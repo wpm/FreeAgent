@@ -1,10 +1,32 @@
 use std::future::Future;
 
 use async_nats::Client;
-use futures::StreamExt;
-use serde::{de::DeserializeOwned, Serialize};
+use futures::{future, Stream, StreamExt};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::warn;
+
+/// Control commands for the entity lifecycle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Control {
+    Start,
+    Stop,
+}
+
+/// Wire format for all NATS messages addressed to an entity.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Envelope<M> {
+    Control(Control),
+    Message(M),
+}
+
+/// Entity lifecycle state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    Idle,
+    Active,
+    Stopped,
+}
 
 /// Idle timeout configuration: a duration and a callback that fires after silence.
 ///
@@ -13,28 +35,42 @@ use tracing::warn;
 /// when the entity has been idle (no messages) for the configured duration.
 pub type Timer<M> = (
     std::time::Duration,
-    Box<dyn Fn(mpsc::UnboundedSender<M>) + Send + 'static>,
+    Box<dyn Fn(mpsc::UnboundedSender<M>) + Send + Sync + 'static>,
 );
+
+/// Abstraction over a NATS connection.
+///
+/// Implemented for `async_nats::Client` out of the box. In tests, inject a
+/// client connected to an embedded or local server.
+pub trait NatsConnection: Clone + Send + 'static {
+    type Subscription: Stream<Item = async_nats::Message> + Unpin + Send + 'static;
+
+    fn subscribe(&self, subject: String) -> impl Future<Output = Self::Subscription> + Send;
+}
+
+impl NatsConnection for Client {
+    type Subscription = async_nats::Subscriber;
+
+    fn subscribe(&self, subject: String) -> impl Future<Output = Self::Subscription> + Send {
+        let inner = self.clone();
+        async move { inner.subscribe(subject).await.expect("subscribe failed") }
+    }
+}
 
 /// A generic autonomous entity that communicates over NATS.
 ///
-/// `M` is the message type exchanged on the NATS subject. It must be
-/// serializable, so it can be sent over the wire and deserializable so
-/// inbound NATS payloads can be decoded.
+/// `M` is the message type carried in `Envelope::Message` payloads. It must be
+/// serializable so it can travel over the wire.
 ///
-/// The entity has three wake-up sources:
-/// 1. A message arrives on its internal queue (from NATS or direct enqueue).
-/// 2. An optional idle timeout fires after a period of inactivity.
-/// 3. The queue channel closes (signals shutdown).
-///
-/// What happens when a message is processed is determined by the `process`
-/// function passed to [`Entity::run`].
+/// Lifecycle: IDLE → ACTIVE → STOPPED.
+/// The entity starts IDLE and only begins processing messages after receiving
+/// `Envelope::Control(Control::Start)` over NATS. It shuts down cleanly on
+/// `Envelope::Control(Control::Stop)`.
 pub struct Entity<M> {
     /// NATS subject this entity subscribes to and is addressed by.
     pub subject: String,
-    pub queue_tx: mpsc::UnboundedSender<M>,
+    queue_tx: mpsc::UnboundedSender<M>,
     queue_rx: mpsc::UnboundedReceiver<M>,
-    /// Optional idle timeout.
     timer: Option<Timer<M>>,
 }
 
@@ -45,9 +81,8 @@ where
     /// Create a new entity subscribed to `subject`.
     ///
     /// `timer` — if `Some((duration, f))`, `f` is called after the entity has
-    /// been idle (no messages processed) for `duration`. The timer resets each
-    /// time a message is processed. The callback receives a clone of the
-    /// internal queue sender, so it can enqueue messages.
+    /// been idle for `duration` while ACTIVE. The timer resets each time a
+    /// message is processed. The callback receives the internal queue sender.
     pub fn new(subject: impl Into<String>, timer: Option<Timer<M>>) -> Self {
         let (queue_tx, queue_rx) = mpsc::unbounded_channel();
         Self {
@@ -58,68 +93,97 @@ where
         }
     }
 
-    /// Run the entity until the queue channel closes or the task is aborted.
+    /// Run the entity until it receives `Control::Stop` or the task is aborted.
     ///
-    /// `process` is called for every message dequeued. It receives the message
-    /// and a clone of the NATS client so it can publish replies.
-    ///
-    /// If an idle timeout is configured, it fires when no message has been
-    /// processed for the configured duration. The timer resets after each
-    /// message and after each timeout callback.
-    pub async fn run<F, Fut>(mut self, nats: Client, process: F)
+    /// Starts in the IDLE state — messages are ignored until `Control::Start` arrives.
+    /// In the ACTIVE state, `process` is called for every `Envelope::Message` dequeued.
+    /// On `Control::Stop`, the NATS subscription is drained and `run()` returns.
+    pub async fn run<NC, F, Fut>(mut self, nats: NC, process: F)
     where
-        F: Fn(M, Client) -> Fut + Send + 'static,
+        NC: NatsConnection,
+        F: Fn(M, NC) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send,
     {
-        // Subscribe to NATS and shuttle inbound messages onto the internal queue.
-        let mut subscription = nats
-            .subscribe(self.subject.clone())
-            .await
-            .expect("subscribe failed");
-
-        let shuttle_tx = self.queue_tx.clone();
-        let subject_label = self.subject.clone();
-        tokio::spawn(async move {
-            while let Some(msg) = subscription.next().await {
-                match serde_json::from_slice::<M>(&msg.payload) {
-                    Ok(m) => {
-                        if shuttle_tx.send(m).is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(subject = %subject_label, error = %e, "failed to deserialize message");
-                    }
-                }
-            }
-        });
-
-        // Main loop with integrated idle timeout.
+        let mut subscription = NatsConnection::subscribe(&nats, self.subject.clone()).await;
+        let mut state = State::Idle;
         let timer = self.timer.take();
-        match timer {
-            Some((idle_duration, callback)) => {
-                loop {
-                    tokio::select! {
-                        msg = self.queue_rx.recv() => {
-                            match msg {
-                                Some(m) => process(m, nats.clone()).await,
-                                None => break, // channel closed
-                            }
-                            // Timer resets implicitly: next iteration starts a fresh sleep.
-                        }
-                        _ = tokio::time::sleep(idle_duration) => {
-                            callback(self.queue_tx.clone());
-                            // Loop continues — if callback enqueued something, recv() picks it up.
+
+        loop {
+            let idle_sleep = match &timer {
+                Some((dur, _)) if state == State::Active => {
+                    future::Either::Left(tokio::time::sleep(*dur))
+                }
+                _ => future::Either::Right(future::pending()),
+            };
+
+            tokio::select! {
+                nats_msg = subscription.next() => {
+                    match nats_msg {
+                        None => break,
+                        Some(raw) => {
+                            state = dispatch(&raw, state, &nats, &process).await;
+                            if state == State::Stopped { break; }
                         }
                     }
                 }
-            }
-            None => {
-                while let Some(msg) = self.queue_rx.recv().await {
-                    process(msg, nats.clone()).await;
+                queue_msg = self.queue_rx.recv() => {
+                    if let Some(m) = queue_msg {
+                        process(m, nats.clone()).await;
+                    }
+                }
+                _ = idle_sleep => {
+                    if let Some((_, callback)) = &timer {
+                        callback(self.queue_tx.clone());
+                    }
                 }
             }
         }
+        // subscription drops here → Subscriber::drop sends Unsubscribe
+    }
+}
+
+/// Deserialize a raw NATS message as `Envelope<M>` and apply state machine logic.
+/// Returns the next state.
+async fn dispatch<M, NC, F, Fut>(
+    raw: &async_nats::Message,
+    state: State,
+    nats: &NC,
+    process: &F,
+) -> State
+where
+    M: DeserializeOwned,
+    NC: NatsConnection,
+    F: Fn(M, NC) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let envelope = match serde_json::from_slice::<Envelope<M>>(&raw.payload) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(subject = %raw.subject, error = %e, "failed to deserialize message");
+            return state;
+        }
+    };
+
+    match (envelope, state) {
+        (Envelope::Control(Control::Start), State::Idle) => State::Active,
+        (Envelope::Control(Control::Start), State::Active) => {
+            warn!("Control::Start received while already active");
+            State::Active
+        }
+        (Envelope::Control(Control::Stop), State::Active) => State::Stopped,
+        (Envelope::Control(Control::Stop), State::Idle) => {
+            warn!("Control::Stop received while idle");
+            State::Idle
+        }
+        (Envelope::Control(ctrl), State::Stopped) => {
+            warn!(?ctrl, "control message received while stopped");
+            State::Stopped
+        }
+        (Envelope::Message(m), State::Active) => {
+            process(m, nats.clone()).await;
+            State::Active
+        }
+        (Envelope::Message(_), s) => s, // silently ignore in Idle/Stopped
     }
 }
 
@@ -137,42 +201,33 @@ mod tests {
         value: u32,
     }
 
-    // ── construction ────────────────────────────────────────────────────────
-
-    #[test]
-    fn new_sets_subject() {
-        let entity = Entity::<Ping>::new("test.subject", None);
-        assert_eq!(entity.subject, "test.subject");
-    }
-
-    #[test]
-    fn queue_tx_is_live_after_construction() {
-        let entity = Entity::<Ping>::new("test.subject", None);
-        // The receiver is still inside the entity, so sending must succeed.
-        assert!(entity.queue_tx.send(Ping { value: 1 }).is_ok());
-    }
-
-    // ── direct queue enqueue ─────────────────────────────────────────────────
-
-    /// Enqueue messages via queue_tx before run(), then drive the entity to
-    /// completion by dropping the sender so the main loop exits cleanly.
-    #[tokio::test]
-    async fn processes_pre_enqueued_messages() {
-        let nats = async_nats::connect("nats://localhost:4222")
+    async fn connect() -> Client {
+        async_nats::connect("nats://localhost:4222")
             .await
-            .expect("NATS not available — start nats-server before running tests");
+            .expect("NATS not available — start nats-server before running tests")
+    }
 
-        let entity = Entity::<Ping>::new("entity.test.pre_enqueue", None);
+    async fn publish<M: Serialize>(nats: &Client, subject: &str, env: &Envelope<M>) {
+        let bytes = serde_json::to_vec(env).unwrap();
+        nats.publish(subject.to_string(), bytes.into())
+            .await
+            .unwrap();
+        nats.flush().await.unwrap();
+    }
 
+    async fn publish_control(nats: &Client, subject: &str, ctrl: Control) {
+        publish::<Ping>(nats, subject, &Envelope::Control(ctrl)).await;
+    }
+
+    /// Spawn an entity that collects processed `Ping` values into the returned vec.
+    fn spawn_collecting_entity(
+        subject: &'static str,
+        nats: Client,
+        timer: Option<Timer<Ping>>,
+    ) -> (tokio::task::JoinHandle<()>, Arc<Mutex<Vec<u32>>>) {
+        let entity = Entity::<Ping>::new(subject, timer);
         let collected: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
         let collected_clone = collected.clone();
-
-        // Enqueue two messages before starting run().
-        entity.queue_tx.send(Ping { value: 10 }).unwrap();
-        entity.queue_tx.send(Ping { value: 20 }).unwrap();
-
-        // run() consumes the entity (and its internal sender), so the channel
-        // stays open as long as the task lives. Abort after a short deadline.
         let handle = tokio::spawn(async move {
             entity
                 .run(nats, move |msg: Ping, _nats| {
@@ -183,46 +238,154 @@ mod tests {
                 })
                 .await;
         });
+        (handle, collected)
+    }
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        handle.abort();
+    /// Spawn an entity that discards all processed messages.
+    fn spawn_entity(
+        subject: &'static str,
+        nats: Client,
+        timer: Option<Timer<Ping>>,
+    ) -> tokio::task::JoinHandle<()> {
+        let entity = Entity::<Ping>::new(subject, timer);
+        tokio::spawn(async move {
+            entity.run(nats, |_msg: Ping, _nats| async {}).await;
+        })
+    }
 
-        let seen = collected.lock().unwrap().clone();
+    // ── construction ────────────────────────────────────────────────────────
+
+    #[test]
+    fn new_sets_subject() {
+        let entity = Entity::<Ping>::new("test.subject", None);
+        assert_eq!(entity.subject, "test.subject");
+    }
+
+    // ── state machine: message processing ───────────────────────────────────
+
+    #[tokio::test]
+    async fn processes_messages_when_active() {
+        let nats = connect().await;
+        let subject = "entity.test.processes_messages";
+        let (handle, collected) = spawn_collecting_entity(subject, nats.clone(), None);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        publish_control(&nats, subject, Control::Start).await;
+        publish(&nats, subject, &Envelope::Message(Ping { value: 42 })).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        publish_control(&nats, subject, Control::Stop).await;
+
+        tokio::time::timeout(Duration::from_millis(500), handle)
+            .await
+            .expect("run() did not exit after Control::Stop")
+            .unwrap();
+
+        assert!(collected.lock().unwrap().contains(&42));
+    }
+
+    // ── state machine: idle ignores messages ─────────────────────────────────
+
+    #[tokio::test]
+    async fn idle_entity_ignores_messages_until_start() {
+        let nats = connect().await;
+        let subject = "entity.test.idle_ignores";
+        let (handle, collected) = spawn_collecting_entity(subject, nats.clone(), None);
+
+        // Send a message while idle — should be ignored.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        publish(&nats, subject, &Envelope::Message(Ping { value: 99 })).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(
-            seen.contains(&10) && seen.contains(&20),
-            "expected both messages processed, got: {seen:?}"
+            collected.lock().unwrap().is_empty(),
+            "message should be ignored while idle"
         );
+
+        // Now start and send a message — should be processed.
+        publish_control(&nats, subject, Control::Start).await;
+        publish(&nats, subject, &Envelope::Message(Ping { value: 42 })).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            collected.lock().unwrap().contains(&42),
+            "message should be processed after start"
+        );
+
+        publish_control(&nats, subject, Control::Stop).await;
+        tokio::time::timeout(Duration::from_millis(500), handle)
+            .await
+            .expect("run() did not exit")
+            .unwrap();
+    }
+
+    // ── state machine: stop exits run() ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn control_stop_exits_run() {
+        let nats = connect().await;
+        let subject = "entity.test.stop_exits";
+        let handle = spawn_entity(subject, nats.clone(), None);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        publish_control(&nats, subject, Control::Start).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        publish_control(&nats, subject, Control::Stop).await;
+
+        tokio::time::timeout(Duration::from_millis(500), handle)
+            .await
+            .expect("run() did not exit after Control::Stop")
+            .unwrap();
+    }
+
+    // ── state machine: unexpected stop while idle doesn't exit ───────────────
+
+    #[tokio::test]
+    async fn unexpected_stop_while_idle_does_not_exit() {
+        let nats = connect().await;
+        let subject = "entity.test.stop_while_idle";
+        let (handle, collected) = spawn_collecting_entity(subject, nats.clone(), None);
+
+        // Stop while idle — entity should remain alive and stay idle.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        publish_control(&nats, subject, Control::Stop).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Entity should still be running — now start it and verify that it processes.
+        publish_control(&nats, subject, Control::Start).await;
+        publish(&nats, subject, &Envelope::Message(Ping { value: 7 })).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            collected.lock().unwrap().contains(&7),
+            "entity should still be alive and processing after spurious Stop"
+        );
+
+        publish_control(&nats, subject, Control::Stop).await;
+        tokio::time::timeout(Duration::from_millis(500), handle)
+            .await
+            .expect("run() did not exit")
+            .unwrap();
     }
 
     // ── idle timeout ────────────────────────────────────────────────────────
 
-    /// An idle entity should have its timeout fire repeatedly.
     #[tokio::test]
     async fn idle_timeout_fires_when_idle() {
-        let nats = async_nats::connect("nats://localhost:4222")
-            .await
-            .expect("NATS not available — start nats-server before running tests");
+        let nats = connect().await;
+        let subject = "entity.test.idle_timeout";
 
         let fired: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
         let fired_clone = fired.clone();
-
-        let idle_duration = Duration::from_millis(20);
         let timer: Timer<Ping> = (
-            idle_duration,
+            Duration::from_millis(20),
             Box::new(move |tx| {
                 *fired_clone.lock().unwrap() += 1;
                 let _ = tx.send(Ping { value: 99 });
             }),
         );
+        let handle = spawn_entity(subject, nats.clone(), Some(timer));
 
-        let entity = Entity::<Ping>::new("entity.test.idle_timeout", Some(timer));
-
-        let handle = tokio::spawn(async move {
-            entity.run(nats, |_msg: Ping, _nats| async {}).await;
-        });
-
-        // Wait long enough for multiple idle timeouts.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Start the entity, then let it idle so the timer fires.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        publish_control(&nats, subject, Control::Start).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
         handle.abort();
 
         let count = *fired.lock().unwrap();
@@ -232,42 +395,29 @@ mod tests {
         );
     }
 
-    /// While the entity is busy processing messages, the idle timeout should
-    /// NOT fire — it only fires after a period of inactivity.
     #[tokio::test]
     async fn idle_timeout_does_not_fire_while_busy() {
-        let nats = async_nats::connect("nats://localhost:4222")
-            .await
-            .expect("NATS not available — start nats-server before running tests");
+        let nats = connect().await;
+        let subject = "entity.test.busy_no_timeout";
 
         let fired: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
         let fired_clone = fired.clone();
-
-        // Idle timeout of 50ms — we'll keep the entity busy for 200ms.
-        let idle_duration = Duration::from_millis(50);
         let timer: Timer<Ping> = (
-            idle_duration,
+            Duration::from_millis(50),
             Box::new(move |_tx| {
                 *fired_clone.lock().unwrap() += 1;
-                // Deliberately do NOT enqueue a message — we want to observe
-                // whether the timeout fires, not feed the loop.
             }),
         );
+        let handle = spawn_entity(subject, nats.clone(), Some(timer));
 
-        let entity = Entity::<Ping>::new("entity.test.busy_no_timeout", Some(timer));
-        let tx = entity.queue_tx.clone();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        publish_control(&nats, subject, Control::Start).await;
 
-        let handle = tokio::spawn(async move {
-            entity.run(nats, |_msg: Ping, _nats| async {}).await;
-        });
-
-        // Rapidly enqueue messages every 10ms for 200ms — well within the 50ms
-        // idle timeout. The timeout should never fire.
+        // Rapidly publish messages every 10ms for 200ms — timeout is 50ms.
         for _ in 0..20 {
-            let _ = tx.send(Ping { value: 1 });
+            publish(&nats, subject, &Envelope::Message(Ping { value: 1 })).await;
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-
         handle.abort();
 
         let count = *fired.lock().unwrap();
@@ -281,8 +431,7 @@ mod tests {
 
     #[test]
     fn no_timer_does_not_panic() {
-        // Just verify construction and that queue_tx is usable — no async needed.
         let entity = Entity::<Ping>::new("entity.test.no_timer", None);
-        assert!(entity.queue_tx.send(Ping { value: 0 }).is_ok());
+        assert_eq!(entity.subject, "entity.test.no_timer");
     }
 }
