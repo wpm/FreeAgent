@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd=$(jq -r '.tool_input.command'); if echo \"$cmd\" | grep -q '^git commit'; then git add -u 2>/dev/null && echo '{\"systemMessage\": \"cargo fmt reformatted files — changes restaged. Retry your commit.\"}'; fi",
+            "statusMessage": "Restaging formatted files..."
+          }
+        ]
+      }
+    ]
+  }
+}

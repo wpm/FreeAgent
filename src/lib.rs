@@ -33,7 +33,7 @@ enum State {
 /// The callback receives the entity's queue sender so it can enqueue messages.
 /// The timeout resets each time the entity processes a message. It only fires
 /// when the entity has been idle (no messages) for the configured duration.
-pub type Timer<M> = (
+pub type OnIdle<M> = (
     std::time::Duration,
     Box<dyn Fn(mpsc::UnboundedSender<M>) + Send + Sync + 'static>,
 );
@@ -71,7 +71,7 @@ pub struct Entity<M> {
     pub subject: String,
     queue_tx: mpsc::UnboundedSender<M>,
     queue_rx: mpsc::UnboundedReceiver<M>,
-    timer: Option<Timer<M>>,
+    timer: Option<OnIdle<M>>,
 }
 
 impl<M> Entity<M>
@@ -83,7 +83,7 @@ where
     /// `timer` — if `Some((duration, f))`, `f` is called after the entity has
     /// been idle for `duration` while ACTIVE. The timer resets each time a
     /// message is processed. The callback receives the internal queue sender.
-    pub fn new(subject: impl Into<String>, timer: Option<Timer<M>>) -> Self {
+    pub fn new(subject: impl Into<String>, timer: Option<OnIdle<M>>) -> Self {
         let (queue_tx, queue_rx) = mpsc::unbounded_channel();
         Self {
             subject: subject.into(),
@@ -189,68 +189,91 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
     use std::sync::{Arc, Mutex};
+    use std::task::{Context, Poll};
     use std::time::Duration;
 
+    use async_nats::Message as NatsMessage;
+    use futures::Stream;
     use serde::{Deserialize, Serialize};
+    use tokio::sync::mpsc;
 
     use super::*;
+
+    // ── MockNats ─────────────────────────────────────────────────────────────
+
+    /// In-memory NATS substitute. Pass `MockNats` into `run()`; use the
+    /// [`MockNatsHandle`] to inject envelopes directly from test code.
+    ///
+    /// `subscribe()` is called exactly once by `run()`, at which point it
+    /// hands ownership of the receiver to the entity's subscription stream.
+    /// The handle retains the sender and can push messages at any time.
+    #[derive(Clone)]
+    struct MockNats {
+        rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<NatsMessage>>>>,
+    }
+
+    struct MockNatsHandle {
+        tx: mpsc::UnboundedSender<NatsMessage>,
+    }
+
+    struct MockSubscription(mpsc::UnboundedReceiver<NatsMessage>);
+
+    impl Stream for MockSubscription {
+        type Item = NatsMessage;
+        fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            self.0.poll_recv(cx)
+        }
+    }
+
+    impl NatsConnection for MockNats {
+        type Subscription = MockSubscription;
+        fn subscribe(&self, _subject: String) -> impl Future<Output = Self::Subscription> + Send {
+            let rx_slot = self.rx.clone();
+            async move {
+                let rx = rx_slot
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("MockNats::subscribe called more than once");
+                MockSubscription(rx)
+            }
+        }
+    }
+
+    fn mock_nats() -> (MockNats, MockNatsHandle) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mock = MockNats {
+            rx: Arc::new(Mutex::new(Some(rx))),
+        };
+        (mock, MockNatsHandle { tx })
+    }
+
+    impl MockNatsHandle {
+        fn inject<M: Serialize>(&self, subject: &str, env: &Envelope<M>) {
+            let bytes = serde_json::to_vec(env).unwrap();
+            let length = bytes.len();
+            let msg = NatsMessage {
+                subject: subject.to_string().into(),
+                reply: None,
+                payload: bytes.into(),
+                headers: None,
+                status: None,
+                description: None,
+                length,
+            };
+            let _ = self.tx.send(msg);
+        }
+
+        fn inject_control(&self, ctrl: Control) {
+            self.inject("test", &Envelope::<Ping>::Control(ctrl));
+        }
+    }
 
     #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
     struct Ping {
         value: u32,
-    }
-
-    async fn connect() -> Client {
-        async_nats::connect("nats://localhost:4222")
-            .await
-            .expect("NATS not available — start nats-server before running tests")
-    }
-
-    async fn publish<M: Serialize>(nats: &Client, subject: &str, env: &Envelope<M>) {
-        let bytes = serde_json::to_vec(env).unwrap();
-        nats.publish(subject.to_string(), bytes.into())
-            .await
-            .unwrap();
-        nats.flush().await.unwrap();
-    }
-
-    async fn publish_control(nats: &Client, subject: &str, ctrl: Control) {
-        publish::<Ping>(nats, subject, &Envelope::Control(ctrl)).await;
-    }
-
-    /// Spawn an entity that collects processed `Ping` values into the returned vec.
-    fn spawn_collecting_entity(
-        subject: &'static str,
-        nats: Client,
-        timer: Option<Timer<Ping>>,
-    ) -> (tokio::task::JoinHandle<()>, Arc<Mutex<Vec<u32>>>) {
-        let entity = Entity::<Ping>::new(subject, timer);
-        let collected: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
-        let collected_clone = collected.clone();
-        let handle = tokio::spawn(async move {
-            entity
-                .run(nats, move |msg: Ping, _nats| {
-                    let c = collected_clone.clone();
-                    async move {
-                        c.lock().unwrap().push(msg.value);
-                    }
-                })
-                .await;
-        });
-        (handle, collected)
-    }
-
-    /// Spawn an entity that discards all processed messages.
-    fn spawn_entity(
-        subject: &'static str,
-        nats: Client,
-        timer: Option<Timer<Ping>>,
-    ) -> tokio::task::JoinHandle<()> {
-        let entity = Entity::<Ping>::new(subject, timer);
-        tokio::spawn(async move {
-            entity.run(nats, |_msg: Ping, _nats| async {}).await;
-        })
     }
 
     // ── construction ────────────────────────────────────────────────────────
@@ -261,132 +284,144 @@ mod tests {
         assert_eq!(entity.subject, "test.subject");
     }
 
-    // ── state machine: message processing ───────────────────────────────────
+    // ── unit tests (no NATS server) ──────────────────────────────────────────
+
+    /// Helper: spawn an entity over MockNats that collects processed values.
+    fn spawn_fake_collecting(
+        timer: Option<OnIdle<Ping>>,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        Arc<Mutex<Vec<u32>>>,
+        MockNatsHandle,
+    ) {
+        let (fake, handle) = mock_nats();
+        let entity = Entity::<Ping>::new("test", timer);
+        let collected: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+        let collected_clone = collected.clone();
+        let join = tokio::spawn(async move {
+            entity
+                .run(fake, move |msg: Ping, _nats| {
+                    let c = collected_clone.clone();
+                    async move {
+                        c.lock().unwrap().push(msg.value);
+                    }
+                })
+                .await;
+        });
+        (join, collected, handle)
+    }
+
+    /// Helper: spawn an entity over MockNats that discards messages.
+    fn spawn_fake_entity(
+        timer: Option<OnIdle<Ping>>,
+    ) -> (tokio::task::JoinHandle<()>, MockNatsHandle) {
+        let (fake, handle) = mock_nats();
+        let entity = Entity::<Ping>::new("test", timer);
+        let join = tokio::spawn(async move {
+            entity.run(fake, |_msg: Ping, _nats| async {}).await;
+        });
+        (join, handle)
+    }
 
     #[tokio::test]
-    async fn processes_messages_when_active() {
-        let nats = connect().await;
-        let subject = "entity.test.processes_messages";
-        let (handle, collected) = spawn_collecting_entity(subject, nats.clone(), None);
+    async fn unit_processes_messages_when_active() {
+        let (join, collected, handle) = spawn_fake_collecting(None);
 
+        handle.inject_control(Control::Start);
+        handle.inject("test", &Envelope::Message(Ping { value: 42 }));
         tokio::time::sleep(Duration::from_millis(20)).await;
-        publish_control(&nats, subject, Control::Start).await;
-        publish(&nats, subject, &Envelope::Message(Ping { value: 42 })).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        publish_control(&nats, subject, Control::Stop).await;
+        handle.inject_control(Control::Stop);
 
-        tokio::time::timeout(Duration::from_millis(500), handle)
+        tokio::time::timeout(Duration::from_millis(500), join)
             .await
-            .expect("run() did not exit after Control::Stop")
+            .expect("run() did not exit")
             .unwrap();
 
         assert!(collected.lock().unwrap().contains(&42));
     }
 
-    // ── state machine: idle ignores messages ─────────────────────────────────
-
     #[tokio::test]
-    async fn idle_entity_ignores_messages_until_start() {
-        let nats = connect().await;
-        let subject = "entity.test.idle_ignores";
-        let (handle, collected) = spawn_collecting_entity(subject, nats.clone(), None);
+    async fn unit_idle_ignores_messages_until_start() {
+        let (join, collected, handle) = spawn_fake_collecting(None);
 
-        // Send a message while idle — should be ignored.
+        // Message while idle — should be ignored.
+        handle.inject("test", &Envelope::Message(Ping { value: 99 }));
         tokio::time::sleep(Duration::from_millis(20)).await;
-        publish(&nats, subject, &Envelope::Message(Ping { value: 99 })).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(
             collected.lock().unwrap().is_empty(),
-            "message should be ignored while idle"
+            "should be ignored while idle"
         );
 
-        // Now start and send a message — should be processed.
-        publish_control(&nats, subject, Control::Start).await;
-        publish(&nats, subject, &Envelope::Message(Ping { value: 42 })).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Start, then send a real message.
+        handle.inject_control(Control::Start);
+        handle.inject("test", &Envelope::Message(Ping { value: 42 }));
+        tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(
             collected.lock().unwrap().contains(&42),
-            "message should be processed after start"
+            "should process after start"
         );
 
-        publish_control(&nats, subject, Control::Stop).await;
-        tokio::time::timeout(Duration::from_millis(500), handle)
+        handle.inject_control(Control::Stop);
+        tokio::time::timeout(Duration::from_millis(500), join)
             .await
             .expect("run() did not exit")
             .unwrap();
     }
 
-    // ── state machine: stop exits run() ─────────────────────────────────────
-
     #[tokio::test]
-    async fn control_stop_exits_run() {
-        let nats = connect().await;
-        let subject = "entity.test.stop_exits";
-        let handle = spawn_entity(subject, nats.clone(), None);
+    async fn unit_stop_exits_run() {
+        let (join, handle) = spawn_fake_entity(None);
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        publish_control(&nats, subject, Control::Start).await;
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        publish_control(&nats, subject, Control::Stop).await;
+        handle.inject_control(Control::Start);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        handle.inject_control(Control::Stop);
 
-        tokio::time::timeout(Duration::from_millis(500), handle)
+        tokio::time::timeout(Duration::from_millis(500), join)
             .await
-            .expect("run() did not exit after Control::Stop")
+            .expect("run() did not exit after Stop")
             .unwrap();
     }
 
-    // ── state machine: unexpected stop while idle doesn't exit ───────────────
-
     #[tokio::test]
-    async fn unexpected_stop_while_idle_does_not_exit() {
-        let nats = connect().await;
-        let subject = "entity.test.stop_while_idle";
-        let (handle, collected) = spawn_collecting_entity(subject, nats.clone(), None);
+    async fn unit_unexpected_stop_while_idle_does_not_exit() {
+        let (join, collected, handle) = spawn_fake_collecting(None);
 
-        // Stop while idle — entity should remain alive and stay idle.
+        // Stop while idle — should warn but stay alive.
+        handle.inject_control(Control::Stop);
         tokio::time::sleep(Duration::from_millis(20)).await;
-        publish_control(&nats, subject, Control::Stop).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Entity should still be running — now start it and verify that it processes.
-        publish_control(&nats, subject, Control::Start).await;
-        publish(&nats, subject, &Envelope::Message(Ping { value: 7 })).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Entity should still be running.
+        handle.inject_control(Control::Start);
+        handle.inject("test", &Envelope::Message(Ping { value: 7 }));
+        tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(
             collected.lock().unwrap().contains(&7),
-            "entity should still be alive and processing after spurious Stop"
+            "entity should still process after spurious Stop"
         );
 
-        publish_control(&nats, subject, Control::Stop).await;
-        tokio::time::timeout(Duration::from_millis(500), handle)
+        handle.inject_control(Control::Stop);
+        tokio::time::timeout(Duration::from_millis(500), join)
             .await
             .expect("run() did not exit")
             .unwrap();
     }
 
-    // ── idle timeout ────────────────────────────────────────────────────────
-
     #[tokio::test]
-    async fn idle_timeout_fires_when_idle() {
-        let nats = connect().await;
-        let subject = "entity.test.idle_timeout";
-
+    async fn unit_idle_timeout_fires_when_idle() {
         let fired: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
         let fired_clone = fired.clone();
-        let timer: Timer<Ping> = (
+        let timer: OnIdle<Ping> = (
             Duration::from_millis(20),
             Box::new(move |tx| {
                 *fired_clone.lock().unwrap() += 1;
                 let _ = tx.send(Ping { value: 99 });
             }),
         );
-        let handle = spawn_entity(subject, nats.clone(), Some(timer));
+        let (join, handle) = spawn_fake_entity(Some(timer));
 
-        // Start the entity, then let it idle so the timer fires.
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        publish_control(&nats, subject, Control::Start).await;
+        handle.inject_control(Control::Start);
         tokio::time::sleep(Duration::from_millis(150)).await;
-        handle.abort();
+        join.abort();
 
         let count = *fired.lock().unwrap();
         assert!(
@@ -396,34 +431,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn idle_timeout_does_not_fire_while_busy() {
-        let nats = connect().await;
-        let subject = "entity.test.busy_no_timeout";
-
+    async fn unit_idle_timeout_does_not_fire_while_busy() {
         let fired: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
         let fired_clone = fired.clone();
-        let timer: Timer<Ping> = (
+        let timer: OnIdle<Ping> = (
             Duration::from_millis(50),
             Box::new(move |_tx| {
                 *fired_clone.lock().unwrap() += 1;
             }),
         );
-        let handle = spawn_entity(subject, nats.clone(), Some(timer));
+        let (join, handle) = spawn_fake_entity(Some(timer));
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        publish_control(&nats, subject, Control::Start).await;
-
-        // Rapidly publish messages every 10ms for 200ms — timeout is 50ms.
+        handle.inject_control(Control::Start);
         for _ in 0..20 {
-            publish(&nats, subject, &Envelope::Message(Ping { value: 1 })).await;
+            handle.inject("test", &Envelope::Message(Ping { value: 1 }));
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        handle.abort();
+        join.abort();
 
         let count = *fired.lock().unwrap();
         assert_eq!(
             count, 0,
-            "idle timeout should NOT fire while entity is busy, but fired {count} times"
+            "idle timeout should NOT fire while busy, fired {count} times"
         );
     }
 
