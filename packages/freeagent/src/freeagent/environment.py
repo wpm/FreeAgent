@@ -1,0 +1,475 @@
+"""The Environment base class: lifecycle owner, same fold model as the agent.
+
+The environment marries a roster of agents to a NATS subject root and owns
+the episode lifecycle state machine::
+
+    setup --> running --> stopping --> ended
+      \\--> aborted (roster incomplete at setup timeout, or duplicate name)
+
+It is the same fold as the agent -- a single locally ordered event stream
+processed one handler at a time -- with three differences: no think queue
+(but timers, which enter the fold as events), a constructor that *creates*
+the episode (app name, roster, episode ID, timeouts), and lifecycle
+ownership (presence confirmation by request/reply, ``start`` and
+``shutdown`` broadcasts, timeout-driven aborts). A minimal environment is
+this base class plus a roster, zero overrides.
+
+**Control flows one way.** The environment broadcasts on the control subject;
+agents never send on it. Agents *can* send app-defined management messages to
+the environment's inbox (e.g. "the game is over") -- the inbox message is
+information, the control broadcast is the decision. Replies to
+environment-originated requests use episode-scoped reply subjects
+(``<app>.episode.<id>.reply.<req-id>``), never NATS's ``_INBOX.>``.
+
+Handlers here obey the same hard rule as agents: **fast and non-blocking** --
+no LLM calls or slow work inside a handler; slow work is a spawned task.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import enum
+import logging
+import uuid
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
+
+from pydantic import ValidationError
+
+from .config import DEFAULT_EPISODE_TIMEOUT, DEFAULT_GRACE_PERIOD, DEFAULT_SETUP_TIMEOUT
+from .envelope import Envelope
+from .subjects import ENV_NAME, EpisodeSubjects, validate_name
+from .transport import MessageHandler, NatsTransport, Subscription, Transport
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine, Iterable, Mapping, Sequence
+
+logger = logging.getLogger("freeagent.environment")
+
+
+class EpisodeState(enum.StrEnum):
+    """The lifecycle state machine's states."""
+
+    SETUP = "setup"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    ENDED = "ended"
+    ABORTED = "aborted"
+
+
+EnvChannel = Literal["public", "env", "reply"]
+
+
+@dataclass(slots=True)
+class EnvMessageEvent:
+    """An external message entering the environment's fold."""
+
+    channel: EnvChannel
+    envelope: Envelope
+
+
+@dataclass(slots=True)
+class TimerEvent:
+    """A timer (or lifecycle decision) entering the environment's fold."""
+
+    name: str
+    payload: Any = field(default=None)
+
+
+EnvironmentEvent = EnvMessageEvent | TimerEvent
+
+_MANAGEMENT_PREFIX = "freeagent."
+_SETUP_TIMER = "freeagent.setup_timeout"
+_EPISODE_TIMER = "freeagent.episode_timeout"
+_SHUTDOWN_TIMER = "freeagent.shutdown"
+_GRACE_TIMER = "freeagent.grace_period"
+
+
+def _management_type(payload: Any) -> str | None:
+    if isinstance(payload, dict):
+        mtype = payload.get("type")
+        if isinstance(mtype, str) and mtype.startswith(_MANAGEMENT_PREFIX):
+            return mtype
+    return None
+
+
+class Environment:
+    """Base class for FreeAgent environments. Owns one episode's lifecycle.
+
+    Lifecycle management is the irreducible minimum every environment
+    provides; the framework provides no built-in state mechanism -- what
+    state an environment keeps and how is entirely up to the application.
+    Applications override :meth:`perceive` for the few messages they care
+    about and call :meth:`initiate_shutdown` when the episode is over.
+    """
+
+    def __init__(
+        self,
+        app: str,
+        roster: Sequence[str],
+        episode_id: str | None = None,
+        config: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Create the environment for one episode.
+
+        ``app`` is the application name (subject prefix); ``roster`` the
+        fixed list of expected agent IDs (assigned top-down -- duplicates
+        rejected); ``episode_id`` is auto-generated when ``None``. ``config``
+        keys (seconds): ``setup_timeout`` (default 30), ``episode_timeout``
+        (default 600), ``grace_period`` (default 5).
+        """
+        validate_name(app, kind="application name")
+        names = list(roster)
+        for name in names:
+            validate_name(name, kind="agent id")
+            if name == ENV_NAME:
+                raise ValueError(f"agent id {ENV_NAME!r} is reserved for the environment")
+        if len(set(names)) != len(names):
+            duplicates = sorted({n for n in names if names.count(n) > 1})
+            raise ValueError(f"duplicate agent ids in roster: {duplicates}")
+        if episode_id is not None:
+            validate_name(episode_id, kind="episode id")
+        self.app = app
+        self.roster: tuple[str, ...] = tuple(names)
+        self.episode_id: str = episode_id if episode_id is not None else uuid.uuid4().hex
+        self.config: dict[str, Any] = dict(config or {})
+        self.setup_timeout = float(self.config.get("setup_timeout", DEFAULT_SETUP_TIMEOUT))
+        self.episode_timeout = float(self.config.get("episode_timeout", DEFAULT_EPISODE_TIMEOUT))
+        self.grace_period = float(self.config.get("grace_period", DEFAULT_GRACE_PERIOD))
+        self._subjects = EpisodeSubjects(app=app, episode_id=self.episode_id)
+        self._state = EpisodeState.SETUP
+        self.state_history: list[EpisodeState] = [EpisodeState.SETUP]
+        self.outcome: Any = None
+        self.abort_reason: str | None = None
+        self.shutdown_reason: str | None = None
+        self._events: asyncio.Queue[EnvironmentEvent] = asyncio.Queue()
+        self._outbox: list[tuple[Any, tuple[str, ...] | None]] = []
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._transport: Transport | None = None
+        self._nonces: dict[str, str] = {}
+        self._present: set[str] = set()
+        self._pending_requests: dict[str, str] = {}
+
+    # ------------------------------------------------------------------
+    # Identity / state
+    # ------------------------------------------------------------------
+
+    @property
+    def state(self) -> EpisodeState:
+        """Current lifecycle state."""
+        return self._state
+
+    @property
+    def subject_root(self) -> str:
+        """The episode's subject root -- what each agent's constructor receives."""
+        return self._subjects.root
+
+    @property
+    def subjects(self) -> EpisodeSubjects:
+        """The episode's subject helper (runtime use only)."""
+        return self._subjects
+
+    # ------------------------------------------------------------------
+    # Handlers (the fold) -- override these. Fast and non-blocking only.
+    # ------------------------------------------------------------------
+
+    async def perceive(self, message: Envelope) -> None:
+        """Handle in-world traffic (public channel) and environment-inbox messages.
+
+        Applications override this for the few messages they care about
+        (e.g. an agent's "the game is over" signal -> call
+        :meth:`initiate_shutdown`). Must be fast and non-blocking: no LLM
+        calls or slow work inside a handler -- spawn a task instead. Default:
+        ignore.
+        """
+
+    async def handle_reply(self, message: Envelope) -> None:
+        """Handle a reply to an application-originated request (:meth:`send_request`).
+
+        Presence replies are consumed by the runtime and never reach this.
+        Must be fast and non-blocking. Default: ignore.
+        """
+
+    async def handle_timer(self, name: str, payload: Any) -> None:
+        """Handle an application timer scheduled with :meth:`schedule_timer`.
+
+        Framework timers (``freeagent.*`` names) are consumed by the runtime
+        and never reach this. Must be fast and non-blocking. Default: ignore.
+        """
+
+    # ------------------------------------------------------------------
+    # Effects -- callable from handlers
+    # ------------------------------------------------------------------
+
+    def act(self, payload: Any, recipients: Iterable[str] | None = None) -> None:
+        """Queue an outgoing in-world message from the environment (sender ``env``).
+
+        Same outbox mechanism as agents: nothing is published until the
+        current handler returns; a raising handler publishes nothing.
+        ``recipients`` are agent IDs; default broadcasts on the public
+        channel.
+        """
+        if recipients is None:
+            self._outbox.append((payload, None))
+            return
+        names = tuple(recipients)
+        for name in names:
+            validate_name(name, kind="recipient agent id")
+        self._outbox.append((payload, names))
+
+    def schedule_timer(self, delay: float, name: str, payload: Any = None) -> asyncio.Task[None]:
+        """Schedule a timer that enters the fold as an event after *delay* seconds.
+
+        Application timer names must not start with ``freeagent.`` (reserved
+        for the framework's own timers); they are delivered to
+        :meth:`handle_timer`.
+        """
+        return self.spawn(self._timer(delay, name, payload))
+
+    def spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+        """Run slow work outside the fold; tracked, errors logged.
+
+        Like the agent's ``spawn``: report results back into the fold (e.g.
+        via :meth:`schedule_timer` with delay 0) rather than mutating state
+        from the task.
+        """
+        task = asyncio.get_running_loop().create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._on_task_done)
+        return task
+
+    def initiate_shutdown(self, reason: str | None = None) -> None:
+        """Decide to end the episode: broadcast ``shutdown`` and start the grace period.
+
+        Callable from application handlers (e.g. on an agent's end-of-game
+        inbox signal) and used by the episode timeout. The transition happens
+        at the fold boundary: this enqueues a lifecycle event; the broadcast
+        goes out when that event is processed. No-op unless running.
+        """
+        self._events.put_nowait(TimerEvent(_SHUTDOWN_TIMER, reason))
+
+    async def broadcast_control(self, payload: Any) -> None:
+        """Broadcast a lifecycle message on the control subject (environment only).
+
+        Published immediately -- control is the environment's lifecycle
+        authority, not in-world traffic. The control subject is strictly
+        environment -> agents; agents never send on it.
+        """
+        if self._transport is None:
+            raise RuntimeError("environment is not attached to a transport")
+        envelope = Envelope(episode_id=self.episode_id, sender=ENV_NAME, payload=payload)
+        await self._transport.publish(self._subjects.control, envelope.to_bytes())
+
+    async def send_request(self, agent_id: str, payload: dict[str, Any]) -> str:
+        """Send an environment-originated request to one agent; returns the request id.
+
+        The request is delivered to the agent's inbox with a ``request_id``
+        field added; the reply arrives on the episode-scoped subject
+        ``reply.<request-id>`` (never ``_INBOX.>``) and is delivered to
+        :meth:`handle_reply`. Request/reply always originates from the
+        environment.
+        """
+        if self._transport is None:
+            raise RuntimeError("environment is not attached to a transport")
+        request_id = uuid.uuid4().hex
+        message = dict(payload)
+        message["request_id"] = request_id
+        envelope = Envelope(episode_id=self.episode_id, sender=ENV_NAME, payload=message)
+        await self._transport.publish(self._subjects.agent(agent_id), envelope.to_bytes())
+        return request_id
+
+    # ------------------------------------------------------------------
+    # Runtime
+    # ------------------------------------------------------------------
+
+    async def run(self, nats_url: str) -> EpisodeState:
+        """Drive the full episode lifecycle against NATS; returns the final state."""
+        transport = NatsTransport(nats_url)
+        await transport.connect()
+        try:
+            return await self.serve(transport)
+        finally:
+            await transport.close()
+
+    async def serve(self, transport: Transport) -> EpisodeState:
+        """Drive the lifecycle against an already connected transport.
+
+        Creates the episode's JetStream stream (idempotently), confirms the
+        roster by presence request/reply, broadcasts ``start``, processes
+        events until ``ended`` or ``aborted``, and returns the final state.
+        Does not close the transport (the caller owns it).
+        """
+        self._transport = transport
+        await transport.ensure_stream(self._subjects.stream, [self._subjects.all_subjects])
+        subscriptions: list[Subscription] = [
+            await transport.subscribe(self._subjects.public, self._receiver("public")),
+            await transport.subscribe(self._subjects.env, self._receiver("env")),
+            await transport.subscribe(self._subjects.reply_wildcard, self._receiver("reply")),
+        ]
+        try:
+            await self._begin_setup()
+            while self._state not in (EpisodeState.ENDED, EpisodeState.ABORTED):
+                event = await self._events.get()
+                await self._process_event(event)
+        finally:
+            for task in list(self._tasks):
+                task.cancel()
+            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+            for subscription in subscriptions:
+                await subscription.unsubscribe()
+            self._transport = None
+        return self._state
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _receiver(self, channel: EnvChannel) -> MessageHandler:
+        async def receive(subject: str, data: bytes) -> None:
+            try:
+                envelope = Envelope.from_bytes(data)
+            except ValidationError:
+                logger.warning("env: undecodable message on %s; dropped", subject)
+                return
+            self._events.put_nowait(EnvMessageEvent(channel, envelope))
+
+        return receive
+
+    async def _begin_setup(self) -> None:
+        """Send presence requests to the roster and arm the setup timeout."""
+        for name in self.roster:
+            request_id = uuid.uuid4().hex
+            self._pending_requests[request_id] = name
+            envelope = Envelope(
+                episode_id=self.episode_id,
+                sender=ENV_NAME,
+                payload={"type": "freeagent.presence_request", "request_id": request_id},
+            )
+            await self._transport.publish(self._subjects.agent(name), envelope.to_bytes())  # type: ignore[union-attr]
+        self.schedule_timer(self.setup_timeout, _SETUP_TIMER)
+        if self._present >= set(self.roster):  # empty roster: nothing to wait for
+            await self._start_episode()
+
+    async def _process_event(self, event: EnvironmentEvent) -> None:
+        """One step of the fold: dispatch, then flush the outbox.
+
+        Same semantics as the agent: the outbox is flushed only when the
+        handler returns normally and discarded (with a logged error) when it
+        raises.
+        """
+        try:
+            await self._dispatch(event)
+        except Exception:
+            self._outbox.clear()
+            logger.exception("env: handler failed; outbox discarded")
+        else:
+            await self._flush_outbox()
+
+    async def _dispatch(self, event: EnvironmentEvent) -> None:
+        if isinstance(event, TimerEvent):
+            await self._dispatch_timer(event)
+            return
+        envelope = event.envelope
+        if event.channel == "reply":
+            payload = envelope.payload
+            if _management_type(payload) == "freeagent.presence_reply":
+                await self._handle_presence_reply(payload)
+                return
+            await self.handle_reply(envelope)
+            return
+        if envelope.sender == ENV_NAME:
+            return  # the environment's own publication echoed back
+        if _management_type(envelope.payload) is not None:
+            logger.debug("env: ignoring management message on %s", event.channel)
+            return
+        await self.perceive(envelope)
+
+    async def _dispatch_timer(self, event: TimerEvent) -> None:
+        if event.name == _SETUP_TIMER:
+            if self._state is EpisodeState.SETUP:
+                missing = sorted(set(self.roster) - self._present)
+                await self._abort(f"setup timeout: roster incomplete, missing {missing}")
+        elif event.name == _EPISODE_TIMER:
+            if self._state is EpisodeState.RUNNING:
+                self.initiate_shutdown("episode timeout")
+        elif event.name == _SHUTDOWN_TIMER:
+            await self._enter_stopping(event.payload)
+        elif event.name == _GRACE_TIMER:
+            if self._state is EpisodeState.STOPPING:
+                self._set_state(EpisodeState.ENDED)
+        elif event.name.startswith(_MANAGEMENT_PREFIX):  # pragma: no cover - defensive
+            logger.warning("env: unknown framework timer %s", event.name)
+        else:
+            await self.handle_timer(event.name, event.payload)
+
+    async def _handle_presence_reply(self, payload: dict[str, Any]) -> None:
+        name = payload.get("agent")
+        nonce = payload.get("nonce")
+        if not isinstance(name, str) or not isinstance(nonce, str) or name not in self.roster:
+            logger.warning("env: malformed or unexpected presence reply: %r", payload)
+            return
+        known = self._nonces.get(name)
+        if known is not None and known != nonce:
+            # Two processes launched under the same agent name.
+            if self._state is EpisodeState.SETUP:
+                await self._abort(f"duplicate agent name {name!r}: presence nonce mismatch")
+            else:
+                logger.error("env: duplicate agent name %r detected after start", name)
+            return
+        self._nonces[name] = nonce
+        self._present.add(name)
+        if self._state is EpisodeState.SETUP and self._present >= set(self.roster):
+            await self._start_episode()
+
+    async def _start_episode(self) -> None:
+        """All expected agents replied: fire the gun."""
+        self._set_state(EpisodeState.RUNNING)
+        await self.broadcast_control({"type": "start"})
+        self.schedule_timer(self.episode_timeout, _EPISODE_TIMER)
+
+    async def _enter_stopping(self, reason: Any) -> None:
+        if self._state is not EpisodeState.RUNNING:
+            return
+        self.shutdown_reason = reason if isinstance(reason, str) else None
+        self._set_state(EpisodeState.STOPPING)
+        await self.broadcast_control({"type": "shutdown"})
+        self.schedule_timer(self.grace_period, _GRACE_TIMER)
+
+    async def _abort(self, reason: str) -> None:
+        self.abort_reason = reason
+        self._set_state(EpisodeState.ABORTED)
+        logger.error("env: episode %s aborted: %s", self.episode_id, reason)
+        # Cooperative cleanup: tell whoever did show up to wind down.
+        await self.broadcast_control({"type": "shutdown"})
+
+    def _set_state(self, state: EpisodeState) -> None:
+        self._state = state
+        self.state_history.append(state)
+
+    async def _flush_outbox(self) -> None:
+        if not self._outbox:
+            return
+        pending, self._outbox = self._outbox, []
+        if self._transport is None:  # pragma: no cover - defensive
+            logger.warning("env: no transport; outbox of %d dropped", len(pending))
+            return
+        for payload, recipients in pending:
+            envelope = Envelope(episode_id=self.episode_id, sender=ENV_NAME, payload=payload)
+            data = envelope.to_bytes()
+            if recipients is None:
+                await self._transport.publish(self._subjects.public, data)
+                continue
+            for name in recipients:
+                await self._transport.publish(self._subjects.agent(name), data)
+
+    async def _timer(self, delay: float, name: str, payload: Any) -> None:
+        await asyncio.sleep(delay)
+        self._events.put_nowait(TimerEvent(name, payload))
+
+    def _on_task_done(self, task: asyncio.Task[Any]) -> None:
+        self._tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("env: spawned task failed", exc_info=exc)
