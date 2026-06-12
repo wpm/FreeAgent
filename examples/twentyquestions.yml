@@ -25,6 +25,7 @@ agents:
     config:
       max_questions: 20
       grace_period: 15
+      nudge_interval: 25
       # secret: a lighthouse   # omit to let the Host pick one at random
   alice:
     class: twentyquestions.player:Player

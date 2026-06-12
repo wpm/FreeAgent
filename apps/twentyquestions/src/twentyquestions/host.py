@@ -90,7 +90,9 @@ class Host(LLMAgent):
         await super().on_decision(decision)  # speak (or not), as the LLM decided
         if self.game_over or not isinstance(decision, HostDecision):
             return
-        if decision.classification == "question":
+        # A question costs budget only when the Host actually answers it
+        # (a silently classified question was dropped, not spent).
+        if decision.classification == "question" and decision.speak:
             self.questions_asked += 1
         won = decision.classification == "guess" and decision.guess_correct
         if not won and self.questions_asked < self.max_questions:

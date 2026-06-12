@@ -38,6 +38,15 @@ async def test_question_verdict_increments_the_count() -> None:
     assert outbox(host) == [("Yes. That was question 1 of 20.", None)]
 
 
+async def test_a_silently_classified_question_does_not_cost_budget() -> None:
+    # A question the Host did not actually answer (speak false) was dropped,
+    # not spent -- the budget must only move when an answer goes out.
+    host = make_host()
+    await host.on_decision(HostDecision(speak=False, classification="question"))
+    assert host.questions_asked == 0
+    assert outbox(host) == []
+
+
 async def test_deliberation_and_other_verdicts_do_not_count() -> None:
     host = make_host()
     await host.on_decision(HostDecision(speak=False, classification="deliberation"))

@@ -24,6 +24,7 @@ Control flows one way: only the environment sends on the control subject; agents
 - Model resolution (`resolve_model`): explicit argument → configured (runner yml) → the `FREEAGENT_MODEL` env var → auto-detect the cheap tier of whichever provider key is present (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`) → a clear error naming the env vars checked.
 - `FakeLLM` is a deterministic, scriptable LLM — no network, no keys — selected through the same mechanism via the model strings `"fake"` (responses registered in test code) and `"fake:<path>"` (a canned YAML file of regex-matched responses). Everything downstream runs without a provider.
 - `LLMAgent` is an agent defined primarily by text prompts: its state is the transcript of perceived messages, and each perception spawns (or defers to an in-flight) decision call returning the structured `Decision` schema — speak or stay silent, and what to say. Subclasses customize the prompt, the schema, and structured side-decisions.
+- A room of LLMAgents can stall: everyone decides to wait for someone else, and with no new messages no one ever decides again. The opt-in `nudge_interval` config key (seconds) schedules a periodic re-decision during a lull, with a prompt hint that taking the initiative is allowed — the design's "act or stay silent?" gatekeeper pattern. Each agent still decides for itself; there is no turn-taking.
 
 ## Testing
 
