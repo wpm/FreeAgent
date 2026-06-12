@@ -1,0 +1,30 @@
+# The Host's canned decide responses (HostDecision mappings). Each entry's
+# match regex fires on a distinctive phrase of the previous speaker; entries
+# are consumed in order, and anything unmatched falls to the silent default.
+# The welcome and the game-over announcement are code-generated, not scripted.
+default: {speak: false, message: "", classification: other, guess_correct: false}
+responses:
+  - match: "should we ask whether it is alive"
+    response:
+      speak: false
+      message: ""
+      classification: deliberation
+      guess_correct: false
+  - match: "question one: is it alive"
+    response:
+      speak: true
+      message: "Yes, it is alive. That was question 1 of 20."
+      classification: question
+      guess_correct: false
+  - match: "does it live in the sea"
+    response:
+      speak: true
+      message: "Yes, it lives in the sea. That was question 2 of 20."
+      classification: question
+      guess_correct: false
+  - match: "is it an octopus"
+    response:
+      speak: true
+      message: "Correct! An octopus it is."
+      classification: guess
+      guess_correct: true

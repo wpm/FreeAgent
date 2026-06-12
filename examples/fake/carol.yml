@@ -1,0 +1,9 @@
+# carol spends question two after the Host's first answer, then says goodbye.
+default: {speak: false, message: ""}
+responses:
+  - match: "question 1 of 20"
+    response:
+      speak: true
+      message: "Alive -- good start. Host, question two: does it live in the sea?"
+  - match: "GAME OVER"
+    response: {speak: true, message: "We make a fine team. Goodbye!"}

@@ -1,6 +1,6 @@
 services:
   nats:
-    image: nats:2.10-alpine
+    image: nats:2.12-alpine
     command: ["--jetstream", "--store_dir", "/data"]
     ports:
       - "4222:4222"   # client connections
