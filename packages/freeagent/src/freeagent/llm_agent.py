@@ -41,6 +41,13 @@ logger = logging.getLogger("freeagent.llm_agent")
 
 _DECISION_THINK = "freeagent.llm_agent.decision"
 _ERROR_THINK = "freeagent.llm_agent.error"
+_NUDGE_THINK = "freeagent.llm_agent.nudge"
+
+_NUDGE_HINT = (
+    "The room has been quiet for a while. If the conversation is waiting on "
+    "someone -- perhaps you -- take the initiative now instead of waiting; if "
+    "there is genuinely nothing to add, stay silent."
+)
 
 _DEFAULT_SYSTEM_PROMPT = (
     "You are {agent_id}, one agent in a real-time multi-agent conversation with no "
@@ -63,7 +70,18 @@ class LLMAgent(Agent):
     model string, resolved via :func:`freeagent.llm.resolve_model`, so
     ``"fake"`` / ``"fake:<path>"`` select the fake LLM), ``system_prompt``,
     ``llm_telemetry`` (bool, default True: publish each call's record to the
-    agent's log-only subject), plus the base :class:`Agent` keys.
+    agent's log-only subject), ``nudge_interval`` (seconds, default off: see
+    below), plus the base :class:`Agent` keys.
+
+    **The nudge.** A conversation of LLMAgents can stall: everyone decides to
+    stay silent and wait, and since decisions are only triggered by perceived
+    messages, no one ever speaks again. With ``nudge_interval`` set, the agent
+    schedules a periodic think message that re-runs the decide call during a
+    lull -- the prompt gains a hint that taking the initiative is allowed.
+    This is the design's "periodic think messages invoke an 'act or stay
+    silent?'" gatekeeper pattern; each agent still decides for itself --
+    there is no turn-taking. Silence checks cost LLM calls, so the interval
+    bounds the spend.
     """
 
     decision_schema: ClassVar[type[Decision]] = Decision
@@ -85,13 +103,24 @@ class LLMAgent(Agent):
         self.system_prompt: str = (
             str(prompt) if prompt else _DEFAULT_SYSTEM_PROMPT.format(agent_id=agent_id)
         )
+        nudge = self.config.get("nudge_interval")
+        self.nudge_interval: float | None = float(nudge) if nudge is not None else None
         self.transcript: list[tuple[str, str]] = []
         self._deciding = False
         self._reconsider = False
+        self._nudged = False
+        self._nudge_scheduled = False
 
     # ------------------------------------------------------------------
     # The fold
     # ------------------------------------------------------------------
+
+    async def control(self, message: Envelope) -> None:
+        """Handle lifecycle messages; arms the periodic nudge on ``start``."""
+        await super().control(message)
+        if self.phase == "active" and self.nudge_interval is not None and not self._nudge_scheduled:
+            self._nudge_scheduled = True
+            self.schedule_periodic_think(self.nudge_interval, {"type": _NUDGE_THINK})
 
     async def perceive(self, message: Envelope) -> None:
         """Append to the transcript and (maybe) spawn a decision.
@@ -119,6 +148,10 @@ class LLMAgent(Agent):
             logger.error("agent %s: decision call failed: %s", self.id, payload.get("error"))
             if self._reconsider:
                 self._begin_decision()
+            return
+        if isinstance(payload, dict) and payload.get("type") == _NUDGE_THINK:
+            if self.phase == "active" and not self._deciding and self.transcript:
+                self._begin_decision(nudged=True)
             return
         await super().handle_think(payload)
 
@@ -152,9 +185,11 @@ class LLMAgent(Agent):
     def decision_messages(self) -> Messages:
         """Build the chat messages for one decision call (system prompt + transcript)."""
         transcript = "\n".join(f"{sender}: {text}" for sender, text in self.transcript)
+        nudge = f"{_NUDGE_HINT}\n\n" if self._nudged else ""
         instructions = (
             "Here is the conversation so far:\n\n"
             f"{transcript or '(nothing yet)'}\n\n"
+            f"{nudge}"
             "Decide whether to speak right now, and what to say if so. "
             "Respond with JSON: speak (boolean), message (string, empty when silent)."
         )
@@ -167,12 +202,15 @@ class LLMAgent(Agent):
     # Internals
     # ------------------------------------------------------------------
 
-    def _begin_decision(self) -> None:
+    def _begin_decision(self, *, nudged: bool = False) -> None:
         self._deciding = True
         self._reconsider = False
+        self._nudged = nudged
         # Snapshot the prompt inside the handler so the spawned call is a
         # pure function of the state at this point in the fold.
-        self.spawn(self._decide(self.decision_messages()))
+        messages = self.decision_messages()
+        self._nudged = False
+        self.spawn(self._decide(messages))
 
     async def _decide(self, messages: Messages) -> None:
         """The spawned LLM call; its completion re-enters the fold as a think message."""

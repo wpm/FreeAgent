@@ -162,6 +162,46 @@ async def test_failed_decision_calls_are_absorbed_and_the_agent_recovers(
     await finish(transport, task)
 
 
+async def test_nudge_breaks_a_stalled_conversation() -> None:
+    # The stall: the agent perceives a message and decides to stay silent;
+    # nothing else ever arrives, so without a nudge it would never decide
+    # again. The periodic nudge re-runs the decision with the lull hint.
+    FakeLLM.respond({"speak": False, "message": ""})
+    FakeLLM.respond(
+        {"speak": True, "message": "breaking the silence"},
+        match="quiet for a while",
+    )
+    transport = await connected_transport()
+    agent = LLMAgent(ROOT, "speaker", config={**FAKE_CONFIG, "nudge_interval": 0.05})
+    task = await start_agent(agent, transport)
+
+    await publish(transport, PUBLIC, "user", "someone should go first")
+    await wait_for(
+        lambda: spoken(transport) == ["breaking the silence"],
+        message="the nudged decision to speak",
+    )
+    # The nudge hint reached the prompt of the second call only.
+    calls = llm_calls(transport)
+    assert len(calls) == 2
+    assert "quiet for a while" not in calls[0]["messages"][1]["content"]
+    assert "quiet for a while" in calls[1]["messages"][1]["content"]
+    await finish(transport, task)
+
+
+async def test_no_nudge_by_default() -> None:
+    FakeLLM.respond({"speak": False, "message": ""})
+    transport = await connected_transport()
+    agent = LLMAgent(ROOT, "speaker", config=FAKE_CONFIG)
+    task = await start_agent(agent, transport)
+
+    await publish(transport, PUBLIC, "user", "anyone?")
+    await wait_for(lambda: len(llm_calls(transport)) == 1, message="the decision call")
+    await asyncio.sleep(0.15)  # several would-be nudge intervals
+    assert len(llm_calls(transport)) == 1
+    assert spoken(transport) == []
+    await finish(transport, task)
+
+
 def test_llm_agent_model_resolution_uses_the_standard_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -16,19 +16,22 @@ recorder:
   output: out/twentyquestions.parquet
 environment:
   class: twentyquestions.environment:TwentyQuestionsEnvironment
-  config: {setup_timeout: 30, episode_timeout: 600, grace_period: 5}
+  # A full 20-question game at real-LLM pace takes well over ten minutes;
+  # the episode timeout is a backstop, not the expected ending.
+  config: {setup_timeout: 30, episode_timeout: 1800, grace_period: 15}
 agents:
   host:
     class: twentyquestions.host:Host
     config:
       max_questions: 20
+      grace_period: 15
       # secret: a lighthouse   # omit to let the Host pick one at random
   alice:
     class: twentyquestions.player:Player
-    config: {}
+    config: {grace_period: 15, nudge_interval: 20}
   bob:
     class: twentyquestions.player:Player
-    config: {}
+    config: {grace_period: 15, nudge_interval: 20}
   carol:
     class: twentyquestions.player:Player
-    config: {}
+    config: {grace_period: 15, nudge_interval: 20}
