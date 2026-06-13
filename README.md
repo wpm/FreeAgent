@@ -13,8 +13,10 @@ Two ideas shape everything else:
 
 Prerequisites: Python ≥ 3.12, [uv](https://docs.astral.sh/uv/), and Docker.
 
+Start NATS with JetStream, then sync the workspace:
+
 ```sh
-docker compose -f docker/nats/docker-compose.yml up -d   # NATS + JetStream
+docker compose -f docker/nats/docker-compose.yml up -d
 uv sync
 ```
 
@@ -24,10 +26,10 @@ Run a complete episode with **no API key** — the deterministic fake LLM plays 
 uv run free-agent run examples/twentyquestions-fake.yml
 ```
 
-Run a **real** game (requires a provider key; the cheap tier of whichever provider is detected is used automatically, or set `FREEAGENT_MODEL` to any litellm model string):
+Run a **real** game. It requires a provider key — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`; the cheap tier of whichever provider is detected is used automatically, or set `FREEAGENT_MODEL` to any litellm model string:
 
 ```sh
-export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY / GEMINI_API_KEY, or FREEAGENT_MODEL
+export ANTHROPIC_API_KEY=sk-ant-...
 uv run free-agent run examples/twentyquestions.yml
 ```
 
