@@ -19,12 +19,15 @@ import json
 import sys
 from typing import Any
 
-from freeagent import EpisodeState, configure_logging
+from freeagent import EpisodeState, TransportError, configure_logging
 
 from .config import import_class
 
 EXIT_ENDED = 0
 EXIT_ABORTED = 2
+# A child that cannot reach NATS exits with this code; the runner treats it as
+# a launch failure (1) rather than an episode outcome.
+EXIT_TRANSPORT = 3
 
 
 def agent_spec(
@@ -103,7 +106,14 @@ def main() -> None:
         print("usage: python -m freeagent_runner.child <json-spec>", file=sys.stderr)
         raise SystemExit(1)
     spec = json.loads(sys.argv[1])
-    raise SystemExit(run_spec(spec))
+    try:
+        raise SystemExit(run_spec(spec))
+    except TransportError as exc:
+        # One clean line instead of a connection-refused traceback; the runner
+        # parent maps EXIT_TRANSPORT to its launch-error exit code.
+        who = f"{spec.get('role', 'child')} {spec.get('agent_id', '')}".strip()
+        print(f"free-agent: {who}: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_TRANSPORT) from None
 
 
 if __name__ == "__main__":

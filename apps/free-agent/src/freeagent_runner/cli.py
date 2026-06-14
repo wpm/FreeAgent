@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from freeagent import DEFAULT_GRACE_PERIOD, configure_logging, subject_root
 
-from .child import EXIT_ABORTED, EXIT_ENDED, agent_spec, environment_spec
+from .child import EXIT_ABORTED, EXIT_ENDED, EXIT_TRANSPORT, agent_spec, environment_spec
 from .config import (
     ConfigError,
     EpisodePlan,
@@ -279,6 +279,8 @@ def _final_state(env_exit: int) -> str:
         return "ended"
     if env_exit == EXIT_ABORTED:
         return "aborted"
+    if env_exit == EXIT_TRANSPORT:
+        return "error (could not reach NATS -- is the server running?)"
     return f"error (environment exited {env_exit})"
 
 

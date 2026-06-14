@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -162,16 +161,20 @@ async def record_episode(
     """
     subjects = EpisodeSubjects(app=app, episode_id=episode_id)
 
-    async def _error_cb(error: Exception) -> None:
-        # One concise line instead of nats-py's default full-traceback dump.
-        print(f"freeagent-recorder: nats error: {error}", file=sys.stderr)
+    async def _error_cb(_error: Exception) -> None:
+        # Swallow nats-py's per-attempt error logging; the RecorderError raised
+        # on a failed connect is the single actionable message.
+        return None
 
     try:
         client = await nats.connect(
             nats_url, connect_timeout=5, max_reconnect_attempts=3, error_cb=_error_cb
         )
     except Exception as error:
-        raise RecorderError(f"cannot connect to NATS at {nats_url}: {error}") from error
+        raise RecorderError(
+            f"cannot connect to NATS at {nats_url}. Is the server running? Start it with: "
+            "docker compose -f docker/nats/docker-compose.yml up -d"
+        ) from error
 
     try:
         js = client.jetstream()

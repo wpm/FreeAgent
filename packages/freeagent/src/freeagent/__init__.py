@@ -37,7 +37,13 @@ from .subjects import (
     subject_root,
     validate_name,
 )
-from .transport import MemoryTransport, NatsTransport, Subscription, Transport
+from .transport import (
+    MemoryTransport,
+    NatsTransport,
+    Subscription,
+    Transport,
+    TransportError,
+)
 
 __all__ = [
     "DEFAULT_EPISODE_TIMEOUT",
@@ -64,6 +70,7 @@ __all__ = [
     "NatsTransport",
     "Subscription",
     "Transport",
+    "TransportError",
     "configure_logging",
     "create_llm",
     "log_level",

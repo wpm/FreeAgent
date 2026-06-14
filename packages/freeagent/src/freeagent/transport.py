@@ -23,6 +23,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import nats
+from nats.errors import NoServersError
 from nats.js.api import ConsumerConfig, DeliverPolicy, StreamConfig
 from nats.js.errors import BadRequestError, NotFoundError
 
@@ -34,6 +35,14 @@ logger = logging.getLogger("freeagent.transport")
 
 MessageHandler = Callable[[str, bytes], Awaitable[None]]
 """Async callback receiving ``(subject, data)`` for each delivered message."""
+
+
+class TransportError(RuntimeError):
+    """A transport-level failure with an operator-facing message.
+
+    Raised in place of nats-py's low-level connection errors so the runner can
+    print one clear line instead of a connection-refused traceback.
+    """
 
 
 @runtime_checkable
@@ -164,6 +173,21 @@ class MemoryTransport:
 # NATS + JetStream transport
 # ---------------------------------------------------------------------------
 
+# Connection retries before connect() gives up with a TransportError. A few
+# attempts ride out a transient blip; we still fail fast (and quietly) when no
+# server is there, rather than nats-py's unbounded reconnect loop.
+_CONNECT_ATTEMPTS = 3
+
+
+async def _quiet_error_cb(_exc: Exception) -> None:
+    """No-op nats-py error callback: suppress its per-attempt tracebacks.
+
+    nats-py's default callback logs every failed (re)connection attempt at
+    ERROR with a full traceback. During startup against a missing server that
+    is just noise; the single :class:`TransportError` from :meth:`connect` is
+    the actionable message.
+    """
+
 
 class _NatsSubscription:
     def __init__(self, inner: object) -> None:
@@ -194,7 +218,20 @@ class NatsTransport:
         return self._js
 
     async def connect(self) -> None:
-        self._nc = await nats.connect(self._url)
+        try:
+            self._nc = await nats.connect(
+                self._url,
+                max_reconnect_attempts=_CONNECT_ATTEMPTS,
+                # Swallow nats-py's per-attempt "encountered error" tracebacks;
+                # a failed connect surfaces as one TransportError below.
+                error_cb=_quiet_error_cb,
+            )
+        except (NoServersError, OSError) as exc:
+            raise TransportError(
+                f"could not connect to NATS at {self._url}. "
+                "Is the server running? Start it with: "
+                "docker compose -f docker/nats/docker-compose.yml up -d"
+            ) from exc
         self._js = self._nc.jetstream()
 
     async def close(self) -> None:
