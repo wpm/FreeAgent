@@ -29,8 +29,7 @@ def format_utterance(agent_id: str, message: str) -> str:
     """
     name = agent_id.center(WIDTH).rstrip()
     body = "\n".join(
-        textwrap.fill(line, width=WIDTH) if line else ""
-        for line in message.splitlines() or [""]
+        textwrap.fill(line, width=WIDTH) if line else "" for line in message.splitlines() or [""]
     )
     return f"{name}\n{body}\n\n"
 
