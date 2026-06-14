@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from freeagent import configure_logging
 from freeagent_recorder.recorder import DEFAULT_IDLE_TIMEOUT, RecorderError, record_episode
 
 if TYPE_CHECKING:
@@ -44,6 +45,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> None:
     """Parse arguments, run the recorder, and exit with a process status."""
+    configure_logging()  # debug logging per FREEAGENT_LOG_LEVEL; app-level, not core
     args = _build_parser().parse_args(argv)
     try:
         count = asyncio.run(

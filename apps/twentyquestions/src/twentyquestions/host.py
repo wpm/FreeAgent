@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from freeagent import Decision, LLMAgent
 
+from .logging import log_utterance
 from .prompts import HOST_SYSTEM_PROMPT, LOSS_ANNOUNCEMENT, WELCOME, WIN_ANNOUNCEMENT
 
 if TYPE_CHECKING:
@@ -88,6 +89,8 @@ class Host(LLMAgent):
     async def on_decision(self, decision: Decision) -> None:
         """The programmatic half: count questions, detect win and loss."""
         await super().on_decision(decision)  # speak (or not), as the LLM decided
+        if decision.speak and decision.message:
+            log_utterance(self.id, decision.message)
         if self.game_over or not isinstance(decision, HostDecision):
             return
         # A question costs budget only when the Host actually answers it
@@ -130,3 +133,4 @@ class Host(LLMAgent):
         """Broadcast *message*, keeping it in the transcript so the LLM sees its own words."""
         self.transcript.append((self.id, message))
         self.act(message)
+        log_utterance(self.id, message)

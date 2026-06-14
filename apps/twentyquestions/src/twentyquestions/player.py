@@ -11,8 +11,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from freeagent import LLMAgent
+from freeagent import Decision, LLMAgent
 
+from .logging import log_utterance
 from .prompts import PLAYER_SYSTEM_PROMPT
 
 if TYPE_CHECKING:
@@ -31,3 +32,9 @@ class Player(LLMAgent):
         super().__init__(subject_root, agent_id, config)
         if not self.config.get("system_prompt"):
             self.system_prompt = PLAYER_SYSTEM_PROMPT.format(agent_id=agent_id)
+
+    async def on_decision(self, decision: Decision) -> None:
+        """Speak as usual, then log the utterance for debugging."""
+        await super().on_decision(decision)
+        if decision.speak and decision.message:
+            log_utterance(self.id, decision.message)

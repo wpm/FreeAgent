@@ -19,7 +19,7 @@ import json
 import sys
 from typing import Any
 
-from freeagent import EpisodeState
+from freeagent import EpisodeState, configure_logging
 
 from .config import import_class
 
@@ -98,6 +98,7 @@ def run_spec(spec: dict[str, Any]) -> int:
 
 def main() -> None:
     """Parse the single JSON-spec argument and run it."""
+    configure_logging()  # debug logging per FREEAGENT_LOG_LEVEL; app-level, not core
     if len(sys.argv) != 2:
         print("usage: python -m freeagent_runner.child <json-spec>", file=sys.stderr)
         raise SystemExit(1)

@@ -23,6 +23,12 @@ from .llm import (
     resolve_model,
 )
 from .llm_agent import Decision, LLMAgent
+from .logging import (
+    DEFAULT_LOG_LEVEL,
+    LOG_LEVEL_ENV_VAR,
+    configure_logging,
+    log_level,
+)
 from .subjects import (
     ENV_NAME,
     NAME_PATTERN,
@@ -36,10 +42,12 @@ from .transport import MemoryTransport, NatsTransport, Subscription, Transport
 __all__ = [
     "DEFAULT_EPISODE_TIMEOUT",
     "DEFAULT_GRACE_PERIOD",
+    "DEFAULT_LOG_LEVEL",
     "DEFAULT_SETUP_TIMEOUT",
     "ENV_NAME",
     "KEY_MODELS",
     "LLM",
+    "LOG_LEVEL_ENV_VAR",
     "MODEL_ENV_VAR",
     "NAME_PATTERN",
     "Agent",
@@ -56,7 +64,9 @@ __all__ = [
     "NatsTransport",
     "Subscription",
     "Transport",
+    "configure_logging",
     "create_llm",
+    "log_level",
     "resolve_model",
     "stream_name",
     "subject_root",

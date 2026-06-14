@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from freeagent import DEFAULT_GRACE_PERIOD, subject_root
+from freeagent import DEFAULT_GRACE_PERIOD, configure_logging, subject_root
 
 from .child import EXIT_ABORTED, EXIT_ENDED, agent_spec, environment_spec
 from .config import (
@@ -53,6 +53,7 @@ TERMINATE_TIMEOUT = 5.0
 
 def main(argv: Sequence[str] | None = None) -> None:
     """Console entry point (sync): parse arguments, run, exit with status."""
+    configure_logging()  # debug logging per FREEAGENT_LOG_LEVEL; app-level, not core
     args = _parse_args(argv)
     try:
         code = _run(args.config)
