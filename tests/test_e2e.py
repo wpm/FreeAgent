@@ -15,8 +15,8 @@ This is the Phase 3 acceptance path, exercised through the real CLI:
   one ``shutdown``, both from ``env``), the scripted public conversation in
   order (welcome, two answered questions, the winning guess, the GAME OVER
   announcement), the Host's ``game_over`` signal on the environment's inbox,
-  and the three goodbyes landing inside the stopping grace period -- after
-  the ``shutdown`` broadcast.
+  and the three goodbyes landing inside the stopping grace period, each after
+  the GAME OVER announcement that triggered it.
 
 Skipped cleanly when NATS is not running. Episode ids are auto-generated and
 the output path is per-test, so this test never collides with concurrently
@@ -180,13 +180,24 @@ def test_fake_twentyquestions_episode_end_to_end(tmp_path: Path) -> None:
     assert announcement_seq < shutdown_seq, "shutdown must follow the GAME OVER announcement"
     assert game_overs[0]["stream_seq"] < shutdown_seq, "shutdown must follow the game_over signal"
 
-    # The goodbyes happen inside the stopping grace period: all three players
-    # say goodbye after the shutdown broadcast.
+    # All three players say goodbye, and the grace period is what lets those
+    # goodbyes be published before the processes exit -- their presence in the
+    # log is the grace period working.
+    #
+    # Ordering note: the goodbyes are scripted reactions to the Host's GAME
+    # OVER announcement (see examples/fake/*.yml), and so is the shutdown
+    # broadcast (announcement -> game_over signal -> env broadcasts shutdown).
+    # Goodbye and shutdown are therefore *concurrent* reactions in separate
+    # processes; nothing orders a goodbye after the shutdown in stream
+    # sequence, and a quick player routinely beats the env's extra hops. The
+    # invariant that actually holds is causal: every goodbye follows the
+    # announcement that triggered it. Asserting goodbye-after-shutdown was a
+    # race and flaked.
     goodbyes = [
         row for row in public if "goodbye" in _payload(row).lower() and row["sender"] in ROSTER
     ]
     assert {row["sender"] for row in goodbyes} == {"alice", "bob", "carol"}
     assert len(goodbyes) == 3, f"expected exactly three goodbyes, got {len(goodbyes)}"
-    assert all(row["stream_seq"] > shutdown_seq for row in goodbyes), (
-        "goodbyes must land after the shutdown broadcast, inside the grace period"
+    assert all(row["stream_seq"] > announcement_seq for row in goodbyes), (
+        "each goodbye must follow the GAME OVER announcement that triggered it"
     )
