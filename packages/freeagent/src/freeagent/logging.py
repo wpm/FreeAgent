@@ -33,11 +33,21 @@ def configure_logging(*, default: str = DEFAULT_LOG_LEVEL) -> str:
     ours. Idempotent enough for app startup: each call resets the single
     stderr sink. Levels are loguru's names (``TRACE``, ``DEBUG``, ``INFO``,
     ``SUCCESS``, ``WARNING``, ``ERROR``, ``CRITICAL``).
+
+    The sink resolves ``sys.stderr`` at write time rather than binding it now.
+    Under pytest's output capture the stderr object is swapped (and the old
+    one closed) between tests, so a bound stream would raise "I/O operation on
+    closed file"; a late-bound write always lands on the live stream.
     """
     level = log_level(default)
     logger.remove()
-    logger.add(sys.stderr, level=level, format=_FORMAT)
+    logger.add(_write_stderr, level=level, format=_FORMAT)
     return level
+
+
+def _write_stderr(message: str) -> None:
+    """Loguru sink: write to whatever ``sys.stderr`` is current at call time."""
+    sys.stderr.write(message)
 
 
 _FORMAT = (
