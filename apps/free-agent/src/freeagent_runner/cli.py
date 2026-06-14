@@ -14,7 +14,6 @@ internal error (including operator interruption).
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import contextlib
 import json
@@ -23,9 +22,17 @@ import shutil
 import signal
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
-from freeagent import DEFAULT_GRACE_PERIOD, configure_logging, subject_root
+import typer
+
+from freeagent import (
+    DEFAULT_GRACE_PERIOD,
+    DEFAULT_LOG_LEVEL,
+    LOG_LEVEL_ENV_VAR,
+    configure_logging,
+    subject_root,
+)
 
 from .child import EXIT_ABORTED, EXIT_ENDED, EXIT_TRANSPORT, agent_spec, environment_spec
 from .config import (
@@ -51,31 +58,61 @@ RECORDER_WAIT = 15.0
 TERMINATE_TIMEOUT = 5.0
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    """Console entry point (sync): parse arguments, run, exit with status."""
-    configure_logging()  # debug logging per FREEAGENT_LOG_LEVEL; app-level, not core
-    args = _parse_args(argv)
+app = typer.Typer(
+    name="free-agent",
+    help="Launch a FreeAgent episode (environment, agents, optional recorder) "
+    "from a YAML configuration.",
+    add_completion=False,
+    no_args_is_help=True,
+)
+
+
+@app.callback()
+def _root() -> None:
+    """Keep ``run`` a named subcommand (Typer collapses a lone command otherwise)."""
+
+
+@app.command()
+def run(
+    config: Annotated[
+        Path,
+        typer.Argument(help="episode configuration *.yml file"),
+    ],
+    log_level: Annotated[
+        str,
+        typer.Option(
+            envvar=LOG_LEVEL_ENV_VAR,
+            help="logging level (TRACE/DEBUG/INFO/SUCCESS/WARNING/ERROR/CRITICAL); "
+            f"reads {LOG_LEVEL_ENV_VAR} when unset.",
+        ),
+    ] = DEFAULT_LOG_LEVEL,
+) -> None:
+    """Run one episode from a YAML configuration."""
+    resolved = configure_logging(level=log_level)  # app-level logging; core stays quiet
+    # Children (agents, environment, recorder) read FREEAGENT_LOG_LEVEL from
+    # their inherited environment; export the resolved level so --log-level
+    # reaches them too, not just this parent process.
+    os.environ[LOG_LEVEL_ENV_VAR] = resolved
     try:
-        code = _run(args.config)
+        code = _run(config)
     except ConfigError as exc:
         print(f"free-agent: error: {exc}", file=sys.stderr)
         code = 1
     except KeyboardInterrupt:
         print("free-agent: interrupted", file=sys.stderr)
         code = 1
-    sys.exit(code)
+    raise typer.Exit(code)
 
 
-def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        prog="free-agent",
-        description="Launch a FreeAgent episode (environment, agents, optional recorder) "
-        "from a YAML configuration.",
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    run_parser = subparsers.add_parser("run", help="run one episode from a YAML configuration")
-    run_parser.add_argument("config", type=Path, help="episode configuration *.yml file")
-    return parser.parse_args(argv)
+def main(argv: Sequence[str] | None = None) -> None:
+    """Console entry point (sync): dispatch to the Typer app.
+
+    ``argv`` defaults to ``sys.argv[1:]``; passing a list drives the app in
+    tests. The Typer/Click app raises ``SystemExit`` with the command's exit
+    code, matching the previous argparse contract. Logging is configured
+    inside the command, once the ``--log-level`` option is resolved.
+    """
+    app(args=argv, prog_name="free-agent")
 
 
 def _run(config_path: Path) -> int:

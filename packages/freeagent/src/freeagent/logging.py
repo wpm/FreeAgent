@@ -17,7 +17,7 @@ import sys
 from loguru import logger
 
 LOG_LEVEL_ENV_VAR = "FREEAGENT_LOG_LEVEL"
-DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_LOG_LEVEL = "WARNING"
 
 
 def log_level(default: str = DEFAULT_LOG_LEVEL) -> str:
@@ -26,23 +26,28 @@ def log_level(default: str = DEFAULT_LOG_LEVEL) -> str:
     return value.strip().upper() if value and value.strip() else default
 
 
-def configure_logging(*, default: str = DEFAULT_LOG_LEVEL) -> str:
-    """Point loguru at stderr at the ``FREEAGENT_LOG_LEVEL`` level; return that level.
+def configure_logging(*, level: str | None = None, default: str = DEFAULT_LOG_LEVEL) -> str:
+    """Point loguru at stderr at the chosen level; return that level.
+
+    *level*, when given, is used verbatim (upper-cased) -- this is the path a
+    CLI uses after resolving its ``--log-level`` option. Otherwise the level
+    comes from ``FREEAGENT_LOG_LEVEL``, falling back to *default*. Levels are
+    loguru's names (``TRACE``, ``DEBUG``, ``INFO``, ``SUCCESS``, ``WARNING``,
+    ``ERROR``, ``CRITICAL``).
 
     Replaces loguru's default handler so the level (and a terse format) are
     ours. Idempotent enough for app startup: each call resets the single
-    stderr sink. Levels are loguru's names (``TRACE``, ``DEBUG``, ``INFO``,
-    ``SUCCESS``, ``WARNING``, ``ERROR``, ``CRITICAL``).
+    stderr sink.
 
     The sink resolves ``sys.stderr`` at write time rather than binding it now.
     Under pytest's output capture the stderr object is swapped (and the old
     one closed) between tests, so a bound stream would raise "I/O operation on
     closed file"; a late-bound write always lands on the live stream.
     """
-    level = log_level(default)
+    resolved = level.strip().upper() if level else log_level(default)
     logger.remove()
-    logger.add(_write_stderr, level=level, format=_FORMAT)
-    return level
+    logger.add(_write_stderr, level=resolved, format=_FORMAT)
+    return resolved
 
 
 def _write_stderr(message: str) -> None:

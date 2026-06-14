@@ -23,7 +23,7 @@ def test_log_level_from_env(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setenv("FREEAGENT_LOG_LEVEL", "debug")
     assert log_level() == "DEBUG"
     monkeypatch.delenv("FREEAGENT_LOG_LEVEL", raising=False)
-    assert log_level() == "INFO"
+    assert log_level() == "WARNING"  # the default
 
 
 def test_sink_writes_to_current_stderr_after_swap_and_close(monkeypatch) -> None:  # noqa: ANN001
