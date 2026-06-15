@@ -5,7 +5,7 @@ description = "FreeAgent: a Python framework for real-time multi-agent LLM inter
 requires-python = ">=3.12"
 dependencies = [
     "nats-py>=2.15.0",
-    "litellm>=1.89.0",
+    "litellm>=1.89.0",  # floor stays >=1.83.0 to exclude the 1.82.7/1.82.8 backdoor; see SECURITY.md
     "loguru>=0.7.3",
     "pyarrow>=24.0.0",
     "pydantic>=2.13.4",
