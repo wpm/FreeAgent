@@ -18,6 +18,7 @@ venv/
 # Node / JS workspace (viewers)
 node_modules/
 dist/
+__screenshots__/
 
 # Episode artifacts
 *.parquet

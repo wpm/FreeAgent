@@ -1,7 +1,7 @@
 /// <reference types="@vitest/browser/context" />
 import { wsconnect, type NatsConnection } from "@nats-io/nats-core";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
-import { page } from "@vitest/browser/context";
+import { page } from "vitest/browser";
 import { render } from "vitest-browser-svelte";
 import { afterAll, beforeAll, expect, test } from "vitest";
 
@@ -68,6 +68,7 @@ test("renders the public transcript live in a real browser", async () => {
   for (const frame of FRAMES) {
     await expect.element(page.getByText(frame.text)).toBeVisible();
   }
-  // And the connection should report itself live.
-  await expect.element(page.getByText("Live")).toBeVisible();
+  // And the connection should report itself live. Exact match: a substring
+  // match would also catch the "live transcript over NATS" subtitle.
+  await expect.element(page.getByText("Live", { exact: true })).toBeVisible();
 });
