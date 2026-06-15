@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import sys
 from importlib.metadata import entry_points
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import typer
@@ -43,10 +44,44 @@ if TYPE_CHECKING:
 
 ENTRY_POINT_GROUP = "freeagent.apps"
 
+
+def _reject_existing(value: Path | None) -> Path | None:
+    """Typer callback: refuse to overwrite an existing ``--parquet-log`` target.
+
+    Click's ``Path(exists=...)`` only *asserts* existence; it has no
+    "must-not-exist" mode, so the no-overwrite rule is enforced here. Raising
+    ``typer.BadParameter`` surfaces as a usage error (exit 2) before the command
+    body runs, so a finished log is never clobbered.
+    """
+    if value is not None and value.exists():
+        raise typer.BadParameter(f"{value} already exists; refusing to overwrite")
+    return value
+
+
+#: The shared ``--parquet-log`` option every application's ``run`` command reuses.
+#:
+#: Recording is a per-run decision: pass ``--parquet-log PATH`` to record this
+#: episode's full message stream to one new Parquet file; omit it for no
+#: recording. The target must not already exist (see :func:`_reject_existing`).
+#: Apps add ``parquet_log: ParquetLogOption = None`` to their ``run`` signature
+#: and pass it to :func:`run_episode`.
+ParquetLogOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--parquet-log",
+        help="record this episode to a new Parquet file at PATH (must not exist); "
+        "omit for no recording.",
+        dir_okay=False,
+        writable=True,
+        callback=_reject_existing,
+    ),
+]
+
 __all__ = [
     "ConfigError",
     "EpisodeConfig",
     "EpisodePlan",
+    "ParquetLogOption",
     "build_root_app",
     "load_config",
     "main",

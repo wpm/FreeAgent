@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from freeagent import Envelope
-from freeagent_recorder import PARQUET_SCHEMA, MessageRecord, make_record, write_parquet
+from freeagent import PARQUET_SCHEMA, Envelope, MessageRecord, make_record, write_parquet
 
 T0 = datetime(2026, 6, 11, 12, 0, 0, tzinfo=UTC)
 

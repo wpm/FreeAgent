@@ -20,7 +20,6 @@ import asyncio
 import contextlib
 import json
 import os
-import shutil
 import signal
 import sys
 from pathlib import Path
@@ -29,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from freeagent.agent import Agent
 from freeagent.config import DEFAULT_GRACE_PERIOD
 from freeagent.environment import Environment
+from freeagent.recorder import __main__ as _recorder_module
 from freeagent.subjects import subject_root
 
 from . import child as _child_module
@@ -51,7 +51,8 @@ if TYPE_CHECKING:
 #: an already-imported module (see :func:`_spawn_child`).
 _CHILD_SCRIPT = Path(_child_module.__file__)
 
-RECORDER_EXECUTABLE = "freeagent-recorder"
+#: The recorder process's source file, spawned directly (see :func:`_spawn_recorder`).
+_RECORDER_SCRIPT = Path(_recorder_module.__file__)
 
 # Extra seconds past the agents' own grace period before terminating them.
 AGENT_EXIT_BUFFER = 3.0
@@ -68,26 +69,20 @@ def run_episode(
     app: str,
     environment: type[Environment],
     agents: Mapping[str, type[Agent]],
+    parquet_log: Path | None = None,
 ) -> int:
     """Validate, then launch and supervise one episode; return its exit code.
 
     *app* is the application name (subject prefix); *environment* is the
     :class:`~freeagent.Environment` subclass to run; *agents* maps each roster
     name to its :class:`~freeagent.Agent` subclass. *config* holds the parsed
-    per-episode tunables. Raises :class:`ConfigError` on a fatal configuration
-    or launch problem.
+    per-episode tunables. When *parquet_log* is given, the recorder is spawned
+    to drain this episode to that path; when ``None``, no recording happens.
+    Raises :class:`ConfigError` on a fatal configuration or launch problem.
     """
     _validate_classes(environment, agents)
     plan = make_plan(config, app=app, roster=agents)
-    recorder_executable: str | None = None
-    if plan.recorder_output is not None:
-        recorder_executable = shutil.which(RECORDER_EXECUTABLE)
-        if recorder_executable is None:
-            raise ConfigError(
-                f"the recorder is enabled but no {RECORDER_EXECUTABLE!r} executable "
-                "was found on PATH"
-            )
-    return asyncio.run(_orchestrate(plan, environment, agents, recorder_executable))
+    return asyncio.run(_orchestrate(plan, environment, agents, parquet_log))
 
 
 def _validate_classes(environment: type[Environment], agents: Mapping[str, type[Agent]]) -> None:
@@ -103,7 +98,7 @@ async def _orchestrate(
     plan: EpisodePlan,
     environment: type[Environment],
     agents: Mapping[str, type[Agent]],
-    recorder_executable: str | None,
+    parquet_log: Path | None,
 ) -> int:
     """Launch all processes, wait for the episode outcome, clean everything up."""
     loop = asyncio.get_running_loop()
@@ -146,19 +141,8 @@ async def _orchestrate(
         )
         children.append(env_proc)
         recorder_proc: asyncio.subprocess.Process | None = None
-        if recorder_executable is not None and plan.recorder_output is not None:
-            recorder_proc = await asyncio.create_subprocess_exec(
-                recorder_executable,
-                "--nats-url",
-                plan.nats_url,
-                "--app",
-                plan.app,
-                "--episode-id",
-                plan.episode_id,
-                "--output",
-                plan.recorder_output,
-                env=child_env,
-            )
+        if parquet_log is not None:
+            recorder_proc = await _spawn_recorder(plan, parquet_log, child_env)
             children.append(recorder_proc)
 
         # The environment process owns the lifecycle; its exit code is the
@@ -203,6 +187,30 @@ async def _spawn_child(
         sys.executable,
         str(_CHILD_SCRIPT),
         json.dumps(spec, default=str),
+        env=child_env,
+    )
+
+
+async def _spawn_recorder(
+    plan: EpisodePlan, parquet_log: Path, child_env: dict[str, str]
+) -> asyncio.subprocess.Process:
+    """Spawn the library recorder as its own process, draining this episode to *parquet_log*.
+
+    Programmatic ``create_subprocess_exec`` of the interpreter on the recorder
+    module's file -- no shell, no console script, no PATH lookup. The recorder
+    is library infrastructure; this is the only way the orchestrator launches it.
+    """
+    return await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(_RECORDER_SCRIPT),
+        "--nats-url",
+        plan.nats_url,
+        "--app",
+        plan.app,
+        "--episode-id",
+        plan.episode_id,
+        "--output",
+        str(parquet_log),
         env=child_env,
     )
 

@@ -30,4 +30,11 @@ uv run free-agent twenty-questions run examples/twentyquestions-fake.yml
 uv run free-agent twenty-questions run examples/twentyquestions.yml
 ```
 
-Both write the full episode log to Parquet under `out/`. The fake game's canned scripts (`examples/fake/*.yml`) play a complete two-question win — "an octopus" — followed by goodbyes; it is the same configuration the repository's end-to-end test runs.
+Add `--parquet-log PATH` (a path that must not already exist) to record the episode's full message log to a Parquet file — the option is the library's shared `ParquetLogOption`, so every FreeAgent app records the same way:
+
+```sh
+uv run free-agent twenty-questions run examples/twentyquestions-fake.yml \
+  --parquet-log out/twentyquestions-fake.parquet
+```
+
+The fake game's canned scripts (`examples/fake/*.yml`) play a complete two-question win — "an octopus" — followed by goodbyes; it is the same configuration the repository's end-to-end test runs.

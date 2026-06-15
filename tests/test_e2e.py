@@ -77,23 +77,21 @@ requires_nats = pytest.mark.skipif(
 
 
 def _derive_config(tmp_path: Path) -> tuple[Path, Path]:
-    """Write a copy of the fake example with the recorder output redirected.
+    """Write a copy of the fake example to a temp dir; return (config, parquet path).
 
-    The checked-in example writes to a fixed path (``out/...``), which would
-    collide between runs; loading and rewriting it also proves the config is
-    machine-readable. The episode id stays absent so the runner generates a
-    fresh one. Returns (derived config path, parquet output path).
+    Loading and rewriting the example proves the config is machine-readable. The
+    episode id stays absent so the runner generates a fresh one. The parquet path
+    is per-test and must not exist (``--parquet-log`` refuses to overwrite).
     """
     config: dict[str, Any] = yaml.safe_load(EXAMPLE_CONFIG.read_text(encoding="utf-8"))
     assert "episode_id" not in config, "the example should leave the episode id auto-generated"
     output = tmp_path / "episode.parquet"
-    config["recorder"]["output"] = str(output)
     derived = tmp_path / "twentyquestions-fake.yml"
     derived.write_text(yaml.safe_dump(config), encoding="utf-8")
     return derived, output
 
 
-def _run_cli(config_path: Path) -> subprocess.CompletedProcess[str]:
+def _run_cli(config_path: Path, parquet_log: Path) -> subprocess.CompletedProcess[str]:
     """Run the real CLI from the repo root (the fake: model paths are cwd-relative)."""
     return subprocess.run(
         [
@@ -103,6 +101,8 @@ def _run_cli(config_path: Path) -> subprocess.CompletedProcess[str]:
             "twenty-questions",
             "run",
             str(config_path),
+            "--parquet-log",
+            str(parquet_log),
         ],
         cwd=REPO_ROOT,
         capture_output=True,
@@ -121,7 +121,7 @@ def _payload(row: dict[str, Any]) -> Any:
 def test_fake_twentyquestions_episode_end_to_end(tmp_path: Path) -> None:
     derived, output = _derive_config(tmp_path)
 
-    result = _run_cli(derived)
+    result = _run_cli(derived, output)
     detail = f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
     assert result.returncode == 0, (
         f"free-agent twenty-questions run exited {result.returncode}\n{detail}"

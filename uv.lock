@@ -5,7 +5,6 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "freeagent",
-    "freeagent-recorder",
     "freeagent-workspace",
     "twentyquestions",
 ]
@@ -342,6 +341,7 @@ dependencies = [
     { name = "litellm" },
     { name = "loguru" },
     { name = "nats-py" },
+    { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "typer" },
@@ -352,27 +352,9 @@ requires-dist = [
     { name = "litellm", specifier = ">=1.60" },
     { name = "loguru", specifier = ">=0.7" },
     { name = "nats-py", specifier = ">=2.9" },
+    { name = "pyarrow", specifier = ">=18.0" },
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "typer", specifier = ">=0.12" },
-]
-
-[[package]]
-name = "freeagent-recorder"
-version = "1.0.0"
-source = { editable = "apps/recorder" }
-dependencies = [
-    { name = "freeagent" },
-    { name = "nats-py" },
-    { name = "pyarrow" },
-    { name = "typer" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "freeagent", editable = "packages/freeagent" },
-    { name = "nats-py", specifier = ">=2.9" },
-    { name = "pyarrow", specifier = ">=18.0" },
     { name = "typer", specifier = ">=0.12" },
 ]
 
@@ -382,7 +364,6 @@ version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "freeagent" },
-    { name = "freeagent-recorder" },
     { name = "twentyquestions" },
 ]
 
@@ -396,7 +377,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "freeagent", editable = "packages/freeagent" },
-    { name = "freeagent-recorder", editable = "apps/recorder" },
     { name = "twentyquestions", editable = "apps/twentyquestions" },
 ]
 

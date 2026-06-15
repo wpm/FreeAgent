@@ -33,13 +33,18 @@ export ANTHROPIC_API_KEY=sk-ant-...
 uv run free-agent twenty-questions run examples/twentyquestions.yml
 ```
 
-Either way, one command launches the environment, the agents, and the recorder as separate processes, runs the episode to `ended`, and prints a one-line summary.
+Either way, one command launches the environment and the agents as separate processes, runs the episode to `ended`, and prints a one-line summary. To also capture the episode's full message log to a Parquet file, add `--parquet-log PATH` (the path must not already exist — the recorder never overwrites a finished log):
 
-The shape is always `free-agent [--log-level LEVEL] APP COMMAND ...`. `APP` is an installed application (`twenty-questions` here, discovered through the `freeagent.apps` entry-point group), and each application defines its own commands. The library supplies the shared root, the config loader, and the launcher; an application supplies its name, environment, and roster in source and calls into them.
+```sh
+uv run free-agent twenty-questions run examples/twentyquestions-fake.yml \
+  --parquet-log out/twentyquestions-fake.parquet
+```
+
+The shape is always `free-agent [--log-level LEVEL] APP COMMAND ...`. `APP` is an installed application (`twenty-questions` here, discovered through the `freeagent.apps` entry-point group), and each application defines its own commands. The library supplies the shared root, the config loader, the shared `--parquet-log` option, and the launcher; an application supplies its name, environment, and roster in source and calls into them.
 
 ## Reading the log
 
-The recorder runs automatically (the `recorder:` block in the example configs) and writes the episode's full message log to Parquet — for the fake game, `out/twentyquestions-fake.parquet`. Peek at the public-channel conversation:
+When you pass `--parquet-log PATH`, the launcher spawns the recorder as its own process and drains the episode's full message stream to that Parquet file. Peek at the public-channel conversation:
 
 ```python
 import json
@@ -51,7 +56,7 @@ for row in pq.read_table("out/twentyquestions-fake.parquet").to_pylist():
         print(f"{row['stream_seq']:>4}  {row['sender']:<6} {json.loads(row['payload'])}")
 ```
 
-Every row carries `episode_id`, `stream_seq`, `subject`, `sender`, `received_at` (JetStream's server clock), and the raw `payload` as a JSON string. See [apps/recorder](apps/recorder/README.md) for the schema.
+Every row carries `episode_id`, `stream_seq`, `subject`, `sender`, `received_at` (JetStream's server clock), and the raw `payload` as a JSON string. The recorder is part of the library (`freeagent.recorder`); see `PARQUET_SCHEMA` there for the pinned schema.
 
 ## Repository layout
 
@@ -59,8 +64,7 @@ A `uv` workspace: the library plus its applications. Applications depend only on
 
 | Path | What it is |
 |------|------------|
-| [`packages/freeagent`](packages/freeagent/README.md) | The library: agents, environments, episode lifecycle, LLM infrastructure, and the `free-agent` CLI root + launcher |
-| [`apps/recorder`](apps/recorder/README.md) | `freeagent-recorder`: drains an episode's JetStream stream to Parquet |
+| [`packages/freeagent`](packages/freeagent/README.md) | The library: agents, environments, episode lifecycle, LLM infrastructure, the `free-agent` CLI root + launcher, and the episode recorder (`freeagent.recorder`) |
 | [`apps/twentyquestions`](apps/twentyquestions/README.md) | The sample application: its own `free-agent twenty-questions` CLI — one Host, several Players, prompts over code |
 | [`docker/nats`](docker/nats) | NATS + JetStream container config (infrastructure, assumed running) |
 | [`examples/`](examples) | Episode tunables for the sample app, real and fake |

@@ -1,4 +1,4 @@
-"""Integration tests against a real NATS + JetStream server.
+"""Integration tests for the recorder against a real NATS + JetStream server.
 
 Skipped cleanly (via the ``nats_url`` fixture) when NATS is not running.
 Episode ids are fresh uuids per test: the JetStream volume is persistent and
@@ -17,8 +17,13 @@ import nats
 import pyarrow.parquet as pq
 import pytest
 
-from freeagent import Envelope, EpisodeSubjects
-from freeagent_recorder import PARQUET_SCHEMA, RecorderError, record_episode
+from freeagent import (
+    PARQUET_SCHEMA,
+    Envelope,
+    EpisodeSubjects,
+    RecorderError,
+    record_episode,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path

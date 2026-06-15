@@ -7,14 +7,14 @@
 # cheap tier of whichever provider API key is exported (ANTHROPIC_API_KEY,
 # OPENAI_API_KEY, GEMINI_API_KEY).
 #
-# Run from the repo root:
+# Recording is a per-run CLI decision, not config: add
+# `--parquet-log out/twentyquestions.parquet` (a path that must not exist) to
+# record the episode. Run from the repo root:
 #
-#   free-agent twenty-questions run examples/twentyquestions.yml
+#   free-agent twenty-questions run examples/twentyquestions.yml \
+#     --parquet-log out/twentyquestions.parquet
 
 nats_url: nats://localhost:4222
-recorder:
-  enabled: true
-  output: out/twentyquestions.parquet
 environment:
   # A full 20-question game at real-LLM pace takes well over ten minutes;
   # the episode timeout is a backstop, not the expected ending.

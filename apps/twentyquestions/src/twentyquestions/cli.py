@@ -20,7 +20,7 @@ from typing import Annotated
 
 import typer
 
-from freeagent import ConfigError, Environment, load_config, run_episode
+from freeagent import ConfigError, Environment, ParquetLogOption, load_config, run_episode
 
 from .environment import TwentyQuestionsEnvironment
 from .host import Host
@@ -56,11 +56,22 @@ def run(
         Path | None,
         typer.Argument(help="episode tunables *.yml file; all-defaults when omitted"),
     ] = None,
+    parquet_log: ParquetLogOption = None,
 ) -> None:
-    """Run one Twenty Questions episode from a YAML of tunables."""
+    """Run one Twenty Questions episode from a YAML of tunables.
+
+    Pass ``--parquet-log PATH`` to record the episode to a new Parquet file;
+    omit it for no recording.
+    """
     try:
         episode = load_config(config)
-        code = run_episode(episode, app=APP_NAME, environment=ENVIRONMENT, agents=ROSTER)
+        code = run_episode(
+            episode,
+            app=APP_NAME,
+            environment=ENVIRONMENT,
+            agents=ROSTER,
+            parquet_log=parquet_log,
+        )
     except ConfigError as exc:
         typer.echo(f"free-agent: error: {exc}", err=True)
         raise typer.Exit(1) from exc

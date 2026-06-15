@@ -7,14 +7,14 @@ next::
 
     episode_id: ep-2026-06-11            # optional; auto-generated (uuid4 hex) when omitted
     nats_url: nats://localhost:4222      # optional, this default
-    recorder:                            # optional; absent == disabled
-      enabled: true                      # optional, default true when the block is present
-      output: out/episode.parquet        # optional, default "<episode_id>.parquet"
     environment:                         # optional
       config: {...}                      # optional, passed verbatim to the constructor
     agents:                              # optional; keys must match the app's roster
       alice:
         config: {...}                    # optional, passed verbatim to the constructor
+
+Recording is not configured here: it is a per-run CLI decision (the shared
+``--parquet-log`` option), so the config carries no recorder block.
 
 The agent keys are *overrides*, not the roster: an app passes its roster (the
 agent names it defines in source) to :func:`make_plan`, and only those names
@@ -48,15 +48,6 @@ class ConfigError(Exception):
     """A fatal problem with the episode configuration (exit code 1)."""
 
 
-class RecorderSpec(BaseModel):
-    """The optional ``recorder`` block; its mere presence enables the recorder."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = True
-    output: str | None = None
-
-
 class ComponentSpec(BaseModel):
     """A component's overrides: a verbatim constructor ``config`` dict, nothing more.
 
@@ -76,7 +67,6 @@ class EpisodeConfig(BaseModel):
 
     episode_id: str | None = None
     nats_url: str = DEFAULT_NATS_URL
-    recorder: RecorderSpec | None = None
     environment: ComponentSpec = Field(default_factory=ComponentSpec)
     agents: dict[str, ComponentSpec] = Field(default_factory=dict)
 
@@ -105,7 +95,6 @@ class EpisodePlan:
     environment_config: dict[str, Any]
     #: agent name -> its constructor config (every roster member, override applied)
     agent_configs: dict[str, dict[str, Any]]
-    recorder_output: str | None  # None == recorder disabled
 
 
 class _StrictLoader(yaml.SafeLoader):
@@ -165,8 +154,7 @@ def make_plan(config: EpisodeConfig, *, app: str, roster: Iterable[str]) -> Epis
     of agent names the application defines in source. Every roster member gets
     a config dict -- empty unless the YAML overrode it. An ``agents`` key that
     is not in the roster is a :class:`ConfigError`. The episode id is generated
-    (uuid4 hex) when omitted, and the recorder's default output path is
-    ``<episode_id>.parquet``.
+    (uuid4 hex) when omitted.
     """
     roster_names = list(roster)
     roster_set = set(roster_names)
@@ -177,13 +165,6 @@ def make_plan(config: EpisodeConfig, *, app: str, roster: Iterable[str]) -> Epis
             f"config overrides unknown agent(s) {unknown}; this app's roster is: {known}"
         )
     episode_id = config.episode_id if config.episode_id is not None else uuid.uuid4().hex
-    recorder_output: str | None = None
-    if config.recorder is not None and config.recorder.enabled:
-        recorder_output = (
-            config.recorder.output
-            if config.recorder.output is not None
-            else f"{episode_id}.parquet"
-        )
     agent_configs = {
         name: dict(config.agents[name].config) if name in config.agents else {}
         for name in roster_names
@@ -194,5 +175,4 @@ def make_plan(config: EpisodeConfig, *, app: str, roster: Iterable[str]) -> Epis
         nats_url=config.nats_url,
         environment_config=dict(config.environment.config),
         agent_configs=agent_configs,
-        recorder_output=recorder_output,
     )

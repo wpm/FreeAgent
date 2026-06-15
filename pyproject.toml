@@ -5,7 +5,6 @@ description = "FreeAgent workspace root: the freeagent library plus its companio
 requires-python = ">=3.12"
 dependencies = [
     "freeagent",
-    "freeagent-recorder",
     "twentyquestions",
 ]
 
@@ -21,7 +20,6 @@ members = ["packages/*", "apps/*"]
 
 [tool.uv.sources]
 freeagent = { workspace = true }
-freeagent-recorder = { workspace = true }
 twentyquestions = { workspace = true }
 
 [tool.ruff]
@@ -29,7 +27,6 @@ line-length = 100
 target-version = "py312"
 src = [
     "packages/freeagent/src",
-    "apps/recorder/src",
     "apps/twentyquestions/src",
 ]
 
@@ -70,7 +67,6 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = [
     "packages/freeagent/tests",
-    "apps/recorder/tests",
     "apps/twentyquestions/tests",
     "tests",
 ]

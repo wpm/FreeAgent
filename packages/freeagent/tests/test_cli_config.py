@@ -36,7 +36,6 @@ def test_empty_config_is_all_defaults() -> None:
     config = EpisodeConfig()
     assert config.episode_id is None
     assert config.nats_url == DEFAULT_NATS_URL
-    assert config.recorder is None
     assert config.environment.config == {}
     assert config.agents == {}
 
@@ -63,7 +62,6 @@ def test_good_config_parses_with_defaults(tmp_path: Path) -> None:
     plan = make_plan(config, app=APP, roster=ROSTER)
     assert NAME_PATTERN.fullmatch(plan.episode_id), "generated episode id must be subject-safe"
     assert plan.app == APP
-    assert plan.recorder_output is None
     # Every roster member gets a config dict; the override applied, the rest empty.
     assert plan.agent_configs == {"alpha": {"grace_period": 0.3}, "beta": {}}
     assert plan.environment_config == {}
@@ -84,32 +82,16 @@ def test_environment_config_passed_verbatim(tmp_path: Path) -> None:
 
 
 # ----------------------------------------------------------------------
-# Recorder
+# Recording is a CLI decision now, not config
 # ----------------------------------------------------------------------
 
 
-def test_recorder_default_output(tmp_path: Path) -> None:
-    path = _write(tmp_path, {"episode_id": "ep1", "recorder": {"enabled": True}})
-    plan = make_plan(load_config(path), app=APP, roster=ROSTER)
-    assert plan.recorder_output == "ep1.parquet"
-
-
-def test_recorder_explicit_output(tmp_path: Path) -> None:
-    path = _write(tmp_path, {"recorder": {"enabled": True, "output": "out/episode.parquet"}})
-    plan = make_plan(load_config(path), app=APP, roster=ROSTER)
-    assert plan.recorder_output == "out/episode.parquet"
-
-
-def test_recorder_block_without_enabled_is_enabled(tmp_path: Path) -> None:
-    path = _write(tmp_path, {"episode_id": "ep2", "recorder": {"output": "x.parquet"}})
-    plan = make_plan(load_config(path), app=APP, roster=ROSTER)
-    assert plan.recorder_output == "x.parquet"
-
-
-def test_recorder_disabled(tmp_path: Path) -> None:
-    path = _write(tmp_path, {"recorder": {"enabled": False}})
-    plan = make_plan(load_config(path), app=APP, roster=ROSTER)
-    assert plan.recorder_output is None
+def test_recorder_block_in_config_is_rejected(tmp_path: Path) -> None:
+    # Recording moved to the --parquet-log CLI option; the config no longer
+    # carries a recorder block (extra="forbid" rejects it).
+    path = _write(tmp_path, {"recorder": {"enabled": True}})
+    with pytest.raises(ConfigError, match="recorder"):
+        load_config(path)
 
 
 # ----------------------------------------------------------------------

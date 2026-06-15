@@ -30,7 +30,8 @@ import nats.js.errors
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from freeagent import Envelope, EpisodeSubjects
+from freeagent.envelope import Envelope
+from freeagent.subjects import EpisodeSubjects
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
