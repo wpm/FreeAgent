@@ -15,6 +15,10 @@ venv/
 .ruff_cache/
 .mypy_cache/
 
+# Node / JS workspace (viewers)
+node_modules/
+dist/
+
 # Episode artifacts
 *.parquet
 

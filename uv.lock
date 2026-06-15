@@ -377,7 +377,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "freeagent", editable = "packages/freeagent" },
-    { name = "twentyquestions", editable = "apps/twentyquestions" },
+    { name = "twentyquestions", editable = "apps/twentyquestions/engine" },
 ]
 
 [package.metadata.requires-dev]
@@ -1673,7 +1673,7 @@ wheels = [
 [[package]]
 name = "twentyquestions"
 version = "1.0.0"
-source = { editable = "apps/twentyquestions" }
+source = { editable = "apps/twentyquestions/engine" }
 dependencies = [
     { name = "freeagent" },
     { name = "pydantic" },
