@@ -5,22 +5,27 @@
  * One code path serves live and replay (ADR-0001): the replayer re-publishes a
  * recorded episode onto NATS with byte-identical subjects, so this subscriber
  * cannot tell them apart. We read the episode's JetStream stream from sequence 1
- * (an ordered consumer with `DeliverPolicy.ALL`), exactly as the engine does, so
+ * (an ordered consumer with `DeliverPolicy.All`), exactly as the engine does, so
  * the full transcript shows in `stream_seq` order whether the viewer joined at
  * the start, mid-episode, or after the fact.
  *
  * Decoding goes through the generated message types (`./messages`): every frame
  * is a FreeAgent `Envelope`, and on the public channel its `payload` is the bare
  * spoken text.
+ *
+ * The transport is the maintained nats.js v3 browser client (`@nats-io/nats-core`
+ * `wsconnect` + `@nats-io/jetstream`), not the deprecated `nats.ws` package.
  */
+import { wsconnect, type NatsConnection } from "@nats-io/nats-core";
 import {
-  connect,
-  consumerOpts,
-  Events,
-  JSONCodec,
+  DeliverPolicy,
+  jetstream,
+  jetstreamManager,
+  JetStreamApiCodes,
+  JetStreamApiError,
+  type ConsumerMessages,
   type JsMsg,
-  type NatsConnection,
-} from "nats.ws";
+} from "@nats-io/jetstream";
 
 import { isGameOver, type Envelope } from "./messages";
 
@@ -47,8 +52,6 @@ export interface ChatMessage {
   outcome: boolean;
 }
 
-const codec = JSONCodec<Envelope>();
-
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A public-channel payload is the bare spoken string; anything else is shown raw. */
@@ -58,14 +61,13 @@ function renderPayload(payload: Envelope["payload"]): string {
   return JSON.stringify(payload);
 }
 
-/** JetStream reports a missing stream when the episode has not started yet. */
+/**
+ * The episode's stream is absent until the environment (live) or the replayer
+ * creates it. JetStream signals that with a structured `StreamNotFound` API
+ * error (code 10059), so we match on the code rather than the message text.
+ */
 function isStreamNotFound(err: unknown): boolean {
-  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return (
-    message.includes("no stream matches") ||
-    message.includes("stream not found") ||
-    message.includes("404")
-  );
+  return err instanceof JetStreamApiError && err.code === JetStreamApiCodes.StreamNotFound;
 }
 
 export class EpisodeViewer {
@@ -80,6 +82,8 @@ export class EpisodeViewer {
   subject = $state("");
 
   #nc: NatsConnection | null = null;
+  /** The active consume iterator, so disconnect can stop it promptly. */
+  #consumed: ConsumerMessages | null = null;
   /** Bumped on every connect/disconnect; stale async loops check it and bail. */
   #generation = 0;
   /** Highest stream sequence ingested, to drop any redelivered duplicates. */
@@ -99,7 +103,7 @@ export class EpisodeViewer {
 
     let nc: NatsConnection;
     try {
-      nc = await connect({
+      nc = await wsconnect({
         servers: server,
         name: "twentyquestions-viewer",
         // Keep retrying through a missing/blinking server: the viewer may be
@@ -139,6 +143,9 @@ export class EpisodeViewer {
   /** Tear down the active connection, if any. */
   async disconnect(): Promise<void> {
     this.#generation++;
+    const consumed = this.#consumed;
+    this.#consumed = null;
+    consumed?.stop();
     const nc = this.#nc;
     this.#nc = null;
     if (nc && !nc.isClosed()) {
@@ -154,21 +161,21 @@ export class EpisodeViewer {
     }
   }
 
-  /** Mirror nats.ws lifecycle events into the status indicator. */
+  /** Mirror connection lifecycle events into the status indicator. */
   async #watchStatus(nc: NatsConnection, generation: number): Promise<void> {
     for await (const status of nc.status()) {
       if (generation !== this.#generation) return;
       switch (status.type) {
-        case Events.Disconnect:
+        case "disconnect":
           this.state = "reconnecting";
-          this.detail = `disconnected from ${status.data ?? this.server}; reconnecting…`;
+          this.detail = `disconnected from ${status.server}; reconnecting…`;
           break;
-        case Events.Reconnect:
+        case "reconnect":
           this.state = "live";
-          this.detail = `reconnected to ${status.data ?? this.server}`;
+          this.detail = `reconnected to ${status.server}`;
           break;
-        case Events.Error:
-          this.detail = `connection error: ${String(status.data)}`;
+        case "error":
+          this.detail = `connection error: ${String(status.error)}`;
           break;
         default:
           break;
@@ -178,23 +185,17 @@ export class EpisodeViewer {
 
   /** Subscribe from sequence 1, waiting for the episode's stream to appear. */
   async #consume(nc: NatsConnection, subject: string, generation: number): Promise<void> {
-    const js = nc.jetstream();
-    while (generation === this.#generation) {
-      const opts = consumerOpts();
-      opts.orderedConsumer(); // ephemeral, reads from sequence 1, ordered
+    const jsm = await jetstreamManager(nc);
+    const js = jetstream(nc);
+
+    // The episode's JetStream stream is created by the environment (live) or the
+    // replayer (replay); it may not exist yet when the viewer opens. Wait for it
+    // rather than failing, mirroring the engine's own subscribe-from-seq-1 logic.
+    let stream: string;
+    while (true) {
       try {
-        const sub = await js.subscribe(subject, opts);
-        if (generation !== this.#generation) {
-          await sub.unsubscribe();
-          return;
-        }
-        if (this.state !== "reconnecting") this.state = "live";
-        this.detail = `watching ${subject}`;
-        for await (const msg of sub) {
-          if (generation !== this.#generation) return;
-          this.#ingest(msg);
-        }
-        return; // the subscription ended on its own
+        stream = await jsm.streams.find(subject);
+        break;
       } catch (err) {
         if (generation !== this.#generation) return;
         if (isStreamNotFound(err)) {
@@ -204,9 +205,35 @@ export class EpisodeViewer {
           continue;
         }
         this.state = "error";
-        this.detail = `subscription failed: ${String(err)}`;
+        this.detail = `could not locate the episode stream: ${String(err)}`;
         return;
       }
+    }
+
+    try {
+      // An ordered (ephemeral) consumer reading the whole stream from sequence 1,
+      // filtered to just the public channel — the stream captures every episode
+      // subject (`<root>.>`), but the room is only what was broadcast publicly.
+      const consumer = await js.consumers.get(stream, {
+        filter_subjects: subject,
+        deliver_policy: DeliverPolicy.All,
+      });
+      const messages = await consumer.consume();
+      if (generation !== this.#generation) {
+        messages.stop();
+        return;
+      }
+      this.#consumed = messages;
+      if (this.state !== "reconnecting") this.state = "live";
+      this.detail = `watching ${subject}`;
+      for await (const msg of messages) {
+        if (generation !== this.#generation) return;
+        this.#ingest(msg);
+      }
+    } catch (err) {
+      if (generation !== this.#generation) return;
+      this.state = "error";
+      this.detail = `subscription failed: ${String(err)}`;
     }
   }
 
@@ -218,7 +245,7 @@ export class EpisodeViewer {
 
     let envelope: Envelope;
     try {
-      envelope = codec.decode(msg.data);
+      envelope = msg.json<Envelope>();
     } catch {
       return; // not a JSON envelope; nothing the viewer can render
     }
