@@ -36,7 +36,20 @@ pnpm run dev        # Vite dev server (http://localhost:5173)
 pnpm run build      # static production bundle in dist/
 pnpm run preview    # serve the built bundle
 pnpm run typecheck  # svelte-check (also the schema contract's compile test)
+pnpm run test       # browser-mode test (needs NATS + a Playwright browser)
 ```
+
+### Browser test
+
+`src/viewer.browser.test.ts` is a [Vitest browser-mode](https://vitest.dev/guide/browser/)
+test: it loads the viewer in a real headless Chromium, seeds a few public-channel
+frames onto a live NATS exactly as an episode (or replay) would, and asserts the
+chat transcript — including the Host's outcome line — renders and the connection
+reports itself live. Unlike a Node/jsdom test it exercises the genuine
+`wsconnect` WebSocket transport and Svelte rendering, which is the only way to
+cover the in-browser path. It needs a NATS server with the websocket listener
+(`ws://localhost:8080`, or `VITE_NATS_WS_URL`) and the Playwright browser
+(`pnpm exec playwright install chromium`). CI runs it in the `viewers` job.
 
 ### Configuring the connection
 

@@ -34,7 +34,7 @@ jobs:
         run: uv run ruff check .
 
   viewers:
-    name: Viewer schema and types
+    name: Viewer schema, types, and browser test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +68,36 @@ jobs:
 
       - name: Type-check viewers
         run: pnpm run typecheck
+
+      # Browser-mode test: load the viewer in a real (headless Chromium) browser
+      # against a live NATS, so the actual websocket transport and Svelte render
+      # are exercised end to end -- not a Node/jsdom stand-in. Needs the same
+      # JetStream + websocket server the runtime uses, and the Playwright browser.
+      - name: Start NATS (JetStream + websocket)
+        run: docker compose -f docker/nats/docker-compose.yml up -d
+
+      - name: Wait for NATS to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8222/healthz >/dev/null; then
+              echo "NATS is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "NATS did not become healthy in time" >&2
+          docker compose -f docker/nats/docker-compose.yml logs
+          exit 1
+
+      - name: Install Playwright browser
+        run: pnpm --filter twentyquestions-viewer exec playwright install --with-deps chromium
+
+      - name: Browser-mode viewer test
+        run: pnpm --filter twentyquestions-viewer test
+
+      - name: Stop NATS
+        if: always()
+        run: docker compose -f docker/nats/docker-compose.yml down -v
 
   test:
     name: Tests
