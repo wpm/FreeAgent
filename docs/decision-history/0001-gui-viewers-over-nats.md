@@ -189,7 +189,7 @@ auth at this stage.
 1. [x] Restructure `apps/twentyquestions/` into `engine/` (Python, own
        `pyproject.toml`) and `viewer/` (TS, own `package.json`) siblings, and add a
        root JS workspace globbing `apps/*/viewer`.
-2. [ ] Enable a websocket listener on the NATS server (`docker/nats` config).
+2. [x] Enable a websocket listener on the NATS server (`docker/nats` config).
 3. [x] Add JSON Schema export from the Pydantic message models and a TS type
        generation step; check the generated schema into the repo. (`pnpm run
        schemas`; schemas under `packages/freeagent/schemas/` and
@@ -197,7 +197,7 @@ auth at this stage.
 4. [x] Build the **app-agnostic** replayer as a library-level command: read any
        app's episode Parquet log and re-publish in `stream_seq` order with timing
        controls onto a separate local NATS server.
-5. [ ] Build the first bespoke viewer — the Twenty Questions chat-room transcript —
+5. [x] Build the first bespoke viewer — the Twenty Questions chat-room transcript —
        against live and replay.
 6. [ ] After two or three viewers exist, review them for a shared viewer SDK and a
        per-application protocol/config format (deferred; do not design up front).
