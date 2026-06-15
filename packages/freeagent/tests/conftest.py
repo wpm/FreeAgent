@@ -7,12 +7,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from freeagent import FakeLLM
+from freeagent import FakeLLM, default_nats_url
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-NATS_URL = "nats://localhost:4222"
 NATS_SKIP_MESSAGE = (
     "NATS is not running; start it with: docker compose -f docker/nats/docker-compose.yml up -d"
 )
@@ -42,7 +41,8 @@ async def _probe_nats(url: str) -> bool:
 
 @pytest.fixture(scope="session")
 def nats_url() -> str:
-    """The NATS URL, or a clean skip when the server is unreachable."""
-    if not asyncio.run(_probe_nats(NATS_URL)):
+    """The NATS URL ($FREEAGENT_NATS_URL or localhost:4222), or a clean skip when unreachable."""
+    url = default_nats_url()
+    if not asyncio.run(_probe_nats(url)):
         pytest.skip(NATS_SKIP_MESSAGE)
-    return NATS_URL
+    return url

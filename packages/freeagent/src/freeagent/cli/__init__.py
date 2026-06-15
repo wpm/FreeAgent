@@ -31,9 +31,11 @@ import typer
 from freeagent.logging import DEFAULT_LOG_LEVEL, LOG_LEVEL_ENV_VAR, configure_logging
 
 from .config import (
+    NATS_URL_ENV_VAR,
     ConfigError,
     EpisodeConfig,
     EpisodePlan,
+    default_nats_url,
     load_config,
     make_plan,
 )
@@ -78,11 +80,13 @@ ParquetLogOption = Annotated[
 ]
 
 __all__ = [
+    "NATS_URL_ENV_VAR",
     "ConfigError",
     "EpisodeConfig",
     "EpisodePlan",
     "ParquetLogOption",
     "build_root_app",
+    "default_nats_url",
     "load_config",
     "main",
     "make_plan",
