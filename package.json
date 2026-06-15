@@ -3,8 +3,5 @@
   "version": "1.0.0",
   "private": true,
   "description": "Root JavaScript workspace for FreeAgent's TypeScript viewers (apps/*/viewer).",
-  "packageManager": "pnpm@9.0.0",
-  "workspaces": [
-    "apps/*/viewer"
-  ]
+  "packageManager": "pnpm@9.0.0"
 }
