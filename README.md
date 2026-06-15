@@ -23,20 +23,20 @@ uv sync
 Run a complete episode with **no API key** — the deterministic fake LLM plays a scripted game of Twenty Questions:
 
 ```sh
-uv run free-agent twenty-questions run examples/twentyquestions-fake.yml
+uv run free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions-fake.yml
 ```
 
 Run a **real** game. It requires a provider key — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`; the cheap tier of whichever provider is detected is used automatically, or set `FREEAGENT_MODEL` to any litellm model string:
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...
-uv run free-agent twenty-questions run examples/twentyquestions.yml
+uv run free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions.yml
 ```
 
 Either way, one command launches the environment and the agents as separate processes, runs the episode to `ended`, and prints a one-line summary. To also capture the episode's full message log to a Parquet file, add `--parquet-log PATH` (the path must not already exist — the recorder never overwrites a finished log):
 
 ```sh
-uv run free-agent twenty-questions run examples/twentyquestions-fake.yml \
+uv run free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions-fake.yml \
   --parquet-log out/twentyquestions-fake.parquet
 ```
 

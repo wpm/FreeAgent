@@ -76,7 +76,7 @@ will light up when it does.
 docker compose -f docker/nats/docker-compose.yml up -d
 
 # Terminal 2 — run a live episode (give it a known id so you can link to it):
-free-agent twenty-questions run examples/twentyquestions-fake.yml
+free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions-fake.yml
 
 # Terminal 3 — the viewer; open the printed URL with the episode id:
 pnpm --filter twentyquestions-viewer run dev
@@ -92,7 +92,7 @@ in-world game-over announcement.
 
 ```sh
 # Record an episode:
-free-agent twenty-questions run examples/twentyquestions-fake.yml \
+free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions-fake.yml \
   --parquet-log out/twentyquestions-fake.parquet
 
 # Replay it onto a separate, local NATS and point the viewer there:

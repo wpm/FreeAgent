@@ -16,17 +16,17 @@ From the repository root, with NATS up:
 
 ```sh
 # Scripted game with the deterministic fake LLM -- no network, no keys.
-uv run free-agent twenty-questions run examples/twentyquestions-fake.yml
+uv run free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions-fake.yml
 
 # A real game (requires ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY,
 # or FREEAGENT_MODEL set to a litellm model string).
-uv run free-agent twenty-questions run examples/twentyquestions.yml
+uv run free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions.yml
 ```
 
 Add `--parquet-log PATH` (a path that must not already exist) to record the episode's full message log to a Parquet file:
 
 ```sh
-uv run free-agent twenty-questions run examples/twentyquestions-fake.yml \
+uv run free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions-fake.yml \
   --parquet-log out/twentyquestions-fake.parquet
 ```
 

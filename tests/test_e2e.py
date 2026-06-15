@@ -2,11 +2,11 @@
 
 This is the Phase 3 acceptance path, exercised through the real CLI:
 
-* a derived copy of ``examples/twentyquestions-fake.yml`` is written to a
-  temporary directory (recorder output redirected to a per-test path, episode
-  id left auto-generated) and run via ``free-agent twenty-questions run`` as a
-  subprocess from
-  the repository root, where the ``fake:examples/fake/*.yml`` model paths
+* a derived copy of ``apps/twentyquestions/examples/twentyquestions-fake.yml``
+  is written to a temporary directory (recorder output redirected to a per-test
+  path, episode id left auto-generated) and run via
+  ``free-agent twenty-questions run`` as a subprocess from the repository root,
+  where the ``fake:apps/twentyquestions/examples/fake/*.yml`` model paths
   resolve;
 * the episode must reach ``ended``: exit code 0 and ``state=ended`` in the
   runner's summary line;
@@ -43,7 +43,9 @@ import yaml
 from freeagent import default_nats_url
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EXAMPLE_CONFIG = REPO_ROOT / "examples" / "twentyquestions-fake.yml"
+EXAMPLE_CONFIG = (
+    REPO_ROOT / "apps" / "twentyquestions" / "examples" / "twentyquestions-fake.yml"
+)
 
 _PARSED_NATS = urlparse(default_nats_url())
 NATS_HOST = _PARSED_NATS.hostname or "localhost"
@@ -55,7 +57,7 @@ ROSTER = frozenset({"host", "alice", "bob", "carol"})
 ALL_SENDERS = ROSTER | {"env"}
 
 #: (sender, distinctive substring) pairs that must appear on the public
-#: channel in this order -- the scripted game in examples/fake/.
+#: channel in this order -- the scripted game in apps/twentyquestions/examples/fake/.
 PUBLIC_CONVERSATION: tuple[tuple[str, str], ...] = (
     ("host", "Welcome to Twenty Questions"),
     ("host", "question 1 of 20"),
@@ -210,7 +212,7 @@ def test_fake_twentyquestions_episode_end_to_end(tmp_path: Path) -> None:
     # log is the grace period working.
     #
     # Ordering note: the goodbyes are scripted reactions to the Host's GAME
-    # OVER announcement (see examples/fake/*.yml), and so is the shutdown
+    # OVER announcement (see apps/twentyquestions/examples/fake/*.yml), and so is the shutdown
     # broadcast (announcement -> game_over signal -> env broadcasts shutdown).
     # Goodbye and shutdown are therefore *concurrent* reactions in separate
     # processes; nothing orders a goodbye after the shutdown in stream

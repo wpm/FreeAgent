@@ -53,11 +53,11 @@ From the repository root, with NATS running:
 
 ```sh
 # A scripted demo game using a deterministic fake model -- no network, no keys.
-uv run free-agent twenty-questions run examples/twentyquestions-fake.yml
+uv run free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions-fake.yml
 
 # A real game (needs an API key -- ANTHROPIC_API_KEY, OPENAI_API_KEY, or
 # GEMINI_API_KEY -- or FREEAGENT_MODEL set to a litellm model string).
-uv run free-agent twenty-questions run examples/twentyquestions.yml
+uv run free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions.yml
 ```
 
 The demo plays out a complete two-question win — the secret is "an octopus" —
@@ -75,7 +75,7 @@ docker compose -f docker/nats/docker-compose.yml up -d
 
 # Terminal 2 -- run one game. It prints "episode_id=<id>" when it finishes;
 # set "episode_id:" in the YAML beforehand if you want to know the id up front.
-uv run free-agent twenty-questions run examples/twentyquestions-fake.yml
+uv run free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions-fake.yml
 
 # Terminal 3 -- start the viewer and open it pointed at that episode:
 pnpm --filter twentyquestions-viewer run dev

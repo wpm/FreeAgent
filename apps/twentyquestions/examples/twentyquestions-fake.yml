@@ -1,0 +1,30 @@
+# Twenty Questions with the deterministic fake LLM -- no network, no API keys.
+#
+# The app's name, environment class, and roster live in the application's
+# source; this file holds only per-episode tunables. The canned scripts in
+# apps/twentyquestions/examples/fake/ play out a complete two-question game
+# ending in a correct guess ("an octopus"), followed by goodbyes inside the
+# stopping grace period. The fake: paths are relative to the directory the
+# command is invoked from, so run from the repo root. Recording is a per-run
+# CLI decision, not config: add `--parquet-log PATH` (a path that must not
+# exist) to record the episode:
+#
+#   free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions-fake.yml \
+#     --parquet-log out/twentyquestions-fake.parquet
+
+nats_url: nats://localhost:4222
+environment:
+  config: {setup_timeout: 30, episode_timeout: 60, grace_period: 2}
+agents:
+  host:
+    config:
+      model: "fake:apps/twentyquestions/examples/fake/host.yml"
+      secret: an octopus
+      max_questions: 20
+      grace_period: 2
+  alice:
+    config: {model: "fake:apps/twentyquestions/examples/fake/alice.yml", grace_period: 2}
+  bob:
+    config: {model: "fake:apps/twentyquestions/examples/fake/bob.yml", grace_period: 2}
+  carol:
+    config: {model: "fake:apps/twentyquestions/examples/fake/carol.yml", grace_period: 2}

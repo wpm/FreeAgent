@@ -1,7 +1,7 @@
 """End-to-end episodes on the in-memory transport -- no NATS, no network.
 
 The fake-LLM episode is driven by the very scripts shipped in
-``examples/fake/``, so the test also validates the example configs' canned
+``apps/twentyquestions/examples/fake/``, so the test also validates the example configs' canned
 game for the runner e2e. The real-model smoke test runs only when a provider
 API key is present.
 """
@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 
     from freeagent import LLMAgent
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-FAKE_SCRIPTS = REPO_ROOT / "examples" / "fake"
+APP_ROOT = Path(__file__).resolve().parents[2]
+FAKE_SCRIPTS = APP_ROOT / "examples" / "fake"
 
 PLAYERS = ("alice", "bob", "carol")
 ROSTER = ("host", *PLAYERS)

@@ -67,15 +67,15 @@ Done when: it runs as a pytest integration test against a local NATS container a
 ### Phase 3 — integration, verification, docs
 
 - End-to-end test: NATS up via docker compose → `free-agent run` Twenty Questions with the fake LLM → assert episode reaches `ended` → run the recorder → open the Parquet file and assert expected subjects, senders, and ordering by `stream_seq`.
-- Root `README.md`: what FreeAgent is (lead with no-turn-taking), quickstart (docker compose, export an API key, `free-agent run examples/twentyquestions.yml`), pointer to DESIGN.md. Brief READMEs per package/app.
+- Root `README.md`: what FreeAgent is (lead with no-turn-taking), quickstart (docker compose, export an API key, `free-agent run apps/twentyquestions/examples/twentyquestions.yml`), pointer to DESIGN.md. Brief READMEs per package/app.
 - Final pass: `uv sync` from scratch works; `ruff check .` clean; `pytest` green — unit tests with no NATS and no network, integration tests skipped with a clear message when NATS isn't running.
 
 ## Acceptance criteria (the definition of done)
 
 1. `uv sync && ruff check . && pytest` succeeds on a clean checkout with Docker available and no LLM API keys set.
 2. `uv pip install ./packages/freeagent` works in a fresh venv — the library stands alone.
-3. With NATS up: `free-agent run examples/twentyquestions-fake.yml` (fake LLM) completes an episode to `ended` and the recorder writes a valid Parquet file.
-4. With a real API key: `free-agent run examples/twentyquestions.yml` plays a watchable, complete game of Twenty Questions.
+3. With NATS up: `free-agent run apps/twentyquestions/examples/twentyquestions-fake.yml` (fake LLM) completes an episode to `ended` and the recorder writes a valid Parquet file.
+4. With a real API key: `free-agent run apps/twentyquestions/examples/twentyquestions.yml` plays a watchable, complete game of Twenty Questions.
 
 ## Non-goals — do not build
 
