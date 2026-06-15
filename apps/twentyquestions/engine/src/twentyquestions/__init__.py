@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from .environment import TwentyQuestionsEnvironment
 from .host import CANNED_SECRETS, Host, HostDecision
+from .payloads import GameOver
 from .player import Player
 
 __all__ = [
     "CANNED_SECRETS",
+    "GameOver",
     "Host",
     "HostDecision",
     "Player",

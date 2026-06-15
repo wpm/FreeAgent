@@ -1,0 +1,22 @@
+{
+  "additionalProperties": false,
+  "description": "Wire envelope for every FreeAgent message. JSON bytes on the wire.\n\nExactly four fields, no timestamps:\n\n- ``message_id``: unique per message (uuid4 hex).\n- ``episode_id``: the episode this message belongs to.\n- ``sender``: agent name, or ``\"env\"`` for the environment.\n- ``payload``: app-defined and opaque to the framework (JSON-serializable).",
+  "properties": {
+    "message_id": {
+      "type": "string"
+    },
+    "episode_id": {
+      "type": "string"
+    },
+    "sender": {
+      "type": "string"
+    },
+    "payload": {}
+  },
+  "required": [
+    "episode_id",
+    "sender"
+  ],
+  "type": "object",
+  "title": "Envelope"
+}

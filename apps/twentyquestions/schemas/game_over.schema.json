@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "description": "The Host's end-of-episode signal to the environment's inbox.\n\nSent to ``env`` when the game is won, lost, or the question budget is\nexhausted; the environment reads it and initiates shutdown. ``type`` is a\nconstant discriminator so a viewer can tell this payload apart from speech.",
+  "properties": {
+    "type": {
+      "const": "game_over",
+      "default": "game_over",
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "win",
+        "loss"
+      ],
+      "type": "string"
+    },
+    "secret": {
+      "type": "string"
+    },
+    "questions_asked": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "outcome",
+    "secret",
+    "questions_asked"
+  ],
+  "type": "object",
+  "title": "GameOver"
+}

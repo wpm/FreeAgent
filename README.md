@@ -64,6 +64,36 @@ A `uv` workspace containing the **library** and its **applications**. The librar
 
 Each application is split into two self-contained, single-language siblings (see [ADR-0001](docs/decision-history/0001-gui-viewers-over-nats.md)): `apps/<app>/engine/` is the Python application (environment, roster, prompts, CLI, its own `pyproject.toml`), and `apps/<app>/viewer/` is the TypeScript web GUI that observes an episode over NATS (its own `package.json`). Keeping the two in separate directories stops the toolchains from colliding: the `uv` workspace globs `apps/*/engine`, while a root JavaScript workspace (`pnpm-workspace.yaml`) globs `apps/*/viewer` so every viewer shares one lockfile and toolchain.
 
+## Message schemas (single source of truth)
+
+The NATS message types are defined once, in Python (Pydantic), and the
+TypeScript viewers consume generated types — no hand-maintained duplication
+(see [ADR-0001](docs/decision-history/0001-gui-viewers-over-nats.md)). The
+pipeline has two steps, wired behind one command:
+
+1. **JSON Schema from Pydantic.** `python -m freeagent.schema` exports the
+   framework envelope to `packages/freeagent/schemas/`, and each app exports
+   its wire payloads (`python -m twentyquestions.schema` →
+   `apps/twentyquestions/schemas/`). Schemas live beside the package that owns
+   the model, so a future repo split inherits a clean contract. Both the
+   `.schema.json` artifacts are committed.
+2. **TypeScript from JSON Schema.** `json-schema-to-typescript` emits `.d.ts`
+   types into each viewer (`apps/twentyquestions/viewer/src/generated/`), which
+   the viewer imports.
+
+Regenerate both from the repo root with a single command (Python via `uv`,
+TypeScript via the `pnpm` workspace):
+
+```sh
+pnpm install      # once, to fetch the JS toolchain
+pnpm run schemas  # JSON Schema from Pydantic, then TypeScript from JSON Schema
+```
+
+After changing a wire model, run `pnpm run schemas` and commit the regenerated
+artifacts. CI fails if the committed schemas or generated types are stale, and
+`pnpm run typecheck` confirms the viewers still compile against them. Guard
+tests (`test_schema.py`) assert the committed JSON Schema matches the models.
+
 ## Tests
 
 ```sh

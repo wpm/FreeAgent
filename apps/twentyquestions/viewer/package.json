@@ -1,0 +1,15 @@
+{
+  "name": "twentyquestions-viewer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Twenty Questions viewer. Its message types are generated from the FreeAgent JSON Schema contract (ADR-0001); see ./README.md.",
+  "scripts": {
+    "generate": "json2ts -i '../../../packages/freeagent/schemas/*.schema.json' -o src/generated && json2ts -i '../schemas/*.schema.json' -o src/generated",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "^15.0.4",
+    "typescript": "^6.0.0"
+  }
+}
