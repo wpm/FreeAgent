@@ -3,13 +3,23 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Twenty Questions viewer. Its message types are generated from the FreeAgent JSON Schema contract (ADR-0001); see ./README.md.",
+  "description": "Twenty Questions viewer: a chat-room live transcript that subscribes to an episode's NATS traffic over websockets (ADR-0001). One code path for live and replay. Message types are generated from the FreeAgent JSON Schema contract; see ./README.md.",
   "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
     "generate": "json2ts -i '../../../packages/freeagent/schemas/*.schema.json' -o src/generated && json2ts -i '../schemas/*.schema.json' -o src/generated",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json"
+  },
+  "dependencies": {
+    "nats.ws": "^1.30.3"
   },
   "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "json-schema-to-typescript": "^15.0.4",
-    "typescript": "^6.0.0"
+    "svelte": "^5.56.3",
+    "svelte-check": "^4.6.0",
+    "typescript": "^6.0.0",
+    "vite": "^8.0.0"
   }
 }
