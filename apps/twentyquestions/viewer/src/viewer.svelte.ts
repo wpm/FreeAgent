@@ -101,31 +101,8 @@ export class EpisodeViewer {
     this.state = "connecting";
     this.detail = `connecting to ${server}…`;
 
-    let nc: NatsConnection;
-    try {
-      nc = await wsconnect({
-        servers: server,
-        name: "twentyquestions-viewer",
-        // Keep retrying through a missing/blinking server: the viewer may be
-        // opened before the episode (or replay) starts and must light up when
-        // it does, never publishing — only subscribing.
-        reconnect: true,
-        maxReconnectAttempts: -1,
-        reconnectTimeWait: 1000,
-        waitOnFirstConnect: true,
-      });
-    } catch (err) {
-      if (generation !== this.#generation) return;
-      this.state = "error";
-      this.detail = `could not connect to ${server}: ${String(err)}`;
-      return;
-    }
-
-    if (generation !== this.#generation) {
-      // Superseded while connecting; drop this connection.
-      await nc.close();
-      return;
-    }
+    const nc = await this.#openConnection(server, generation);
+    if (nc === null) return; // superseded while connecting
 
     this.#nc = nc;
     void this.#watchStatus(nc, generation);
@@ -138,6 +115,43 @@ export class EpisodeViewer {
         this.detail = err ? `connection closed: ${String(err)}` : "connection closed";
       }
     });
+  }
+
+  /**
+   * Open a connection, retrying a missing/unreachable server with visible
+   * status instead of blocking silently. The viewer may be opened before the
+   * server or episode exists and must light up when it appears (it only ever
+   * subscribes) — but a wrong URL or a down server should show progress and the
+   * underlying error, not a perpetual, featureless "connecting…".
+   *
+   * Each first-connect attempt is bounded by `timeout` so a down server surfaces
+   * quickly; `reconnect` then handles drops after a successful connect. Returns
+   * the connection, or null if a later connect/disconnect superseded this one.
+   */
+  async #openConnection(server: string, generation: number): Promise<NatsConnection | null> {
+    for (let attempt = 1; generation === this.#generation; attempt++) {
+      try {
+        const nc = await wsconnect({
+          servers: server,
+          name: "twentyquestions-viewer",
+          reconnect: true,
+          maxReconnectAttempts: -1,
+          reconnectTimeWait: 1000,
+          timeout: 5000,
+        });
+        if (generation !== this.#generation) {
+          await nc.close();
+          return null;
+        }
+        return nc;
+      } catch (err) {
+        if (generation !== this.#generation) return null;
+        this.state = "connecting";
+        this.detail = `cannot reach ${server} (attempt ${attempt}); retrying… [${String(err)}]`;
+        await delay(1000);
+      }
+    }
+    return null;
   }
 
   /** Tear down the active connection, if any. */
@@ -183,57 +197,67 @@ export class EpisodeViewer {
     }
   }
 
-  /** Subscribe from sequence 1, waiting for the episode's stream to appear. */
+  /**
+   * Subscribe from sequence 1, re-establishing through transient failures.
+   *
+   * The episode's JetStream stream is created by the environment (live) or the
+   * replayer (replay); it may not exist yet when the viewer opens, so we wait
+   * for it rather than failing, mirroring the engine's subscribe-from-seq-1
+   * logic. A subscription that drops mid-episode — a transient JetStream/API
+   * error, or the ordered consumer's iterator ending on a reconnect — is
+   * re-established rather than going permanently dark; the `#lastSeq` de-dup
+   * guard means re-reading from sequence 1 never double-renders. The loop ends
+   * only when this session is superseded or the connection closes for good.
+   */
   async #consume(nc: NatsConnection, subject: string, generation: number): Promise<void> {
     const jsm = await jetstreamManager(nc);
     const js = jetstream(nc);
 
-    // The episode's JetStream stream is created by the environment (live) or the
-    // replayer (replay); it may not exist yet when the viewer opens. Wait for it
-    // rather than failing, mirroring the engine's own subscribe-from-seq-1 logic.
-    let stream: string;
-    while (true) {
+    while (generation === this.#generation && !nc.isClosed()) {
+      let stream: string;
       try {
         stream = await jsm.streams.find(subject);
-        break;
       } catch (err) {
         if (generation !== this.#generation) return;
         if (isStreamNotFound(err)) {
           this.state = "waiting";
           this.detail = `waiting for the episode to start (${subject})…`;
-          await delay(500);
-          continue;
+        } else {
+          // A transient API error locating the stream: keep trying.
+          this.detail = `locating the episode stream… [${String(err)}]`;
         }
-        this.state = "error";
-        this.detail = `could not locate the episode stream: ${String(err)}`;
-        return;
+        await delay(500);
+        continue;
       }
-    }
 
-    try {
-      // An ordered (ephemeral) consumer reading the whole stream from sequence 1,
-      // filtered to just the public channel — the stream captures every episode
-      // subject (`<root>.>`), but the room is only what was broadcast publicly.
-      const consumer = await js.consumers.get(stream, {
-        filter_subjects: subject,
-        deliver_policy: DeliverPolicy.All,
-      });
-      const messages = await consumer.consume();
-      if (generation !== this.#generation) {
-        messages.stop();
-        return;
-      }
-      this.#consumed = messages;
-      if (this.state !== "reconnecting") this.state = "live";
-      this.detail = `watching ${subject}`;
-      for await (const msg of messages) {
+      try {
+        // An ordered (ephemeral) consumer reading the whole stream from sequence
+        // 1, filtered to just the public channel — the stream captures every
+        // episode subject (`<root>.>`), but the room is only public broadcast.
+        const consumer = await js.consumers.get(stream, {
+          filter_subjects: subject,
+          deliver_policy: DeliverPolicy.All,
+        });
+        const messages = await consumer.consume();
+        if (generation !== this.#generation) {
+          messages.stop();
+          return;
+        }
+        this.#consumed = messages;
+        if (this.state !== "reconnecting") this.state = "live";
+        this.detail = `watching ${subject}`;
+        for await (const msg of messages) {
+          if (generation !== this.#generation) return;
+          this.#ingest(msg);
+        }
+        // Iterator ended without throwing (e.g. a consumer reset): loop to
+        // re-establish from where the de-dup guard left off.
+      } catch (err) {
         if (generation !== this.#generation) return;
-        this.#ingest(msg);
+        this.state = "reconnecting";
+        this.detail = `subscription interrupted; retrying… [${String(err)}]`;
+        await delay(1000);
       }
-    } catch (err) {
-      if (generation !== this.#generation) return;
-      this.state = "error";
-      this.detail = `subscription failed: ${String(err)}`;
     }
   }
 
