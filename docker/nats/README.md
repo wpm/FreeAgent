@@ -8,14 +8,27 @@ docker compose -f docker/nats/docker-compose.yml up -d
 
 Clients connect at `nats://localhost:4222`, and JetStream state persists across restarts. Each episode gets its own stream, which the environment creates and the recorder drains.
 
+## Browser viewers (websockets)
+
+The server also runs a websocket listener so browser-based viewers can subscribe to episode traffic directly via [`nats.ws`](https://github.com/nats-io/nats.ws). Connect from the browser at:
+
+```
+ws://localhost:8080
+```
+
+It is unencrypted (`no_tls: true`) — fine for this trusted local research testbed (see [ADR-0001](../../docs/decision-history/0001-gui-viewers-over-nats.md)). The same JetStream streams are reachable over websockets as over the TCP client port, so viewers see the per-episode stream and its `stream_seq` ordering.
+
+The server configuration lives in [`nats-server.conf`](./nats-server.conf), mounted into the container; the websocket and JetStream blocks are defined there.
+
 ## Configuring the published ports
 
 The host ports are configurable via environment variables; the defaults reproduce the command above exactly:
 
-| Variable            | Default | Container port | Purpose            |
-| ------------------- | ------- | -------------- | ------------------ |
-| `NATS_CLIENT_PORT`  | `4222`  | `4222`         | Client connections |
-| `NATS_MONITOR_PORT` | `8222`  | `8222`         | HTTP monitoring    |
+| Variable            | Default | Container port | Purpose                       |
+| ------------------- | ------- | -------------- | ----------------------------- |
+| `NATS_CLIENT_PORT`  | `4222`  | `4222`         | Client connections            |
+| `NATS_MONITOR_PORT` | `8222`  | `8222`         | HTTP monitoring               |
+| `NATS_WS_PORT`      | `8080`  | `8080`         | Websocket (`nats.ws`) viewers |
 
 Only the *published host* ports change; the container-internal ports are fixed, so a client still reaches the server at whatever host port you publish.
 
@@ -28,9 +41,11 @@ Docker Compose namespaces resources by project name (`COMPOSE_PROJECT_NAME`, or 
 Start an isolated server for a worktree:
 
 ```sh
-COMPOSE_PROJECT_NAME=fa-wt1 NATS_CLIENT_PORT=4250 NATS_MONITOR_PORT=8250 \
+COMPOSE_PROJECT_NAME=fa-wt1 NATS_CLIENT_PORT=4250 NATS_MONITOR_PORT=8250 NATS_WS_PORT=8090 \
   docker compose -f docker/nats/docker-compose.yml up -d
 ```
+
+(Set `NATS_WS_PORT` too if more than one instance runs at once, or their websocket host ports collide.)
 
 Then point that worktree's runtime and test suite at it. The runtime and the test suite both resolve their NATS URL from `FREEAGENT_NATS_URL`, falling back to `nats://localhost:4222`:
 

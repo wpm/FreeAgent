@@ -1,11 +1,13 @@
 services:
   nats:
     image: nats:2.12-alpine
-    command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
+    command: ["-c", "/etc/nats/nats-server.conf"]
     ports:
       - "${NATS_CLIENT_PORT:-4222}:4222"    # client connections
       - "${NATS_MONITOR_PORT:-8222}:8222"   # HTTP monitoring
+      - "${NATS_WS_PORT:-8080}:8080"        # websocket (nats.ws) for browser viewers
     volumes:
+      - ./nats-server.conf:/etc/nats/nats-server.conf:ro
       - nats-data:/data
 
 volumes:
