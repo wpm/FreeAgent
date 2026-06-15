@@ -33,6 +33,42 @@ jobs:
       - name: ruff check
         run: uv run ruff check .
 
+  viewers:
+    name: Viewer schema and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-extras --dev
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install JS workspace
+        run: pnpm install --frozen-lockfile
+
+      # Single source of truth: regenerate JSON Schema from the Pydantic models
+      # and TypeScript from the JSON Schema, then fail if anything changed --
+      # the committed artifacts must already match. See docs/decision-history/0001.
+      - name: Regenerate schemas and types
+        run: pnpm run schemas
+
+      - name: Fail if committed schemas or types are stale
+        run: git diff --exit-code
+
+      - name: Type-check viewers
+        run: pnpm run typecheck
+
   test:
     name: Tests
     runs-on: ubuntu-latest

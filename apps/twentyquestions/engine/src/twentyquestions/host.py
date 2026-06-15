@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from freeagent import Decision, LLMAgent
 
 from .logging import log_utterance
+from .payloads import GameOver
 from .prompts import HOST_SYSTEM_PROMPT, LOSS_ANNOUNCEMENT, WELCOME, WIN_ANNOUNCEMENT
 
 if TYPE_CHECKING:
@@ -110,12 +111,11 @@ class Host(LLMAgent):
             )
         )
         self.act(
-            {
-                "type": "game_over",
-                "outcome": "win" if won else "loss",
-                "secret": self.secret,
-                "questions_asked": self.questions_asked,
-            },
+            GameOver(
+                outcome="win" if won else "loss",
+                secret=self.secret,
+                questions_asked=self.questions_asked,
+            ).model_dump(),
             recipients=["env"],
         )
 

@@ -190,8 +190,10 @@ auth at this stage.
        `pyproject.toml`) and `viewer/` (TS, own `package.json`) siblings, and add a
        root JS workspace globbing `apps/*/viewer`.
 2. [ ] Enable a websocket listener on the NATS server (`docker/nats` config).
-3. [ ] Add JSON Schema export from the Pydantic message models and a TS type
-       generation step; check the generated schema into the repo.
+3. [x] Add JSON Schema export from the Pydantic message models and a TS type
+       generation step; check the generated schema into the repo. (`pnpm run
+       schemas`; schemas under `packages/freeagent/schemas/` and
+       `apps/<app>/schemas/`, types under `apps/<app>/viewer/src/generated/`.)
 4. [x] Build the **app-agnostic** replayer as a library-level command: read any
        app's episode Parquet log and re-publish in `stream_seq` order with timing
        controls onto a separate local NATS server.
