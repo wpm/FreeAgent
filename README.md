@@ -46,6 +46,18 @@ The shape is always `free-agent [--log-level LEVEL] APP COMMAND ...`. `APP` is a
 
 When you pass `--parquet-log PATH`, the episode's full message log is written to a Parquet file: one row per message, carrying the episode id, an authoritative sequence number, the channel, the sender, a server timestamp, and the message payload. It is an ordinary columnar table — read it with any Parquet tool to replay a game, analyze behavior, or build training data.
 
+## Replaying an episode
+
+A recorded episode replays as **NATS playback, not log reading** (see [ADR-0001](docs/decision-history/0001-gui-viewers-over-nats.md)): the replayer re-publishes a Parquet log's messages onto a NATS server using byte-identical subjects, so a viewer subscribes the same way whether it is watching a live episode or a replay — one code path, no idea which it is seeing.
+
+```sh
+# Point a second, local nats-server at a different port so replay never mixes
+# with live traffic, then replay onto it.
+free-agent replay out/twentyquestions-fake.parquet --nats-url nats://localhost:4223
+```
+
+`replay` is a top-level command, a sibling of the per-application sub-commands, because the Parquet log is uniform across every application — one tool replays any app's episode and never needs app-specific code. Messages are published on their original subjects in `stream_seq` order; inter-message timing is preserved by default, scaled by `--speed` (e.g. `--speed 2.0`), or dropped entirely with `--as-fast-as-possible`. Start is the command; stop is Ctrl-C. Pause and seek live on the library's `Replayer` class for an embedding GUI to drive.
+
 ## Project structure
 
 A `uv` workspace containing the **library** and its **applications**. The library is the substrate and is usable on its own; each application depends only on the library, never on another application. The repository ships one sample application, Twenty Questions, plus the NATS infrastructure config and ready-to-run example episodes. Each component has its own README, and [the design document](docs/DESIGN.md) is authoritative.

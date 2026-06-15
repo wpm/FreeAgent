@@ -40,6 +40,7 @@ from .config import (
     make_plan,
 )
 from .orchestrate import run_episode
+from .replay import replay as _replay_command
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -136,6 +137,9 @@ def build_root_app() -> typer.Typer:
         no_args_is_help=True,
     )
     root.callback()(_log_level_callback)
+    # The replayer is a library-level command, app-agnostic and a sibling of
+    # the per-app sub-commands (ADR-0001): one tool replays any app's episode.
+    root.command("replay")(_replay_command)
     for name, sub_app in sorted(_discover_apps().items()):
         root.add_typer(sub_app, name=name)
     return root

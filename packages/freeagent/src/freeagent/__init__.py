@@ -49,6 +49,13 @@ from .recorder import (
     record_episode,
     write_parquet,
 )
+from .replayer import (
+    Replayer,
+    ReplayerError,
+    ReplayMessage,
+    load_episode,
+    replay_episode,
+)
 from .subjects import (
     ENV_NAME,
     NAME_PATTERN,
@@ -96,6 +103,9 @@ __all__ = [
     "NatsTransport",
     "ParquetLogOption",
     "RecorderError",
+    "ReplayMessage",
+    "Replayer",
+    "ReplayerError",
     "Subscription",
     "Transport",
     "TransportError",
@@ -104,10 +114,12 @@ __all__ = [
     "create_llm",
     "default_nats_url",
     "load_config",
+    "load_episode",
     "log_level",
     "make_plan",
     "make_record",
     "record_episode",
+    "replay_episode",
     "resolve_model",
     "run_episode",
     "stream_name",
