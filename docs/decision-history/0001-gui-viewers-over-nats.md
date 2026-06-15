@@ -3,12 +3,17 @@
 **Status:** Accepted
 **Date:** 2026-06-14
 **Deciders:** Bill McNeill
+**Amended:** 2026-06-14 — clarified that the replayer is a single, app-agnostic,
+library-level tool (the Parquet log is uniform across applications, so it need not
+live under any one app's CLI), and that recording is library infrastructure spawned
+per run rather than a separate recorder application.
 
 ## Context
 
 FreeAgent applications run real-time, non-turn-taking multi-agent episodes whose
-every message lands on NATS (JetStream), and the recorder drains that stream to a
-single Parquet file per episode. "The wire is the log": `stream_seq` gives the
+every message lands on NATS (JetStream), and a per-run recorder — library
+infrastructure spawned as its own process, not a separate application — drains that
+stream to a single Parquet file per episode. "The wire is the log": `stream_seq` gives the
 authoritative total order, and the Parquet log is the same artifact later consumed
 by replay tooling and RL training-data generators.
 
@@ -44,6 +49,11 @@ order, with original or scaled inter-message timing — onto a **separate, local
 NATS server using byte-identical subjects. The viewer only ever subscribes to
 NATS and cannot tell live from replay; it has exactly one code path. Pause, seek,
 and speed controls live in the replayer, where they are reusable beyond GUIs.
+
+The replayer is **app-agnostic**: the Parquet log is uniform across every
+application (each row is a `subject`, a `payload`, and a `stream_seq`), so a single
+library-level replay command replays any app's episode rather than living under one
+application's CLI.
 
 Treat the **NATS subject layout and message schemas as the contract**. Schemas are
 single-sourced from the Python Pydantic models via exported JSON Schema, from which
@@ -182,8 +192,9 @@ auth at this stage.
 2. [ ] Enable a websocket listener on the NATS server (`docker/nats` config).
 3. [ ] Add JSON Schema export from the Pydantic message models and a TS type
        generation step; check the generated schema into the repo.
-4. [ ] Build the replayer: read an episode Parquet log and re-publish in
-       `stream_seq` order with timing controls onto a local NATS server.
+4. [ ] Build the **app-agnostic** replayer as a library-level command: read any
+       app's episode Parquet log and re-publish in `stream_seq` order with timing
+       controls onto a separate local NATS server.
 5. [ ] Build the first bespoke viewer — the Twenty Questions chat-room transcript —
        against live and replay.
 6. [ ] After two or three viewers exist, review them for a shared viewer SDK and a
