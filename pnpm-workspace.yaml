@@ -1,0 +1,9 @@
+# Root JavaScript/TypeScript workspace (see ADR-0001).
+#
+# Each FreeAgent application is split into single-language siblings:
+# apps/<app>/engine is the Python half (governed by the uv workspace in
+# pyproject.toml) and apps/<app>/viewer is the TypeScript GUI. Globbing every
+# viewer here gives all of them one shared lockfile and toolchain even though
+# each viewer is co-located with the app it serves.
+packages:
+  - "apps/*/viewer"

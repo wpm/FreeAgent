@@ -15,8 +15,12 @@ dev = [
     "ruff>=0.9",
 ]
 
+# Each app is split into single-language siblings (see ADR-0001): the Python
+# half lives in apps/<app>/engine, so the uv workspace globs that, not apps/*.
+# A TypeScript apps/<app>/viewer sibling is governed by the root JS workspace
+# (pnpm-workspace.yaml) instead, keeping the two toolchains from colliding.
 [tool.uv.workspace]
-members = ["packages/*", "apps/*"]
+members = ["packages/*", "apps/*/engine"]
 
 [tool.uv.sources]
 freeagent = { workspace = true }
@@ -27,8 +31,11 @@ line-length = 100
 target-version = "py312"
 src = [
     "packages/freeagent/src",
-    "apps/twentyquestions/src",
+    "apps/twentyquestions/engine/src",
 ]
+# Viewers are TypeScript siblings of each engine; keep their subtrees out of
+# ruff entirely so the Python linter never globs a JS/TS tree.
+extend-exclude = ["apps/*/viewer"]
 
 [tool.ruff.lint]
 select = [
@@ -67,7 +74,7 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = [
     "packages/freeagent/tests",
-    "apps/twentyquestions/tests",
+    "apps/twentyquestions/engine/tests",
     "tests",
 ]
 asyncio_mode = "auto"

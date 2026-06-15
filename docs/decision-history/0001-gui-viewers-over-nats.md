@@ -186,7 +186,7 @@ auth at this stage.
 
 ## Action Items
 
-1. [ ] Restructure `apps/twentyquestions/` into `engine/` (Python, own
+1. [x] Restructure `apps/twentyquestions/` into `engine/` (Python, own
        `pyproject.toml`) and `viewer/` (TS, own `package.json`) siblings, and add a
        root JS workspace globbing `apps/*/viewer`.
 2. [ ] Enable a websocket listener on the NATS server (`docker/nats` config).

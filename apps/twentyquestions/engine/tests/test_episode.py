@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
     from freeagent import LLMAgent
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 FAKE_SCRIPTS = REPO_ROOT / "examples" / "fake"
 
 PLAYERS = ("alice", "bob", "carol")
