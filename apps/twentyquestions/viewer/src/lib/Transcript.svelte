@@ -6,10 +6,25 @@
 
   let container: HTMLDivElement | undefined = $state();
 
-  // Keep the newest message in view as the room fills up.
+  // Pixels from the bottom within which the user counts as "following along".
+  const STICK_THRESHOLD = 64;
+  // Whether the user was pinned to the bottom *before* this batch rendered.
+  let following = true;
+
+  // Measure before the DOM updates: only keep auto-scrolling when the user is
+  // already at the bottom, so a new message never yanks them away from earlier
+  // exchanges they scrolled up to read (noticeable on a fast replay).
+  $effect.pre(() => {
+    void messages.length;
+    if (!container) return;
+    following =
+      container.scrollHeight - container.scrollTop - container.clientHeight <= STICK_THRESHOLD;
+  });
+
+  // Keep the newest message in view, but only if they were following.
   $effect(() => {
     void messages.length;
-    if (container) container.scrollTop = container.scrollHeight;
+    if (container && following) container.scrollTop = container.scrollHeight;
   });
 </script>
 
