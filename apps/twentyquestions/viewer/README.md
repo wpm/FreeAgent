@@ -6,8 +6,8 @@ renders an episode as a chat-room live transcript. It observes the episode
 never publishing: human interaction is a non-goal for now. The
 transport is the maintained [nats.js](https://github.com/nats-io/nats.js) v3
 browser client ([`@nats-io/nats-core`](https://www.npmjs.com/package/@nats-io/nats-core)'s
-`wsconnect` plus [`@nats-io/jetstream`](https://www.npmjs.com/package/@nats-io/jetstream)),
-the successor to the now-deprecated `nats.ws` package. It is the single-language sibling of
+`wsconnect` plus [`@nats-io/jetstream`](https://www.npmjs.com/package/@nats-io/jetstream)).
+It is the single-language sibling of
 [`../engine`](../engine), which holds the Python application, and a member of the
 root JavaScript workspace (`pnpm-workspace.yaml` globs `apps/*/viewer`). Keeping
 the TypeScript tree out of `engine/` is deliberate: it stops the Python tooling
