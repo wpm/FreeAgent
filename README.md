@@ -7,7 +7,7 @@ Two ideas shape everything else:
 - **Substrate, not policy.** The library does not solve latency, decide when agents should speak, or enforce rules. It provides the medium — environments, episodes, agents, messages over NATS — in which application-level agents implement their own strategies for these problems.
 - **The wire is the log.** Every message sent during an episode lands in one JetStream stream, and the recorder drains that stream into one Parquet file. Stream sequence numbers provide the authoritative total order; what each agent *experienced* is a different (and equally valid) order, reconstructable from the same log. This is also how episodes become multi-agent RL training data.
 
-[DESIGN.md](DESIGN.md) is the authoritative design document; everything here follows it.
+[DESIGN.md](docs/DESIGN.md) is the authoritative design document; everything here follows it.
 
 ## Quickstart
 
@@ -68,7 +68,7 @@ A `uv` workspace: the library plus its applications. Applications depend only on
 | [`apps/twentyquestions`](apps/twentyquestions/README.md) | The sample application: its own `free-agent twenty-questions` CLI — one Host, several Players, prompts over code |
 | [`docker/nats`](docker/nats) | NATS + JetStream container config (infrastructure, assumed running) |
 | [`examples/`](examples) | Episode tunables for the sample app, real and fake |
-| [`DESIGN.md`](DESIGN.md) | The authoritative design document |
+| [`DESIGN.md`](docs/DESIGN.md) | The authoritative design document |
 
 ## Tests
 
