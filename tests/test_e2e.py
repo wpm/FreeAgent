@@ -43,9 +43,7 @@ import yaml
 from freeagent import default_nats_url
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EXAMPLE_CONFIG = (
-    REPO_ROOT / "apps" / "twentyquestions" / "examples" / "twentyquestions-fake.yml"
-)
+EXAMPLE_CONFIG = REPO_ROOT / "apps" / "twentyquestions" / "examples" / "twentyquestions-fake.yml"
 
 _PARSED_NATS = urlparse(default_nats_url())
 NATS_HOST = _PARSED_NATS.hostname or "localhost"
