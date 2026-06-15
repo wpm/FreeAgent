@@ -10,9 +10,9 @@ import yaml
 
 from freeagent import NAME_PATTERN
 from freeagent.cli.config import (
-    DEFAULT_NATS_URL,
     ConfigError,
     EpisodeConfig,
+    default_nats_url,
     load_config,
     make_plan,
 )
@@ -35,7 +35,7 @@ def _write(tmp_path: Path, config: dict[str, Any]) -> Path:
 def test_empty_config_is_all_defaults() -> None:
     config = EpisodeConfig()
     assert config.episode_id is None
-    assert config.nats_url == DEFAULT_NATS_URL
+    assert config.nats_url == default_nats_url()
     assert config.environment.config == {}
     assert config.agents == {}
 
@@ -56,7 +56,7 @@ def test_good_config_parses_with_defaults(tmp_path: Path) -> None:
         {"agents": {"alpha": {"config": {"grace_period": 0.3}}}},
     )
     config = load_config(path)
-    assert config.nats_url == DEFAULT_NATS_URL
+    assert config.nats_url == default_nats_url()
     assert config.agents["alpha"].config == {"grace_period": 0.3}
 
     plan = make_plan(config, app=APP, roster=ROSTER)

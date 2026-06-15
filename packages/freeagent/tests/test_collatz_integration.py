@@ -17,6 +17,7 @@ import asyncio
 import socket
 import uuid
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import nats
 import pytest
@@ -30,16 +31,17 @@ from collatz_app import (
 )
 from nats.js.api import ConsumerConfig, DeliverPolicy
 
-from freeagent import ENV_NAME, Envelope, EpisodeState
+from freeagent import ENV_NAME, Envelope, EpisodeState, default_nats_url
 
 if TYPE_CHECKING:
     from nats.aio.msg import Msg
 
     from freeagent import EpisodeSubjects
 
-NATS_HOST = "localhost"
-NATS_PORT = 4222
-NATS_URL = f"nats://{NATS_HOST}:{NATS_PORT}"
+NATS_URL = default_nats_url()
+_PARSED_NATS = urlparse(NATS_URL)
+NATS_HOST = _PARSED_NATS.hostname or "localhost"
+NATS_PORT = _PARSED_NATS.port or 4222
 SKIP_REASON = (
     "NATS is not running; start it with: docker compose -f docker/nats/docker-compose.yml up -d"
 )

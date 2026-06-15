@@ -10,11 +10,13 @@ from __future__ import annotations
 
 from .agent import Agent
 from .cli import (
+    NATS_URL_ENV_VAR,
     ConfigError,
     EpisodeConfig,
     EpisodePlan,
     ParquetLogOption,
     build_root_app,
+    default_nats_url,
     load_config,
     make_plan,
     run_episode,
@@ -74,6 +76,7 @@ __all__ = [
     "LOG_LEVEL_ENV_VAR",
     "MODEL_ENV_VAR",
     "NAME_PATTERN",
+    "NATS_URL_ENV_VAR",
     "PARQUET_SCHEMA",
     "Agent",
     "ConfigError",
@@ -99,6 +102,7 @@ __all__ = [
     "build_root_app",
     "configure_logging",
     "create_llm",
+    "default_nats_url",
     "load_config",
     "log_level",
     "make_plan",

@@ -34,16 +34,20 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import pyarrow.parquet as pq
 import pytest
 import yaml
 
+from freeagent import default_nats_url
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_CONFIG = REPO_ROOT / "examples" / "twentyquestions-fake.yml"
 
-NATS_HOST = "localhost"
-NATS_PORT = 4222
+_PARSED_NATS = urlparse(default_nats_url())
+NATS_HOST = _PARSED_NATS.hostname or "localhost"
+NATS_PORT = _PARSED_NATS.port or 4222
 RUN_TIMEOUT = 120.0
 
 APP = "twentyquestions"
@@ -92,6 +96,9 @@ def _derive_config(tmp_path: Path) -> tuple[Path, Path]:
     """
     config: dict[str, Any] = yaml.safe_load(EXAMPLE_CONFIG.read_text(encoding="utf-8"))
     assert "episode_id" not in config, "the example should leave the episode id auto-generated"
+    # Target whichever NATS this test run uses ($FREEAGENT_NATS_URL or localhost:4222),
+    # so a per-worktree server on a distinct port is honored by the launched episode.
+    config["nats_url"] = default_nats_url()
     output = tmp_path / "episode.parquet"
     derived = tmp_path / "twentyquestions-fake.yml"
     derived.write_text(yaml.safe_dump(config), encoding="utf-8")

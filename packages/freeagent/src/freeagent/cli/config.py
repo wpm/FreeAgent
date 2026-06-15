@@ -6,7 +6,7 @@ parses only the per-episode tunables an operator overrides from one run to the
 next::
 
     episode_id: ep-2026-06-11            # optional; auto-generated (uuid4 hex) when omitted
-    nats_url: nats://localhost:4222      # optional, this default
+    nats_url: nats://localhost:4222      # optional; defaults to $FREEAGENT_NATS_URL or this
     environment:                         # optional
       config: {...}                      # optional, passed verbatim to the constructor
     agents:                              # optional; keys must match the app's roster
@@ -28,6 +28,7 @@ rejected.
 
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -41,7 +42,23 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
-DEFAULT_NATS_URL = "nats://localhost:4222"
+#: Environment variable that overrides the default NATS URL.
+NATS_URL_ENV_VAR = "FREEAGENT_NATS_URL"
+
+#: The hard-coded fallback used when the environment variable is unset.
+FALLBACK_NATS_URL = "nats://localhost:4222"
+
+
+def default_nats_url() -> str:
+    """The default NATS URL: ``$FREEAGENT_NATS_URL`` when set, else localhost:4222.
+
+    Reading the environment makes the default configurable per process without a
+    config file -- e.g. pointing each git worktree's test suite at its own NATS
+    instance on a distinct port, so parallel runs never share a server. An
+    explicit ``nats_url:`` in the episode YAML still wins; this is only the
+    fallback when none is given.
+    """
+    return os.environ.get(NATS_URL_ENV_VAR, FALLBACK_NATS_URL)
 
 
 class ConfigError(Exception):
@@ -66,7 +83,7 @@ class EpisodeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     episode_id: str | None = None
-    nats_url: str = DEFAULT_NATS_URL
+    nats_url: str = Field(default_factory=default_nats_url)
     environment: ComponentSpec = Field(default_factory=ComponentSpec)
     agents: dict[str, ComponentSpec] = Field(default_factory=dict)
 
