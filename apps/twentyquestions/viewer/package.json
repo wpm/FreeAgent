@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Twenty Questions viewer: a chat-room live transcript that subscribes to an episode's NATS traffic over websockets (ADR-0001). One code path for live and replay. Message types are generated from the FreeAgent JSON Schema contract; see ./README.md.",
   "scripts": {
+    "predev": "pnpm install",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
