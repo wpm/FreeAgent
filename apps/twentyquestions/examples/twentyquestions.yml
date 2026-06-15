@@ -11,7 +11,7 @@
 # `--parquet-log out/twentyquestions.parquet` (a path that must not exist) to
 # record the episode. Run from the repo root:
 #
-#   free-agent twenty-questions run examples/twentyquestions.yml \
+#   free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions.yml \
 #     --parquet-log out/twentyquestions.parquet
 
 nats_url: nats://localhost:4222
