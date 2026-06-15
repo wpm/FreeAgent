@@ -7,6 +7,8 @@ TransportError rather than nats-py's raw connection traceback.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from freeagent import NatsTransport, TransportError
@@ -15,7 +17,14 @@ from freeagent import NatsTransport, TransportError
 # hang. 4299 is just outside the usual NATS 4222.
 DEAD_URL = "nats://127.0.0.1:4299"
 
+_SLOW_TEST_VAR = "FREEAGENT_SLOW_TEST"
+_slow = pytest.mark.skipif(
+    not os.environ.get(_SLOW_TEST_VAR),
+    reason=f"slow test is opt-in: set {_SLOW_TEST_VAR} to run it",
+)
 
+
+@_slow
 async def test_connect_to_missing_server_raises_transport_error() -> None:
     transport = NatsTransport(DEAD_URL)
     with pytest.raises(TransportError) as excinfo:

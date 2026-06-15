@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -75,6 +76,12 @@ requires_nats = pytest.mark.skipif(
     ),
 )
 
+_SLOW_TEST_VAR = "FREEAGENT_SLOW_TEST"
+slow = pytest.mark.skipif(
+    not os.environ.get(_SLOW_TEST_VAR),
+    reason=f"slow test is opt-in: set {_SLOW_TEST_VAR} to run it",
+)
+
 
 def _derive_config(tmp_path: Path) -> tuple[Path, Path]:
     """Write a copy of the fake example to a temp dir; return (config, parquet path).
@@ -117,6 +124,7 @@ def _payload(row: dict[str, Any]) -> Any:
     return json.loads(row["payload"])
 
 
+@slow
 @requires_nats
 def test_fake_twentyquestions_episode_end_to_end(tmp_path: Path) -> None:
     derived, output = _derive_config(tmp_path)

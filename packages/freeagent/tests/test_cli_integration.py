@@ -38,6 +38,12 @@ requires_nats = pytest.mark.skipif(
     ),
 )
 
+_SLOW_TEST_VAR = "FREEAGENT_SLOW_TEST"
+slow = pytest.mark.skipif(
+    not os.environ.get(_SLOW_TEST_VAR),
+    reason=f"slow test is opt-in: set {_SLOW_TEST_VAR} to run it",
+)
+
 FAST_ENV = {"setup_timeout": 1.0, "episode_timeout": 1.0, "grace_period": 0.2}
 ABORT_ENV = {"setup_timeout": 0.5, "episode_timeout": 5.0, "grace_period": 0.2}
 
@@ -50,6 +56,7 @@ def _children_can_import_noop_app(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PYTHONPATH", joined)
 
 
+@slow
 @requires_nats
 def test_episode_runs_to_ended(capsys: pytest.CaptureFixture[str]) -> None:
     config = EpisodeConfig.model_validate({"environment": {"config": FAST_ENV}})
@@ -65,6 +72,7 @@ def test_episode_runs_to_ended(capsys: pytest.CaptureFixture[str]) -> None:
     assert "state=ended" in out
 
 
+@slow
 @requires_nats
 def test_episode_aborts_when_an_agent_never_joins(capsys: pytest.CaptureFixture[str]) -> None:
     config = EpisodeConfig.model_validate({"environment": {"config": ABORT_ENV}})

@@ -137,12 +137,12 @@ async def test_full_episode_with_the_canned_example_scripts() -> None:
 
 
 _KEY_VARS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY")
-_TEST_LLM_VAR = "FREEAGENT_TEST_LLM"
+_LLM_TEST_VAR = "FREEAGENT_LLM_TEST"
 
 
 @pytest.mark.skipif(
-    not os.environ.get(_TEST_LLM_VAR),
-    reason=f"real-model test is opt-in: set {_TEST_LLM_VAR} to run it (it calls a real LLM)",
+    not os.environ.get(_LLM_TEST_VAR),
+    reason=f"real-model test is opt-in: set {_LLM_TEST_VAR} to run it (it calls a real LLM)",
 )
 @pytest.mark.skipif(
     not any(os.environ.get(var) for var in _KEY_VARS),
