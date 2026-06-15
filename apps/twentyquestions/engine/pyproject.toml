@@ -5,8 +5,8 @@ description = "Twenty Questions: the FreeAgent sample application — several Pl
 requires-python = ">=3.12"
 dependencies = [
     "freeagent",
-    "pydantic>=2.10",
-    "typer>=0.26",
+    "pydantic>=2.13.4",
+    "typer>=0.26.7",
 ]
 
 [project.entry-points."freeagent.apps"]

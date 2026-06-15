@@ -4,13 +4,13 @@ version = "1.0.0"
 description = "FreeAgent: a Python framework for real-time multi-agent LLM interaction with no turn-taking."
 requires-python = ">=3.12"
 dependencies = [
-    "nats-py>=2.9",
-    "litellm>=1.60",
-    "loguru>=0.7",
-    "pyarrow>=18.0",
-    "pydantic>=2.10",
-    "pyyaml>=6.0",
-    "typer>=0.26",
+    "nats-py>=2.15.0",
+    "litellm>=1.89.0",
+    "loguru>=0.7.3",
+    "pyarrow>=24.0.0",
+    "pydantic>=2.13.4",
+    "pyyaml>=6.0.3",
+    "typer>=0.26.7",
 ]
 
 [project.scripts]
