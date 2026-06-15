@@ -48,7 +48,7 @@ When you pass `--parquet-log PATH`, the episode's full message log is written to
 
 ## Replaying an episode
 
-A recorded episode replays as **NATS playback, not log reading** (see [ADR-0001](docs/decision-history/0001-gui-viewers-over-nats.md)): the replayer re-publishes a Parquet log's messages onto a NATS server using byte-identical subjects, so a viewer subscribes the same way whether it is watching a live episode or a replay — one code path, no idea which it is seeing.
+A recorded episode replays as **NATS playback, not log reading**: the replayer re-publishes a Parquet log's messages onto a NATS server using byte-identical subjects, so a viewer subscribes the same way whether it is watching a live episode or a replay — one code path, no idea which it is seeing.
 
 ```sh
 # Point a second, local nats-server at a different port so replay never mixes
@@ -62,14 +62,13 @@ free-agent replay out/twentyquestions-fake.parquet --nats-url nats://localhost:4
 
 A `uv` workspace containing the **library** and its **applications**. The library is the substrate and is usable on its own; each application depends only on the library, never on another application. The repository ships one sample application, Twenty Questions, plus the NATS infrastructure config and ready-to-run example episodes. Each component has its own README, and [the design document](docs/DESIGN.md) is authoritative.
 
-Each application is split into two self-contained, single-language siblings (see [ADR-0001](docs/decision-history/0001-gui-viewers-over-nats.md)): `apps/<app>/engine/` is the Python application (environment, roster, prompts, CLI, its own `pyproject.toml`), and `apps/<app>/viewer/` is the TypeScript web GUI that observes an episode over NATS (its own `package.json`). Keeping the two in separate directories stops the toolchains from colliding: the `uv` workspace globs `apps/*/engine`, while a root JavaScript workspace (`pnpm-workspace.yaml`) globs `apps/*/viewer` so every viewer shares one lockfile and toolchain.
+Each application is split into two self-contained, single-language siblings: `apps/<app>/engine/` is the Python application (environment, roster, prompts, CLI, its own `pyproject.toml`), and `apps/<app>/viewer/` is the TypeScript web GUI that observes an episode over NATS (its own `package.json`). Keeping the two in separate directories stops the toolchains from colliding: the `uv` workspace globs `apps/*/engine`, while a root JavaScript workspace (`pnpm-workspace.yaml`) globs `apps/*/viewer` so every viewer shares one lockfile and toolchain.
 
 ## Message schemas (single source of truth)
 
 The NATS message types are defined once, in Python (Pydantic), and the
-TypeScript viewers consume generated types — no hand-maintained duplication
-(see [ADR-0001](docs/decision-history/0001-gui-viewers-over-nats.md)). The
-pipeline has two steps, wired behind one command:
+TypeScript viewers consume generated types — no hand-maintained duplication.
+The pipeline has two steps, wired behind one command:
 
 1. **JSON Schema from Pydantic.** `python -m freeagent.schema` exports the
    framework envelope to `packages/freeagent/schemas/`, and each app exports

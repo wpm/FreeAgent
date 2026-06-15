@@ -16,7 +16,7 @@ The server also runs a websocket listener so browser-based viewers can subscribe
 ws://localhost:8080
 ```
 
-It is unencrypted (`no_tls: true`) — fine for this trusted local research testbed (see [ADR-0001](../../docs/decision-history/0001-gui-viewers-over-nats.md)). The same JetStream streams are reachable over websockets as over the TCP client port, so viewers see the per-episode stream and its `stream_seq` ordering.
+It is unencrypted (`no_tls: true`) — fine for this trusted local research testbed. The same JetStream streams are reachable over websockets as over the TCP client port, so viewers see the per-episode stream and its `stream_seq` ordering.
 
 The server configuration lives in [`nats-server.conf`](./nats-server.conf), mounted into the container; the websocket and JetStream blocks are defined there.
 
