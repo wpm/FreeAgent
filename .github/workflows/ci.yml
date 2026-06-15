@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-extras --dev
+
+      # Mirror .githooks/pre-commit, but check-only: fail on any change rather
+      # than fixing in place, since CI has nothing to re-stage.
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+      - name: ruff check
+        run: uv run ruff check .
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+
+    env:
+      # Run the slow tests (real child processes, connection-timeout probes) too.
+      # Only the live-LLM test is excluded, by leaving FREEAGENT_LLM_TEST unset.
+      FREEAGENT_SLOW_TEST: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-extras --dev
+
+      # The suite reaches NATS at nats://localhost:4222. Use the same compose
+      # file the README documents so JetStream is enabled exactly as locally;
+      # a bare service container can't pass the --jetstream command flag.
+      - name: Start NATS (JetStream)
+        run: docker compose -f docker/nats/docker-compose.yml up -d
+
+      - name: Wait for NATS to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8222/healthz >/dev/null; then
+              echo "NATS is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "NATS did not become healthy in time" >&2
+          docker compose -f docker/nats/docker-compose.yml logs
+          exit 1
+
+      - name: Run tests
+        run: uv run pytest -v
+
+      - name: Stop NATS
+        if: always()
+        run: docker compose -f docker/nats/docker-compose.yml down -v
