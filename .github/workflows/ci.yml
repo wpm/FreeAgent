@@ -10,6 +10,13 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege default: every job here only checks out the repo and runs
+# lint/tests, so read-only access to the contents is all that is needed. An
+# explicit block also satisfies the CodeQL "missing workflow permissions"
+# (CWE-275) alert by dropping the default read/write token.
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint and format
