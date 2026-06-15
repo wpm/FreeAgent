@@ -3,11 +3,11 @@
 The Twenty Questions **viewer** — a TypeScript web app (Vite + Svelte) that
 renders an episode as a chat-room live transcript. It observes the episode
 **entirely over NATS**, subscribing to the public channel over websockets and
-never publishing: human interaction is a non-goal for now (ADR-0001). The
+never publishing: human interaction is a non-goal for now. The
 transport is the maintained [nats.js](https://github.com/nats-io/nats.js) v3
 browser client ([`@nats-io/nats-core`](https://www.npmjs.com/package/@nats-io/nats-core)'s
-`wsconnect` plus [`@nats-io/jetstream`](https://www.npmjs.com/package/@nats-io/jetstream)),
-the successor to the now-deprecated `nats.ws` package named in ADR-0001. It is the single-language sibling of
+`wsconnect` plus [`@nats-io/jetstream`](https://www.npmjs.com/package/@nats-io/jetstream)).
+It is the single-language sibling of
 [`../engine`](../engine), which holds the Python application, and a member of the
 root JavaScript workspace (`pnpm-workspace.yaml` globs `apps/*/viewer`). Keeping
 the TypeScript tree out of `engine/` is deliberate: it stops the Python tooling
@@ -16,7 +16,7 @@ the TypeScript tree out of `engine/` is deliberate: it stops the Python tooling
 ## One code path for live and replay
 
 The viewer cannot tell a live episode from a replay, and has exactly one code
-path for both (ADR-0001). It reads the episode's JetStream stream from sequence
+path for both. It reads the episode's JetStream stream from sequence
 1 (an ordered consumer with `DeliverPolicy.ALL`), exactly as the engine does, so
 the whole transcript renders in `stream_seq` order whether it joined at the
 start, mid-episode, or after the fact. A replay re-publishes a recorded episode
@@ -95,7 +95,7 @@ in-world game-over announcement.
 free-agent twenty-questions run examples/twentyquestions-fake.yml \
   --parquet-log out/twentyquestions-fake.parquet
 
-# Replay it onto a separate, local NATS (ADR-0001) and point the viewer there:
+# Replay it onto a separate, local NATS and point the viewer there:
 free-agent replay out/twentyquestions-fake.parquet --nats-url nats://localhost:4223
 #   open the viewer with ?server=ws://localhost:8081&episode=<id>
 ```
