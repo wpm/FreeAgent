@@ -1,34 +1,30 @@
 # Twenty Questions with the deterministic fake LLM -- no network, no API keys.
 #
-# The canned scripts in examples/fake/ play out a complete two-question game
-# ending in a correct guess ("an octopus"), followed by goodbyes inside the
-# stopping grace period. The fake: paths are relative to the directory the
-# runner is invoked from, so run from the repo root:
+# The app's name, environment class, and roster live in the application's
+# source; this file holds only per-episode tunables. The canned scripts in
+# examples/fake/ play out a complete two-question game ending in a correct
+# guess ("an octopus"), followed by goodbyes inside the stopping grace period.
+# The fake: paths are relative to the directory the command is invoked from, so
+# run from the repo root:
 #
-#   free-agent run examples/twentyquestions-fake.yml
+#   free-agent twenty-questions run examples/twentyquestions-fake.yml
 
-app: twentyquestions
 nats_url: nats://localhost:4222
 recorder:
   enabled: true
   output: out/twentyquestions-fake.parquet
 environment:
-  class: twentyquestions.environment:TwentyQuestionsEnvironment
   config: {setup_timeout: 30, episode_timeout: 60, grace_period: 2}
 agents:
   host:
-    class: twentyquestions.host:Host
     config:
       model: "fake:examples/fake/host.yml"
       secret: an octopus
       max_questions: 20
       grace_period: 2
   alice:
-    class: twentyquestions.player:Player
     config: {model: "fake:examples/fake/alice.yml", grace_period: 2}
   bob:
-    class: twentyquestions.player:Player
     config: {model: "fake:examples/fake/bob.yml", grace_period: 2}
   carol:
-    class: twentyquestions.player:Player
     config: {model: "fake:examples/fake/carol.yml", grace_period: 2}

@@ -9,6 +9,15 @@ decide everything else. See DESIGN.md for the authoritative design.
 from __future__ import annotations
 
 from .agent import Agent
+from .cli import (
+    ConfigError,
+    EpisodeConfig,
+    EpisodePlan,
+    build_root_app,
+    load_config,
+    make_plan,
+    run_episode,
+)
 from .config import DEFAULT_EPISODE_TIMEOUT, DEFAULT_GRACE_PERIOD, DEFAULT_SETUP_TIMEOUT
 from .envelope import Envelope
 from .environment import Environment, EpisodeState
@@ -57,9 +66,12 @@ __all__ = [
     "MODEL_ENV_VAR",
     "NAME_PATTERN",
     "Agent",
+    "ConfigError",
     "Decision",
     "Envelope",
     "Environment",
+    "EpisodeConfig",
+    "EpisodePlan",
     "EpisodeState",
     "EpisodeSubjects",
     "FakeLLM",
@@ -71,10 +83,14 @@ __all__ = [
     "Subscription",
     "Transport",
     "TransportError",
+    "build_root_app",
     "configure_logging",
     "create_llm",
+    "load_config",
     "log_level",
+    "make_plan",
     "resolve_model",
+    "run_episode",
     "stream_name",
     "subject_root",
     "validate_name",

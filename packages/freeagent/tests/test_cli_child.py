@@ -6,15 +6,28 @@ import json
 
 import pytest
 
-from freeagent import EpisodeState
-from freeagent_runner.child import (
+from freeagent import Agent, Environment, EpisodeState
+from freeagent.cli.child import (
     EXIT_ABORTED,
     EXIT_ENDED,
     agent_spec,
+    class_ref,
     environment_spec,
     exit_code_for_state,
+    import_class,
     run_spec,
 )
+
+
+def test_class_ref_round_trips_via_import() -> None:
+    ref = class_ref(Agent)
+    assert ref == "freeagent.agent:Agent"
+    assert import_class(ref) is Agent
+
+
+def test_import_class_rejects_non_class() -> None:
+    with pytest.raises(TypeError, match="is not a class"):
+        import_class("freeagent:__doc__")
 
 
 def test_agent_spec_round_trips_through_json() -> None:
@@ -59,4 +72,8 @@ def test_exit_code_for_state(state: EpisodeState, code: int) -> None:
 
 def test_run_spec_rejects_unknown_role() -> None:
     with pytest.raises(ValueError, match="unknown child role"):
-        run_spec({"role": "referee", "class": "noop_app:NoopAgent"})
+        run_spec({"role": "referee", "class": class_ref(Agent)})
+
+
+def test_class_ref_resolves_environment() -> None:
+    assert import_class(class_ref(Environment)) is Environment

@@ -1,15 +1,17 @@
-"""The ``free-agent`` CLI: launch one episode's processes from a YAML config.
+"""Launch and supervise one episode's processes.
 
-``free-agent run <config>.yml`` validates the configuration (names, class
-references, base classes -- all in the parent, before launching anything),
-then runs every roster member and the environment as separate OS processes
-plus, optionally, the recorder. It waits for the environment process to exit
--- its exit code is the episode outcome -- gives agents the grace period to
-wind down on their own, terminates stragglers, waits for the recorder, and
-prints a one-line summary.
+This is the reusable orchestration an application's ``run`` command calls. The
+application supplies what it *is* in source -- its name, its environment class,
+and its roster (agent name -> agent class) -- and a parsed
+:class:`~freeagent.cli.config.EpisodeConfig` of per-episode tunables. The
+orchestrator resolves those into a plan, validates the classes, then runs every
+roster member and the environment as separate OS processes plus, optionally,
+the recorder. It waits for the environment process to exit -- its exit code is
+the episode outcome -- gives agents the grace period to wind down, terminates
+stragglers, waits for the recorder, and prints a one-line summary.
 
-Exit codes: 0 = episode ended, 2 = episode aborted, 1 = config/launch/
-internal error (including operator interruption).
+Returns an exit code: 0 = episode ended, 2 = episode aborted, 1 = config/
+launch/internal error (including operator interruption).
 """
 
 from __future__ import annotations
@@ -22,30 +24,32 @@ import shutil
 import signal
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Any
 
-import typer
+from freeagent.agent import Agent
+from freeagent.config import DEFAULT_GRACE_PERIOD
+from freeagent.environment import Environment
+from freeagent.subjects import subject_root
 
-from freeagent import (
-    DEFAULT_GRACE_PERIOD,
-    DEFAULT_LOG_LEVEL,
-    LOG_LEVEL_ENV_VAR,
-    configure_logging,
-    subject_root,
+from . import child as _child_module
+from .child import (
+    EXIT_ABORTED,
+    EXIT_ENDED,
+    EXIT_TRANSPORT,
+    agent_spec,
+    class_ref,
+    environment_spec,
 )
-
-from .child import EXIT_ABORTED, EXIT_ENDED, EXIT_TRANSPORT, agent_spec, environment_spec
-from .config import (
-    ConfigError,
-    EpisodePlan,
-    add_to_sys_path,
-    load_config,
-    make_plan,
-    validate_classes,
-)
+from .config import ConfigError, EpisodePlan, make_plan
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping
+
+    from .config import EpisodeConfig
+
+#: The child runner's source file, launched directly to avoid runpy re-executing
+#: an already-imported module (see :func:`_spawn_child`).
+_CHILD_SCRIPT = Path(_child_module.__file__)
 
 RECORDER_EXECUTABLE = "freeagent-recorder"
 
@@ -58,71 +62,23 @@ RECORDER_WAIT = 15.0
 TERMINATE_TIMEOUT = 5.0
 
 
-app = typer.Typer(
-    name="free-agent",
-    help="Launch a FreeAgent episode (environment, agents, optional recorder) "
-    "from a YAML configuration.",
-    add_completion=False,
-    no_args_is_help=True,
-)
+def run_episode(
+    config: EpisodeConfig,
+    *,
+    app: str,
+    environment: type[Environment],
+    agents: Mapping[str, type[Agent]],
+) -> int:
+    """Validate, then launch and supervise one episode; return its exit code.
 
-
-@app.callback()
-def _root() -> None:
-    """Keep ``run`` a named subcommand (Typer collapses a lone command otherwise)."""
-
-
-@app.command()
-def run(
-    config: Annotated[
-        Path,
-        typer.Argument(help="episode configuration *.yml file"),
-    ],
-    log_level: Annotated[
-        str,
-        typer.Option(
-            envvar=LOG_LEVEL_ENV_VAR,
-            help="logging level (TRACE/DEBUG/INFO/SUCCESS/WARNING/ERROR/CRITICAL); "
-            f"reads {LOG_LEVEL_ENV_VAR} when unset.",
-        ),
-    ] = DEFAULT_LOG_LEVEL,
-) -> None:
-    """Run one episode from a YAML configuration."""
-    resolved = configure_logging(level=log_level)  # app-level logging; core stays quiet
-    # Children (agents, environment, recorder) read FREEAGENT_LOG_LEVEL from
-    # their inherited environment; export the resolved level so --log-level
-    # reaches them too, not just this parent process.
-    os.environ[LOG_LEVEL_ENV_VAR] = resolved
-    try:
-        code = _run(config)
-    except ConfigError as exc:
-        print(f"free-agent: error: {exc}", file=sys.stderr)
-        code = 1
-    except KeyboardInterrupt:
-        print("free-agent: interrupted", file=sys.stderr)
-        code = 1
-    raise typer.Exit(code)
-
-
-def main(argv: Sequence[str] | None = None) -> None:
-    """Console entry point (sync): dispatch to the Typer app.
-
-    ``argv`` defaults to ``sys.argv[1:]``; passing a list drives the app in
-    tests. The Typer/Click app raises ``SystemExit`` with the command's exit
-    code, matching the previous argparse contract. Logging is configured
-    inside the command, once the ``--log-level`` option is resolved.
+    *app* is the application name (subject prefix); *environment* is the
+    :class:`~freeagent.Environment` subclass to run; *agents* maps each roster
+    name to its :class:`~freeagent.Agent` subclass. *config* holds the parsed
+    per-episode tunables. Raises :class:`ConfigError` on a fatal configuration
+    or launch problem.
     """
-    app(args=argv, prog_name="free-agent")
-
-
-def _run(config_path: Path) -> int:
-    """Validate the configuration, then orchestrate the episode."""
-    config = load_config(config_path)
-    plan = make_plan(config, config_path)
-    # App modules living next to the yml are importable in the parent (for
-    # validation) and in every child (via PYTHONPATH).
-    add_to_sys_path(plan.config_dir)
-    validate_classes(plan)
+    _validate_classes(environment, agents)
+    plan = make_plan(config, app=app, roster=agents)
     recorder_executable: str | None = None
     if plan.recorder_output is not None:
         recorder_executable = shutil.which(RECORDER_EXECUTABLE)
@@ -131,10 +87,24 @@ def _run(config_path: Path) -> int:
                 f"the recorder is enabled but no {RECORDER_EXECUTABLE!r} executable "
                 "was found on PATH"
             )
-    return asyncio.run(_orchestrate(plan, recorder_executable))
+    return asyncio.run(_orchestrate(plan, environment, agents, recorder_executable))
 
 
-async def _orchestrate(plan: EpisodePlan, recorder_executable: str | None) -> int:
+def _validate_classes(environment: type[Environment], agents: Mapping[str, type[Agent]]) -> None:
+    """Check the application supplied the right base classes (a programming error)."""
+    if not (isinstance(environment, type) and issubclass(environment, Environment)):
+        raise ConfigError(f"environment {environment!r} is not a subclass of freeagent.Environment")
+    for name, cls in agents.items():
+        if not (isinstance(cls, type) and issubclass(cls, Agent)):
+            raise ConfigError(f"agent {name!r}: {cls!r} is not a subclass of freeagent.Agent")
+
+
+async def _orchestrate(
+    plan: EpisodePlan,
+    environment: type[Environment],
+    agents: Mapping[str, type[Agent]],
+    recorder_executable: str | None,
+) -> int:
     """Launch all processes, wait for the episode outcome, clean everything up."""
     loop = asyncio.get_running_loop()
     interrupted = asyncio.Event()
@@ -145,18 +115,18 @@ async def _orchestrate(plan: EpisodePlan, recorder_executable: str | None) -> in
             handled_signals.append(sig)
     children: list[asyncio.subprocess.Process] = []
     try:
-        child_env = _child_environ(plan.config_dir)
+        child_env = dict(os.environ)
         root = subject_root(plan.app, plan.episode_id)
         # Launch order doesn't matter: agents launch idle and their subscribe
         # retries until the environment has created the episode's stream.
         agent_procs: list[asyncio.subprocess.Process] = []
-        for name, spec in plan.agents.items():
+        for name, cls in agents.items():
             proc = await _spawn_child(
                 agent_spec(
-                    class_ref=spec.class_ref,
+                    class_ref=class_ref(cls),
                     subject_root=root,
                     agent_id=name,
-                    config=spec.config,
+                    config=plan.agent_configs[name],
                     nats_url=plan.nats_url,
                 ),
                 child_env,
@@ -165,11 +135,11 @@ async def _orchestrate(plan: EpisodePlan, recorder_executable: str | None) -> in
             children.append(proc)
         env_proc = await _spawn_child(
             environment_spec(
-                class_ref=plan.environment.class_ref,
+                class_ref=class_ref(environment),
                 app=plan.app,
-                roster=list(plan.agents),
+                roster=list(agents),
                 episode_id=plan.episode_id,
-                config=plan.environment.config,
+                config=plan.environment_config,
                 nats_url=plan.nats_url,
             ),
             child_env,
@@ -217,22 +187,21 @@ async def _orchestrate(plan: EpisodePlan, recorder_executable: str | None) -> in
         await _terminate_all(children)
 
 
-def _child_environ(config_dir: Path) -> dict[str, str]:
-    """The children's environment: PYTHONPATH led by the config file's directory."""
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH")
-    env["PYTHONPATH"] = str(config_dir) if not existing else f"{config_dir}{os.pathsep}{existing}"
-    return env
-
-
 async def _spawn_child(
     spec: dict[str, Any], child_env: dict[str, str]
 ) -> asyncio.subprocess.Process:
-    """Launch ``python -m freeagent_runner.child <json-spec>``; stdio inherited."""
+    """Launch the child runner for *spec* as its own process; stdio inherited.
+
+    The child is launched by file path rather than ``-m freeagent.cli.child``:
+    ``-m`` of a submodule first imports the ``freeagent.cli`` package, whose
+    ``__init__`` already imports ``child``, so runpy then re-executes an
+    already-imported module and warns. Running the file directly sidesteps that
+    -- the child uses only absolute ``freeagent.*`` imports, which resolve from
+    the installed package regardless of how the file was started.
+    """
     return await asyncio.create_subprocess_exec(
         sys.executable,
-        "-m",
-        "freeagent_runner.child",
+        str(_CHILD_SCRIPT),
         json.dumps(spec, default=str),
         env=child_env,
     )
@@ -259,8 +228,8 @@ async def _wait_for_environment(
 def _agent_deadline(plan: EpisodePlan) -> float:
     """Seconds agents get to exit on their own: their grace period plus a buffer."""
     graces = [DEFAULT_GRACE_PERIOD]
-    for spec in plan.agents.values():
-        value = spec.config.get("grace_period")
+    for config in plan.agent_configs.values():
+        value = config.get("grace_period")
         if isinstance(value, int | float):
             graces.append(float(value))
     return max(graces) + AGENT_EXIT_BUFFER
@@ -323,7 +292,3 @@ def _final_state(env_exit: int) -> str:
 
 def _print_summary(plan: EpisodePlan, state: str) -> None:
     print(f"free-agent: app={plan.app} episode_id={plan.episode_id} state={state}")
-
-
-if __name__ == "__main__":
-    main()

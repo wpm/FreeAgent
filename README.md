@@ -23,17 +23,19 @@ uv sync
 Run a complete episode with **no API key** — the deterministic fake LLM plays a scripted game of Twenty Questions:
 
 ```sh
-uv run free-agent run examples/twentyquestions-fake.yml
+uv run free-agent twenty-questions run examples/twentyquestions-fake.yml
 ```
 
 Run a **real** game. It requires a provider key — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`; the cheap tier of whichever provider is detected is used automatically, or set `FREEAGENT_MODEL` to any litellm model string:
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...
-uv run free-agent run examples/twentyquestions.yml
+uv run free-agent twenty-questions run examples/twentyquestions.yml
 ```
 
 Either way, one command launches the environment, the agents, and the recorder as separate processes, runs the episode to `ended`, and prints a one-line summary.
+
+The shape is always `free-agent [--log-level LEVEL] APP COMMAND ...`. `APP` is an installed application (`twenty-questions` here, discovered through the `freeagent.apps` entry-point group), and each application defines its own commands. The library supplies the shared root, the config loader, and the launcher; an application supplies its name, environment, and roster in source and calls into them.
 
 ## Reading the log
 
@@ -53,16 +55,15 @@ Every row carries `episode_id`, `stream_seq`, `subject`, `sender`, `received_at`
 
 ## Repository layout
 
-A `uv` workspace: the library plus three applications. Applications depend only on `freeagent`, never on each other, and the library is installable standalone.
+A `uv` workspace: the library plus its applications. Applications depend only on `freeagent`, never on each other, and the library is installable standalone.
 
 | Path | What it is |
 |------|------------|
-| [`packages/freeagent`](packages/freeagent/README.md) | The library: agents, environments, episode lifecycle, LLM infrastructure |
-| [`apps/free-agent`](apps/free-agent/README.md) | The `free-agent` runner CLI: one episode from one YAML file |
+| [`packages/freeagent`](packages/freeagent/README.md) | The library: agents, environments, episode lifecycle, LLM infrastructure, and the `free-agent` CLI root + launcher |
 | [`apps/recorder`](apps/recorder/README.md) | `freeagent-recorder`: drains an episode's JetStream stream to Parquet |
-| [`apps/twentyquestions`](apps/twentyquestions/README.md) | The sample application: one Host, several Players, prompts over code |
+| [`apps/twentyquestions`](apps/twentyquestions/README.md) | The sample application: its own `free-agent twenty-questions` CLI — one Host, several Players, prompts over code |
 | [`docker/nats`](docker/nats) | NATS + JetStream container config (infrastructure, assumed running) |
-| [`examples/`](examples) | Episode configurations for the runner, real and fake |
+| [`examples/`](examples) | Episode tunables for the sample app, real and fake |
 | [`DESIGN.md`](DESIGN.md) | The authoritative design document |
 
 ## Tests

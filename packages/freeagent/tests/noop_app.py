@@ -1,8 +1,8 @@
-"""A tiny no-LLM application used by the runner's tests.
+"""A tiny no-LLM application used by the CLI orchestration tests.
 
-This module lives next to the test episode configurations on purpose: the
-runner must make app modules that live beside the yml importable (in the
-parent via ``sys.path``, in the children via ``PYTHONPATH``).
+It is importable both in the test process and in the child processes the
+orchestrator spawns (the integration test exports this directory on
+``PYTHONPATH`` so ``python -m freeagent.cli.child`` can import it).
 """
 
 from __future__ import annotations
@@ -30,6 +30,3 @@ class CrashingAgent(Agent):
 
 class NotAnAgent:
     """Importable, a class, but neither an Agent nor an Environment."""
-
-
-NOT_A_CLASS = "importable, but not a class"

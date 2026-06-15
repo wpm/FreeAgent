@@ -1,0 +1,117 @@
+"""The ``free-agent`` root CLI and the building blocks applications mount into it.
+
+``free-agent --log-level LEVEL APP_NAME COMMAND ...`` is the convention. The
+root app owns one thing every application shares -- the ``--log-level`` option
+-- and then dispatches to a per-application Typer sub-app discovered from the
+``freeagent.apps`` entry-point group::
+
+    # in an application's pyproject.toml
+    [project.entry-points."freeagent.apps"]
+    twenty-questions = "twentyquestions.cli:app"
+
+Installing an application makes ``free-agent twenty-questions ...`` work; the
+library never imports its applications by name. Each application defines its own
+commands (``run`` and whatever else it needs) and calls
+:func:`freeagent.cli.orchestrate.run_episode` for the standard launch behavior.
+
+The orchestration, config loader, and child entry point live alongside this
+module and are re-exported from :mod:`freeagent` for applications to import.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from importlib.metadata import entry_points
+from typing import TYPE_CHECKING, Annotated
+
+import typer
+
+from freeagent.logging import DEFAULT_LOG_LEVEL, LOG_LEVEL_ENV_VAR, configure_logging
+
+from .config import (
+    ConfigError,
+    EpisodeConfig,
+    EpisodePlan,
+    load_config,
+    make_plan,
+)
+from .orchestrate import run_episode
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+ENTRY_POINT_GROUP = "freeagent.apps"
+
+__all__ = [
+    "ConfigError",
+    "EpisodeConfig",
+    "EpisodePlan",
+    "build_root_app",
+    "load_config",
+    "main",
+    "make_plan",
+    "run_episode",
+]
+
+
+def _log_level_callback(
+    log_level: Annotated[
+        str,
+        typer.Option(
+            envvar=LOG_LEVEL_ENV_VAR,
+            help="logging level (TRACE/DEBUG/INFO/SUCCESS/WARNING/ERROR/CRITICAL); "
+            f"reads {LOG_LEVEL_ENV_VAR} when unset.",
+        ),
+    ] = DEFAULT_LOG_LEVEL,
+) -> None:
+    """Configure logging once, before any application command runs.
+
+    The resolved level is exported back to ``FREEAGENT_LOG_LEVEL`` so the child
+    processes the orchestrator launches inherit it.
+    """
+    resolved = configure_logging(level=log_level)  # app-level logging; core stays quiet
+    os.environ[LOG_LEVEL_ENV_VAR] = resolved
+
+
+def _discover_apps() -> dict[str, typer.Typer]:
+    """Load every ``freeagent.apps`` entry point into a name -> Typer sub-app map."""
+    apps: dict[str, typer.Typer] = {}
+    for entry in entry_points(group=ENTRY_POINT_GROUP):
+        loaded = entry.load()
+        if not isinstance(loaded, typer.Typer):
+            raise TypeError(
+                f"{ENTRY_POINT_GROUP} entry point {entry.name!r} "
+                f"({entry.value}) is not a typer.Typer instance"
+            )
+        apps[entry.name] = loaded
+    return apps
+
+
+def build_root_app() -> typer.Typer:
+    """Build the ``free-agent`` Typer app with every installed application mounted."""
+    root = typer.Typer(
+        name="free-agent",
+        help="Run a FreeAgent application: free-agent [--log-level LEVEL] APP COMMAND ...",
+        add_completion=False,
+        no_args_is_help=True,
+    )
+    root.callback()(_log_level_callback)
+    for name, sub_app in sorted(_discover_apps().items()):
+        root.add_typer(sub_app, name=name)
+    return root
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Console entry point for ``free-agent``: build the root app and dispatch.
+
+    ``argv`` defaults to ``sys.argv[1:]``; passing a list drives the app in
+    tests. The Typer/Click app raises ``SystemExit`` with the command's exit
+    code.
+    """
+    app = build_root_app()
+    app(args=argv, prog_name="free-agent")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

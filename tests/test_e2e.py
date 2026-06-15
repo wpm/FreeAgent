@@ -1,10 +1,11 @@
-"""End-to-end test: ``free-agent run`` on a fake-LLM Twenty Questions episode.
+"""End-to-end test: ``free-agent twenty-questions run`` on a fake-LLM episode.
 
 This is the Phase 3 acceptance path, exercised through the real CLI:
 
 * a derived copy of ``examples/twentyquestions-fake.yml`` is written to a
   temporary directory (recorder output redirected to a per-test path, episode
-  id left auto-generated) and run via ``free-agent run`` as a subprocess from
+  id left auto-generated) and run via ``free-agent twenty-questions run`` as a
+  subprocess from
   the repository root, where the ``fake:examples/fake/*.yml`` model paths
   resolve;
 * the episode must reach ``ended``: exit code 0 and ``state=ended`` in the
@@ -95,7 +96,14 @@ def _derive_config(tmp_path: Path) -> tuple[Path, Path]:
 def _run_cli(config_path: Path) -> subprocess.CompletedProcess[str]:
     """Run the real CLI from the repo root (the fake: model paths are cwd-relative)."""
     return subprocess.run(
-        [sys.executable, "-m", "freeagent_runner.cli", "run", str(config_path)],
+        [
+            sys.executable,
+            "-m",
+            "freeagent.cli",
+            "twenty-questions",
+            "run",
+            str(config_path),
+        ],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -115,7 +123,9 @@ def test_fake_twentyquestions_episode_end_to_end(tmp_path: Path) -> None:
 
     result = _run_cli(derived)
     detail = f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
-    assert result.returncode == 0, f"free-agent run exited {result.returncode}\n{detail}"
+    assert result.returncode == 0, (
+        f"free-agent twenty-questions run exited {result.returncode}\n{detail}"
+    )
     assert "state=ended" in result.stdout, f"missing state=ended in summary\n{detail}"
     # The runner waits for the recorder before exiting, so the file exists now.
     assert output.exists(), f"recorder output {output} was not written\n{detail}"

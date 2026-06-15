@@ -6,7 +6,6 @@ requires-python = ">=3.12"
 dependencies = [
     "freeagent",
     "freeagent-recorder",
-    "free-agent",
     "twentyquestions",
 ]
 
@@ -23,7 +22,6 @@ members = ["packages/*", "apps/*"]
 [tool.uv.sources]
 freeagent = { workspace = true }
 freeagent-recorder = { workspace = true }
-free-agent = { workspace = true }
 twentyquestions = { workspace = true }
 
 [tool.ruff]
@@ -32,7 +30,6 @@ target-version = "py312"
 src = [
     "packages/freeagent/src",
     "apps/recorder/src",
-    "apps/free-agent/src",
     "apps/twentyquestions/src",
 ]
 
@@ -74,7 +71,6 @@ ignore = [
 testpaths = [
     "packages/freeagent/tests",
     "apps/recorder/tests",
-    "apps/free-agent/tests",
     "apps/twentyquestions/tests",
     "tests",
 ]

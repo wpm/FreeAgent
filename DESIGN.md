@@ -195,22 +195,23 @@ A general pattern, to be followed when new initialization concerns appear: solve
 free-agent/
 ├── pyproject.toml          # uv workspace root
 ├── packages/
-│   └── freeagent/          # the library
+│   └── freeagent/          # the library + the `free-agent` CLI root and launcher
 ├── apps/
-│   ├── twentyquestions/    # sample application
-│   ├── recorder/           # JetStream → Parquet episode recorder
-│   └── free-agent/         # dev runner CLI
+│   ├── twentyquestions/    # sample application (its own `free-agent` sub-app)
+│   └── recorder/           # JetStream → Parquet episode recorder
 └── docker/
     └── nats/               # NATS + JetStream container config
 ```
 
-The **`free-agent` runner** is a command-line application that launches everything an episode needs — environment, agents, optionally the recorder — from a `*.yml` configuration file. It is the dev/demo experience: one command instead of six terminals. Batch generation of training data (many concurrent episodes) builds on the same foundation later.
+The **`free-agent` CLI** launches everything an episode needs — environment, agents, optionally the recorder — with one command instead of six terminals. The convention is `free-agent [--log-level LEVEL] APP COMMAND ...`. The launcher is library code: `freeagent` provides the Typer root (it owns the shared `--log-level` option), the episode-tunables config loader, and the orchestration that spawns and supervises the child processes. Each application provides what it *is* — its name, its environment class, and its roster (agent name → agent class) — in source, registers a Typer sub-app through the `freeagent.apps` entry-point group, and calls the launcher from its own `run` command. Installing an application makes `free-agent APP ...` work; the library never imports its applications by name, and applications may add whatever other commands they need.
+
+A `*.yml` passed to a command carries only per-episode tunables — the NATS URL, the recorder block, the episode id, and each component's verbatim `config` — never class references or the roster, which live in source. This keeps what an application is in code that the type checker and tests see, and keeps configuration to the dials an operator actually turns between runs. Batch generation of training data (many concurrent episodes) builds on the same foundation later.
 
 ## LLM infrastructure
 
 LLMs are used so pervasively that FreeAgent builds in LLM infrastructure, even though no application is required to use it:
 
-- An async LLM client wrapper over litellm, used via the spawn-don't-block pattern: the call runs as a spawned task and its completion re-enters the agent's fold as a think message. The model is configurable as a single litellm model string, resolved in order: explicit argument → runner yml → `FREEAGENT_MODEL` env var → auto-detect (pick the cheapest tier of whichever provider's API key is present in the environment) → a clear error naming the env vars checked. The default should be cheap and work automatically for anyone whose shell already has a provider key. Structured outputs (e.g. the Host's classification verdicts) are requested as JSON schema and validated with Pydantic models.
+- An async LLM client wrapper over litellm, used via the spawn-don't-block pattern: the call runs as a spawned task and its completion re-enters the agent's fold as a think message. The model is configurable as a single litellm model string, resolved in order: explicit argument → episode yml → `FREEAGENT_MODEL` env var → auto-detect (pick the cheapest tier of whichever provider's API key is present in the environment) → a clear error naming the env vars checked. The default should be cheap and work automatically for anyone whose shell already has a provider key. Structured outputs (e.g. the Host's classification verdicts) are requested as JSON schema and validated with Pydantic models.
 - Automatic optional telemetry: each call's prompt, completion, and timing published to the agent's log-only subject — which is how silence decisions become training data.
 - An `LLMAgent` base class: an agent defined primarily by text prompts. It maintains the transcript of perceived messages as state and delegates to prompts the decisions of when and what to say. This class is the road to the "applications from text prompts alone" goal.
 
