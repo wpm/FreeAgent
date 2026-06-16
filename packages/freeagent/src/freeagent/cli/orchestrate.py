@@ -6,22 +6,36 @@ and its roster (agent name -> agent class) -- and a parsed
 :class:`~freeagent.cli.config.EpisodeConfig` of per-episode tunables. The
 orchestrator resolves those into a plan, validates the classes, then runs every
 roster member and the environment as separate OS processes plus, optionally,
-the recorder. It waits for the environment process to exit -- its exit code is
-the episode outcome -- gives agents the grace period to wind down, terminates
-stragglers, waits for the recorder, and prints a one-line summary.
+the recorder.
 
-Returns an exit code: 0 = episode ended, 2 = episode aborted, 1 = config/
-launch/internal error (including operator interruption).
+Two entry points, one built on the other:
+
+* :func:`start_episode` is the primitive. It launches the child processes and
+  returns an :class:`EpisodeHandle` *without blocking* -- supervision (waiting
+  for the environment, winding agents down, cleaning up stragglers) runs as a
+  background task the caller drives through the handle. A daemon can hold many
+  handles at once in a single event loop, poll each one's state, await its
+  completion, and request an abort -- with no process-wide or global state and
+  no signal handlers of its own.
+* :func:`run_episode` is the synchronous CLI behavior built on that primitive:
+  it starts one episode, installs SIGINT/SIGTERM handlers, awaits completion,
+  prints a one-line summary, and returns an exit code (0 = ended, 2 = aborted,
+  1 = config/launch/internal error or operator interruption).
+
+Signal handling is opt-in: only :func:`run_episode` installs it; an in-process
+daemon caller of :func:`start_episode` gets none.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import enum
 import json
 import os
 import signal
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -43,7 +57,7 @@ from .child import (
 from .config import ConfigError, EpisodePlan, make_plan
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
 
     from .config import EpisodeConfig
 
@@ -63,6 +77,37 @@ RECORDER_WAIT = 15.0
 TERMINATE_TIMEOUT = 5.0
 
 
+class EpisodeStatus(enum.StrEnum):
+    """An episode handle's lifecycle, as seen by whoever holds the handle.
+
+    ``RUNNING`` until supervision resolves; then one terminal value. ``ENDED``,
+    ``ABORTED``, and ``ERROR`` come from the environment process's exit code;
+    ``INTERRUPTED`` is an operator abort (a requested abort or a CLI signal)
+    that stopped the wait before the environment exited.
+    """
+
+    RUNNING = "running"
+    ENDED = "ended"
+    ABORTED = "aborted"
+    INTERRUPTED = "interrupted"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeOutcome:
+    """The result of supervising an episode to completion.
+
+    *status* is the terminal :class:`EpisodeStatus`; *summary* is the
+    human-readable state for the one-line summary (it carries the failure detail
+    that ``status`` flattens to ``ERROR``); *exit_code* is the CLI exit code
+    (0 = ended, 2 = aborted, 1 = error or interruption).
+    """
+
+    status: EpisodeStatus
+    summary: str
+    exit_code: int
+
+
 def run_episode(
     config: EpisodeConfig,
     *,
@@ -79,10 +124,28 @@ def run_episode(
     per-episode tunables. When *parquet_log* is given, the recorder is spawned
     to drain this episode to that path; when ``None``, no recording happens.
     Raises :class:`ConfigError` on a fatal configuration or launch problem.
+
+    This is the synchronous CLI behavior: it installs SIGINT/SIGTERM handlers,
+    blocks until the episode finishes, prints a one-line summary, and returns
+    0 (ended) / 2 (aborted) / 1 (error or operator interruption).
     """
     _validate_classes(environment, agents)
     plan = make_plan(config, app=app, roster=agents)
-    return asyncio.run(_orchestrate(plan, environment, agents, parquet_log))
+    return asyncio.run(_run_episode(plan, environment, agents, parquet_log))
+
+
+async def _run_episode(
+    plan: EpisodePlan,
+    environment: type[Environment],
+    agents: Mapping[str, type[Agent]],
+    parquet_log: Path | None,
+) -> int:
+    """The CLI's supervised run: start the episode, handle signals, summarize."""
+    handle = await start_episode(plan, environment, agents, parquet_log)
+    with _install_signal_handlers(handle):
+        outcome = await handle.wait()
+    _print_summary(plan, outcome.summary)
+    return outcome.exit_code
 
 
 def _validate_classes(environment: type[Environment], agents: Mapping[str, type[Agent]]) -> None:
@@ -94,27 +157,33 @@ def _validate_classes(environment: type[Environment], agents: Mapping[str, type[
             raise ConfigError(f"agent {name!r}: {cls!r} is not a subclass of freeagent.Agent")
 
 
-async def _orchestrate(
+async def start_episode(
     plan: EpisodePlan,
     environment: type[Environment],
     agents: Mapping[str, type[Agent]],
-    parquet_log: Path | None,
-) -> int:
-    """Launch all processes, wait for the episode outcome, clean everything up."""
-    loop = asyncio.get_running_loop()
-    interrupted = asyncio.Event()
-    handled_signals: list[signal.Signals] = []
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        with contextlib.suppress(NotImplementedError, RuntimeError):
-            loop.add_signal_handler(sig, interrupted.set)
-            handled_signals.append(sig)
+    parquet_log: Path | None = None,
+) -> EpisodeHandle:
+    """Launch one episode's processes and return a handle, without blocking.
+
+    Spawns every roster agent and the environment (plus the recorder when
+    *parquet_log* is given) as OS processes, then starts a background task that
+    supervises them to completion. The returned :class:`EpisodeHandle` lets the
+    caller query state, await completion, and request an abort. No signal
+    handlers are installed and no global state is touched, so many handles can
+    run concurrently in one event loop.
+
+    *plan* is an already-resolved :class:`~freeagent.cli.config.EpisodePlan`
+    (see :func:`~freeagent.cli.config.make_plan`); *environment* and *agents*
+    are the validated classes (see :func:`run_episode` for the validating
+    front door).
+    """
+    child_env = dict(os.environ)
+    root = subject_root(plan.app, plan.episode_id)
+    agent_procs: list[asyncio.subprocess.Process] = []
     children: list[asyncio.subprocess.Process] = []
     try:
-        child_env = dict(os.environ)
-        root = subject_root(plan.app, plan.episode_id)
         # Launch order doesn't matter: agents launch idle and their subscribe
         # retries until the environment has created the episode's stream.
-        agent_procs: list[asyncio.subprocess.Process] = []
         for name, cls in agents.items():
             proc = await _spawn_child(
                 agent_spec(
@@ -144,31 +213,134 @@ async def _orchestrate(
         if parquet_log is not None:
             recorder_proc = await _spawn_recorder(plan, parquet_log, child_env)
             children.append(recorder_proc)
-
-        # The environment process owns the lifecycle; its exit code is the
-        # episode outcome.
-        env_exit = await _wait_for_environment(env_proc, interrupted)
-        if env_exit is None:
-            _print_summary(plan, "interrupted")
-            return 1
-        # Agents wind down on their own after the shutdown broadcast; give
-        # them the grace period plus a buffer, then escalate.
-        await _shutdown_processes(agent_procs, _agent_deadline(plan))
-        if recorder_proc is not None:
-            # The recorder terminates on its own after the episode ends
-            # (shutdown + idle timeout); give it time, then escalate.
-            await _shutdown_processes([recorder_proc], RECORDER_WAIT)
-        state = _final_state(env_exit)
-        _print_summary(plan, state)
-        if env_exit == EXIT_ENDED:
-            return 0
-        if env_exit == EXIT_ABORTED:
-            return 2
-        return 1
-    finally:
-        for sig in handled_signals:
-            loop.remove_signal_handler(sig)
+    except BaseException:
+        # A partial launch must not leak processes: tear down what we started.
         await _terminate_all(children)
+        raise
+    return EpisodeHandle(
+        plan=plan,
+        agent_procs=agent_procs,
+        env_proc=env_proc,
+        recorder_proc=recorder_proc,
+        children=children,
+    )
+
+
+class EpisodeHandle:
+    """A running episode a caller drives without blocking the event loop.
+
+    Returned by :func:`start_episode` once the child processes are up. The
+    handle exposes the episode's identity (:attr:`app`, :attr:`episode_id`), its
+    current :attr:`state`, and the live :attr:`processes`; it lets the caller
+    :meth:`wait` for completion, read the final :attr:`outcome`, and
+    :meth:`request_abort`. Supervision runs as a background task started in the
+    constructor, so the episode makes progress -- agents wind down, stragglers
+    are cleaned up -- whether or not anyone is awaiting it.
+    """
+
+    def __init__(
+        self,
+        *,
+        plan: EpisodePlan,
+        agent_procs: list[asyncio.subprocess.Process],
+        env_proc: asyncio.subprocess.Process,
+        recorder_proc: asyncio.subprocess.Process | None,
+        children: list[asyncio.subprocess.Process],
+    ) -> None:
+        self._plan = plan
+        self._agent_procs = agent_procs
+        self._env_proc = env_proc
+        self._recorder_proc = recorder_proc
+        self._children = children
+        self._interrupted = asyncio.Event()
+        self._status = EpisodeStatus.RUNNING
+        self._outcome: EpisodeOutcome | None = None
+        # Drive supervision in the background so the caller is never blocked;
+        # wait() simply awaits this task.
+        self._supervisor = asyncio.ensure_future(self._supervise())
+
+    @property
+    def app(self) -> str:
+        """The application name (subject prefix) this episode runs under."""
+        return self._plan.app
+
+    @property
+    def episode_id(self) -> str:
+        """This episode's id."""
+        return self._plan.episode_id
+
+    @property
+    def state(self) -> EpisodeStatus:
+        """The episode's current lifecycle state -- ``RUNNING`` until it finishes."""
+        return self._status
+
+    @property
+    def processes(self) -> frozenset[asyncio.subprocess.Process]:
+        """The episode's child-process set (agents, environment, optional recorder)."""
+        return frozenset(self._children)
+
+    @property
+    def outcome(self) -> EpisodeOutcome | None:
+        """The terminal :class:`EpisodeOutcome`, or ``None`` while still running."""
+        return self._outcome
+
+    async def wait(self) -> EpisodeOutcome:
+        """Await the episode's completion and return its :class:`EpisodeOutcome`.
+
+        Awaiting from several places is fine, and a cancelled waiter does not
+        cancel the supervision (or the cleanup it owns) -- only this call's wait.
+        """
+        return await asyncio.shield(self._supervisor)
+
+    def request_abort(self) -> None:
+        """Ask the episode to stop now; the outcome becomes ``INTERRUPTED``.
+
+        Idempotent and non-blocking: it wakes the supervisor, which stops
+        waiting on the environment and tears every child process down. This is
+        what the CLI's signal handlers call, and what a daemon calls to abort.
+        """
+        self._interrupted.set()
+
+    async def _supervise(self) -> EpisodeOutcome:
+        """Wait for the outcome, wind agents down, and clean every child up."""
+        try:
+            # The environment process owns the lifecycle; its exit code is the
+            # episode outcome. ``None`` means an abort won the race first.
+            env_exit = await _wait_for_environment(self._env_proc, self._interrupted)
+            if env_exit is not None:
+                # Agents wind down on their own after the shutdown broadcast;
+                # give them the grace period plus a buffer, then escalate.
+                await _shutdown_processes(self._agent_procs, _agent_deadline(self._plan))
+                if self._recorder_proc is not None:
+                    # The recorder terminates on its own after the episode ends
+                    # (shutdown + idle timeout); give it time, then escalate.
+                    await _shutdown_processes([self._recorder_proc], RECORDER_WAIT)
+            outcome = _outcome_for_exit(env_exit)
+            self._status = outcome.status
+            self._outcome = outcome
+            return outcome
+        finally:
+            await _terminate_all(self._children)
+
+
+@contextlib.contextmanager
+def _install_signal_handlers(handle: EpisodeHandle) -> Iterator[None]:
+    """Route SIGINT/SIGTERM to ``handle.request_abort`` for the duration.
+
+    Opt-in operator interruption for the CLI only; restored on exit. Platforms
+    without loop signal handlers (and non-main threads) are tolerated silently.
+    """
+    loop = asyncio.get_running_loop()
+    handled: list[signal.Signals] = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(NotImplementedError, RuntimeError):
+            loop.add_signal_handler(sig, handle.request_abort)
+            handled.append(sig)
+    try:
+        yield
+    finally:
+        for sig in handled:
+            loop.remove_signal_handler(sig)
 
 
 async def _spawn_child(
@@ -218,7 +390,7 @@ async def _spawn_recorder(
 async def _wait_for_environment(
     env_proc: asyncio.subprocess.Process, interrupted: asyncio.Event
 ) -> int | None:
-    """Wait for the environment to exit; ``None`` means SIGINT/SIGTERM won."""
+    """Wait for the environment to exit; ``None`` means an abort won the race."""
     env_wait = asyncio.ensure_future(env_proc.wait())
     stop_wait = asyncio.ensure_future(interrupted.wait())
     await asyncio.wait({env_wait, stop_wait}, return_when=asyncio.FIRST_COMPLETED)
@@ -287,15 +459,18 @@ def _signal_all(procs: list[asyncio.subprocess.Process], method: str) -> None:
                 getattr(proc, method)()
 
 
-def _final_state(env_exit: int) -> str:
-    """Map the environment process's exit code to the episode's final state."""
+def _outcome_for_exit(env_exit: int | None) -> EpisodeOutcome:
+    """Map the environment exit code (``None`` = aborted) to an :class:`EpisodeOutcome`."""
+    if env_exit is None:
+        return EpisodeOutcome(EpisodeStatus.INTERRUPTED, "interrupted", 1)
     if env_exit == EXIT_ENDED:
-        return "ended"
+        return EpisodeOutcome(EpisodeStatus.ENDED, "ended", 0)
     if env_exit == EXIT_ABORTED:
-        return "aborted"
+        return EpisodeOutcome(EpisodeStatus.ABORTED, "aborted", 2)
     if env_exit == EXIT_TRANSPORT:
-        return "error (could not reach NATS -- is the server running?)"
-    return f"error (environment exited {env_exit})"
+        summary = "error (could not reach NATS -- is the server running?)"
+        return EpisodeOutcome(EpisodeStatus.ERROR, summary, 1)
+    return EpisodeOutcome(EpisodeStatus.ERROR, f"error (environment exited {env_exit})", 1)
 
 
 def _print_summary(plan: EpisodePlan, state: str) -> None:
