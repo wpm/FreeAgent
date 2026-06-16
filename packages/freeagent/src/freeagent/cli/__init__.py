@@ -64,6 +64,7 @@ from .orchestrate import (
     start_episode,
 )
 from .replay import replay as _replay_command
+from .serve import serve as _serve_command
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -161,6 +162,9 @@ def build_root_app() -> typer.Typer:
     # The replayer is a library-level command, app-agnostic and a sibling of
     # the per-app sub-commands (ADR-0001): one tool replays any app's episode.
     root.command("replay")(_replay_command)
+    # The control service is likewise app-agnostic library infrastructure: one
+    # service launches any installed app by its REST name.
+    root.command("serve")(_serve_command)
     # Mount each installed app's Typer sub-app under its REST name; an app
     # registered purely to be launched (no CLI of its own) is simply skipped.
     for name, spec in sorted(load_apps().items()):

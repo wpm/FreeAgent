@@ -58,6 +58,36 @@ free-agent replay out/twentyquestions-fake.parquet --nats-url nats://localhost:4
 
 `replay` is a top-level command, a sibling of the per-application sub-commands, because the Parquet log is uniform across every application — one tool replays any app's episode and never needs app-specific code. Messages are published on their original subjects in `stream_seq` order; inter-message timing is preserved by default, scaled by `--speed` (e.g. `--speed 2.0`), or dropped entirely with `--as-fast-as-possible`. Start is the command; stop is Ctrl-C. Pause and seek live on the library's `Replayer` class for an embedding GUI to drive.
 
+## Control service
+
+The CLI launches one episode and blocks. The **control service** is the long-running alternative: a small REST API that owns a set of running episodes and launches, lists, observes, and stops them on demand — the same supervised launch as `run`, driven over HTTP instead of from a terminal.
+
+```sh
+free-agent serve            # binds 127.0.0.1:8000 by default
+```
+
+It binds to **loopback with no auth**, consistent with the local NATS testbed (see [SECURITY.md](SECURITY.md)), and verifies NATS is reachable on startup and on every create — a down server yields a clear `503`, never a hang. The REST resources live under `/freeagent/<application>/<episode>` and map, at the API boundary, onto the existing NATS subjects — the service introduces no new wire subjects:
+
+| Method & path | Does |
+| --- | --- |
+| `POST /freeagent/{application}/episodes` | create a **live** episode (or **replay** a recorded log) |
+| `GET  /freeagent/episodes` | list every running episode |
+| `GET  /freeagent/{application}/episodes/{episode}` | one episode's status |
+| `POST /freeagent/{application}/episodes/{episode}/stop` | graceful operator-abort |
+| `POST /freeagent/teardown` | bring everything down |
+
+The create body carries the same settable config the YAML does — `nats_url`, an optional `episode_id`, and per-component `config` blocks (the Host's `secret`, an agent's `model`, timeouts) — plus a `mode` of `live` or `replay` and, for a live run, an optional `parquet_log` to record it. A created episode is observable over NATS **exactly like a `run`-launched one**: a viewer subscribes by mapping the REST id to the response's `subject_root`.
+
+```sh
+# Create a live episode, then watch the service's view of it.
+curl -s -XPOST localhost:8000/freeagent/twenty-questions/episodes \
+  -H 'content-type: application/json' \
+  -d '{"mode":"live","agents":{"host":{"config":{"secret":"otter"}}}}'
+curl -s localhost:8000/freeagent/episodes
+```
+
+The service is **API-only**: it serves no static bundle. The browser viewer is served by its own Vite dev server and calls the API cross-origin, so CORS is configured for that origin (`http://localhost:5173` by default). Serving the built viewer from one origin is a deferred convenience. Two v1 limits worth knowing: the registry is **in memory** (a service restart forgets the episodes it was tracking — and tears their processes down with it, so nothing is orphaned), and the service does **not** manage the NATS Docker container (start it yourself, as above).
+
 ## Project structure
 
 A `uv` workspace containing the **library** and its **applications**. The library is the substrate and is usable on its own; each application depends only on the library, never on another application. The repository ships one sample application, Twenty Questions, plus the NATS infrastructure config and ready-to-run example episodes. Each component has its own README, and [the design document](docs/DESIGN.md) is authoritative.
