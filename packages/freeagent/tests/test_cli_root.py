@@ -32,6 +32,16 @@ def _app_with_parquet_log() -> typer.Typer:
     return app
 
 
+def _spec(cli_app: typer.Typer | None = None) -> cli.AppSpec:
+    """A minimal AppSpec for the noop test app, optionally carrying a CLI."""
+    return cli.AppSpec(
+        name="demoapp",
+        environment=NoopEnvironment,
+        roster={"alpha": NoopAgent},
+        cli=cli_app,
+    )
+
+
 def test_build_root_app_mounts_discovered_apps(monkeypatch: pytest.MonkeyPatch) -> None:
     sub = typer.Typer(name="demo")
 
@@ -39,15 +49,24 @@ def test_build_root_app_mounts_discovered_apps(monkeypatch: pytest.MonkeyPatch) 
     def hello() -> None:
         typer.echo("hi from demo")
 
-    monkeypatch.setattr(cli, "_discover_apps", lambda: {"demo": sub})
+    monkeypatch.setattr(cli, "load_apps", lambda: {"demo": _spec(sub)})
     root = cli.build_root_app()
     result = CliRunner().invoke(root, ["demo", "hello"])
     assert result.exit_code == 0
     assert "hi from demo" in result.stdout
 
 
+def test_build_root_app_skips_apps_without_a_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An app registered to be launched but with no CLI mounts nothing, no crash."""
+    monkeypatch.setattr(cli, "load_apps", lambda: {"headless": _spec(None)})
+    root = cli.build_root_app()
+    # The replay command is always there; the headless app contributes no sub-app.
+    result = CliRunner().invoke(root, ["headless"])
+    assert result.exit_code != 0  # no such command mounted
+
+
 def test_root_app_no_args_is_help(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "_discover_apps", dict)
+    monkeypatch.setattr(cli, "load_apps", dict)
     result = CliRunner().invoke(cli.build_root_app(), [])
     # no_args_is_help: exits non-zero with usage, not a crash.
     assert "APP" in result.stdout or "Usage" in result.stdout
