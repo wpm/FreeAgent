@@ -26,7 +26,7 @@ Agents are **cooperative with the framework**. Even in adversarial games they pl
 
 ## Architecture
 
-NATS (with JetStream enabled) is assumed to exist — typically a Docker container. It is not part of any FreeAgent process.
+NATS (with JetStream enabled) is assumed to exist — typically a Docker container. It is not part of any FreeAgent process. This holds even once a persistent control service is running (see below): the service *verifies* NATS is reachable and fails with a clear error if it is not, but it does not embed NATS and, in v1, does not manage the container — bringing NATS up stays the operator's job. Optional container orchestration is deferred, and when it lands it will be opt-in so the default still honors "NATS is assumed to exist." Verifying that a dependency is reachable is not the same as owning its lifecycle.
 
 ```mermaid
 flowchart LR
@@ -44,6 +44,8 @@ flowchart LR
 Process types: one environment per episode, N agents, and optionally a recorder that drains the episode's JetStream stream into a Parquet file. The recorder is library infrastructure (`freeagent.recorder`): the launcher spawns it as its own process per episode, but no agent or environment is required to use it — FreeAgent contains no *required* logging code. Recording is a per-run decision via the shared `--parquet-log PATH` CLI option (a new file, never overwritten); omit it and nothing is recorded.
 
 JetStream is infrastructure. How streams are laid out (per episode, per application) is a deployment concern, not part of FreeAgent's abstraction surface, which ends at subjects and messages.
+
+The orchestration that launches these processes comes in two shapes built on one primitive. The `free-agent` CLI runs an episode **to completion** — it spawns the children, blocks until the environment exits, and returns an exit code. The same primitive also backs an optional **persistent control service**: a long-running process that starts episodes *without blocking*, holds each as a supervised handle, and so can run, inspect, and stop many episodes at once in a single event loop. The service hosts a localhost web API shaped as `freeagent/<app>/<episode>` — a façade mapped, at the API boundary only, onto the unchanged wire subjects above (the dashed REST name `twenty-questions` maps to the undashed subject prefix `twentyquestions`); the NATS wire never changes, so a viewer cannot tell a service-launched episode from a CLI-launched one. It keeps an in-memory registry of running episodes (not persisted across restarts in v1), discovers what to launch through each application's self-description rather than importing apps by name, and stops an episode through the operator-abort path described under [Episode lifecycle](#episode-lifecycle). The control service is not required: an application runs perfectly well from the CLI alone.
 
 ## NATS subjects
 
