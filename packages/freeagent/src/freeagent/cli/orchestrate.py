@@ -302,7 +302,15 @@ class EpisodeHandle:
         self._interrupted.set()
 
     async def _supervise(self) -> EpisodeOutcome:
-        """Wait for the outcome, wind agents down, and clean every child up."""
+        """Wait for the outcome, wind agents down, and clean every child up.
+
+        An unexpected error inside supervision is never allowed to vanish into
+        the background task: it is first recorded as a terminal ``ERROR``
+        outcome -- so a daemon polling :attr:`state` sees the truth instead of a
+        wedged ``RUNNING`` -- and then re-raised so an awaiter of :meth:`wait`
+        still sees it (this is the behavior :func:`run_episode` relies on).
+        ``CancelledError`` is not an outcome and propagates untouched.
+        """
         try:
             # The environment process owns the lifecycle; its exit code is the
             # episode outcome. ``None`` means an abort won the race first.
@@ -316,11 +324,19 @@ class EpisodeHandle:
                     # (shutdown + idle timeout); give it time, then escalate.
                     await _shutdown_processes([self._recorder_proc], RECORDER_WAIT)
             outcome = _outcome_for_exit(env_exit)
-            self._status = outcome.status
-            self._outcome = outcome
+        except Exception as exc:
+            self._record(_error_outcome(exc))
+            raise
+        else:
+            self._record(outcome)
             return outcome
         finally:
             await _terminate_all(self._children)
+
+    def _record(self, outcome: EpisodeOutcome) -> None:
+        """Latch the terminal outcome so :attr:`state` and :attr:`outcome` are truthful."""
+        self._status = outcome.status
+        self._outcome = outcome
 
 
 @contextlib.contextmanager
@@ -471,6 +487,11 @@ def _outcome_for_exit(env_exit: int | None) -> EpisodeOutcome:
         summary = "error (could not reach NATS -- is the server running?)"
         return EpisodeOutcome(EpisodeStatus.ERROR, summary, 1)
     return EpisodeOutcome(EpisodeStatus.ERROR, f"error (environment exited {env_exit})", 1)
+
+
+def _error_outcome(exc: Exception) -> EpisodeOutcome:
+    """An ``ERROR`` outcome for an unexpected failure while supervising the episode."""
+    return EpisodeOutcome(EpisodeStatus.ERROR, f"error ({exc})", 1)
 
 
 def _print_summary(plan: EpisodePlan, state: str) -> None:
