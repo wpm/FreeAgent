@@ -7,7 +7,10 @@ orchestrator spawns (the integration test exports this directory on
 
 from __future__ import annotations
 
-from freeagent import Agent, Environment
+import typer
+
+from freeagent import Agent, AppSpec, ConfigField, Environment, SettableConfig
+from freeagent.cli.apps import AGENT_FIELDS
 
 
 class NoopAgent(Agent):
@@ -16,6 +19,27 @@ class NoopAgent(Agent):
 
 class NoopEnvironment(Environment):
     """The base lifecycle with nothing on top; the episode ends by timeout."""
+
+
+_cli = typer.Typer(name="noop")
+
+
+@_cli.command()
+def ping() -> None:
+    typer.echo("pong from noop")
+
+
+#: A self-describing registration the apps-registry tests load by REST name.
+APP = AppSpec(
+    name="noopapp",
+    environment=NoopEnvironment,
+    roster={"alpha": NoopAgent},
+    settable_config=SettableConfig(
+        environment=(ConfigField("episode_timeout", "number", "seconds before timeout"),),
+        agents={"alpha": AGENT_FIELDS},
+    ),
+    cli=_cli,
+)
 
 
 class CrashingAgent(Agent):

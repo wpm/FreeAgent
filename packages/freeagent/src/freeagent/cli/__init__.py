@@ -7,7 +7,13 @@ root app owns one thing every application shares -- the ``--log-level`` option
 
     # in an application's pyproject.toml
     [project.entry-points."freeagent.apps"]
-    twenty-questions = "twentyquestions.cli:app"
+    twenty-questions = "twentyquestions.cli:APP"
+
+The entry point resolves to an :class:`~freeagent.cli.apps.AppSpec` -- the
+application's self-description (subject-prefix name, environment, roster, and
+settable config surface) with its Typer sub-app attached. Mounting the CLI
+reads ``APP.cli``; a generic launcher reads the rest (see
+:mod:`freeagent.cli.apps`).
 
 Installing an application makes ``free-agent twenty-questions ...`` work; the
 library never imports its applications by name. Each application defines its own
@@ -22,7 +28,6 @@ from __future__ import annotations
 
 import os
 import sys
-from importlib.metadata import entry_points
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -30,6 +35,15 @@ import typer
 
 from freeagent.logging import DEFAULT_LOG_LEVEL, LOG_LEVEL_ENV_VAR, configure_logging
 
+from .apps import (
+    ENTRY_POINT_GROUP,
+    AppSpec,
+    ConfigField,
+    SettableConfig,
+    UnknownAppError,
+    load_app,
+    load_apps,
+)
 from .config import (
     NATS_URL_ENV_VAR,
     ConfigError,
@@ -50,8 +64,6 @@ from .replay import replay as _replay_command
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-ENTRY_POINT_GROUP = "freeagent.apps"
 
 
 def _reject_existing(value: Path | None) -> Path | None:
@@ -87,16 +99,23 @@ ParquetLogOption = Annotated[
 ]
 
 __all__ = [
+    "ENTRY_POINT_GROUP",
     "NATS_URL_ENV_VAR",
+    "AppSpec",
     "ConfigError",
+    "ConfigField",
     "EpisodeConfig",
     "EpisodeHandle",
     "EpisodeOutcome",
     "EpisodePlan",
     "EpisodeStatus",
     "ParquetLogOption",
+    "SettableConfig",
+    "UnknownAppError",
     "build_root_app",
     "default_nats_url",
+    "load_app",
+    "load_apps",
     "load_config",
     "main",
     "make_plan",
@@ -124,20 +143,6 @@ def _log_level_callback(
     os.environ[LOG_LEVEL_ENV_VAR] = resolved
 
 
-def _discover_apps() -> dict[str, typer.Typer]:
-    """Load every ``freeagent.apps`` entry point into a name -> Typer sub-app map."""
-    apps: dict[str, typer.Typer] = {}
-    for entry in entry_points(group=ENTRY_POINT_GROUP):
-        loaded = entry.load()
-        if not isinstance(loaded, typer.Typer):
-            raise TypeError(
-                f"{ENTRY_POINT_GROUP} entry point {entry.name!r} "
-                f"({entry.value}) is not a typer.Typer instance"
-            )
-        apps[entry.name] = loaded
-    return apps
-
-
 def build_root_app() -> typer.Typer:
     """Build the ``free-agent`` Typer app with every installed application mounted."""
     root = typer.Typer(
@@ -150,8 +155,11 @@ def build_root_app() -> typer.Typer:
     # The replayer is a library-level command, app-agnostic and a sibling of
     # the per-app sub-commands (ADR-0001): one tool replays any app's episode.
     root.command("replay")(_replay_command)
-    for name, sub_app in sorted(_discover_apps().items()):
-        root.add_typer(sub_app, name=name)
+    # Mount each installed app's Typer sub-app under its REST name; an app
+    # registered purely to be launched (no CLI of its own) is simply skipped.
+    for name, spec in sorted(load_apps().items()):
+        if spec.cli is not None:
+            root.add_typer(spec.cli, name=name)
     return root
 
 
