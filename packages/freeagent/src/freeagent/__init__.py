@@ -35,8 +35,14 @@ from .cli import (
     start_episode,
 )
 from .config import DEFAULT_EPISODE_TIMEOUT, DEFAULT_GRACE_PERIOD, DEFAULT_SETUP_TIMEOUT
+from .control import (
+    OPERATOR_SENDER,
+    abort_episode,
+    operator_abort_message,
+    publish_operator_abort,
+)
 from .envelope import Envelope
-from .environment import Environment, EpisodeState
+from .environment import OPERATOR_ABORT_TYPE, Environment, EpisodeState
 from .llm import (
     KEY_MODELS,
     LLM,
@@ -100,6 +106,8 @@ __all__ = [
     "MODEL_ENV_VAR",
     "NAME_PATTERN",
     "NATS_URL_ENV_VAR",
+    "OPERATOR_ABORT_TYPE",
+    "OPERATOR_SENDER",
     "PARQUET_SCHEMA",
     "Agent",
     "AppSpec",
@@ -132,6 +140,7 @@ __all__ = [
     "Transport",
     "TransportError",
     "UnknownAppError",
+    "abort_episode",
     "build_root_app",
     "configure_logging",
     "create_llm",
@@ -143,6 +152,8 @@ __all__ = [
     "log_level",
     "make_plan",
     "make_record",
+    "operator_abort_message",
+    "publish_operator_abort",
     "record_episode",
     "replay_episode",
     "resolve_model",

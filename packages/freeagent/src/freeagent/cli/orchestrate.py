@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 from freeagent.agent import Agent
 from freeagent.config import DEFAULT_GRACE_PERIOD
+from freeagent.control import abort_episode
 from freeagent.environment import Environment
 from freeagent.recorder import __main__ as _recorder_module
 from freeagent.subjects import subject_root
@@ -293,13 +294,27 @@ class EpisodeHandle:
         return await asyncio.shield(self._supervisor)
 
     def request_abort(self) -> None:
-        """Ask the episode to stop now; the outcome becomes ``INTERRUPTED``.
+        """Stop the episode *now* by tearing it down; the outcome is ``INTERRUPTED``.
 
         Idempotent and non-blocking: it wakes the supervisor, which stops
         waiting on the environment and tears every child process down. This is
-        what the CLI's signal handlers call, and what a daemon calls to abort.
+        the hard interrupt the CLI's signal handlers call (Ctrl-C). For an
+        orderly stop that lets agents say goodbye, use :meth:`abort`.
         """
         self._interrupted.set()
+
+    async def abort(self, reason: str | None = None) -> EpisodeOutcome:
+        """Gracefully abort the episode and await its outcome (``ABORTED``).
+
+        Sends an operator-abort request on the environment's inbox -- it kills
+        no process. The environment broadcasts ``shutdown``, agents get the
+        grace period to wind down, and the environment exits with the aborted
+        code, so the outcome is ``ABORTED`` (exit 2), not the ``INTERRUPTED`` of
+        :meth:`request_abort`. Returns once supervision has cleaned every child
+        up. This is the path the control service drives over NATS.
+        """
+        await abort_episode(self._plan.nats_url, self.app, self.episode_id, reason=reason)
+        return await self.wait()
 
     async def _supervise(self) -> EpisodeOutcome:
         """Wait for the outcome, wind agents down, and clean every child up.
