@@ -1,10 +1,18 @@
 /**
  * Viewer configuration: where to connect and which channel to watch.
  *
- * The viewer is read-only and shareable by URL (ADR-0001), so its configuration
- * comes from URL query parameters, falling back to build-time Vite env vars and
- * then to local-dev defaults. The episode's channel can be named two ways, per
- * the issue:
+ * Two configuration surfaces live here:
+ *
+ *   - the **observe** surface (`resolveConfig`) — the read-only, shareable-by-URL
+ *     NATS settings of the original viewer: a websocket server and a public
+ *     subject. Unchanged from the single-episode viewer (ADR-0001).
+ *   - the **control** surface (`resolveControllerConfig`) — where the REST
+ *     control service lives and which websocket NATS the launched episodes are
+ *     watched over, so the app can configure and launch episodes, not just
+ *     observe one named by hand.
+ *
+ * Both come from URL query parameters, falling back to build-time Vite env vars
+ * and then to local-dev defaults. The observe channel can be named two ways:
  *
  *   - app name + episode id  ?app=twentyquestions&episode=<id>
  *   - a full subject         ?subject=twentyquestions.episode.<id>.public
@@ -17,6 +25,15 @@ const DEFAULT_SERVER = "ws://localhost:8080";
 
 /** This is the Twenty Questions viewer; its app name is fixed by default. */
 const DEFAULT_APP = "twentyquestions";
+
+/** Local-dev default control-service base URL (see freeagent.service.server). */
+const DEFAULT_CONTROL = "http://localhost:8000";
+
+/**
+ * The dashed REST/entry-point name of this app, distinct from the undashed
+ * subject prefix `DEFAULT_APP`. The control service routes by this name.
+ */
+const DEFAULT_APPLICATION = "twenty-questions";
 
 export interface ViewerConfig {
   /** NATS websocket URL to connect to. */
@@ -46,4 +63,33 @@ export function resolveConfig(search: string = window.location.search): ViewerCo
   const episode = params.get("episode") ?? env.VITE_EPISODE_ID ?? "";
   const subject = episode ? publicSubject(app, episode) : "";
   return { server, subject };
+}
+
+/** Where the control plane lives and how its episodes are watched. */
+export interface ControllerConfig {
+  /** Control-service REST base URL (e.g. http://localhost:8000). */
+  control: string;
+  /**
+   * The NATS *websocket* URL the launched episodes are watched over. This is the
+   * browser-facing listener of the same NATS the service publishes to over its
+   * own `nats://` URL — the two are different listeners (ports) on one server,
+   * so the websocket URL is configured here rather than derived from the
+   * service's NATS URL.
+   */
+  natsWs: string;
+  /** The dashed REST application name the control service routes by. */
+  application: string;
+}
+
+/** Resolve the control-plane configuration from the URL, env, and defaults. */
+export function resolveControllerConfig(
+  search: string = window.location.search,
+): ControllerConfig {
+  const params = new URLSearchParams(search);
+  const env = import.meta.env;
+
+  const control = params.get("control") ?? env.VITE_CONTROL_URL ?? DEFAULT_CONTROL;
+  const natsWs = params.get("server") ?? env.VITE_NATS_WS_URL ?? DEFAULT_SERVER;
+  const application = params.get("application") ?? env.VITE_APPLICATION ?? DEFAULT_APPLICATION;
+  return { control, natsWs, application };
 }
