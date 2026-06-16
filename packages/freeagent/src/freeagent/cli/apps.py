@@ -115,6 +115,24 @@ class AppSpec:
     #: are launchable but expose no CLI of their own.
     cli: typer.Typer | None = None
 
+    def __post_init__(self) -> None:
+        """Reject a settable surface that names agents outside the roster.
+
+        A generic caller reads :attr:`settable_config` to know which ``config``
+        fields an operator may set per agent; if it named an agent the roster
+        does not contain, that drift would surface only downstream (a form field
+        for a non-existent agent). A roster member with no settable fields may be
+        omitted, so this is a subset check, not equality. Validating here makes a
+        mismatch a registration-time error -- exactly when the app author can fix
+        it -- rather than a silent inconsistency the control service inherits.
+        """
+        unknown = set(self.settable_config.agents) - set(self.roster)
+        if unknown:
+            raise ValueError(
+                f"settable_config names agent(s) {sorted(unknown)} absent from the "
+                f"roster {sorted(self.roster)}"
+            )
+
     def run(self, config: EpisodeConfig, *, parquet_log: Path | None = None) -> int:
         """Launch and supervise one episode of this app; return its exit code.
 
@@ -174,6 +192,13 @@ def load_apps() -> dict[str, AppSpec]:
     :attr:`AppSpec.name` is the undashed subject prefix. An entry point that
     does not resolve to an :class:`AppSpec` is a packaging error and raises
     :class:`TypeError`.
+
+    Deliberately uncached: each call re-scans installed-distribution metadata, so
+    an app installed into a long-running process is picked up without a restart.
+    The scan is cheap for the CLI's single dispatch; a hot-path caller (a control
+    service launching many episodes) should call this once and hold the result --
+    or cache :func:`load_app` itself -- rather than have the library pin a
+    snapshot of what is installed.
     """
     apps: dict[str, AppSpec] = {}
     for entry in entry_points(group=ENTRY_POINT_GROUP):
