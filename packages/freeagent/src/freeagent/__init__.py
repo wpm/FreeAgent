@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from .agent import Agent
 from .cli import (
+    AGENT_FIELDS,
+    ENVIRONMENT_FIELDS,
+    LLM_AGENT_FIELDS,
     NATS_URL_ENV_VAR,
     AppSpec,
     ConfigError,
@@ -83,13 +86,16 @@ from .transport import (
 )
 
 __all__ = [
+    "AGENT_FIELDS",
     "DEFAULT_EPISODE_TIMEOUT",
     "DEFAULT_GRACE_PERIOD",
     "DEFAULT_LOG_LEVEL",
     "DEFAULT_SETUP_TIMEOUT",
+    "ENVIRONMENT_FIELDS",
     "ENV_NAME",
     "KEY_MODELS",
     "LLM",
+    "LLM_AGENT_FIELDS",
     "LOG_LEVEL_ENV_VAR",
     "MODEL_ENV_VAR",
     "NAME_PATTERN",

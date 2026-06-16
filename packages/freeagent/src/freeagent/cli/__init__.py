@@ -36,7 +36,10 @@ import typer
 from freeagent.logging import DEFAULT_LOG_LEVEL, LOG_LEVEL_ENV_VAR, configure_logging
 
 from .apps import (
+    AGENT_FIELDS,
     ENTRY_POINT_GROUP,
+    ENVIRONMENT_FIELDS,
+    LLM_AGENT_FIELDS,
     AppSpec,
     ConfigField,
     SettableConfig,
@@ -99,7 +102,10 @@ ParquetLogOption = Annotated[
 ]
 
 __all__ = [
+    "AGENT_FIELDS",
     "ENTRY_POINT_GROUP",
+    "ENVIRONMENT_FIELDS",
+    "LLM_AGENT_FIELDS",
     "NATS_URL_ENV_VAR",
     "AppSpec",
     "ConfigError",
