@@ -10,7 +10,15 @@ from noop_app import NoopAgent, NoopEnvironment, NotAnAgent
 from typer.testing import CliRunner
 
 import freeagent.cli as cli
-from freeagent import ConfigError, EpisodeConfig, ParquetLogOption, run_episode
+from freeagent import (
+    ConfigError,
+    EpisodeConfig,
+    EpisodeStatus,
+    ParquetLogOption,
+    make_plan,
+    run_episode,
+)
+from freeagent.cli import orchestrate
 
 
 def _app_with_parquet_log() -> typer.Typer:
@@ -84,3 +92,47 @@ def test_parquet_log_refuses_to_overwrite(tmp_path: Path) -> None:
     result = CliRunner().invoke(_app_with_parquet_log(), ["--parquet-log", str(target)])
     assert result.exit_code == 2  # Typer usage error
     assert "already exists" in result.output
+
+
+class _FinishedProc:
+    """A stand-in process that is already gone, so cleanup is a no-op."""
+
+    returncode = 0
+
+    async def wait(self) -> int:
+        return 0
+
+
+async def test_handle_records_error_when_supervision_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected supervision failure latches an ERROR outcome and still raises.
+
+    No NATS or child processes: the failure is injected into the supervisor, and
+    the point is that ``state`` becomes ERROR (not a wedged RUNNING) for a poller
+    while ``wait()`` still re-raises for an awaiter.
+    """
+    boom = RuntimeError("supervision blew up")
+
+    async def _raise(*_args: object, **_kwargs: object) -> int:
+        raise boom
+
+    monkeypatch.setattr(orchestrate, "_wait_for_environment", _raise)
+    plan = make_plan(EpisodeConfig(), app="noopapp", roster=["alpha"])
+    env_proc = _FinishedProc()
+    handle = orchestrate.EpisodeHandle(
+        plan=plan,
+        agent_procs=[],
+        env_proc=env_proc,  # type: ignore[arg-type]
+        recorder_proc=None,
+        children=[env_proc],  # type: ignore[list-item]
+    )
+
+    with pytest.raises(RuntimeError, match="supervision blew up"):
+        await handle.wait()
+
+    assert handle.state is EpisodeStatus.ERROR
+    assert handle.outcome is not None
+    assert handle.outcome.status is EpisodeStatus.ERROR
+    assert handle.outcome.exit_code == 1
+    assert "supervision blew up" in handle.outcome.summary

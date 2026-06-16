@@ -54,8 +54,10 @@ slow = pytest.mark.skipif(
 
 FAST_ENV = {"setup_timeout": 1.0, "episode_timeout": 1.0, "grace_period": 0.2}
 ABORT_ENV = {"setup_timeout": 0.5, "episode_timeout": 5.0, "grace_period": 0.2}
-# Long episode timeout: the episode stays RUNNING so a test can abort it.
-LONG_ENV = {"setup_timeout": 1.0, "episode_timeout": 30.0, "grace_period": 0.2}
+# Long timeouts so the episode stays RUNNING for a test to abort: a generous
+# setup window (the abort, not a slow join, must be what ends it) and a long
+# episode timeout (it must not end on its own before the test aborts it).
+LONG_ENV = {"setup_timeout": 10.0, "episode_timeout": 30.0, "grace_period": 0.2}
 
 
 def _noop_plan(env_config: dict[str, object]) -> EpisodePlan:
