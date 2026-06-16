@@ -39,7 +39,13 @@ from .config import (
     load_config,
     make_plan,
 )
-from .orchestrate import run_episode
+from .orchestrate import (
+    EpisodeHandle,
+    EpisodeOutcome,
+    EpisodeStatus,
+    run_episode,
+    start_episode,
+)
 from .replay import replay as _replay_command
 
 if TYPE_CHECKING:
@@ -84,7 +90,10 @@ __all__ = [
     "NATS_URL_ENV_VAR",
     "ConfigError",
     "EpisodeConfig",
+    "EpisodeHandle",
+    "EpisodeOutcome",
     "EpisodePlan",
+    "EpisodeStatus",
     "ParquetLogOption",
     "build_root_app",
     "default_nats_url",
@@ -92,6 +101,7 @@ __all__ = [
     "main",
     "make_plan",
     "run_episode",
+    "start_episode",
 ]
 
 
