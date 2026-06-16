@@ -7,7 +7,7 @@ isolated::
     <app>.episode.<id>.public            broadcast channel -- the room
     <app>.episode.<id>.agent.<name>      per-agent inbox
     <app>.episode.<id>.control           lifecycle: start / shutdown (environment -> agents only)
-    <app>.episode.<id>.env               environment's inbox (agent -> environment management)
+    <app>.episode.<id>.env               environment's inbox (agent mgmt; operator-abort)
     <app>.episode.<id>.reply.<req-id>    replies to environment-originated requests
     <app>.episode.<id>.log.<name>        optional log-only telemetry; no agent subscribes
 
@@ -95,7 +95,11 @@ class EpisodeSubjects:
 
     @property
     def env(self) -> str:
-        """The environment's inbox for app-defined agent -> environment messages."""
+        """The environment's inbox: app-defined agent -> environment messages.
+
+        Also carries the framework's one service -> environment message, the
+        operator-abort request (see :mod:`freeagent.control`).
+        """
         return f"{self.root}.{ENV_NAME}"
 
     @property

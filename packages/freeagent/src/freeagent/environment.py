@@ -17,9 +17,15 @@ this base class plus a roster, zero overrides.
 **Control flows one way.** The environment broadcasts on the control subject;
 agents never send on it. Agents *can* send app-defined management messages to
 the environment's inbox (e.g. "the game is over") -- the inbox message is
-information, the control broadcast is the decision. Replies to
-environment-originated requests use episode-scoped reply subjects
-(``<app>.episode.<id>.reply.<req-id>``), never NATS's ``_INBOX.>``.
+information, the control broadcast is the decision. The same inbox carries the
+framework's one service->environment message, an **operator-abort request**
+(``{"type": "freeagent.abort"}``): it asks the environment to take its normal
+``stopping -> aborted`` path -- ``shutdown`` broadcast, grace period, exit with
+the aborted code -- rather than have its process killed (which would skip the
+broadcast and strand agents). Here too the request is information; the broadcast
+is the decision. Replies to environment-originated requests use episode-scoped
+reply subjects (``<app>.episode.<id>.reply.<req-id>``), never NATS's
+``_INBOX.>``.
 
 Handlers here obey the same hard rule as agents: **fast and non-blocking** --
 no LLM calls or slow work inside a handler; slow work is a spawned task.
@@ -82,7 +88,17 @@ _MANAGEMENT_PREFIX = "freeagent."
 _SETUP_TIMER = "freeagent.setup_timeout"
 _EPISODE_TIMER = "freeagent.episode_timeout"
 _SHUTDOWN_TIMER = "freeagent.shutdown"
+_ABORT_SIGNAL = "freeagent.operator_abort"
 _GRACE_TIMER = "freeagent.grace_period"
+
+OPERATOR_ABORT_TYPE = "freeagent.abort"
+"""Management ``type`` of an operator-abort request on the environment inbox.
+
+Part of the service->environment control protocol (see :mod:`freeagent.control`):
+sent on ``<root>.env``, it asks the environment to abort gracefully -- broadcast
+``shutdown``, run the grace period, and settle in ``aborted``. Lifecycle
+authority stays with the environment: the message is a request, not a command.
+"""
 
 
 def _management_type(payload: Any) -> str | None:
@@ -138,6 +154,7 @@ class Environment:
         self.grace_period = float(self.config.get("grace_period", DEFAULT_GRACE_PERIOD))
         self._subjects = EpisodeSubjects(app=app, episode_id=self.episode_id)
         self._state = EpisodeState.SETUP
+        self._terminal_state = EpisodeState.ENDED
         self.state_history: list[EpisodeState] = [EpisodeState.SETUP]
         self.outcome: Any = None
         self.abort_reason: str | None = None
@@ -247,6 +264,20 @@ class Environment:
         goes out when that event is processed. No-op unless running.
         """
         self._events.put_nowait(TimerEvent(_SHUTDOWN_TIMER, reason))
+
+    def initiate_abort(self, reason: str | None = None) -> None:
+        """Decide to abort the episode: graceful shutdown that ends in ``aborted``.
+
+        The graceful sibling of :meth:`initiate_shutdown` -- same ``stopping``
+        path (``shutdown`` broadcast, grace period for goodbyes) but the episode
+        settles in ``aborted`` (exit code 2), not ``ended``. This is what an
+        operator-abort request on the inbox triggers, and what an in-process
+        supervisor calls to abort gracefully instead of killing the env process
+        (which would skip the broadcast and strand agents). Like
+        :meth:`initiate_shutdown`, it transitions at the fold boundary and is a
+        no-op unless running.
+        """
+        self._events.put_nowait(TimerEvent(_ABORT_SIGNAL, reason))
 
     async def broadcast_control(self, payload: Any) -> None:
         """Broadcast a lifecycle message on the control subject (environment only).
@@ -379,10 +410,27 @@ class Environment:
             return
         if envelope.sender == ENV_NAME:
             return  # the environment's own publication echoed back
-        if _management_type(envelope.payload) is not None:
+        mtype = _management_type(envelope.payload)
+        if mtype is not None:
+            if event.channel == "env" and mtype == OPERATOR_ABORT_TYPE:
+                self._request_operator_abort(envelope)
+                return
             logger.debug("env: ignoring management message on %s", event.channel)
             return
         await self.perceive(envelope)
+
+    def _request_operator_abort(self, envelope: Envelope) -> None:
+        """Honor an operator-abort request on the inbox: begin the graceful abort.
+
+        The environment keeps control authority -- this only *initiates* the
+        abort (the broadcast remains the decision); :meth:`initiate_abort` is a
+        no-op unless the episode is running.
+        """
+        payload = envelope.payload
+        reason = payload.get("reason") if isinstance(payload, dict) else None
+        detail = reason if isinstance(reason, str) else "operator abort"
+        logger.info("env: operator abort requested by %r: %s", envelope.sender, detail)
+        self.initiate_abort(detail)
 
     async def _dispatch_timer(self, event: TimerEvent) -> None:
         if event.name == _SETUP_TIMER:
@@ -394,9 +442,11 @@ class Environment:
                 self.initiate_shutdown("episode timeout")
         elif event.name == _SHUTDOWN_TIMER:
             await self._enter_stopping(event.payload)
+        elif event.name == _ABORT_SIGNAL:
+            await self._enter_stopping(event.payload, terminal=EpisodeState.ABORTED)
         elif event.name == _GRACE_TIMER:
             if self._state is EpisodeState.STOPPING:
-                self._set_state(EpisodeState.ENDED)
+                self._set_state(self._terminal_state)
         elif event.name.startswith(_MANAGEMENT_PREFIX):  # pragma: no cover - defensive
             logger.warning("env: unknown framework timer %s", event.name)
         else:
@@ -427,10 +477,23 @@ class Environment:
         await self.broadcast_control({"type": "start"})
         self.schedule_timer(self.episode_timeout, _EPISODE_TIMER)
 
-    async def _enter_stopping(self, reason: Any) -> None:
+    async def _enter_stopping(
+        self, reason: Any, terminal: EpisodeState = EpisodeState.ENDED
+    ) -> None:
+        """Begin the grace period; settle in *terminal* (``ended`` or ``aborted``).
+
+        Both shutdown triggers share this path -- the only difference is the
+        terminal state the grace timer lands on: a normal shutdown ends in
+        ``ended``, an operator abort in ``aborted``. The ``shutdown`` broadcast
+        and grace period are identical, so agents wind down the same way either
+        way.
+        """
         if self._state is not EpisodeState.RUNNING:
             return
         self.shutdown_reason = reason if isinstance(reason, str) else None
+        self._terminal_state = terminal
+        if terminal is EpisodeState.ABORTED:
+            self.abort_reason = self.shutdown_reason
         self._set_state(EpisodeState.STOPPING)
         await self.broadcast_control({"type": "shutdown"})
         self.schedule_timer(self.grace_period, _GRACE_TIMER)
