@@ -58,7 +58,7 @@ def test_replay_is_mounted_on_the_root_app(monkeypatch: pytest.MonkeyPatch, tmp_
     _write_log(log)
     calls: dict[str, Any] = {}
     _stub_replay(monkeypatch, calls, result=1)
-    monkeypatch.setattr(cli, "_discover_apps", dict)  # no apps; replay must still be there
+    monkeypatch.setattr(cli, "load_apps", dict)  # no apps; replay must still be there
 
     result = CliRunner().invoke(cli.build_root_app(), ["replay", str(log), "--as-fast-as-possible"])
 

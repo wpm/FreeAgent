@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.entry-points."freeagent.apps"]
-twenty-questions = "twentyquestions.cli:app"
+twenty-questions = "twentyquestions.cli:APP"
 
 [build-system]
 requires = ["hatchling"]
