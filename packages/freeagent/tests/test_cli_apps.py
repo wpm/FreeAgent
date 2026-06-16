@@ -115,3 +115,25 @@ def test_appspec_is_frozen() -> None:
     spec = AppSpec(name="x", environment=NoopEnvironment, roster={})
     with pytest.raises(FrozenInstanceError):
         spec.name = "y"  # type: ignore[misc]
+
+
+def test_appspec_rejects_settable_config_for_a_non_roster_agent() -> None:
+    """A settable surface naming an agent outside the roster fails at construction."""
+    with pytest.raises(ValueError, match=r"settable_config names agent\(s\) \['ghost'\]"):
+        AppSpec(
+            name="x",
+            environment=NoopEnvironment,
+            roster={"alpha": NoopAgent},
+            settable_config=SettableConfig(agents={"ghost": ()}),
+        )
+
+
+def test_appspec_allows_roster_member_with_no_settable_fields() -> None:
+    """The roster/settable check is a subset: an agent may expose no settable config."""
+    spec = AppSpec(
+        name="x",
+        environment=NoopEnvironment,
+        roster={"alpha": NoopAgent, "beta": NoopAgent},
+        settable_config=SettableConfig(agents={"alpha": ()}),  # beta omitted, fine
+    )
+    assert set(spec.roster) == {"alpha", "beta"}

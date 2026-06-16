@@ -13,7 +13,7 @@ That same identity is also advertised, once, as an :class:`~freeagent.AppSpec`
 can run an episode of this app without importing it by name. ``APP`` is what the
 ``freeagent.apps`` entry point points at; it carries the subject-prefix name,
 the environment, the roster, the settable config surface, and the Typer
-sub-app (:data:`app`) the root CLI mounts.
+sub-app (:data:`cli`) the root CLI mounts.
 
 Invoked as::
 
@@ -28,6 +28,8 @@ from typing import Annotated
 import typer
 
 from freeagent import (
+    ENVIRONMENT_FIELDS,
+    LLM_AGENT_FIELDS,
     AppSpec,
     ConfigError,
     ConfigField,
@@ -36,7 +38,6 @@ from freeagent import (
     SettableConfig,
     load_config,
 )
-from freeagent.cli.apps import ENVIRONMENT_FIELDS, LLM_AGENT_FIELDS
 
 from .environment import TwentyQuestionsEnvironment
 from .host import Host
@@ -81,7 +82,7 @@ SETTABLE_CONFIG = SettableConfig(
     },
 )
 
-app = typer.Typer(
+cli = typer.Typer(
     name=APP_NAME,
     help="Twenty Questions: one Host and three Players, no turn-taking.",
     add_completion=False,
@@ -89,7 +90,7 @@ app = typer.Typer(
 )
 
 
-@app.command()
+@cli.command()
 def run(
     config: Annotated[
         Path | None,
@@ -115,11 +116,11 @@ def run(
 
 
 #: The application's self-description: what ``freeagent.apps`` registers and what
-#: a generic launcher loads. Defined after ``app`` so it can carry the CLI.
+#: a generic launcher loads. Defined after ``cli`` so it can carry the sub-app.
 APP = AppSpec(
     name=APP_NAME,
     environment=ENVIRONMENT,
     roster=ROSTER,
     settable_config=SETTABLE_CONFIG,
-    cli=app,
+    cli=cli,
 )

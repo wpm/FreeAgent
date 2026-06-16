@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import typer
 
-from freeagent import Agent, AppSpec, ConfigField, Environment, SettableConfig
-from freeagent.cli.apps import AGENT_FIELDS
+from freeagent import AGENT_FIELDS, Agent, AppSpec, ConfigField, Environment, SettableConfig
 
 
 class NoopAgent(Agent):
