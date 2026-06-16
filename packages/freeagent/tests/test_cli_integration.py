@@ -146,6 +146,27 @@ async def test_handle_request_abort_interrupts_a_running_episode() -> None:
 
 @slow
 @requires_nats
+async def test_handle_abort_drives_graceful_aborted_shutdown() -> None:
+    """abort() ends a running episode gracefully: ABORTED, exit 2, all torn down."""
+    agents = {"alpha": NoopAgent, "beta": NoopAgent}
+    handle = await start_episode(_noop_plan(LONG_ENV), NoopEnvironment, agents)
+    # Let the episode come up, then abort it well before its 30s timeout.
+    await asyncio.sleep(2.0)
+    assert handle.state is EpisodeStatus.RUNNING
+
+    # Unlike request_abort(), this sends the operator-abort request over NATS;
+    # the environment broadcasts shutdown, runs its grace period, and exits with
+    # the aborted code -- so the outcome is ABORTED (exit 2), not INTERRUPTED.
+    outcome = await handle.abort("operator test")
+
+    assert outcome.status is EpisodeStatus.ABORTED
+    assert outcome.exit_code == 2
+    assert handle.state is EpisodeStatus.ABORTED
+    assert all(proc.returncode is not None for proc in handle.processes)
+
+
+@slow
+@requires_nats
 async def test_two_concurrent_episodes_do_not_interfere() -> None:
     """Two handles run in one loop, on distinct episodes, both reaching ENDED."""
     agents = {"alpha": NoopAgent, "beta": NoopAgent}

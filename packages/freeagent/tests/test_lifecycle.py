@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from freeagent_testing import connected_transport, decoded, published, wait_for
 
-from freeagent import Agent, Envelope, Environment, EpisodeState
+from freeagent import Agent, Envelope, Environment, EpisodeState, publish_operator_abort
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -211,6 +211,64 @@ async def test_grace_period_lets_goodbyes_land_before_ended() -> None:
     # perceived by the environment while STOPPING -- i.e. inside the grace
     # period, before ENDED.
     assert ("alice", "goodbye", EpisodeState.STOPPING) in env.seen
+
+
+async def test_operator_abort_drives_graceful_aborted_shutdown() -> None:
+    transport = await connected_transport()
+    env = SignalEnv(
+        APP,
+        ["alice"],
+        episode_id=EPISODE,
+        config={**FAST, "episode_timeout": 5.0, "grace_period": 0.2},
+    )
+    alice = GoodbyeAgent(env.subject_root, "alice", config={"grace_period": 0.05})
+
+    async def abort_once_running() -> None:
+        await wait_for(lambda: env.state is EpisodeState.RUNNING, message="running")
+        await publish_operator_abort(transport, APP, EPISODE, reason="operator test")
+
+    aborter = asyncio.create_task(abort_once_running())
+    try:
+        state = await run_episode(env, [alice], transport)
+    finally:
+        aborter.cancel()
+
+    # The operator request drove the normal stopping path, but settling in
+    # ABORTED (exit code 2), not ENDED.
+    assert state is EpisodeState.ABORTED
+    assert env.state_history == [
+        EpisodeState.SETUP,
+        EpisodeState.RUNNING,
+        EpisodeState.STOPPING,
+        EpisodeState.ABORTED,
+    ]
+    assert env.abort_reason == "operator test"
+    assert env.shutdown_reason == "operator test"
+    # Same broadcast as any shutdown: start fired before the wind-down.
+    control = [e.payload["type"] for e in published(transport, f"{APP}.episode.{EPISODE}.control")]
+    assert control == ["start", "shutdown"]
+    # The grace period was honored: the goodbye landed while STOPPING, before
+    # the episode reached ABORTED.
+    assert ("alice", "goodbye", EpisodeState.STOPPING) in env.seen
+    # Nothing escaped the episode's subject root (no _INBOX.> replies).
+    assert all(s.startswith(f"{APP}.episode.{EPISODE}.") for s, _ in decoded(transport))
+
+
+async def test_operator_abort_before_running_is_ignored() -> None:
+    # An abort request that arrives during setup (no agents present yet) is a
+    # no-op: initiate_abort only acts on a running episode. The episode then
+    # aborts on its own at the setup timeout, for the usual reason.
+    transport = await connected_transport()
+    env = Environment(
+        APP, ["alice", "ghost"], episode_id=EPISODE, config={**FAST, "setup_timeout": 0.1}
+    )
+    await publish_operator_abort(transport, APP, EPISODE, reason="too early")
+    alice = Agent(env.subject_root, "alice", config=AGENT_FAST)
+    state = await run_episode(env, [alice], transport)
+
+    assert state is EpisodeState.ABORTED
+    assert env.abort_reason is not None
+    assert "ghost" in env.abort_reason  # setup-timeout reason, not the operator's
 
 
 async def test_agents_start_idle_and_activate_on_the_gun() -> None:

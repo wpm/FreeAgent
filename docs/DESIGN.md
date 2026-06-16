@@ -108,7 +108,7 @@ sequenceDiagram
     Note over E,A: free-for-all begins — no one acts before the gun
 ```
 
-**Shutdown** has four triggers, all first-class: the environment decides, an agent signals the environment via its inbox (game over), the episode timeout fires (owned by the environment's clock), or an external operator intervenes. In every case the environment broadcasts `stop` on control, agents wind down cooperatively, and the environment optionally publishes an outcome record as the episode's last word. Per-phase timeouts (e.g. "answer within 30 s") are application policy built on a library timer primitive, not framework structure.
+**Shutdown** has four triggers, all first-class: the environment decides, an agent signals the environment via its inbox (game over), the episode timeout fires (owned by the environment's clock), or an external operator intervenes. The operator (the control service, or an in-process supervisor holding an episode handle) intervenes by *requesting*, not commanding: it sends an `freeagent.abort` message on the environment's inbox (`<id>.env`), and the environment takes its normal stopping path but settles in `aborted` rather than `ended` — never by killing the environment process, which would skip the broadcast and strand agents. In every case the environment broadcasts `shutdown` on control, agents wind down cooperatively, and the environment optionally publishes an outcome record as the episode's last word. Per-phase timeouts (e.g. "answer within 30 s") are application policy built on a library timer primitive, not framework structure.
 
 ## Logging
 
