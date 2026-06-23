@@ -2,166 +2,76 @@
   import { onMount } from "svelte";
 
   import { resolveConfig } from "./config";
-  import { EpisodeController, type LaunchSettings } from "./controller.svelte";
-  import EpisodePanel from "./lib/EpisodePanel.svelte";
+  import { EpisodeViewer } from "./viewer.svelte";
+  import ConnectionStatus from "./lib/ConnectionStatus.svelte";
+  import Transcript from "./lib/Transcript.svelte";
 
-  const controller = new EpisodeController();
   const initial = resolveConfig();
+  const viewer = new EpisodeViewer();
 
-  // The launch surface. The roster (player count) is source-defined for v1, so
-  // these are the only knobs: the Host's secret, a model override for every LLM
-  // agent, the logging file, and an optional fixed episode id.
-  let settings = $state<LaunchSettings>({ secret: "", model: "", parquetLog: "", episodeId: "" });
-
-  // The read-only observe bar: attach a transcript to a subject by hand, exactly
-  // as the original single-episode viewer did (no control plane involved).
+  let server = $state(initial.server);
   let subject = $state(initial.subject);
-  let replayPath = $state("");
 
-  function observe() {
+  const active = $derived(
+    viewer.state === "connecting" ||
+      viewer.state === "waiting" ||
+      viewer.state === "live" ||
+      viewer.state === "reconnecting",
+  );
+
+  function start() {
+    const s = server.trim();
     const subj = subject.trim();
-    if (!subj) return;
-    controller.observe(controller.config.natsWs, subj);
+    if (!s || !subj) return;
+    void viewer.connect(s, subj);
   }
 
-  function startLive() {
-    void controller.startLive(settings);
-  }
-
-  function startReplay() {
-    const path = replayPath.trim();
-    if (!path) return;
-    void controller.startReplay(path);
-  }
-
-  // A shared link that already names an episode just works: attach to it on load
-  // through the same read-only path, otherwise wait for the operator.
+  // Auto-connect when the URL already names an episode, so a shared link just
+  // works; otherwise wait for the operator to fill in the subject.
   onMount(() => {
-    if (initial.subject) observe();
+    if (initial.subject) start();
   });
 </script>
 
 <main>
-  <header class="top">
+  <header>
     <div class="titles">
       <h1>Twenty Questions</h1>
-      <p class="subtitle">control plane — configure, launch, and watch episodes</p>
+      <p class="subtitle">live transcript over NATS</p>
     </div>
-    <button
-      type="button"
-      class="ghost"
-      disabled={controller.busy}
-      onclick={() => controller.refresh()}>Refresh</button
-    >
+    <ConnectionStatus state={viewer.state} detail={viewer.detail} />
   </header>
 
-  <section class="config">
+  <form
+    class="controls"
+    onsubmit={(event) => {
+      event.preventDefault();
+      start();
+    }}
+  >
     <label>
-      <span>Control service</span>
+      <span>Server</span>
+      <input bind:value={server} placeholder="ws://localhost:8080" autocomplete="off" />
+    </label>
+    <label class="grow">
+      <span>Subject</span>
       <input
-        bind:value={controller.config.control}
-        placeholder="http://localhost:8000"
+        bind:value={subject}
+        placeholder="twentyquestions.episode.&lt;id&gt;.public"
         autocomplete="off"
       />
     </label>
-    <label>
-      <span>NATS websocket</span>
-      <input
-        bind:value={controller.config.natsWs}
-        placeholder="ws://localhost:8080"
-        autocomplete="off"
-      />
-    </label>
-    <label>
-      <span>Application</span>
-      <input
-        bind:value={controller.config.application}
-        placeholder="twenty-questions"
-        autocomplete="off"
-      />
-    </label>
-  </section>
-
-  <section class="launch">
-    <form
-      class="row"
-      onsubmit={(event) => {
-        event.preventDefault();
-        startLive();
-      }}
-    >
-      <label class="grow">
-        <span>Host secret</span>
-        <input bind:value={settings.secret} placeholder="(random canned secret)" autocomplete="off" />
-      </label>
-      <label>
-        <span>Model</span>
-        <input bind:value={settings.model} placeholder="(app default)" autocomplete="off" />
-      </label>
-      <label>
-        <span>Logging file</span>
-        <input bind:value={settings.parquetLog} placeholder="out/episode.parquet" autocomplete="off" />
-      </label>
-      <label>
-        <span>Episode id</span>
-        <input bind:value={settings.episodeId} placeholder="(auto)" autocomplete="off" />
-      </label>
-      <button type="submit" disabled={controller.busy}>Start episode</button>
-    </form>
-
-    <form
-      class="row"
-      onsubmit={(event) => {
-        event.preventDefault();
-        startReplay();
-      }}
-    >
-      <label class="grow">
-        <span>Replay log</span>
-        <input bind:value={replayPath} placeholder="out/episode.parquet" autocomplete="off" />
-      </label>
-      <button type="submit" disabled={controller.busy}>Replay</button>
-    </form>
-
-    <form
-      class="row"
-      onsubmit={(event) => {
-        event.preventDefault();
-        observe();
-      }}
-    >
-      <label class="grow">
-        <span>Observe subject (read-only)</span>
-        <input
-          bind:value={subject}
-          placeholder="twentyquestions.episode.&lt;id&gt;.public"
-          autocomplete="off"
-        />
-      </label>
-      <button type="submit" class="secondary">Connect</button>
-    </form>
-
-    {#if controller.error}
-      <p class="detail error">{controller.error}</p>
+    <button type="submit">{active ? "Reconnect" : "Connect"}</button>
+    {#if active}
+      <button type="button" class="secondary" onclick={() => viewer.disconnect()}>Disconnect</button>
     {/if}
-  </section>
+  </form>
 
-  {#if controller.episodes.length === 0}
-    <p class="empty">
-      No episodes yet. Start one above, replay a recorded log, or attach to a subject to watch.
-    </p>
-  {:else}
-    <div class="grid">
-      {#each controller.episodes as episode (episode.key)}
-        <EpisodePanel
-          {episode}
-          busy={controller.busy}
-          onstop={(e) => controller.stop(e)}
-          onclose={(e) => controller.close(e)}
-        />
-      {/each}
-    </div>
+  {#if viewer.detail}
+    <p class="detail" class:error={viewer.state === "error"}>{viewer.detail}</p>
   {/if}
+
+  <Transcript messages={viewer.messages} />
 </main>
 
 <style>
@@ -169,17 +79,18 @@
     display: flex;
     flex-direction: column;
     height: 100vh;
+    max-width: 720px;
     margin: 0 auto;
-    background: var(--bg);
+    background: var(--surface);
+    box-shadow: 0 0 2.5rem rgba(15, 23, 42, 0.08);
   }
 
-  .top {
+  header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
-    padding: 0.9rem 1.25rem;
-    background: var(--surface);
+    padding: 0.9rem 1rem;
     border-bottom: 1px solid var(--border);
   }
 
@@ -194,31 +105,14 @@
     color: var(--muted);
   }
 
-  .config,
-  .launch {
-    padding: 0.7rem 1.25rem;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-  }
-
-  .config {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.6rem;
-    background: var(--surface-2);
-  }
-
-  .launch {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .row {
+  .controls {
     display: flex;
     flex-wrap: wrap;
     align-items: flex-end;
     gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
   }
 
   label {
@@ -256,49 +150,22 @@
     cursor: pointer;
   }
 
-  button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  button.secondary,
-  button.ghost {
+  button.secondary {
     background: var(--surface);
     color: var(--muted);
     border-color: var(--border);
   }
 
   .detail {
-    margin: 0.2rem 0 0;
-    font-size: 0.78rem;
+    margin: 0;
+    padding: 0.35rem 1rem;
+    font-size: 0.75rem;
     color: var(--muted);
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
   }
 
   .detail.error {
     color: #dc2626;
-  }
-
-  .empty {
-    margin: auto;
-    color: var(--muted);
-    font-style: italic;
-    text-align: center;
-    padding: 2rem;
-  }
-
-  .grid {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
-    gap: 0.9rem;
-    padding: 0.9rem 1.25rem;
-    align-content: start;
-  }
-
-  /* Each panel gets a bounded height so its transcript scrolls independently. */
-  .grid :global(.panel) {
-    height: min(32rem, 70vh);
   }
 </style>
