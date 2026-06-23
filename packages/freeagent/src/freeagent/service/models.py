@@ -107,6 +107,10 @@ class EpisodeView(BaseModel):
     mode: EpisodeMode
     status: str
     detail: str | None = None
+    #: Whether the service still holds a handle it can gracefully stop -- true
+    #: only while running. The browser shows **Stop** only where this is set; a
+    #: pre-restart episode has no view at all, so discovery offers no Stop for it.
+    controllable: bool = False
     nats_url: str
     created_at: datetime
 

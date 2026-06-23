@@ -17,6 +17,9 @@
  * URL, exactly as the old viewer did, with no control-plane handle). Both render
  * through the same transcript panel.
  */
+import { wsconnect, type NatsConnection } from "@nats-io/nats-core";
+import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
+
 import { resolveControllerConfig, type ControllerConfig } from "./config";
 import {
   ControlClient,
@@ -25,6 +28,7 @@ import {
   type CreateEpisodeRequest,
   type EpisodeView,
 } from "./control";
+import { discoverEpisodes, type DiscoveredEpisode } from "./discovery";
 import { EpisodeViewer } from "./viewer.svelte";
 
 /** The settable launch surface an operator drives from the browser.
@@ -59,6 +63,17 @@ export interface WatchedEpisode {
   title: string;
 }
 
+/**
+ * One discovered episode as the controller surfaces it: the JetStream facts plus
+ * the control service's REST view *when it owns the episode*. A null `view` means
+ * the service does not know it (CLI-launched, another instance, pre-restart) — it
+ * is still watchable, just not stoppable. Where `view` is present its lifecycle
+ * `status`/`detail` and `controllable` flag overlay the bare wire facts.
+ */
+export interface DiscoveredEntry extends DiscoveredEpisode {
+  view: EpisodeView | null;
+}
+
 /** The Host agent's roster name — where its `secret` config rides. */
 const HOST = "host";
 /** Every roster member a `model` override applies to (the Host plus the Players). */
@@ -76,6 +91,18 @@ export class EpisodeController {
   error = $state("");
   /** True while a control request is in flight, to disable the launch controls. */
   busy = $state(false);
+  /** Every episode found on the bus, newest activity first; the discovery list. */
+  discovered = $state<DiscoveredEntry[]>([]);
+  /** The last discovery error (NATS unreachable), shown beside the list. */
+  discoveryError = $state("");
+
+  /** The NATS connection discovery lists streams over, and its manager. */
+  #discoveryNc: NatsConnection | null = null;
+  #discoveryJsm: JetStreamManager | null = null;
+  /** The websocket URL the discovery connection is bound to, to spot retargeting. */
+  #discoveryServer = "";
+  /** The polling timer, so discovery can be torn down. */
+  #discoveryTimer: ReturnType<typeof setInterval> | null = null;
 
   /** A REST client bound to the current control-service URL. */
   get #client(): ControlClient {
@@ -99,6 +126,123 @@ export class EpisodeController {
     this.episodes = [...this.episodes, episode];
     void viewer.connect(server, subject);
     return episode;
+  }
+
+  /**
+   * Begin polling JetStream for the set of episodes on the bus.
+   *
+   * Discovery is a **read over NATS** (ADR-0001): it lists streams directly
+   * through the websocket connection, so it works even with the control service
+   * down. The service is consulted only to *overlay* lifecycle status and a Stop
+   * handle onto episodes it owns; a service failure leaves discovery intact. Poll
+   * once immediately, then on an interval so new episodes — live or replayed,
+   * from any source — appear without a manual refresh.
+   */
+  async startDiscovery(intervalMs = 3000): Promise<void> {
+    this.stopDiscovery();
+    await this.discover();
+    this.#discoveryTimer = setInterval(() => void this.discover(), intervalMs);
+  }
+
+  /** Stop polling and drop the discovery connection. */
+  stopDiscovery(): void {
+    if (this.#discoveryTimer !== null) {
+      clearInterval(this.#discoveryTimer);
+      this.#discoveryTimer = null;
+    }
+    this.#closeDiscoveryConnection();
+  }
+
+  /** Drop just the discovery connection, leaving any poll timer running. */
+  #closeDiscoveryConnection(): void {
+    const nc = this.#discoveryNc;
+    this.#discoveryNc = null;
+    this.#discoveryJsm = null;
+    this.#discoveryServer = "";
+    if (nc && !nc.isClosed()) void nc.close();
+  }
+
+  /**
+   * Refresh the discovery list once: read every episode of this app off the bus,
+   * then overlay the control service's REST view onto the ones it owns.
+   *
+   * The JetStream read is the source of truth for *existence*; the REST list is
+   * best-effort enrichment. If the service is unreachable the discovered episodes
+   * still render (without status or Stop), because the wire already knows them.
+   */
+  async discover(): Promise<void> {
+    const jsm = await this.#discoveryManager();
+    if (jsm === null) return; // NATS unreachable; #discoveryManager set the error
+    let found: DiscoveredEpisode[];
+    try {
+      found = await discoverEpisodes(jsm, this.config.app);
+    } catch (err) {
+      this.discoveryError = err instanceof Error ? err.message : String(err);
+      return;
+    }
+    // Best-effort overlay: index the service's owned episodes by subject identity
+    // so each discovered stream picks up its lifecycle view when there is one.
+    const owned = new Map<string, EpisodeView>();
+    try {
+      for (const view of await this.#client.listEpisodes()) {
+        owned.set(`${view.app}/${view.episode_id}`, view);
+      }
+    } catch {
+      // Service down or unreachable: discovery still stands on its own.
+    }
+    this.discovered = found.map((episode) => ({
+      ...episode,
+      view: owned.get(`${episode.app}/${episode.episodeId}`) ?? null,
+    }));
+    this.discoveryError = "";
+  }
+
+  /**
+   * Attach a read-only viewer to a discovered episode's public channel — the
+   * one-click Watch. When the service owns the episode the panel carries its REST
+   * view (live status, a Stop button); otherwise it is observed read-only, the
+   * same single transcript path a live episode uses (ADR-0001).
+   */
+  watchDiscovered(entry: DiscoveredEntry): WatchedEpisode {
+    const viewer = new EpisodeViewer();
+    const episode: WatchedEpisode = {
+      key: `dsc-${nextKey++}`,
+      viewer,
+      source: entry.view ? "control" : "observe",
+      view: entry.view,
+      title: `${entry.app}/${entry.episodeId}`,
+    };
+    this.episodes = [...this.episodes, episode];
+    void viewer.connect(this.config.natsWs, `${entry.subjectRoot}.public`);
+    return episode;
+  }
+
+  /** Ensure a live discovery connection to the configured websocket NATS. */
+  async #discoveryManager(): Promise<JetStreamManager | null> {
+    // Reuse the connection unless it dropped or the operator retargeted the URL.
+    // Only the connection is dropped here; the poll timer keeps running so the
+    // list refreshes against the new server.
+    if (this.#discoveryServer !== this.config.natsWs) this.#closeDiscoveryConnection();
+    if (this.#discoveryNc && !this.#discoveryNc.isClosed() && this.#discoveryJsm) {
+      return this.#discoveryJsm;
+    }
+    try {
+      const nc = await wsconnect({
+        servers: this.config.natsWs,
+        name: "twentyquestions-discovery",
+        reconnect: true,
+        maxReconnectAttempts: -1,
+        reconnectTimeWait: 1000,
+        timeout: 5000,
+      });
+      this.#discoveryNc = nc;
+      this.#discoveryServer = this.config.natsWs;
+      this.#discoveryJsm = await jetstreamManager(nc);
+      return this.#discoveryJsm;
+    } catch (err) {
+      this.discoveryError = `cannot reach NATS at ${this.config.natsWs} [${String(err)}]`;
+      return null;
+    }
   }
 
   /**
@@ -143,6 +287,7 @@ export class EpisodeController {
     try {
       const view = await this.#client.createEpisode(this.config.application, request);
       this.#watch(view);
+      void this.discover(); // surface the new episode in the list without waiting for the poll
     } catch (err) {
       this.error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -182,6 +327,25 @@ export class EpisodeController {
     } finally {
       this.busy = false;
     }
+  }
+
+  /**
+   * Gracefully stop a discovered episode the service owns, straight from the
+   * discovery list (no panel need be open). Only episodes carrying a controllable
+   * view can be stopped; the list re-reads afterwards to latch the new status.
+   */
+  async stopDiscovered(entry: DiscoveredEntry): Promise<void> {
+    if (entry.view === null) return; // not service-owned: no handle to stop
+    this.busy = true;
+    this.error = "";
+    try {
+      await this.#client.stopEpisode(entry.view.application, entry.view.id);
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : String(err);
+    } finally {
+      this.busy = false;
+    }
+    await this.discover();
   }
 
   /**

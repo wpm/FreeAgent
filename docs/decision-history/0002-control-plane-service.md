@@ -87,6 +87,20 @@ The registry is **not persisted across service restarts** in v1 — a known
 limitation. A restart loses the service's view of episodes (the episodes
 themselves are independent OS processes and survive, but the handles do not).
 
+> **Amended (#36): discovery over JetStream softens this.** The browser now
+> discovers episodes by listing JetStream streams directly (`<app>_episode_<id>`,
+> see `subjects.py`), not by asking the registry. Because the wire already holds
+> the authoritative set of episodes, a restart no longer loses **visibility or
+> watchability**: every episode whose stream still exists — live, replayed, from
+> the CLI, from another instance, or from before the restart — remains
+> discoverable and watchable from the browser. What a restart still loses is only
+> the **control handle**: the ability to gracefully *stop* a pre-restart episode,
+> which is inherent (a new process cannot reattach a supervisor to children it
+> never spawned). So `EpisodeView.controllable` is true only while the service
+> owns the handle; a discovered-but-unowned episode is read-only. Durable
+> persistence of the *handle* across restarts remains the open follow-up; durable
+> persistence of *episode existence* is, in effect, already provided by JetStream.
+
 ### Generic launch via app self-description
 
 Because the service is generic, an app must **advertise** what `run_episode`

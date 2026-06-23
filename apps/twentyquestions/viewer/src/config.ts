@@ -79,6 +79,13 @@ export interface ControllerConfig {
   natsWs: string;
   /** The dashed REST application name the control service routes by. */
   application: string;
+  /**
+   * The undashed subject prefix this app's episodes carry (`twentyquestions`),
+   * distinct from the dashed REST `application` (`twenty-questions`). Discovery
+   * lists JetStream streams directly and filters to this prefix's episodes, so
+   * it needs the subject-level name the wire actually uses.
+   */
+  app: string;
 }
 
 /** Resolve the control-plane configuration from the URL, env, and defaults. */
@@ -91,5 +98,6 @@ export function resolveControllerConfig(
   const control = params.get("control") ?? env.VITE_CONTROL_URL ?? DEFAULT_CONTROL;
   const natsWs = params.get("server") ?? env.VITE_NATS_WS_URL ?? DEFAULT_SERVER;
   const application = params.get("application") ?? env.VITE_APPLICATION ?? DEFAULT_APPLICATION;
-  return { control, natsWs, application };
+  const app = params.get("app") ?? env.VITE_APP_NAME ?? DEFAULT_APP;
+  return { control, natsWs, application, app };
 }

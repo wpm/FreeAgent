@@ -162,6 +162,20 @@ class ManagedEpisode:
     def detail(self) -> str | None:
         return None
 
+    @property
+    def controllable(self) -> bool:
+        """Whether the service can still gracefully stop this episode.
+
+        True only while running: the service holds a live handle (live) or an
+        active playback task (replay) it can wind down; a terminal episode has
+        nothing left to stop. This is what lets the browser show **Stop** only
+        where it can act. A pre-restart episode is not in the registry at all, so
+        it has no view -- discovery finds it over JetStream but offers no Stop,
+        which is inherent: a new process cannot reattach to children it never
+        spawned (ADR-0002).
+        """
+        return self.status == "running"
+
     async def stop(self) -> None:
         """Gracefully bring this episode to a clean end."""
         raise NotImplementedError

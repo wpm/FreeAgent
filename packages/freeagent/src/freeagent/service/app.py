@@ -70,6 +70,7 @@ def _view(episode: ManagedEpisode) -> EpisodeView:
         mode=episode.mode,  # type: ignore[arg-type]
         status=episode.status,
         detail=episode.detail,
+        controllable=episode.controllable,
         nats_url=episode.nats_url,
         created_at=episode.created_at,
     )

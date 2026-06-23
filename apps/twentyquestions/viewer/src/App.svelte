@@ -3,6 +3,7 @@
 
   import { resolveConfig } from "./config";
   import { EpisodeController, type LaunchSettings } from "./controller.svelte";
+  import DiscoveryList from "./lib/DiscoveryList.svelte";
   import EpisodePanel from "./lib/EpisodePanel.svelte";
 
   const controller = new EpisodeController();
@@ -35,9 +36,12 @@
   }
 
   // A shared link that already names an episode just works: attach to it on load
-  // through the same read-only path, otherwise wait for the operator.
+  // through the same read-only path. Either way, start discovering every episode
+  // on the bus so any of them is watchable with one click — no hand-typed subject.
   onMount(() => {
     if (initial.subject) observe();
+    void controller.startDiscovery();
+    return () => controller.stopDiscovery();
   });
 </script>
 
@@ -131,7 +135,7 @@
       }}
     >
       <label class="grow">
-        <span>Observe subject (read-only)</span>
+        <span>Observe subject (fallback — discovery above is the primary path)</span>
         <input
           bind:value={subject}
           placeholder="twentyquestions.episode.&lt;id&gt;.public"
@@ -145,6 +149,14 @@
       <p class="detail error">{controller.error}</p>
     {/if}
   </section>
+
+  <DiscoveryList
+    episodes={controller.discovered}
+    busy={controller.busy}
+    error={controller.discoveryError}
+    onwatch={(entry) => controller.watchDiscovered(entry)}
+    onstop={(entry) => controller.stopDiscovered(entry)}
+  />
 
   {#if controller.episodes.length === 0}
     <p class="empty">

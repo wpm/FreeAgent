@@ -215,6 +215,9 @@ async def test_create_list_get_stop_teardown() -> None:
             assert view["mode"] == "live"
             assert view["status"] == "running"
             assert view["app"] == NOOP_APP
+            # A running episode is controllable: the service holds a handle it can
+            # gracefully stop, so the browser's discovery overlay offers Stop.
+            assert view["controllable"] is True
             # The REST id IS the subject id for a live episode.
             assert view["episode_id"] == episode_id
             assert view["subject_root"] == f"{NOOP_APP}.episode.{episode_id}"
@@ -233,6 +236,9 @@ async def test_create_list_get_stop_teardown() -> None:
             stopped = await client.post(f"/freeagent/{NOOP_APP}/episodes/{episode_id}/stop")
             assert stopped.status_code == 200
             assert stopped.json()["status"] == "aborted"
+            # Once terminal there is nothing left to stop, so it is no longer
+            # controllable -- discovery shows it watchable, but without Stop.
+            assert stopped.json()["controllable"] is False
 
             # --- teardown clears everything.
             torn = await client.post("/freeagent/teardown")

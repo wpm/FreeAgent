@@ -70,6 +70,13 @@ export interface EpisodeView {
   mode: EpisodeMode;
   status: string;
   detail: string | null;
+  /**
+   * Whether the service still holds a handle it can gracefully stop — true only
+   * while the episode is running under *this* service instance. After a restart
+   * a pre-restart episode has no view at all (the in-memory registry forgot it),
+   * so discovery finds it over JetStream but offers no Stop.
+   */
+  controllable: boolean;
   nats_url: string;
   created_at: string;
 }
