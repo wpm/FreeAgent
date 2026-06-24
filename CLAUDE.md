@@ -3,6 +3,11 @@
 Guidance for AI coding agents (Claude Code web and local) working in this
 repository.
 
+## Coding Conventions
+- Do test-driven developement. Never check in a failing test.
+- Try to keep test converage near 100%.
+- When writing in Python, include type hints for everything.
+
 ## Commit and PR conventions
 
 - The `freeagent` package and applications under `apps` may all be released independently.
@@ -15,5 +20,7 @@ repository.
 - Branch commits are squashed away, so their messages are not enforced —
   but use the conventional format there too; it keeps history legible and
   PR titles honest.
+- After creating a PR, monitor it and fix all problems: source conflicts, branch updates, and CI failures.
+- After a PR clears all checks, run `/review` and address all the comments.
 - When creating a PR for an issue, ensure that it when it closes, the issue
   closes as well.
