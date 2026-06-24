@@ -26,5 +26,6 @@ and the community hub at [adr.github.io](https://adr.github.io/).
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [0001](0001-gui-viewers-over-nats.md) | GUI viewers over NATS with NATS-based playback | Accepted |
-| [0002](0002-control-plane-service.md) | A persistent control-plane service over a REST façade | Accepted |
+| [0001](0001-gui-viewers-over-nats.md) | GUI viewers over NATS with NATS-based playback | Accepted (partially superseded by 0003) |
+| [0002](0002-control-plane-service.md) | A persistent control-plane service over a REST façade | Accepted (partially superseded by 0003) |
+| [0003](0003-the-atemporal-episode.md) | The atemporal episode | Accepted |

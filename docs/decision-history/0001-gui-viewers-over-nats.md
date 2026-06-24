@@ -3,6 +3,12 @@
 **Status:** Accepted
 **Date:** 2026-06-14
 **Deciders:** Bill McNeill
+**Superseded in part:** 2026-06-23 by [ADR-0003](0003-the-atemporal-episode.md) —
+the browser no longer subscribes to NATS directly (Python becomes the sole
+JetStream client and the UI is a thin HTTP/WebSocket client of it); replay is no
+longer re-publication onto a second NATS but a re-read of the episode's persisted
+JetStream stream; and the read-only viewer merges with the controller into one
+app. The web-stack choice, monorepo layout, and schema-as-contract still stand.
 **Amended:** 2026-06-14 — clarified that the replayer is a single, app-agnostic,
 library-level tool (the Parquet log is uniform across applications, so it need not
 live under any one app's CLI), and that recording is library infrastructure spawned
