@@ -3,6 +3,11 @@
 **Status:** Accepted
 **Date:** 2026-06-16
 **Deciders:** Bill McNeill
+**Superseded in part:** 2026-06-23 by [ADR-0003](0003-the-atemporal-episode.md) —
+JetStream, not the in-memory registry, becomes the source of truth for what
+episodes exist and their status, resolving the no-persistence-across-restarts
+limitation. The non-blocking `EpisodeHandle`, `AppSpec` self-description,
+operator-abort, and the REST-façade-over-unchanged-subjects boundary all stand.
 
 ## Context
 
