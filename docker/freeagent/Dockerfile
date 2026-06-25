@@ -1,44 +1,24 @@
-# The `freeagent` image: the episode service (REST + feed) plus the built UI
-# bundle it serves from one origin (ADR-0003). Two stages -- build the TypeScript
-# bundle with Node, then assemble the Python service and copy the bundle in.
+# The `freeagent` image: the episode service -- an app-independent REST/JetStream
+# API and nothing else (ADR-0004). It serves no UI and bundles no application:
+# a UI (e.g. the Twenty Questions viewer) is a separate process the operator runs
+# on the host, talking to this API over HTTP cross-origin.
 
 # syntax=docker/dockerfile:1
 
-# --- Stage 1: build the UI bundle -------------------------------------------
-FROM node:22-alpine AS ui
-RUN corepack enable
-WORKDIR /src
-
-# Install the JS workspace from the manifests first (cached across source edits).
-COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
-COPY apps/twentyquestions/viewer/package.json apps/twentyquestions/viewer/package.json
-RUN pnpm install --frozen-lockfile
-
-# The generated types come from the committed JSON Schemas; build the bundle.
-COPY packages/freeagent/schemas packages/freeagent/schemas
-COPY apps/twentyquestions/schemas apps/twentyquestions/schemas
-COPY apps/twentyquestions/viewer apps/twentyquestions/viewer
-RUN pnpm --filter twentyquestions-viewer run build
-
-# --- Stage 2: the Python episode service ------------------------------------
 FROM python:3.12-slim AS service
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 
-# Install the uv workspace (the freeagent library + the twentyquestions engine),
-# exactly as pinned in uv.lock. The service launches episodes as child
-# processes, so the app must be importable in this image.
+# Install ONLY the `freeagent` library from the uv workspace, exactly as pinned
+# in uv.lock (`--package freeagent` excludes the companion app engines). The
+# workspace manifests are needed to resolve against the frozen lock; the app
+# engine sources are deliberately NOT copied -- the service runs no app code.
 COPY pyproject.toml uv.lock README.md ./
 COPY packages packages
-COPY apps/twentyquestions/engine apps/twentyquestions/engine
-COPY apps/twentyquestions/schemas apps/twentyquestions/schemas
-RUN uv sync --frozen --no-dev
-
-# The built UI bundle the service serves from one origin.
-COPY --from=ui /src/apps/twentyquestions/viewer/dist /app/ui
+COPY apps/twentyquestions/engine/pyproject.toml apps/twentyquestions/engine/README.md apps/twentyquestions/engine/
+RUN uv sync --frozen --no-dev --package freeagent
 
 ENV PATH="/app/.venv/bin:$PATH"
-ENV FREEAGENT_UI_DIR="/app/ui"
 EXPOSE 8000
 
 # Default command; the compose file overrides host/port for the network.

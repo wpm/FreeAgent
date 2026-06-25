@@ -34,26 +34,32 @@ sealed episode is simply the same read with no further appends.
 
 ## Running it
 
-The viewer needs the **episode service** (which it talks to for both REST and the
-feed). The easy path is the full Docker network, which serves the UI from the
-service's own origin:
+The viewer is a **separate host process** that talks to the episode service over
+REST and the per-episode feed (ADR-0004) — it is not served by the service and is
+not part of the Docker network. So you run two things: the **backend** (the
+service + NATS), then the **viewer**.
 
 ```sh
-./docker/twenty-questions.sh        # build, bring up, open http://localhost:8000
+# 1. Bring up the backend (REST API on http://localhost:8000):
+docker compose -f docker/compose.yml up --build
+
+# 2. From the repo root, install the JS workspace and start the viewer:
+pnpm install
+pnpm --filter twentyquestions-viewer run dev        # http://localhost:5173
 ```
 
-For UI development against the live service or the canned **mock**:
+Or develop against the canned **mock** (no NATS, no backend) — it implements the
+whole contract with canned data:
 
 ```sh
-# From the repo root (installs the whole JS workspace):
-pnpm install
-
-# A no-NATS mock implementing the whole contract with canned data:
 uv run python -m freeagent.service.mock        # serves http://localhost:8000
+```
 
-# From this directory — the Vite dev server (point its connection at the service):
-pnpm run dev        # http://localhost:5173
-pnpm run build      # static production bundle in dist/ (what the service serves)
+Other scripts (from this directory):
+
+```sh
+pnpm run dev        # the Vite dev server — http://localhost:5173
+pnpm run build      # static production bundle in dist/
 pnpm run preview    # serve the built bundle
 pnpm run typecheck  # svelte-check (also the schema contract's compile test)
 pnpm run test       # vitest (currently no unit tests; passes clean)

@@ -1,16 +1,20 @@
-# The two-service FreeAgent application network (ADR-0003).
+# The two-service FreeAgent backend network (ADR-0004).
 #
 # Two services on one private network:
 #
 #   nats       the durable record -- JetStream on a persistent volume. NATS is
 #              INTERNAL to the network: it publishes no host ports.
-#   freeagent  the episode service: the REST API, the per-episode feed, and the
-#              built UI bundle, all from one origin. It is the ONLY service that
-#              publishes a port to the host.
+#   freeagent  the episode service: an app-independent REST/JetStream API (plus
+#              the per-episode WebSocket feed). It serves NO UI and bundles no
+#              application. It is the ONLY service that publishes a port to the
+#              host.
 #
-# A Parquet volume is mounted into freeagent for import/export edge I/O. Bring it
-# all up with `docker compose -f docker/compose.yml up --build`, then open the
-# Twenty Questions UI at http://localhost:8000 (see ./README.md).
+# This network is the FreeAgent *backend*. A UI (e.g. the Twenty Questions
+# viewer) is a separate process run on the host that calls this API cross-origin
+# -- it is NOT part of this network. A Parquet volume is mounted into freeagent
+# for import/export edge I/O. Bring the backend up with
+# `docker compose -f docker/compose.yml up --build`; the REST API answers at
+# http://localhost:8000 (see ./README.md).
 name: freeagent
 
 services:
@@ -21,7 +25,7 @@ services:
       - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
       - nats-data:/data
     # No published ports: NATS is reachable only inside the network, as
-    # nats://nats:4222. The browser never speaks to it (ADR-0003).
+    # nats://nats:4222. A UI never speaks to it (ADR-0003/0004).
 
   freeagent:
     build:
@@ -30,8 +34,6 @@ services:
     environment:
       # Episodes (and their child processes) use the in-network NATS.
       FREEAGENT_NATS_URL: "nats://nats:4222"
-      # Serve the built UI bundle from this origin.
-      FREEAGENT_UI_DIR: "/app/ui"
     # Bind 0.0.0.0 so the one published port is reachable from the host.
     command: ["free-agent", "serve", "--host", "0.0.0.0", "--port", "8000"]
     ports:

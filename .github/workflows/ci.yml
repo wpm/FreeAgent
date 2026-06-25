@@ -77,8 +77,9 @@ jobs:
         run: pnpm run typecheck
 
       # The browser no longer speaks NATS (ADR-0003): it talks only to the
-      # episode service. The old NATS+Playwright browser test is gone; a static
-      # build proves the bundle the service serves still builds.
+      # episode service, and the viewer is its own host process (ADR-0004). The
+      # old NATS+Playwright browser test is gone; a static build proves the
+      # viewer bundle still builds.
       - name: Build viewer bundle
         run: pnpm --filter twentyquestions-viewer run build
 
