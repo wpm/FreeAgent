@@ -34,6 +34,9 @@ services:
     environment:
       # Episodes (and their child processes) use the in-network NATS.
       FREEAGENT_NATS_URL: "nats://nats:4222"
+      # Confine import/export edge I/O to the mounted Parquet volume: a request's
+      # parquet_path is resolved within this directory and may not escape it.
+      FREEAGENT_PARQUET_DIR: "/data/parquet"
     # Bind 0.0.0.0 so the one published port is reachable from the host.
     command: ["free-agent", "serve", "--host", "0.0.0.0", "--port", "8000"]
     ports:

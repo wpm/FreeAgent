@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -58,6 +59,15 @@ _NATS_PROBE_TIMEOUT = 8.0
 #: Bound on tearing one episode down, so a wedged child cannot hang teardown.
 _TEARDOWN_TIMEOUT = 30.0
 
+#: Environment variable naming the directory edge I/O (import/export) is confined
+#: to. A request's ``parquet_path`` is resolved *within* this directory and may
+#: not escape it (see :func:`_resolve_within`).
+PARQUET_DIR_ENV_VAR = "FREEAGENT_PARQUET_DIR"
+
+#: Default Parquet directory: the volume the Docker network mounts into the
+#: service (``docker/compose.yml``).
+DEFAULT_PARQUET_DIR = "/data/parquet"
+
 
 class ServiceError(Exception):
     """Base for episode-service errors the REST layer maps to status codes."""
@@ -73,6 +83,31 @@ class EpisodeNotFoundError(ServiceError):
 
 class EpisodeExistsError(ServiceError):
     """The requested episode id is already taken (HTTP 409)."""
+
+
+class EdgeIOPathError(ServiceError):
+    """A Parquet path that escapes the configured Parquet directory (HTTP 400)."""
+
+
+def _resolve_within(base: Path, requested: str) -> Path:
+    """Resolve *requested* under *base*, refusing any path that escapes *base*.
+
+    Edge I/O takes a client-supplied ``parquet_path``; without containment that
+    is a path-injection vector (``../../etc/passwd``, an absolute path elsewhere).
+    The request is treated as **relative to** the mounted Parquet directory: it is
+    joined onto *base*, fully resolved (collapsing ``..`` and symlinks), and
+    rejected unless it still sits inside *base*. An absolute ``requested`` joined
+    onto *base* still resolves outside it and is rejected -- callers pass a path
+    *within* the volume, not a host path.
+    """
+    base_resolved = base.resolve()
+    candidate = (base_resolved / requested).resolve()
+    if candidate != base_resolved and base_resolved not in candidate.parents:
+        raise EdgeIOPathError(
+            f"parquet_path {requested!r} escapes the Parquet directory; "
+            "it must be a path within the mounted volume"
+        )
+    return candidate
 
 
 async def _quiet_error_cb(_exc: Exception) -> None:
@@ -233,6 +268,9 @@ class ControlService:
     to its :class:`~freeagent.AppSpec` (injectable for tests). *transport*
     injects a ready, connected transport for the durable store (tests use an
     in-memory one); when omitted, the service lazily connects its own.
+    *parquet_dir* (or ``$FREEAGENT_PARQUET_DIR``) is the directory edge I/O is
+    confined to; a request's ``parquet_path`` is resolved within it and may not
+    escape it.
     """
 
     def __init__(
@@ -241,6 +279,7 @@ class ControlService:
         nats_url: str,
         app_loader: Callable[[str], AppSpec] = load_app,
         transport: Transport | None = None,
+        parquet_dir: str | Path | None = None,
     ) -> None:
         self._default_nats_url = nats_url
         self._app_loader = app_loader
@@ -248,6 +287,12 @@ class ControlService:
         self._lock = asyncio.Lock()
         self._transport = transport
         self._owns_transport = transport is None
+        resolved_dir = (
+            parquet_dir
+            if parquet_dir is not None
+            else os.environ.get(PARQUET_DIR_ENV_VAR, DEFAULT_PARQUET_DIR)
+        )
+        self._parquet_dir = Path(resolved_dir)
 
     @property
     def default_nats_url(self) -> str:
@@ -404,27 +449,37 @@ class ControlService:
     async def export(
         self, application: str, episode_id: str, parquet_path: str
     ) -> ExportEpisodeResult:
-        """Drain a sealed episode to a Parquet file on the mounted volume."""
+        """Drain a sealed episode to a Parquet file on the mounted volume.
+
+        *parquet_path* is resolved within the configured Parquet directory and may
+        not escape it (:class:`EdgeIOPathError` -> 400).
+        """
         from .edgeio import export_episode  # local import: avoids an import cycle
 
         spec = self._app_loader(application)
+        output = _resolve_within(self._parquet_dir, parquet_path)
         rows = await export_episode(
             nats_url=self._default_nats_url,
             app=spec.name,
             episode_id=episode_id,
-            output=Path(parquet_path),
+            output=output,
         )
         return ExportEpisodeResult(parquet_path=parquet_path, rows=rows)
 
     async def import_(
         self, parquet_path: str, *, episode_id: str | None = None, name: str | None = None
     ) -> EpisodeView:
-        """Play a Parquet log into a fresh sealed episode; return its view."""
+        """Play a Parquet log into a fresh sealed episode; return its view.
+
+        *parquet_path* is resolved within the configured Parquet directory and may
+        not escape it (:class:`EdgeIOPathError` -> 400).
+        """
         from .edgeio import import_episode  # local import: avoids an import cycle
 
+        source = _resolve_within(self._parquet_dir, parquet_path)
         transport = await self._ensure_transport()
         result = await import_episode(
-            transport, parquet_path=Path(parquet_path), episode_id=episode_id, name=name
+            transport, parquet_path=source, episode_id=episode_id, name=name
         )
         record = await (await self._store()).get(result.app, result.episode_id)
         if record is None:  # pragma: no cover - the stream was just created

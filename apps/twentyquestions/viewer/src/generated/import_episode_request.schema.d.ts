@@ -8,9 +8,10 @@
 /**
  * The body of an import request: play a Parquet log into a fresh stream.
  *
- * ``parquet_path`` is a path on the service's mounted volume. ``episode_id``
- * optionally pins the new episode's id (else one is assigned); ``name``
- * optionally titles it (else a fallback is used).
+ * ``parquet_path`` is a path **within** the service's mounted Parquet volume
+ * (``$FREEAGENT_PARQUET_DIR``); it is resolved relative to that directory and
+ * may not escape it. ``episode_id`` optionally pins the new episode's id (else
+ * one is assigned); ``name`` optionally titles it (else a fallback is used).
  */
 export interface ImportEpisodeRequest {
   parquet_path: string;

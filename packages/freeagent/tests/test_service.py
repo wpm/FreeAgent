@@ -297,6 +297,34 @@ async def test_teardown_of_empty_service_is_zero() -> None:
     assert response.json() == {"stopped": 0}
 
 
+@pytest.mark.parametrize("escaping", ["../../etc/passwd", "/etc/passwd", "a/../../escape.parquet"])
+async def test_export_rejects_a_parquet_path_outside_the_volume(
+    tmp_path: Path, escaping: str
+) -> None:
+    """A parquet_path that escapes the configured Parquet directory is a 400 and
+    never reaches NATS (path-injection containment)."""
+    service = ControlService(nats_url=DEAD_NATS_URL, app_loader=_noop_loader, parquet_dir=tmp_path)
+    async with _client(service) as client:
+        response = await client.post(
+            f"/freeagent/{NOOP_APP}/episodes/whatever/export",
+            json={"parquet_path": escaping},
+        )
+    assert response.status_code == 400
+    assert "escapes the Parquet directory" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("escaping", ["../../etc/passwd", "/etc/passwd"])
+async def test_import_rejects_a_parquet_path_outside_the_volume(
+    tmp_path: Path, escaping: str
+) -> None:
+    """Import confines its source path the same way export confines its output."""
+    service = ControlService(nats_url=DEAD_NATS_URL, app_loader=_noop_loader, parquet_dir=tmp_path)
+    async with _client(service) as client:
+        response = await client.post("/freeagent/import", json={"parquet_path": escaping})
+    assert response.status_code == 400
+    assert "escapes the Parquet directory" in response.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Slow: the real API against a real NATS server and real child processes
 # ---------------------------------------------------------------------------

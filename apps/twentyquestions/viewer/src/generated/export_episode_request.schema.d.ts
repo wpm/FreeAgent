@@ -8,8 +8,10 @@
 /**
  * The body of an export request: drain a sealed episode to Parquet.
  *
- * ``parquet_path`` is the destination on the service's mounted volume; it must
- * not already exist (a finished log is never overwritten).
+ * ``parquet_path`` is the destination **within** the service's mounted Parquet
+ * volume (``$FREEAGENT_PARQUET_DIR``); it is resolved relative to that directory
+ * and may not escape it, and it must not already exist (a finished log is never
+ * overwritten).
  */
 export interface ExportEpisodeRequest {
   parquet_path: string;

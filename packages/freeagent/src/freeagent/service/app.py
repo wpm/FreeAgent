@@ -54,6 +54,7 @@ from .models import (
 )
 from .registry import (
     ControlService,
+    EdgeIOPathError,
     EpisodeExistsError,
     EpisodeNotFoundError,
     NatsUnreachableError,
@@ -233,6 +234,10 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(EdgeIOError)
     async def _bad_edge_io(_request: Request, exc: EdgeIOError) -> JSONResponse:
+        return problem(status.HTTP_400_BAD_REQUEST, str(exc))
+
+    @app.exception_handler(EdgeIOPathError)
+    async def _bad_edge_io_path(_request: Request, exc: EdgeIOPathError) -> JSONResponse:
         return problem(status.HTTP_400_BAD_REQUEST, str(exc))
 
     @app.exception_handler(ConfigError)
