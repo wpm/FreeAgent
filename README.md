@@ -58,41 +58,54 @@ free-agent replay out/twentyquestions-fake.parquet --nats-url nats://localhost:4
 
 `replay` is a top-level command, a sibling of the per-application sub-commands, because the Parquet log is uniform across every application — one tool replays any app's episode and never needs app-specific code. Messages are published on their original subjects in `stream_seq` order; inter-message timing is preserved by default, scaled by `--speed` (e.g. `--speed 2.0`), or dropped entirely with `--as-fast-as-possible`. Start is the command; stop is Ctrl-C. Pause and seek live on the library's `Replayer` class for an embedding GUI to drive.
 
-## Control service
+## Episode service and the UI
 
-The CLI launches one episode and blocks. The **control service** is the long-running alternative: a small REST API that owns a set of running episodes and launches, lists, observes, and stops them on demand — the same supervised launch as `run`, driven over HTTP instead of from a terminal.
+The CLI launches one episode and blocks. The **episode service** is the long-running alternative: a small REST API (plus a per-episode WebSocket feed) that creates, lists, observes, renames, deletes, and stops episodes on demand — the same supervised launch as `run`, driven over HTTP. An episode is a durable, named, **JetStream-resident** object ([ADR-0003](docs/decision-history/0003-the-atemporal-episode.md)): the service's source of truth is JetStream, not in-memory state, so a restart loses nothing.
+
+The simplest way to use it is the **two-service Docker network** — NATS (internal) plus the service (which serves the REST API, the feed, and the built UI from one origin). One command brings it up and opens the Twenty Questions UI:
 
 ```sh
-free-agent serve            # binds 127.0.0.1:8000 by default
+./docker/twenty-questions.sh        # build, bring up, open http://localhost:8000
 ```
 
-It binds to **loopback with no auth**, consistent with the local NATS testbed (see [SECURITY.md](SECURITY.md)), and verifies NATS is reachable on startup and on every create — a down server yields a clear `503`, never a hang. The REST resources live under `/freeagent/<application>/<episode>` and map, at the API boundary, onto the existing NATS subjects — the service introduces no new wire subjects:
+See [`docker/README.md`](docker/README.md). To run the service directly:
+
+```sh
+free-agent serve                        # REST + feed on 127.0.0.1:8000
+free-agent serve --ui-dir path/to/dist  # also serve a built UI bundle (one origin)
+```
+
+It binds **loopback with no auth** by default, consistent with the local NATS testbed (see [SECURITY.md](SECURITY.md)). The REST resources live under `/freeagent/<application>/<episode>`:
 
 | Method & path | Does |
 | --- | --- |
-| `POST /freeagent/{application}/episodes` | create a **live** episode (or **replay** a recorded log) |
-| `GET  /freeagent/episodes` | list every running episode |
-| `GET  /freeagent/{application}/episodes/{episode}` | one episode's status |
-| `POST /freeagent/{application}/episodes/{episode}/stop` | graceful operator-abort |
-| `POST /freeagent/teardown` | bring everything down |
+| `POST   /freeagent/{application}/episodes` | create a **live** episode |
+| `GET    /freeagent/episodes` | list every episode (from the durable record) |
+| `GET    /freeagent/{application}/episodes/{episode}` | one episode's status |
+| `PATCH  /freeagent/{application}/episodes/{episode}` | rename (friendly name) |
+| `DELETE /freeagent/{application}/episodes/{episode}` | delete (remove the stream) |
+| `POST   /freeagent/{application}/episodes/{episode}/stop` | graceful operator-abort |
+| `POST   /freeagent/{application}/episodes/{episode}/export` | drain a sealed episode to Parquet |
+| `POST   /freeagent/import` | play a Parquet log into a fresh episode |
+| `WS     /freeagent/{application}/episodes/{episode}/feed` | the normalized per-episode feed |
 
-The create body carries the same settable config the YAML does — `nats_url`, an optional `episode_id`, and per-component `config` blocks (the Host's `secret`, an agent's `model`, timeouts) — plus a `mode` of `live` or `replay` and, for a live run, an optional `parquet_log` to record it. A created episode is observable over NATS **exactly like a `run`-launched one**: a viewer subscribes by mapping the REST id to the response's `subject_root`.
+The create body carries the settable config — an optional `episode_id` and `name`, a `model` and `api_key` threaded into agent config, and per-component `config` blocks (the Host's `secret`, timeouts) — plus an optional `parquet_log` to record the run.
 
 ```sh
 # Create a live episode, then watch the service's view of it.
 curl -s -XPOST localhost:8000/freeagent/twenty-questions/episodes \
   -H 'content-type: application/json' \
-  -d '{"mode":"live","agents":{"host":{"config":{"secret":"otter"}}}}'
+  -d '{"name":"otters","agents":{"host":{"config":{"secret":"otter"}}}}'
 curl -s localhost:8000/freeagent/episodes
 ```
 
-The service is **API-only**: it serves no static bundle. The browser viewer is served by its own Vite dev server and calls the API cross-origin, so CORS is configured for that origin (`http://localhost:5173` by default). Serving the built viewer from one origin is a deferred convenience. Two v1 limits worth knowing: the registry is **in memory** (a service restart forgets the episodes it was tracking — and tears their processes down with it, so nothing is orphaned), and the service does **not** manage the NATS Docker container (start it yourself, as above).
+The browser **never speaks NATS** (ADR-0003): the UI talks only to the service, which relays a small normalized feed (a message was appended, the status/seal changed, the connection's liveness changed). For UI development without NATS, a canned **mock** implements the whole contract: `uv run python -m freeagent.service.mock`.
 
 ## Project structure
 
 A `uv` workspace containing the **library** and its **applications**. The library is the substrate and is usable on its own; each application depends only on the library, never on another application. The repository ships one sample application, Twenty Questions, plus the NATS infrastructure config and ready-to-run example episodes. Each component has its own README, and [the design document](docs/DESIGN.md) is authoritative.
 
-Each application is split into two self-contained, single-language siblings: `apps/<app>/engine/` is the Python application (environment, roster, prompts, CLI, its own `pyproject.toml`), and `apps/<app>/viewer/` is the TypeScript web GUI that observes an episode over NATS (its own `package.json`). Keeping the two in separate directories stops the toolchains from colliding: the `uv` workspace globs `apps/*/engine`, while a root JavaScript workspace (`pnpm-workspace.yaml`) globs `apps/*/viewer` so every viewer shares one lockfile and toolchain.
+Each application is split into two self-contained, single-language siblings: `apps/<app>/engine/` is the Python application (environment, roster, prompts, CLI, its own `pyproject.toml`), and `apps/<app>/viewer/` is the TypeScript web GUI that observes an episode through the episode service's feed — never NATS (ADR-0003) — with its own `package.json`. Keeping the two in separate directories stops the toolchains from colliding: the `uv` workspace globs `apps/*/engine`, while a root JavaScript workspace (`pnpm-workspace.yaml`) globs `apps/*/viewer` so every viewer shares one lockfile and toolchain.
 
 ## Message schemas (single source of truth)
 

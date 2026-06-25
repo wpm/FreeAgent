@@ -1,0 +1,14 @@
+# Keep the build context small and reproducible: never ship local state into
+# the image. Source is copied explicitly in docker/freeagent/Dockerfile.
+.git
+.github
+.venv
+**/.venv
+**/node_modules
+**/dist
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+out
+*.parquet

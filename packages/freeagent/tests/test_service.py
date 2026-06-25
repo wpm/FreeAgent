@@ -297,6 +297,22 @@ async def test_teardown_of_empty_service_is_zero() -> None:
     assert response.json() == {"stopped": 0}
 
 
+async def test_serves_ui_bundle_and_api_from_one_origin(tmp_path: Path) -> None:
+    """With a UI bundle configured, the service serves it at / and the API still
+    answers under /freeagent (ADR-0003: one origin to the browser)."""
+    (tmp_path / "index.html").write_text("<!doctype html><title>FreeAgent</title>")
+    service = _durable_service(MemoryTransport())
+    app = create_app(service=service, ui_dir=tmp_path)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://service") as client:
+        index = await client.get("/")
+        assert index.status_code == 200
+        assert "FreeAgent" in index.text
+        # The API still wins for its own paths.
+        listing = await client.get("/freeagent/episodes")
+        assert listing.status_code == 200
+        assert listing.json() == []
+
+
 # ---------------------------------------------------------------------------
 # Slow: the real API against a real NATS server and real child processes
 # ---------------------------------------------------------------------------
