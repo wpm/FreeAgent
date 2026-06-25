@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ChatMessage } from "../viewer.svelte";
+  import type { ChatMessage } from "../skins/twentyquestions/feed.svelte";
 
   let { message }: { message: ChatMessage } = $props();
 
