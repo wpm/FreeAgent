@@ -1,171 +1,140 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  /**
+   * The app shell: a pan-application generic-left / app-right layout.
+   *
+   * The left pane (`EpisodeList`) is generic and knows nothing about any game.
+   * The right pane is PLUGGABLE: the shell selects a plugin component by the
+   * selected episode's `application` (or the default application for the "new"
+   * flow) from the registry. The shell owns selection, the "new" trigger, the
+   * theme, and the Settings modal; it delegates every app-specific concern --
+   * the transcript and the create FORM -- to the plugin.
+   */
+  import type { EpisodeView } from "./contract";
+  import EpisodeList from "./shell/EpisodeList.svelte";
+  import SettingsPanel from "./shell/SettingsPanel.svelte";
+  import { DEFAULT_APPLICATION, getPlugin } from "./shell/registry";
+  import { settings } from "./shell/settings.svelte";
 
-  import { resolveConfig } from "./config";
-  import { EpisodeViewer } from "./viewer.svelte";
-  import ConnectionStatus from "./lib/ConnectionStatus.svelte";
-  import Transcript from "./lib/Transcript.svelte";
+  // Register the bundled skins (side-effect import wires them into the registry).
+  import "./skins/twentyquestions/index";
 
-  const initial = resolveConfig();
-  const viewer = new EpisodeViewer();
+  let selected = $state<EpisodeView | null>(null);
+  let composing = $state(false);
+  let showSettings = $state(false);
 
-  let server = $state(initial.server);
-  let subject = $state(initial.subject);
-
-  const active = $derived(
-    viewer.state === "connecting" ||
-      viewer.state === "waiting" ||
-      viewer.state === "live" ||
-      viewer.state === "reconnecting",
+  // Which application's plugin renders the right pane: the selected episode's,
+  // or the default when composing a brand-new game.
+  const application = $derived(
+    composing || !selected ? DEFAULT_APPLICATION : selected.application,
   );
+  const plugin = $derived(getPlugin(application));
 
-  function start() {
-    const s = server.trim();
-    const subj = subject.trim();
-    if (!s || !subj) return;
-    void viewer.connect(s, subj);
+  function select(episode: EpisodeView) {
+    composing = false;
+    selected = episode;
   }
 
-  // Auto-connect when the URL already names an episode, so a shared link just
-  // works; otherwise wait for the operator to fill in the subject.
-  onMount(() => {
-    if (initial.subject) start();
-  });
+  function startNew() {
+    composing = true;
+    selected = null;
+  }
+
+  // The plugin reports a freshly created episode: select it and drop out of the
+  // compose state so its feed opens.
+  function onCreated(episode: EpisodeView) {
+    composing = false;
+    selected = episode;
+  }
 </script>
 
-<main>
-  <header>
-    <div class="titles">
-      <h1>Twenty Questions</h1>
-      <p class="subtitle">live transcript over NATS</p>
+<div class="app" data-theme={settings.theme}>
+  <div class="layout">
+    <div class="left">
+      <EpisodeList selectedId={selected?.id ?? null} onSelect={select} onNew={startNew} />
+      <button type="button" class="settings" onclick={() => (showSettings = true)}>
+        Settings
+      </button>
     </div>
-    <ConnectionStatus state={viewer.state} detail={viewer.detail} />
-  </header>
 
-  <form
-    class="controls"
-    onsubmit={(event) => {
-      event.preventDefault();
-      start();
-    }}
-  >
-    <label>
-      <span>Server</span>
-      <input bind:value={server} placeholder="ws://localhost:8080" autocomplete="off" />
-    </label>
-    <label class="grow">
-      <span>Subject</span>
-      <input
-        bind:value={subject}
-        placeholder="twentyquestions.episode.&lt;id&gt;.public"
-        autocomplete="off"
-      />
-    </label>
-    <button type="submit">{active ? "Reconnect" : "Connect"}</button>
-    {#if active}
-      <button type="button" class="secondary" onclick={() => viewer.disconnect()}>Disconnect</button>
-    {/if}
-  </form>
+    <main class="right">
+      {#if plugin}
+        {@const Plugin = plugin.component}
+        <Plugin
+          episode={selected}
+          {composing}
+          {onCreated}
+          onCancelCompose={() => (composing = false)}
+        />
+      {:else if selected}
+        <p class="placeholder">No viewer registered for “{selected.application}”.</p>
+      {:else}
+        <p class="placeholder">Select an episode, or start a new one.</p>
+      {/if}
+    </main>
+  </div>
 
-  {#if viewer.detail}
-    <p class="detail" class:error={viewer.state === "error"}>{viewer.detail}</p>
+  {#if showSettings}
+    <SettingsPanel onClose={() => (showSettings = false)} />
   {/if}
-
-  <Transcript messages={viewer.messages} />
-</main>
+</div>
 
 <style>
-  main {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    max-width: 720px;
-    margin: 0 auto;
-    background: var(--surface);
-    box-shadow: 0 0 2.5rem rgba(15, 23, 42, 0.08);
+  /* The shell carries the theme via data-theme; the dark palette overrides the
+     same custom properties app.css defines for light. */
+  .app {
+    height: 100%;
   }
 
-  header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 0.9rem 1rem;
-    border-bottom: 1px solid var(--border);
+  .app[data-theme="dark"] {
+    --bg: #0b1120;
+    --surface: #111827;
+    --surface-2: #1e293b;
+    --border: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    background: var(--bg);
+    color: var(--text);
   }
 
-  .titles h1 {
-    margin: 0;
-    font-size: 1.15rem;
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(14rem, 20rem) 1fr;
+    height: 100%;
+    background: var(--bg);
   }
 
-  .subtitle {
-    margin: 0;
-    font-size: 0.78rem;
-    color: var(--muted);
+  .left {
+    display: grid;
+    grid-template-rows: 1fr auto;
+    min-height: 0;
   }
 
-  .controls {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-end;
-    gap: 0.5rem;
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid var(--border);
+  .settings {
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 0.55rem;
+    border: none;
+    border-top: 1px solid var(--border);
     background: var(--surface-2);
-  }
-
-  label {
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-    font-size: 0.72rem;
-    font-weight: 600;
     color: var(--muted);
-  }
-
-  label.grow {
-    flex: 1;
-    min-width: 12rem;
-  }
-
-  input {
-    font: inherit;
-    font-size: 0.85rem;
-    padding: 0.4rem 0.55rem;
-    border: 1px solid var(--border);
-    border-radius: 0.5rem;
-    background: var(--surface);
-  }
-
-  button {
-    font: inherit;
-    font-weight: 600;
-    font-size: 0.85rem;
-    padding: 0.45rem 0.9rem;
-    border: 1px solid transparent;
-    border-radius: 0.5rem;
-    background: #2563eb;
-    color: white;
     cursor: pointer;
   }
 
-  button.secondary {
-    background: var(--surface);
-    color: var(--muted);
-    border-color: var(--border);
+  .settings:hover {
+    color: var(--text);
   }
 
-  .detail {
+  .right {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .placeholder {
     margin: 0;
-    padding: 0.35rem 1rem;
-    font-size: 0.75rem;
+    padding: 2rem;
     color: var(--muted);
-    background: var(--surface-2);
-    border-bottom: 1px solid var(--border);
-  }
-
-  .detail.error {
-    color: #dc2626;
+    font-style: italic;
   }
 </style>
