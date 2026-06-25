@@ -20,7 +20,7 @@ An **environment** marries a set of agents to a NATS subject root. Interaction b
 
 An **episode** is one run of an environment, from coordinated startup to shutdown. Episodes are one-and-done: to play again, you start over from the beginning. The episode ID is the unit of NATS routing, of logging, and of replay.
 
-A **recruiter** assembles the roster *before* the episode exists — lobby, matchmaking, open enrollment, waiting for human players to wander in. It then hands a fixed roster to a freshly created environment. This keeps the environment's startup protocol singular and simple: known roster, everyone shows up in time or the episode aborts. V1 ships a minimal recruiter.
+A **recruiter** assembles the roster *before* the episode exists — lobby, matchmaking, open enrollment, waiting for human players to wander in. It then hands a fixed roster to a freshly created environment. This keeps the environment's startup protocol singular and simple: known roster, everyone shows up in time or the episode aborts. V1's recruiter assigns the roster top-down from configuration; in the worker pool ([ADR-0005](decision-history/0005-the-worker-pool.md)) it is also the **enqueuer** — it turns that roster into the episode's set of manifests (one per role) and publishes them to the work queue, which is exactly the unit of work a pool of workers pulls and launches.
 
 Agents are **cooperative with the framework**. Even in adversarial games they play by the rules. The environment coordinates; it does not enforce.
 
@@ -41,11 +41,27 @@ flowchart LR
     R --> P[(Parquet)]
 ```
 
-Process types: one environment per episode, N agents, and optionally a recorder that drains the episode's JetStream stream into a Parquet file. The recorder is library infrastructure (`freeagent.recorder`): the launcher spawns it as its own process per episode, but no agent or environment is required to use it — FreeAgent contains no *required* logging code. Recording is a per-run decision via the shared `--parquet-log PATH` CLI option (a new file, never overwritten); omit it and nothing is recorded.
+Process types *within an episode*: one environment, N agents, and optionally a recorder that drains the episode's JetStream stream into a Parquet file. The recorder is library infrastructure (`freeagent.recorder`): the launcher spawns it as its own process per episode, but no agent or environment is required to use it — FreeAgent contains no *required* logging code. Recording is a per-run decision via the shared `--parquet-log PATH` CLI option (a new file, never overwritten); omit it and nothing is recorded. *Who* launches these processes — the CLI on one machine, or a pool of workers spread across many — is a separate question, taken up under [Who launches an episode, and where](#who-launches-an-episode-and-where).
 
 JetStream is infrastructure. How streams are laid out (per episode, per application) is a deployment concern, not part of FreeAgent's abstraction surface, which ends at subjects and messages.
 
-The orchestration that launches these processes comes in two shapes built on one primitive. The `free-agent` CLI runs an episode **to completion** — it spawns the children, blocks until the environment exits, and returns an exit code. The same primitive also backs an optional **persistent control service**: a long-running process that starts episodes *without blocking*, holds each as a supervised handle, and so can run, inspect, and stop many episodes at once in a single event loop. The service hosts a localhost web API shaped as `freeagent/<app>/<episode>` — a façade mapped, at the API boundary only, onto the unchanged wire subjects above (the dashed REST name `twenty-questions` maps to the undashed subject prefix `twentyquestions`); the NATS wire never changes, so a viewer cannot tell a service-launched episode from a CLI-launched one. It keeps an in-memory registry of running episodes (not persisted across restarts in v1), discovers what to launch through each application's self-description rather than importing apps by name, and stops an episode through the operator-abort path described under [Episode lifecycle](#episode-lifecycle). The control service is not required: an application runs perfectly well from the CLI alone.
+### Who launches an episode, and where
+
+Launching an episode means starting that environment and those N agents as processes. There are two paths, built on one shared primitive (forking a child from a self-contained spec and supervising it at the OS level).
+
+The `free-agent` CLI runs an episode **to completion** on one machine: it spawns the children, blocks until the environment exits, and returns an exit code. This is the single-machine path, unchanged.
+
+The other path is the **worker pool** ([ADR-0005](decision-history/0005-the-worker-pool.md)), which exists because the goal is bulk generation of training data — *many* concurrent episodes, eventually across a server pool — and one process launching every agent on one machine cannot spread across machines. In the pool model, launching is split across three process tiers:
+
+- **Service** (one long-lived process) — the localhost web API, shaped as `freeagent/<app>/<episode>`, a façade mapped at the API boundary only onto the unchanged wire subjects above (the dashed REST name `twenty-questions` maps to the undashed subject prefix `twentyquestions`); the NATS wire never changes, so a viewer cannot tell a pool-launched episode from a CLI-launched one. The service is **provision-only**: `create` does not launch anything and holds no handle. It discovers what to provision through each application's self-description rather than importing apps by name, asks the recruiter to enqueue the episode's work, and returns. `list`/`get`/`status` read the durable record (JetStream is the source of truth — a restart loses nothing); `stop` is the operator-abort described under [Episode lifecycle](#episode-lifecycle). The service is not required: an application runs perfectly well from the CLI alone.
+- **Workers** (long-lived, ×M, stateless and identical) — a pool of generic, app-agnostic supervisors, each `free-agent work`. A worker pulls a **manifest** (the serializable unit of work — a role, a `module:QualName` class reference, the constructor config, the episode's subject root and ids, the NATS URL) off a shared JetStream **work queue**, forks one child process for that role, confirms it is up, acknowledges the message, and then supervises that child at the OS level for the rest of its life. A worker never runs agent code itself; over its life it hosts roles from *many* episodes.
+- **Children** (short-lived) — exactly one role of one episode: one agent, or the environment. A child is launchable purely from its manifest. Agents run as **separate OS processes, not async tasks** sharing one: isolation over density — a wedged or crashing agent cannot take a neighbour down and can be `SIGKILL`'d.
+
+Placement is the work queue itself: one work-queue-retention stream holds the manifests, all workers bind **one shared durable pull consumer**, and the server hands each manifest to exactly one worker (competing consumers). Pull, not push, so each worker fetches only as much as its spare capacity allows — distribution by capacity, with no central scheduler. Filling the queue and scaling the pool (`--scale worker=N`) is the whole execution model; the autoscaling signal, when wanted, is work-queue depth.
+
+The manifest *references* code by import path; it does not carry code. So a worker that runs a manifest must have the named engine **installed** — workers are "fat" (library + engines), while the slim service launches nothing and needs no engine. This is the two-image backend (see [Repository layout](#repository-layout)). A manifest also records the **resolved engine version** once a child imports the class (e.g. `twentyquestions==1.2.3`), written into the episode's durable record as write-only provenance — the difference between an RL trajectory you can reproduce and one you cannot.
+
+**Two control planes, and the worker lives in only one.** The episode's lifecycle runs **in-band over NATS**, environment-led, exactly as for a CLI-launched episode: presence → `start` → `shutdown`, with children conducting it autonomously (an agent hears `shutdown` and winds itself down). The worker is invisible here. **Out-of-band at the OS**, the worker does what only the holder of a PID can: fork, reap exited children, and escalate `SIGTERM`→`SIGKILL` on a straggler that ignores cooperative shutdown. The environment *decides* (broadcasts shutdown over NATS); the worker *enforces* on whatever will not leave. No durable, cross-machine process handle is ever stored — the durable record holds the manifest set, status, and resolved versions, never a PID.
 
 ## NATS subjects
 
@@ -86,7 +102,7 @@ stateDiagram-v2
     [*] --> setup
     setup --> running : all ready → start broadcast
     setup --> aborted : roster incomplete at setup timeout
-    running --> stopping : env decides | agent signals env | episode timeout | operator
+    running --> stopping : env decides | agent signals env | episode timeout | operator | lost role
     stopping --> ended : agents acked / grace period expired
     ended --> [*]
     aborted --> [*]
@@ -110,7 +126,11 @@ sequenceDiagram
     Note over E,A: free-for-all begins — no one acts before the gun
 ```
 
-**Shutdown** has four triggers, all first-class: the environment decides, an agent signals the environment via its inbox (game over), the episode timeout fires (owned by the environment's clock), or an external operator intervenes. The operator (the control service, or an in-process supervisor holding an episode handle) intervenes by *requesting*, not commanding: it sends an `freeagent.abort` message on the environment's inbox (`<id>.env`), and the environment takes its normal stopping path but settles in `aborted` rather than `ended` — never by killing the environment process, which would skip the broadcast and strand agents. In every case the environment broadcasts `shutdown` on control, agents wind down cooperatively, and the environment optionally publishes an outcome record as the episode's last word. Per-phase timeouts (e.g. "answer within 30 s") are application policy built on a library timer primitive, not framework structure.
+**Shutdown** has five triggers, all first-class: the environment decides, an agent signals the environment via its inbox (game over), the episode timeout fires (owned by the environment's clock), an external operator intervenes, or **a role is lost**. The operator (the control service's `stop`) intervenes by *requesting*, not commanding: it sends an `freeagent.abort` message on the environment's inbox (`<id>.env`), and the environment takes its normal stopping path but settles in `aborted` rather than `ended` — never by killing the environment process, which would skip the broadcast and strand agents.
+
+The **lost-role** trigger is the worker pool's liveness backstop ([ADR-0005](decision-history/0005-the-worker-pool.md)). A worker that dies *after* acking takes its child with it: in the one-process-per-container model the queue does not redeliver, so the role simply **vanishes** from a live episode. The environment notices through the same presence machinery that confirmed the roster at setup — during `running` it periodically re-probes presence, and a member that was present but stops answering past a deadline is *lost*. A lost role drives the episode down its normal graceful-abort path to `aborted`. Crucially, **no role is ever re-run into a live episode**: a re-run role rejoining would be the duplicate-join the presence-nonce check is built to reject, so the only correct response to a lost participant is to abort the episode cleanly, not to respawn. (The re-probe interval and deadline are operator-settable environment config.)
+
+In every case the environment broadcasts `shutdown` on control, agents wind down cooperatively, and the environment optionally publishes an outcome record as the episode's last word. Per-phase timeouts (e.g. "answer within 30 s") are application policy built on a library timer primitive, not framework structure.
 
 ## Logging
 
@@ -187,24 +207,35 @@ The base Environment is the same fold model as the agent — a single locally or
 
 **Naming.** Name choice is another initialization coordination challenge, alongside coordinated startup. Agent IDs are assigned top-down — by the runner's configuration in v1, by a recruiter later — never chosen by agents themselves. Uniqueness is therefore a configuration-validation problem, not a distributed-coordination one. As a sanity check, presence replies carry a per-process nonce, so the environment detects two processes launched under the same name and aborts.
 
+**Presence is also a running-state liveness check.** The same presence request/reply that confirms the roster at setup is re-used during `running` to detect a participant that *vanishes* mid-episode — the worker pool's lost-role case (see [Episode lifecycle](#episode-lifecycle)). A periodic re-probe with a response deadline distinguishes a genuinely-absent role (abort) from one that is merely silent-but-alive (fine — silence is an action), and the per-process nonce keeps a re-run role from masquerading as the original. This is the runtime-protocol last resort the pattern below reserves for what only runtime can know: not just who showed up, but who is *still here*.
+
 A general pattern, to be followed when new initialization concerns appear: solve coordination problems at configuration time (roster, names) or in infrastructure (JetStream replay) wherever possible; runtime protocol is the last resort, reserved for what only runtime can know (who actually showed up).
 
 ## Repository layout
 
 `uv` workspace shared by the library and applications. The library is installable on its own.
 
+The **`free-agent` CLI** launches everything an episode needs — environment, agents, optionally the recorder — with one command instead of six terminals. The convention is `free-agent [--log-level LEVEL] APP COMMAND ...`. The launcher is library code: `freeagent` provides the Typer root (it owns the shared `--log-level` option), the shared `--parquet-log` recording option, the episode-tunables config loader, and the orchestration that spawns and supervises the child processes. Each application provides what it *is* — its name, its environment class, and its roster (agent name → agent class) — in source, and advertises it through the `freeagent.apps` entry-point group as an `AppSpec`: the same identity plus the settable config surface (which `config` fields an operator may set, as plain wire-safe data, no class references) and the app's Typer sub-app. The root CLI mounts the sub-app; a generic launcher (the control service) loads an `AppSpec` by its dashed REST name and gets everything `run_episode` needs without importing the app by name. Installing an application makes `free-agent APP ...` work; the library never imports its applications by name, and applications may add whatever other commands they need.
+
+Alongside the per-app `run` command, the library root carries two app-agnostic, top-level commands that together make up the **worker-pool backend** ([ADR-0005](decision-history/0005-the-worker-pool.md)): `free-agent serve` (the provision-only episode service) and `free-agent work` (a worker). The one `freeagent` library ships as **two images**, not two packages:
+
+- the **service (slim)** image — the library only, *no* engines, the web stack behind a `service` extra. It launches nothing, so it needs no engine; it owns the REST/feed surface.
+- the **worker (fat)** image — the library **plus** the installed app engines, running `free-agent work`; it needs none of the web stack.
+
+Workers are stateless, publish no ports, and carry no `container_name` (which would forbid replicas), so the pool scales by replica count — the same image at `replicas: 1` on a laptop and `replicas: N` on a cluster. The repository's `docker/compose.yml` brings up NATS (internal), one service (the only published port), and a scalable `worker` service on one private network; `docker/` therefore holds both image definitions:
+
 ```
 free-agent/
 ├── pyproject.toml          # uv workspace root
 ├── packages/
-│   └── freeagent/          # the library: CLI root + launcher, and the episode recorder
+│   └── freeagent/          # the library: CLI root + launcher, episode recorder, service, worker
 ├── apps/
 │   └── twentyquestions/    # sample application (its own `free-agent` sub-app)
 └── docker/
-    └── nats/               # NATS + JetStream container config
+    ├── nats/               # NATS + JetStream container config
+    ├── freeagent/          # the slim service image
+    └── worker/             # the fat worker image
 ```
-
-The **`free-agent` CLI** launches everything an episode needs — environment, agents, optionally the recorder — with one command instead of six terminals. The convention is `free-agent [--log-level LEVEL] APP COMMAND ...`. The launcher is library code: `freeagent` provides the Typer root (it owns the shared `--log-level` option), the shared `--parquet-log` recording option, the episode-tunables config loader, and the orchestration that spawns and supervises the child processes. Each application provides what it *is* — its name, its environment class, and its roster (agent name → agent class) — in source, and advertises it through the `freeagent.apps` entry-point group as an `AppSpec`: the same identity plus the settable config surface (which `config` fields an operator may set, as plain wire-safe data, no class references) and the app's Typer sub-app. The root CLI mounts the sub-app; a generic launcher (the control service) loads an `AppSpec` by its dashed REST name and gets everything `run_episode` needs without importing the app by name. Installing an application makes `free-agent APP ...` work; the library never imports its applications by name, and applications may add whatever other commands they need.
 
 A `*.yml` passed to a command carries only per-episode tunables — the NATS URL, the episode id, and each component's verbatim `config` — never class references or the roster (which live in source), and never the recorder (which is the `--parquet-log` CLI option). This keeps what an application is in code that the type checker and tests see, and keeps configuration to the dials an operator actually turns between runs. Batch generation of training data (many concurrent episodes) builds on the same foundation later.
 
