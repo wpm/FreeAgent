@@ -1,6 +1,6 @@
-# The two-service FreeAgent backend network (ADR-0004).
+# The FreeAgent backend network (ADR-0004/0005).
 #
-# Two services on one private network:
+# Services on one private network:
 #
 #   nats       the durable record -- JetStream on a persistent volume. NATS is
 #              INTERNAL to the network: it publishes no host ports.
@@ -8,6 +8,9 @@
 #              the per-episode WebSocket feed). It serves NO UI and bundles no
 #              application. It is the ONLY service that publishes a port to the
 #              host.
+#   worker     the fat episode worker (ADR-0005): bundles the app engines and
+#              pulls manifests off the NATS work queue, forking each child. It
+#              publishes no port and is scalable -- `up --scale worker=N`.
 #
 # This network is the FreeAgent *backend*. A UI (e.g. the Twenty Questions
 # viewer) is a separate process run on the host that calls this API cross-origin
@@ -43,6 +46,25 @@ services:
       - "${FREEAGENT_PORT:-8000}:8000"   # the ONLY published port
     volumes:
       - parquet:/data/parquet
+    depends_on:
+      - nats
+
+  # The fat worker (ADR-0005): a long-lived, app-agnostic supervisor that pulls
+  # episode Manifests off the in-network NATS work queue and forks each child.
+  # It bundles the app engines (unlike the slim `freeagent` service image), so it
+  # can import the roles a manifest names. It publishes NO port and serves no UI.
+  #
+  # Stateless and horizontally scalable: bring up N with
+  # `docker compose -f docker/compose.yml up --scale worker=N`. There is
+  # deliberately no `container_name` (it forbids replicas) and no published port.
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/worker/Dockerfile
+    environment:
+      # Pull manifests from -- and run episode children against -- the in-network NATS.
+      FREEAGENT_NATS_URL: "nats://nats:4222"
+    command: ["free-agent", "work"]
     depends_on:
       - nats
 
