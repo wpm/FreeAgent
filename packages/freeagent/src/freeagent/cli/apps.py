@@ -233,6 +233,16 @@ ENVIRONMENT_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("setup_timeout", "number", "seconds to wait for every agent to join (default 30)"),
     ConfigField("episode_timeout", "number", "seconds before the episode times out (default 600)"),
     ConfigField("grace_period", "number", "seconds of wind-down after shutdown (default 5)"),
+    ConfigField(
+        "liveness_interval",
+        "number",
+        "seconds between mid-episode liveness probes; 0 disables (default 15)",
+    ),
+    ConfigField(
+        "liveness_timeout",
+        "number",
+        "seconds a probed role may go silent before it is declared lost (default 10)",
+    ),
 )
 
 

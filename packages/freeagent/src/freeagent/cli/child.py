@@ -81,9 +81,14 @@ def environment_spec(
     episode_id: str,
     config: dict[str, Any],
     nats_url: str,
+    manifest_set: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build the JSON-serializable child spec for the environment process."""
-    return {
+    """Build the JSON-serializable child spec for the environment process.
+
+    *manifest_set* (the recruited "what should be running", ADR-0005) is included
+    only when provided, so the orchestrator's hand-built spec stays unchanged.
+    """
+    spec: dict[str, Any] = {
         "role": "environment",
         "class": class_ref,
         "app": app,
@@ -92,6 +97,9 @@ def environment_spec(
         "config": config,
         "nats_url": nats_url,
     }
+    if manifest_set is not None:
+        spec["manifest_set"] = manifest_set
+    return spec
 
 
 def exit_code_for_state(state: EpisodeState) -> int:
@@ -118,6 +126,12 @@ def run_spec(spec: dict[str, Any]) -> int:
             episode_id=spec["episode_id"],
             config=spec["config"],
         )
+        # The recruited manifest set rides the spec (ADR-0005); the environment
+        # writes it into the durable record and stamps resolved versions at
+        # stream creation. Absent on a hand-built (non-recruiter) launch.
+        manifest_set = spec.get("manifest_set")
+        if manifest_set is not None:
+            environment.set_manifest_set(manifest_set)
         state = asyncio.run(environment.run(spec["nats_url"]))
         return exit_code_for_state(state)
     raise ValueError(f"unknown child role {role!r}")

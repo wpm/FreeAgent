@@ -91,6 +91,31 @@ class Manifest(BaseModel):
     #: Write-only provenance; gates nothing in v1. ``None`` until stamped.
     resolved_version: str | None = None
 
+    #: The full recruited manifest set, on the **environment** manifest only
+    #: (ADR-0005). The recruiter stamps the environment manifest with the whole
+    #: set so the environment child -- the one process that owns the episode's
+    #: stream -- can write "what should be running" into the durable record at
+    #: stream creation. ``None`` on agent manifests and on an environment
+    #: manifest the recruiter did not stamp (e.g. a hand-built one).
+    #:
+    #: Typed as a list of plain manifest *dicts* rather than ``list[Manifest]``
+    #: on purpose: a self-referential ``list[Manifest]`` makes the exported JSON
+    #: Schema recursive (which the TS generator cannot resolve), and the set is
+    #: written into the durable record as dicts anyway. Build it with
+    #: :meth:`set_manifest_set` so the ``class`` alias is applied uniformly.
+    manifest_set: list[dict[str, Any]] | None = None
+
+    def set_manifest_set(self, manifests: list[Manifest]) -> None:
+        """Stamp this manifest with *manifests* as its recruited set (env only).
+
+        Each manifest is dumped with the ``class`` alias on the wire (matching
+        the rest of the manifest), and its own ``manifest_set`` is dropped so the
+        durable record is never nested recursively.
+        """
+        self.manifest_set = [
+            manifest.model_dump(exclude={"manifest_set"}) for manifest in manifests
+        ]
+
     def model_dump_json(self, **kwargs: Any) -> str:
         """Serialize to JSON with the ``class`` alias on the wire by default.
 
@@ -126,8 +151,14 @@ class Manifest(BaseModel):
         Produces exactly the dict
         :func:`freeagent.cli.child.agent_spec` / ``environment_spec`` build today,
         so a child launched from a manifest behaves identically. Manifest-only
-        fields (``manifest_version``, ``resolved_version``) are provenance and do
-        not belong in the launch spec, so they are omitted.
+        provenance (``manifest_version``, ``resolved_version``) is omitted.
+
+        The one exception is the environment manifest's :attr:`manifest_set`: it
+        is launch-relevant, not mere provenance, because the environment child
+        writes it into the durable record at stream creation (ADR-0005, "what
+        should be running"). It rides the env spec as a list of plain manifest
+        dicts and is omitted when unset, so a hand-built environment manifest
+        launches exactly as before.
         """
         spec: dict[str, Any] = {"role": self.role, "class": self.cls}
         if self.role == "agent":
@@ -145,6 +176,8 @@ class Manifest(BaseModel):
                 config=dict(self.config),
                 nats_url=self.nats_url,
             )
+            if self.manifest_set is not None:
+                spec["manifest_set"] = [dict(m) for m in self.manifest_set]
         return spec
 
     def with_resolved_version(self, stamp: str) -> Manifest:

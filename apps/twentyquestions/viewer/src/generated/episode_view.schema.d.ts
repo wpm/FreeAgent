@@ -33,5 +33,11 @@ export interface EpisodeView {
   detail?: string | null;
   nats_url: string;
   created_at: string;
+  manifest_set?: {
+    [k: string]: unknown;
+  }[];
+  resolved_versions?: {
+    [k: string]: string;
+  };
   [k: string]: unknown;
 }

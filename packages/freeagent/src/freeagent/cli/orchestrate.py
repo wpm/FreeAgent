@@ -276,6 +276,16 @@ class EpisodeHandle:
         return frozenset(self._children)
 
     @property
+    def agent_procs(self) -> tuple[asyncio.subprocess.Process, ...]:
+        """The roster agents' child processes, in roster order.
+
+        Distinct from :attr:`processes` (which also holds the environment and an
+        optional recorder): a supervisor that wants to act on a single agent --
+        e.g. to verify mid-episode liveness by removing one -- addresses it here.
+        """
+        return tuple(self._agent_procs)
+
+    @property
     def outcome(self) -> EpisodeOutcome | None:
         """The terminal :class:`EpisodeOutcome`, or ``None`` while still running."""
         return self._outcome

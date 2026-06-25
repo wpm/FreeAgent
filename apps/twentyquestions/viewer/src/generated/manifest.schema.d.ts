@@ -30,4 +30,9 @@ export interface Manifest {
   roster?: string[] | null;
   episode_id?: string | null;
   resolved_version?: string | null;
+  manifest_set?:
+    | {
+        [k: string]: unknown;
+      }[]
+    | null;
 }
