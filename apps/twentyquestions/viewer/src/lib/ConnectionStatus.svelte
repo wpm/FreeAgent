@@ -1,15 +1,13 @@
 <script lang="ts">
-  import type { ConnectionState } from "../viewer.svelte";
+  import type { FeedPhase } from "../skins/twentyquestions/feed.svelte";
 
-  let { state, detail }: { state: ConnectionState; detail: string } = $props();
+  let { state, detail }: { state: FeedPhase; detail: string } = $props();
 
-  const LABELS: Record<ConnectionState, string> = {
-    idle: "Not connected",
+  const LABELS: Record<FeedPhase, string> = {
     connecting: "Connecting",
-    waiting: "Waiting for episode",
+    open: "Loading history",
     live: "Live",
-    reconnecting: "Reconnecting",
-    closed: "Disconnected",
+    closed: "Replay (sealed)",
     error: "Error",
   };
 </script>
@@ -47,10 +45,13 @@
   }
 
   .status--connecting .dot,
-  .status--waiting .dot,
-  .status--reconnecting .dot {
+  .status--open .dot {
     background: #f59e0b;
     animation: blink 1s step-start infinite;
+  }
+
+  .status--closed .dot {
+    background: var(--muted);
   }
 
   .status--error .dot {
