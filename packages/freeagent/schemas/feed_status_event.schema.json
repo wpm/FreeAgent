@@ -1,0 +1,48 @@
+{
+  "description": "Feed event: the episode's status, seal, name, or outcome changed.\n\nThe service sends one of these when a feed opens (the current snapshot) and\nagain whenever any of these change -- so the UI can render the left-pane\nlabel and the skin's status/budget chips without polling.",
+  "properties": {
+    "type": {
+      "const": "status",
+      "default": "status",
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "sealed": {
+      "type": "boolean"
+    },
+    "name": {
+      "type": "string"
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "detail": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "status",
+    "sealed",
+    "name"
+  ],
+  "type": "object",
+  "title": "FeedStatusEvent"
+}

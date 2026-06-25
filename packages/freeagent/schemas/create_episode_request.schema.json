@@ -1,0 +1,115 @@
+{
+  "$defs": {
+    "ComponentConfig": {
+      "additionalProperties": false,
+      "description": "One component's verbatim constructor ``config`` block.\n\nMirrors :class:`~freeagent.cli.config.ComponentSpec`: the class is fixed by\nthe application in source, only the ``config`` is operator-settable. The\nkeys an operator may set are the ones the app's ``settable_config`` surface\nadvertises (the Host's ``secret``, an agent's ``model``, and so on).",
+      "properties": {
+        "config": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The body of a create-episode request.\n\n``mode`` selects the launch path:\n\n* **live** -- start a real episode (environment + roster) over NATS. The\n  ``environment`` and ``agents`` ``config`` blocks carry the settable config\n  (secret, model, timeouts); ``parquet_log`` optionally records the run.\n* **replay** -- re-publish a recorded episode from ``parquet_path`` onto\n  NATS. *Deprecated by ADR-0003* in favour of the dedicated import endpoint;\n  retained for compatibility. No environment or agents are launched.\n\n``episode_id`` is optional: omit it to let the service assign a short id, or\nsupply one (it must satisfy ``[A-Za-z0-9_-]+``). ``name`` is an optional\nhuman-friendly title (auto-generated when omitted). ``model`` and ``api_key``\nare conveniences threaded into every agent's config so an operator can pick a\nmodel and supply a key without spelling out per-agent ``config`` blocks.\n``nats_url`` overrides the service's default NATS URL for this episode.",
+  "properties": {
+    "mode": {
+      "default": "live",
+      "enum": [
+        "live",
+        "replay"
+      ],
+      "type": "string"
+    },
+    "episode_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "nats_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "api_key": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "parquet_log": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "parquet_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "environment": {
+      "$ref": "#/$defs/ComponentConfig"
+    },
+    "agents": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ComponentConfig"
+      },
+      "type": "object"
+    }
+  },
+  "type": "object",
+  "title": "CreateEpisodeRequest"
+}

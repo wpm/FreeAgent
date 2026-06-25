@@ -20,11 +20,20 @@ See :func:`run` (and ``python -m freeagent.service``) to serve it.
 from __future__ import annotations
 
 from .app import DEFAULT_DEV_ORIGINS, create_app
+from .mock import create_mock_app
 from .models import (
     ComponentConfig,
     CreateEpisodeRequest,
+    EpisodeMessage,
     EpisodeMode,
     EpisodeView,
+    ExportEpisodeRequest,
+    ExportEpisodeResult,
+    FeedConnectionEvent,
+    FeedMessageEvent,
+    FeedStatusEvent,
+    ImportEpisodeRequest,
+    RenameEpisodeRequest,
     TeardownResult,
 )
 from .registry import (
@@ -48,16 +57,25 @@ __all__ = [
     "ControlService",
     "CreateEpisodeRequest",
     "EpisodeExistsError",
+    "EpisodeMessage",
     "EpisodeMode",
     "EpisodeNotFoundError",
     "EpisodeView",
+    "ExportEpisodeRequest",
+    "ExportEpisodeResult",
+    "FeedConnectionEvent",
+    "FeedMessageEvent",
+    "FeedStatusEvent",
+    "ImportEpisodeRequest",
     "LiveEpisode",
     "ManagedEpisode",
     "NatsUnreachableError",
+    "RenameEpisodeRequest",
     "ReplayEpisode",
     "ServiceError",
     "TeardownResult",
     "create_app",
+    "create_mock_app",
     "run",
     "verify_nats_reachable",
 ]

@@ -67,8 +67,11 @@ def _view(episode: ManagedEpisode) -> EpisodeView:
         app=episode.app,
         episode_id=episode.episode_id,
         subject_root=episode.subject_root,
+        name=episode.name,
         mode=episode.mode,  # type: ignore[arg-type]
         status=episode.status,
+        sealed=episode.sealed,
+        outcome=episode.outcome,
         detail=episode.detail,
         nats_url=episode.nats_url,
         created_at=episode.created_at,
