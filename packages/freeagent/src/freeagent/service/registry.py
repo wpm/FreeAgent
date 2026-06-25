@@ -41,7 +41,7 @@ from freeagent.names import fallback_episode_name
 from freeagent.subjects import subject_root, validate_name
 from freeagent.transport import NatsTransport, Transport
 
-from .models import EpisodeView
+from .models import EpisodeView, ExportEpisodeResult
 from .store import EpisodeRecord, EpisodeStore
 
 if TYPE_CHECKING:
@@ -400,6 +400,36 @@ class ControlService:
         if live is not None:
             await self._teardown_one(live)
         await (await self._store()).delete(spec.name, episode_id)
+
+    async def export(
+        self, application: str, episode_id: str, parquet_path: str
+    ) -> ExportEpisodeResult:
+        """Drain a sealed episode to a Parquet file on the mounted volume."""
+        from .edgeio import export_episode  # local import: avoids an import cycle
+
+        spec = self._app_loader(application)
+        rows = await export_episode(
+            nats_url=self._default_nats_url,
+            app=spec.name,
+            episode_id=episode_id,
+            output=Path(parquet_path),
+        )
+        return ExportEpisodeResult(parquet_path=parquet_path, rows=rows)
+
+    async def import_(
+        self, parquet_path: str, *, episode_id: str | None = None, name: str | None = None
+    ) -> EpisodeView:
+        """Play a Parquet log into a fresh sealed episode; return its view."""
+        from .edgeio import import_episode  # local import: avoids an import cycle
+
+        transport = await self._ensure_transport()
+        result = await import_episode(
+            transport, parquet_path=Path(parquet_path), episode_id=episode_id, name=name
+        )
+        record = await (await self._store()).get(result.app, result.episode_id)
+        if record is None:  # pragma: no cover - the stream was just created
+            raise EpisodeNotFoundError(f"imported episode {result.episode_id!r} not found")
+        return _view_from_record(record, nats_url=self._default_nats_url)
 
     async def stop(self, application: str, episode_id: str) -> EpisodeView:
         """Gracefully stop one live episode and return its (terminal) view.
