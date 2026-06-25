@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING
 from freeagent.agent import Agent
 from freeagent.environment import Environment
 
+from .child import class_ref
 from .config import ConfigError
 from .orchestrate import run_episode as _run_episode
 
@@ -54,6 +55,14 @@ if TYPE_CHECKING:
 
 #: The entry-point group an application registers its :class:`AppSpec` under.
 ENTRY_POINT_GROUP = "freeagent.apps"
+
+#: The entry-point group an application registers its :class:`ManifestSpec`
+#: under (ADR-0005). Separate from :data:`ENTRY_POINT_GROUP` precisely so the
+#: slim service can resolve an app's manifest metadata **without importing the
+#: engine**: a :class:`ManifestSpec` carries only class-ref *strings*, so its
+#: defining module imports no engine classes, and resolving it lands no 404 even
+#: when the engine is not installed (the worker-pool slim image).
+MANIFEST_ENTRY_POINT_GROUP = "freeagent.manifests"
 
 
 class UnknownAppError(ConfigError):
@@ -88,6 +97,35 @@ class SettableConfig:
 
     environment: tuple[ConfigField, ...] = ()
     agents: Mapping[str, tuple[ConfigField, ...]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestSpec:
+    """An app's launch identity as **class-ref strings** -- importing no engine.
+
+    The recruiter (ADR-0005) needs only three facts to build an episode's
+    manifest set: the subject-prefix :attr:`name`, the environment's
+    ``module:QualName`` :attr:`environment` reference, and the
+    :attr:`roster` mapping each agent name to its ``module:QualName`` reference.
+    Every value here is a *string* -- never a class object -- so a
+    :class:`ManifestSpec` is wire-safe and, crucially, its defining module imports
+    no engine code. The slim worker-pool service resolves it (see
+    :func:`load_manifest_spec`) to enqueue manifests **without** the engine
+    installed; only the fat worker that later runs a manifest imports the class
+    the string names.
+
+    A fat caller that already holds an :class:`AppSpec` (with live classes) builds
+    the equivalent spec via :meth:`AppSpec.manifest_spec`; an app advertises one
+    directly on the :data:`MANIFEST_ENTRY_POINT_GROUP` entry point so a slim
+    service never has to load the :class:`AppSpec`.
+    """
+
+    #: The subject prefix every episode of this app lives under (undashed).
+    name: str
+    #: ``module:QualName`` reference to the environment class.
+    environment: str
+    #: Agent name -> ``module:QualName`` reference to that agent's class.
+    roster: Mapping[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +170,20 @@ class AppSpec:
                 f"settable_config names agent(s) {sorted(unknown)} absent from the "
                 f"roster {sorted(self.roster)}"
             )
+
+    def manifest_spec(self) -> ManifestSpec:
+        """Project this spec's live classes onto an engine-free :class:`ManifestSpec`.
+
+        The fat path's bridge to the recruiter: a caller holding real classes
+        (the CLI, a test) derives the same class-ref strings a slim service reads
+        from the :data:`MANIFEST_ENTRY_POINT_GROUP` entry point. Building manifests
+        from the result means the recruiter never touches a class object.
+        """
+        return ManifestSpec(
+            name=self.name,
+            environment=class_ref(self.environment),
+            roster={name: class_ref(cls) for name, cls in self.roster.items()},
+        )
 
     def run(self, config: EpisodeConfig, *, parquet_log: Path | None = None) -> int:
         """Launch and supervise one episode of this app; return its exit code.
@@ -223,6 +275,49 @@ def load_app(name: str) -> AppSpec:
         return apps[name]
     except KeyError:
         known = ", ".join(sorted(apps)) or "(none installed)"
+        raise UnknownAppError(
+            f"unknown application {name!r}; installed applications: {known}"
+        ) from None
+
+
+def load_manifest_specs() -> dict[str, ManifestSpec]:
+    """Discover every app's :class:`ManifestSpec`, keyed by REST name -- no engine import.
+
+    Reads the :data:`MANIFEST_ENTRY_POINT_GROUP` group: every value is a
+    :class:`ManifestSpec` whose defining module carries only class-ref *strings*,
+    so resolving the set imports **no engine code**. This is the slim
+    worker-pool service's window onto what it can provision: it learns each app's
+    subject prefix, environment ref, and roster refs without the engine installed.
+
+    An entry point that does not resolve to a :class:`ManifestSpec` is a
+    packaging error and raises :class:`TypeError`. Uncached, like
+    :func:`load_apps`, so a newly-installed app is picked up without a restart.
+    """
+    specs: dict[str, ManifestSpec] = {}
+    for entry in entry_points(group=MANIFEST_ENTRY_POINT_GROUP):
+        spec = entry.load()
+        if not isinstance(spec, ManifestSpec):
+            raise TypeError(
+                f"{MANIFEST_ENTRY_POINT_GROUP} entry point {entry.name!r} "
+                f"({entry.value}) is not a ManifestSpec instance"
+            )
+        specs[entry.name] = spec
+    return specs
+
+
+def load_manifest_spec(name: str) -> ManifestSpec:
+    """Return the :class:`ManifestSpec` registered under REST *name* -- no engine import.
+
+    The slim service's ``create`` front door (ADR-0005): it resolves an app's
+    launch identity as strings and enqueues manifests without importing the
+    engine. Raises :class:`UnknownAppError` -- the same clean listing error
+    :func:`load_app` raises -- when no installed application matches.
+    """
+    specs = load_manifest_specs()
+    try:
+        return specs[name]
+    except KeyError:
+        known = ", ".join(sorted(specs)) or "(none installed)"
         raise UnknownAppError(
             f"unknown application {name!r}; installed applications: {known}"
         ) from None
