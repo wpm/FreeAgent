@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import nats
 from nats.errors import NoServersError
-from nats.js.api import ConsumerConfig, DeliverPolicy, StreamConfig
+from nats.js.api import ConsumerConfig, DeliverPolicy, RetentionPolicy, StreamConfig
 from nats.js.errors import BadRequestError, NotFoundError
 
 if TYPE_CHECKING:
@@ -80,6 +80,19 @@ class Transport(Protocol):
         self, name: str, subjects: Sequence[str], *, metadata: dict[str, str] | None = None
     ) -> None:
         """Idempotently create the stream capturing *subjects*, with *metadata*."""
+        ...
+
+    async def ensure_work_queue_stream(
+        self, name: str, subjects: Sequence[str], *, metadata: dict[str, str] | None = None
+    ) -> None:
+        """Idempotently create a work-queue-retention stream capturing *subjects*.
+
+        Unlike :meth:`ensure_stream` (limits retention -- a durable log), this
+        creates a stream whose messages are *removed once acknowledged*: the
+        shared manifest queue of ADR-0005, where each enqueued unit of work is
+        delivered to exactly one worker. Idempotent: an already-existing stream
+        of this name is left in place (its metadata merged).
+        """
         ...
 
     async def publish(self, subject: str, data: bytes) -> None:
@@ -184,6 +197,10 @@ class MemoryTransport:
         self.streams: dict[str, tuple[str, ...]] = {}
         self.stream_meta: dict[str, dict[str, str]] = {}
         self.sealed_streams: set[str] = set()
+        #: Names of streams created with work-queue retention (ADR-0005). Lets a
+        #: test assert the recruiter built the queue with the right retention,
+        #: even though publish/subscribe semantics here do not model removal.
+        self.work_queue_streams: set[str] = set()
 
     async def connect(self) -> None:
         return None
@@ -198,6 +215,20 @@ class MemoryTransport:
         self.streams[name] = tuple(subjects)
         if metadata:
             self.stream_meta.setdefault(name, {}).update(metadata)
+
+    async def ensure_work_queue_stream(
+        self, name: str, subjects: Sequence[str], *, metadata: dict[str, str] | None = None
+    ) -> None:
+        # Work-queue retention is a server-side delivery property (a message is
+        # removed once acked); it does not change the in-memory replay model, so
+        # we record the stream exactly like ensure_stream and just flag it as a
+        # work queue for tests to assert against. Idempotent: re-ensuring keeps
+        # the existing subjects (a real server leaves the stream in place).
+        if name not in self.streams:
+            self.streams[name] = tuple(subjects)
+        if metadata:
+            self.stream_meta.setdefault(name, {}).update(metadata)
+        self.work_queue_streams.add(name)
 
     async def publish(self, subject: str, data: bytes) -> None:
         if self._sealed_stream_for(subject) is not None:
@@ -327,6 +358,29 @@ class NatsTransport:
             # The stream already exists (possibly created concurrently with a
             # config the server reports as conflicting); confirm it is there and
             # apply any metadata the caller asked for.
+            await js.stream_info(name)
+            if metadata:
+                await self.set_stream_metadata(name, metadata)
+
+    async def ensure_work_queue_stream(
+        self, name: str, subjects: Sequence[str], *, metadata: dict[str, str] | None = None
+    ) -> None:
+        js = self._jetstream()
+        try:
+            await js.add_stream(
+                StreamConfig(
+                    name=name,
+                    subjects=list(subjects),
+                    retention=RetentionPolicy.WORK_QUEUE,
+                    metadata=metadata or None,
+                )
+            )
+        except BadRequestError:
+            # The stream already exists (the queue is long-lived and shared by
+            # every episode and every recruiter); confirm it is there and apply
+            # any metadata the caller asked for. We do not re-assert retention:
+            # a server reports a retention change on an existing stream as an
+            # error, and the queue's retention is fixed at creation.
             await js.stream_info(name)
             if metadata:
                 await self.set_stream_metadata(name, metadata)

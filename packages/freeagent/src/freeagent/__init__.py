@@ -71,6 +71,7 @@ from .recorder import (
     record_episode,
     write_parquet,
 )
+from .recruiter import build_manifests, enqueue_episode
 from .replayer import (
     Replayer,
     ReplayerError,
@@ -94,6 +95,12 @@ from .transport import (
     Transport,
     TransportError,
 )
+from .workqueue import (
+    WORK_QUEUE_STREAM,
+    WORK_QUEUE_SUBJECT_PREFIX,
+    WORK_QUEUE_SUBJECTS,
+    work_subject,
+)
 
 __all__ = [
     "AGENT_FIELDS",
@@ -114,6 +121,9 @@ __all__ = [
     "OPERATOR_ABORT_TYPE",
     "OPERATOR_SENDER",
     "PARQUET_SCHEMA",
+    "WORK_QUEUE_STREAM",
+    "WORK_QUEUE_SUBJECTS",
+    "WORK_QUEUE_SUBJECT_PREFIX",
     "Agent",
     "AppSpec",
     "ConfigError",
@@ -149,10 +159,12 @@ __all__ = [
     "TransportError",
     "UnknownAppError",
     "abort_episode",
+    "build_manifests",
     "build_root_app",
     "configure_logging",
     "create_llm",
     "default_nats_url",
+    "enqueue_episode",
     "fallback_episode_name",
     "load_app",
     "load_apps",
@@ -172,5 +184,6 @@ __all__ = [
     "stream_name",
     "subject_root",
     "validate_name",
+    "work_subject",
     "write_parquet",
 ]
