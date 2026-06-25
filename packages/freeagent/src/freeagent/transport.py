@@ -45,6 +45,16 @@ class TransportError(RuntimeError):
     """
 
 
+class SealedStreamError(TransportError):
+    """A publish was attempted to a sealed (complete, immutable) episode stream.
+
+    Sealing (ADR-0003) makes a finished episode immutable: it is still readable
+    and deletable as a whole, but rejects further appends. JetStream enforces
+    this server-side; :class:`MemoryTransport` models the same rejection so the
+    seal is unit-testable without a server.
+    """
+
+
 @runtime_checkable
 class Subscription(Protocol):
     """Handle for one active subscription."""
@@ -66,16 +76,37 @@ class Transport(Protocol):
         """Tear down the connection and all subscriptions."""
         ...
 
-    async def ensure_stream(self, name: str, subjects: Sequence[str]) -> None:
-        """Idempotently create the stream capturing *subjects*."""
+    async def ensure_stream(
+        self, name: str, subjects: Sequence[str], *, metadata: dict[str, str] | None = None
+    ) -> None:
+        """Idempotently create the stream capturing *subjects*, with *metadata*."""
         ...
 
     async def publish(self, subject: str, data: bytes) -> None:
-        """Publish raw bytes to a subject."""
+        """Publish raw bytes to a subject.
+
+        Raises :class:`SealedStreamError` if the subject's stream is sealed.
+        """
         ...
 
     async def subscribe(self, subject: str, handler: MessageHandler) -> Subscription:
         """Subscribe to a subject (wildcards allowed), delivering from sequence 1."""
+        ...
+
+    async def stream_metadata(self, name: str) -> dict[str, str]:
+        """The stream's current metadata (empty when it carries none)."""
+        ...
+
+    async def set_stream_metadata(self, name: str, metadata: dict[str, str]) -> None:
+        """Merge *metadata* into the stream's existing metadata (read-modify-write)."""
+        ...
+
+    async def seal_stream(self, name: str) -> None:
+        """Seal the stream: make it immutable, rejecting all further appends."""
+        ...
+
+    async def stream_sealed(self, name: str) -> bool:
+        """Whether the stream is sealed (complete and immutable)."""
         ...
 
 
@@ -143,6 +174,8 @@ class MemoryTransport:
         self._subscriptions: list[_MemorySubscription] = []
         self.history: list[tuple[str, bytes]] = []
         self.streams: dict[str, tuple[str, ...]] = {}
+        self.stream_meta: dict[str, dict[str, str]] = {}
+        self.sealed_streams: set[str] = set()
 
     async def connect(self) -> None:
         return None
@@ -151,10 +184,16 @@ class MemoryTransport:
         for sub in list(self._subscriptions):
             await sub.unsubscribe()
 
-    async def ensure_stream(self, name: str, subjects: Sequence[str]) -> None:
+    async def ensure_stream(
+        self, name: str, subjects: Sequence[str], *, metadata: dict[str, str] | None = None
+    ) -> None:
         self.streams[name] = tuple(subjects)
+        if metadata:
+            self.stream_meta.setdefault(name, {}).update(metadata)
 
     async def publish(self, subject: str, data: bytes) -> None:
+        if self._sealed_stream_for(subject) is not None:
+            raise SealedStreamError(f"cannot publish to {subject}: episode is sealed")
         self.history.append((subject, data))
         for sub in list(self._subscriptions):
             if subject_matches(sub.pattern, subject):
@@ -167,6 +206,26 @@ class MemoryTransport:
                 sub.deliver(past_subject, data)
         self._subscriptions.append(sub)
         return sub
+
+    async def stream_metadata(self, name: str) -> dict[str, str]:
+        return dict(self.stream_meta.get(name, {}))
+
+    async def set_stream_metadata(self, name: str, metadata: dict[str, str]) -> None:
+        self.stream_meta.setdefault(name, {}).update(metadata)
+
+    async def seal_stream(self, name: str) -> None:
+        self.sealed_streams.add(name)
+
+    async def stream_sealed(self, name: str) -> bool:
+        return name in self.sealed_streams
+
+    def _sealed_stream_for(self, subject: str) -> str | None:
+        """The sealed stream capturing *subject*, if any (mirrors JetStream)."""
+        for name in self.sealed_streams:
+            patterns = self.streams.get(name, ())
+            if any(subject_matches(pattern, subject) for pattern in patterns):
+                return name
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -240,17 +299,50 @@ class NatsTransport:
         self._nc = None
         self._js = None
 
-    async def ensure_stream(self, name: str, subjects: Sequence[str]) -> None:
+    async def ensure_stream(
+        self, name: str, subjects: Sequence[str], *, metadata: dict[str, str] | None = None
+    ) -> None:
         js = self._jetstream()
         try:
-            await js.add_stream(StreamConfig(name=name, subjects=list(subjects)))
+            await js.add_stream(
+                StreamConfig(name=name, subjects=list(subjects), metadata=metadata or None)
+            )
         except BadRequestError:
             # The stream already exists (possibly created concurrently with a
-            # config the server reports as conflicting); confirm it is there.
+            # config the server reports as conflicting); confirm it is there and
+            # apply any metadata the caller asked for.
             await js.stream_info(name)
+            if metadata:
+                await self.set_stream_metadata(name, metadata)
 
     async def publish(self, subject: str, data: bytes) -> None:
-        await self._jetstream().publish(subject, data)
+        try:
+            await self._jetstream().publish(subject, data)
+        except BadRequestError as exc:
+            # A sealed stream rejects appends; surface it as the typed error.
+            raise SealedStreamError(f"cannot publish to {subject}: episode is sealed") from exc
+
+    async def stream_metadata(self, name: str) -> dict[str, str]:
+        info = await self._jetstream().stream_info(name)
+        return dict(info.config.metadata or {})
+
+    async def set_stream_metadata(self, name: str, metadata: dict[str, str]) -> None:
+        js = self._jetstream()
+        info = await js.stream_info(name)
+        config = info.config
+        config.metadata = {**(config.metadata or {}), **metadata}
+        await js.update_stream(config)
+
+    async def seal_stream(self, name: str) -> None:
+        js = self._jetstream()
+        info = await js.stream_info(name)
+        config = info.config
+        config.sealed = True
+        await js.update_stream(config)
+
+    async def stream_sealed(self, name: str) -> bool:
+        info = await self._jetstream().stream_info(name)
+        return bool(info.config.sealed)
 
     async def subscribe(self, subject: str, handler: MessageHandler) -> Subscription:
         js = self._jetstream()

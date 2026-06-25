@@ -38,12 +38,15 @@ import enum
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import ValidationError
 
 from .config import DEFAULT_EPISODE_TIMEOUT, DEFAULT_GRACE_PERIOD, DEFAULT_SETUP_TIMEOUT
 from .envelope import Envelope
+from .metadata import KEY_NAME, KEY_OUTCOME, KEY_STATUS, EpisodeMetadata
+from .names import fallback_episode_name
 from .subjects import ENV_NAME, EpisodeSubjects, validate_name
 from .transport import MessageHandler, NatsTransport, Subscription, Transport
 
@@ -157,6 +160,17 @@ class Environment:
         self._terminal_state = EpisodeState.ENDED
         self.state_history: list[EpisodeState] = [EpisodeState.SETUP]
         self.outcome: Any = None
+        # Friendly name (ADR-0003): a user-set name (config) or the
+        # auto-generated fallback, until an application contributes a more
+        # specific one via set_name (e.g. Twenty Questions titles a finished
+        # game by its secret). Stored on the stream's metadata.
+        configured = self.config.get("name")
+        self._friendly_name: str = (
+            configured
+            if isinstance(configured, str) and configured
+            else fallback_episode_name(self.episode_id)
+        )
+        self._name_app_contributed = False
         self.abort_reason: str | None = None
         self.shutdown_reason: str | None = None
         self._events: asyncio.Queue[EnvironmentEvent] = asyncio.Queue()
@@ -185,6 +199,37 @@ class Environment:
     def subjects(self) -> EpisodeSubjects:
         """The episode's subject helper (runtime use only)."""
         return self._subjects
+
+    @property
+    def name(self) -> str:
+        """The episode's friendly name (ADR-0003): user-set, app-contributed, or
+        the auto-generated fallback."""
+        return self._friendly_name
+
+    def set_name(self, name: str) -> None:
+        """Contribute an application-specific friendly name for the episode.
+
+        Callable from handlers (e.g. Twenty Questions titles a finished game by
+        its secret). This is the most specific of the three name sources, so it
+        wins over the user-set or fallback name and is written to the stream
+        metadata when the episode is sealed. Fast and non-blocking.
+        """
+        self._friendly_name = name
+        self._name_app_contributed = True
+
+    def outcome_label(self) -> str | None:
+        """How the episode finished -- ``aborted``/``timed_out``/``None``.
+
+        Orthogonal to whether the stream is sealed (ADR-0003): this is the
+        *outcome* metadata, not the open/sealed state. Applications override it
+        to report a structured result (Twenty Questions returns ``won``/``lost``)
+        and may defer to ``super().outcome_label()`` for the framework cases.
+        """
+        if self._state is EpisodeState.ABORTED:
+            return "aborted"
+        if self.shutdown_reason == "episode timeout":
+            return "timed_out"
+        return None
 
     # ------------------------------------------------------------------
     # Handlers (the fold) -- override these. Fast and non-blocking only.
@@ -331,7 +376,11 @@ class Environment:
         Does not close the transport (the caller owns it).
         """
         self._transport = transport
-        await transport.ensure_stream(self._subjects.stream, [self._subjects.all_subjects])
+        await transport.ensure_stream(
+            self._subjects.stream,
+            [self._subjects.all_subjects],
+            metadata=self._initial_metadata(),
+        )
         subscriptions: list[Subscription] = [
             await transport.subscribe(self._subjects.public, self._receiver("public")),
             await transport.subscribe(self._subjects.env, self._receiver("env")),
@@ -342,6 +391,9 @@ class Environment:
             while self._state not in (EpisodeState.ENDED, EpisodeState.ABORTED):
                 event = await self._events.get()
                 await self._process_event(event)
+            # Terminal step of the stopping path: record the outcome and seal
+            # the episode (immutable, complete) before releasing the transport.
+            await self._seal_episode()
         finally:
             for task in list(self._tasks):
                 task.cancel()
@@ -350,6 +402,51 @@ class Environment:
                 await subscription.unsubscribe()
             self._transport = None
         return self._state
+
+    def _initial_metadata(self) -> dict[str, str]:
+        """The episode metadata written when the stream is created (ADR-0003)."""
+        return EpisodeMetadata(
+            app=self.app,
+            name=self._friendly_name,
+            status=str(self._state),
+            mode="live",
+            created_at=datetime.now(UTC).isoformat(),
+        ).to_stream_metadata()
+
+    async def _write_status(self, status: EpisodeState) -> None:
+        """Update the episode's durable status label (best-effort, never fatal)."""
+        if self._transport is None:
+            return
+        try:
+            await self._transport.set_stream_metadata(
+                self._subjects.stream, {KEY_STATUS: str(status)}
+            )
+        except Exception:
+            logger.warning("env: could not update status metadata", exc_info=True)
+
+    async def _seal_episode(self) -> None:
+        """Write the terminal status/outcome/name, then seal the stream.
+
+        Sealing makes a finished episode immutable -- it rejects further appends
+        but stays readable and deletable as a whole. Metadata is written *before*
+        the seal because a sealed stream rejects config changes too. Best-effort:
+        a seal failure is logged, not raised, so it never masks the final state.
+        """
+        if self._transport is None:
+            return
+        updates = {KEY_STATUS: str(self._state)}
+        outcome = self.outcome_label()
+        if outcome is not None:
+            updates[KEY_OUTCOME] = outcome
+        # The name is rewritten only when the application contributed one, so a
+        # mid-episode rename through the service is not clobbered here.
+        if self._name_app_contributed:
+            updates[KEY_NAME] = self._friendly_name
+        try:
+            await self._transport.set_stream_metadata(self._subjects.stream, updates)
+            await self._transport.seal_stream(self._subjects.stream)
+        except Exception:
+            logger.warning("env: could not seal episode %s", self.episode_id, exc_info=True)
 
     # ------------------------------------------------------------------
     # Internals
@@ -474,6 +571,7 @@ class Environment:
     async def _start_episode(self) -> None:
         """All expected agents replied: fire the gun."""
         self._set_state(EpisodeState.RUNNING)
+        await self._write_status(EpisodeState.RUNNING)
         await self.broadcast_control({"type": "start"})
         self.schedule_timer(self.episode_timeout, _EPISODE_TIMER)
 
@@ -495,6 +593,7 @@ class Environment:
         if terminal is EpisodeState.ABORTED:
             self.abort_reason = self.shutdown_reason
         self._set_state(EpisodeState.STOPPING)
+        await self._write_status(EpisodeState.STOPPING)
         await self.broadcast_control({"type": "shutdown"})
         self.schedule_timer(self.grace_period, _GRACE_TIMER)
 
