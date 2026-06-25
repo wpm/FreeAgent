@@ -65,6 +65,7 @@ from .orchestrate import (
 )
 from .replay import replay as _replay_command
 from .serve import serve as _serve_command
+from .work import _work_command
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -165,6 +166,9 @@ def build_root_app() -> typer.Typer:
     # The control service is likewise app-agnostic library infrastructure: one
     # service launches any installed app by its REST name.
     root.command("serve")(_serve_command)
+    # The worker is the same kind of app-agnostic infrastructure: one worker
+    # pulls and runs any app's episode manifests off the shared work queue.
+    root.command("work")(_work_command)
     # Mount each installed app's Typer sub-app under its REST name; an app
     # registered purely to be launched (no CLI of its own) is simply skipped.
     for name, spec in sorted(load_apps().items()):

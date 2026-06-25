@@ -24,7 +24,14 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import nats
 from nats.errors import NoServersError
-from nats.js.api import ConsumerConfig, DeliverPolicy, RetentionPolicy, StreamConfig
+from nats.errors import TimeoutError as NatsTimeoutError
+from nats.js.api import (
+    AckPolicy,
+    ConsumerConfig,
+    DeliverPolicy,
+    RetentionPolicy,
+    StreamConfig,
+)
 from nats.js.errors import BadRequestError, NotFoundError
 
 if TYPE_CHECKING:
@@ -65,6 +72,49 @@ class Subscription(Protocol):
 
 
 @runtime_checkable
+class PulledMessage(Protocol):
+    """One manifest pulled off the work queue, acked by the worker on confirmed launch.
+
+    A worker fetches a batch of these from its :class:`PullSubscription`, spawns
+    the child the manifest describes, and -- only once the child has survived its
+    connect phase -- :meth:`ack`-s it. A child that fails to start is
+    :meth:`nak`-ed so the manifest is redelivered to another worker; a manifest
+    that can never be launched is :meth:`term`-ed so it is not redelivered.
+    """
+
+    @property
+    def data(self) -> bytes:
+        """The raw manifest bytes (``Manifest.model_validate_json`` parses them)."""
+        ...
+
+    async def ack(self) -> None:
+        """Acknowledge the message: the work is claimed and will not be redelivered."""
+        ...
+
+    async def nak(self) -> None:
+        """Negatively acknowledge: redeliver the message to a worker (incl. this one)."""
+        ...
+
+    async def term(self) -> None:
+        """Terminate the message: stop redelivering it (it can never be launched)."""
+        ...
+
+
+@runtime_checkable
+class PullSubscription(Protocol):
+    """A bound durable pull consumer a worker fetches manifest batches from."""
+
+    async def fetch(self, batch: int, timeout: float) -> Sequence[PulledMessage]:  # noqa: ASYNC109
+        """Pull up to *batch* messages, waiting at most *timeout* seconds.
+
+        Returns the empty sequence when no message arrives in the window rather
+        than raising, so the worker's pull loop can simply poll again. The
+        ``timeout`` parameter mirrors nats-py's ``PullSubscription.fetch``.
+        """
+        ...
+
+
+@runtime_checkable
 class Transport(Protocol):
     """The async messaging surface FreeAgent runs on."""
 
@@ -93,6 +143,20 @@ class Transport(Protocol):
         delivered to exactly one worker. Idempotent: an already-existing stream
         of this name is left in place (its metadata merged).
         """
+        ...
+
+    async def ensure_work_consumer(self, stream: str, durable: str, *, ack_wait: float) -> None:
+        """Idempotently create the one shared durable pull consumer on *stream*.
+
+        Every worker binds this same durable name (ADR-0005), so a manifest is
+        delivered to exactly one of them. ``ack_wait`` covers startup only.
+        """
+        ...
+
+    async def pull_subscribe(
+        self, stream: str, durable: str, subjects: Sequence[str]
+    ) -> PullSubscription:
+        """Bind the shared durable pull consumer and return a fetchable handle."""
         ...
 
     async def publish(self, subject: str, data: bytes) -> None:
@@ -183,6 +247,71 @@ class _MemorySubscription:
             await self._task
 
 
+class _MemoryPulledMessage:
+    """One in-memory pulled manifest, returning to its queue if not acked.
+
+    Mirrors a JetStream work-queue message: :meth:`ack`/:meth:`term` remove it
+    for good; :meth:`nak` returns it to the front of the pending queue so the
+    next :meth:`~_MemoryPullQueue.fetch` redelivers it (the worker's redelivery
+    path when a child fails to start).
+    """
+
+    def __init__(self, queue: _MemoryPullQueue, data: bytes) -> None:
+        self._queue = queue
+        self.data = data
+
+    async def ack(self) -> None:
+        self._queue.resolve(self)
+
+    async def term(self) -> None:
+        self._queue.resolve(self)
+
+    async def nak(self) -> None:
+        self._queue.redeliver(self)
+
+
+class _MemoryPullQueue:
+    """The pending+in-flight FIFO behind one in-memory work-queue stream."""
+
+    def __init__(self) -> None:
+        self.pending: list[bytes] = []
+        self._in_flight: set[_MemoryPulledMessage] = set()
+
+    def enqueue(self, data: bytes) -> None:
+        self.pending.append(data)
+
+    def fetch(self, batch: int) -> list[_MemoryPulledMessage]:
+        taken: list[_MemoryPulledMessage] = []
+        while self.pending and len(taken) < batch:
+            message = _MemoryPulledMessage(self, self.pending.pop(0))
+            self._in_flight.add(message)
+            taken.append(message)
+        return taken
+
+    def resolve(self, message: _MemoryPulledMessage) -> None:
+        self._in_flight.discard(message)  # acked/termed: gone for good
+
+    def redeliver(self, message: _MemoryPulledMessage) -> None:
+        if message in self._in_flight:
+            self._in_flight.discard(message)
+            self.pending.insert(0, message.data)  # naked: back to the front
+
+
+class _MemoryPullSubscription:
+    """A fetchable handle bound to one in-memory work-queue (stream, durable)."""
+
+    def __init__(self, queue: _MemoryPullQueue) -> None:
+        self._queue = queue
+
+    async def fetch(self, batch: int, timeout: float) -> Sequence[PulledMessage]:  # noqa: ASYNC109
+        messages = self._queue.fetch(batch)
+        if not messages:
+            # Nothing pending: model the real consumer's empty-window wait so a
+            # polling loop yields instead of spinning. Bounded by *timeout*.
+            await asyncio.sleep(min(timeout, 0.01))
+        return messages
+
+
 class MemoryTransport:
     """In-process transport for unit tests -- no network, no NATS.
 
@@ -201,6 +330,9 @@ class MemoryTransport:
         #: test assert the recruiter built the queue with the right retention,
         #: even though publish/subscribe semantics here do not model removal.
         self.work_queue_streams: set[str] = set()
+        #: One pending+in-flight FIFO per work-queue stream, so the worker's
+        #: pull -> ack/nak loop is unit-testable without a server.
+        self._work_queues: dict[str, _MemoryPullQueue] = {}
 
     async def connect(self) -> None:
         return None
@@ -229,11 +361,39 @@ class MemoryTransport:
         if metadata:
             self.stream_meta.setdefault(name, {}).update(metadata)
         self.work_queue_streams.add(name)
+        self._work_queues.setdefault(name, _MemoryPullQueue())
+
+    async def ensure_work_consumer(
+        self,
+        stream: str,
+        durable: str,  # noqa: ARG002 - server-side delivery concern, unused in-memory
+        *,
+        ack_wait: float,  # noqa: ARG002 - server-side delivery concern, unused in-memory
+    ) -> None:
+        # Consumers share the stream's one queue; binding is a no-op beyond
+        # ensuring the queue exists (idempotent, like the real durable consumer).
+        self._work_queues.setdefault(stream, _MemoryPullQueue())
+
+    async def pull_subscribe(
+        self,
+        stream: str,
+        durable: str,  # noqa: ARG002 - the durable name is bound server-side
+        subjects: Sequence[str],  # noqa: ARG002 - the subject filter is bound server-side
+    ) -> PullSubscription:
+        # One shared queue per stream stands in for the durable consumer.
+        return _MemoryPullSubscription(self._work_queues.setdefault(stream, _MemoryPullQueue()))
 
     async def publish(self, subject: str, data: bytes) -> None:
         if self._sealed_stream_for(subject) is not None:
             raise SealedStreamError(f"cannot publish to {subject}: episode is sealed")
         self.history.append((subject, data))
+        # Route into any work-queue stream capturing this subject: a work-queue
+        # message is pulled+acked, not replayed to push subscribers.
+        for name, patterns in self.streams.items():
+            if name in self._work_queues and any(
+                subject_matches(pattern, subject) for pattern in patterns
+            ):
+                self._work_queues[name].enqueue(data)
         for sub in list(self._subscriptions):
             if subject_matches(sub.pattern, subject):
                 sub.deliver(subject, data)
@@ -253,6 +413,8 @@ class MemoryTransport:
         self.streams.pop(name, None)
         self.stream_meta.pop(name, None)
         self.sealed_streams.discard(name)
+        self.work_queue_streams.discard(name)
+        self._work_queues.pop(name, None)
 
     async def stream_metadata(self, name: str) -> dict[str, str]:
         return dict(self.stream_meta.get(name, {}))
@@ -301,6 +463,25 @@ class _NatsSubscription:
 
     async def unsubscribe(self) -> None:
         await self._inner.unsubscribe()  # type: ignore[attr-defined]
+
+
+class _NatsPullSubscription:
+    """Wraps nats-py's ``PullSubscription`` as a :class:`PullSubscription`.
+
+    The one behavioural shim is ``fetch``: nats-py raises ``TimeoutError`` when a
+    batch window elapses with no message; the worker's loop wants that to be an
+    ordinary empty poll, so we translate it into an empty list.
+    """
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+
+    async def fetch(self, batch: int, timeout: float) -> Sequence[PulledMessage]:  # noqa: ASYNC109
+        try:
+            msgs = await self._inner.fetch(batch, timeout=timeout)  # type: ignore[attr-defined]
+        except NatsTimeoutError:
+            return []
+        return list(msgs)
 
 
 class NatsTransport:
@@ -445,3 +626,51 @@ class NatsTransport:
                 await asyncio.sleep(0.1)
             else:
                 return _NatsSubscription(inner)
+
+    # -- work-queue pull consumer (ADR-0005) -----------------------------------
+    #
+    # The recruiter's ``ensure_work_queue_stream`` (above) creates the shared
+    # work-queue stream; these two methods are the *consumer* side the worker
+    # uses. The work queue is read through one shared durable PULL consumer (not
+    # the per-episode ordered push consumers ``subscribe`` uses): every worker
+    # binds the same durable name, so a manifest is delivered to exactly one of
+    # them. Workers pull manifests, launch them, and ack on confirmed creation.
+
+    async def ensure_work_consumer(self, stream: str, durable: str, *, ack_wait: float) -> None:
+        """Idempotently create the ONE shared durable pull consumer on *stream*.
+
+        Every worker binds this same durable consumer -- never a per-instance one,
+        which would fan every manifest to every worker. ``ack_wait`` covers
+        *startup only*: the worker acks on confirmed child creation (seconds), so
+        a short window suffices; a child that dies before its ack is redelivered.
+        Explicit acks make that redelivery the worker's decision, not a timeout's.
+        """
+        js = self._jetstream()
+        config = ConsumerConfig(
+            durable_name=durable,
+            ack_policy=AckPolicy.EXPLICIT,
+            ack_wait=ack_wait,
+        )
+        try:
+            await js.add_consumer(stream, config)
+        except BadRequestError:
+            # Already exists (every worker ensures it); confirm and move on.
+            await js.consumer_info(stream, durable)
+
+    async def pull_subscribe(
+        self, stream: str, durable: str, subjects: Sequence[str]
+    ) -> PullSubscription:
+        """Bind the shared durable pull consumer and return a fetchable handle.
+
+        Binds (does not create) the durable consumer :meth:`ensure_work_consumer`
+        made, so every worker shares it. *subjects* is the work queue's capture
+        wildcard (``WORK_QUEUE_SUBJECTS``); a single shared consumer reads them
+        all. The returned :class:`PullSubscription` fetches batches sized to the
+        worker's spare capacity.
+        """
+        js = self._jetstream()
+        # nats-py binds a pull subscription to one subject filter; the work queue
+        # uses one wildcard, so the first (and only) subject is that wildcard.
+        subject = next(iter(subjects))
+        inner = await js.pull_subscribe(subject, durable=durable, stream=stream)
+        return _NatsPullSubscription(inner)

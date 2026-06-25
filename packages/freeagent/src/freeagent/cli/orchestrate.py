@@ -31,13 +31,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import enum
-import json
 import os
 import signal
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from freeagent.agent import Agent
 from freeagent.config import DEFAULT_GRACE_PERIOD
@@ -46,7 +45,6 @@ from freeagent.environment import Environment
 from freeagent.recorder import __main__ as _recorder_module
 from freeagent.subjects import subject_root
 
-from . import child as _child_module
 from .child import (
     EXIT_ABORTED,
     EXIT_ENDED,
@@ -56,15 +54,14 @@ from .child import (
     environment_spec,
 )
 from .config import ConfigError, EpisodePlan, make_plan
+from .supervise import shutdown_processes as _shutdown_processes
+from .supervise import spawn_child as _spawn_child
+from .supervise import terminate_all as _terminate_all
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
     from .config import EpisodeConfig
-
-#: The child runner's source file, launched directly to avoid runpy re-executing
-#: an already-imported module (see :func:`_spawn_child`).
-_CHILD_SCRIPT = Path(_child_module.__file__)
 
 #: The recorder process's source file, spawned directly (see :func:`_spawn_recorder`).
 _RECORDER_SCRIPT = Path(_recorder_module.__file__)
@@ -74,8 +71,6 @@ AGENT_EXIT_BUFFER = 3.0
 # Seconds the recorder gets after the agents are gone (its shutdown + idle
 # timeout fires on its own) before being terminated.
 RECORDER_WAIT = 15.0
-# Seconds between terminate() and kill() for stragglers.
-TERMINATE_TIMEOUT = 5.0
 
 
 class EpisodeStatus(enum.StrEnum):
@@ -374,26 +369,6 @@ def _install_signal_handlers(handle: EpisodeHandle) -> Iterator[None]:
             loop.remove_signal_handler(sig)
 
 
-async def _spawn_child(
-    spec: dict[str, Any], child_env: dict[str, str]
-) -> asyncio.subprocess.Process:
-    """Launch the child runner for *spec* as its own process; stdio inherited.
-
-    The child is launched by file path rather than ``-m freeagent.cli.child``:
-    ``-m`` of a submodule first imports the ``freeagent.cli`` package, whose
-    ``__init__`` already imports ``child``, so runpy then re-executes an
-    already-imported module and warns. Running the file directly sidesteps that
-    -- the child uses only absolute ``freeagent.*`` imports, which resolve from
-    the installed package regardless of how the file was started.
-    """
-    return await asyncio.create_subprocess_exec(
-        sys.executable,
-        str(_CHILD_SCRIPT),
-        json.dumps(spec, default=str),
-        env=child_env,
-    )
-
-
 async def _spawn_recorder(
     plan: EpisodePlan, parquet_log: Path, child_env: dict[str, str]
 ) -> asyncio.subprocess.Process:
@@ -444,50 +419,6 @@ def _agent_deadline(plan: EpisodePlan) -> float:
         if isinstance(value, int | float):
             graces.append(float(value))
     return max(graces) + AGENT_EXIT_BUFFER
-
-
-async def _shutdown_processes(procs: list[asyncio.subprocess.Process], deadline: float) -> None:
-    """Wait *deadline* seconds for *procs* to exit, then terminate(), then kill()."""
-    if await _wait_all(procs, deadline):
-        return
-    _signal_all(procs, "terminate")
-    if await _wait_all(procs, TERMINATE_TIMEOUT):
-        return
-    _signal_all(procs, "kill")
-    await _wait_all(procs, TERMINATE_TIMEOUT)
-
-
-async def _terminate_all(procs: list[asyncio.subprocess.Process]) -> None:
-    """Final cleanup: terminate (then kill) anything still running."""
-    live = [proc for proc in procs if proc.returncode is None]
-    if not live:
-        return
-    _signal_all(live, "terminate")
-    if not await _wait_all(live, TERMINATE_TIMEOUT):
-        _signal_all(live, "kill")
-        await _wait_all(live, TERMINATE_TIMEOUT)
-
-
-async def _wait_all(procs: list[asyncio.subprocess.Process], seconds: float) -> bool:
-    """True when every process has exited within *seconds*."""
-    pending = [proc for proc in procs if proc.returncode is None]
-    if not pending:
-        return True
-    waiters = [asyncio.ensure_future(proc.wait()) for proc in pending]
-    _done, not_done = await asyncio.wait(waiters, timeout=seconds)
-    for waiter in not_done:
-        waiter.cancel()
-    if not_done:
-        await asyncio.gather(*not_done, return_exceptions=True)
-    return not not_done
-
-
-def _signal_all(procs: list[asyncio.subprocess.Process], method: str) -> None:
-    """Send terminate()/kill() to every still-running process, ignoring races."""
-    for proc in procs:
-        if proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                getattr(proc, method)()
 
 
 def _outcome_for_exit(env_exit: int | None) -> EpisodeOutcome:
