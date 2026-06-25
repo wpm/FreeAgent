@@ -1,26 +1,26 @@
-"""Control-service tests: the REST API over running episodes.
+"""Episode-service tests: the REST API over the durable JetStream record.
 
-Two tiers, mirroring the rest of the suite:
+Three tiers:
 
-* **Fast** tests need neither NATS nor child processes -- request-model
-  validation, the NATS-down 503 (a *closed* port, so it fails fast), and the
+* **Fast, no NATS** -- request-model validation, the NATS-down 503, and the
   unknown-application 404.
-* **Slow** tests (opt-in ``FREEAGENT_SLOW_TEST``, skipped without NATS) drive the
-  real thing: create launches an episode observable over NATS exactly like a
-  ``run``-launched one, list/get reflect it, stop aborts it gracefully, teardown
-  clears everything, and a recorded log replays onto NATS.
+* **Fast, in-memory durable record** -- the JetStream-sourcing logic
+  (list/get/rename/delete and *restart durability*) driven against an injected
+  :class:`MemoryTransport` seeded with episode streams + metadata, exactly as the
+  real durable record looks. This is the heart of ADR-0003 and runs without NATS.
+* **Slow** (opt-in ``FREEAGENT_SLOW_TEST``, skipped without NATS) -- create
+  launches a real episode, observable over NATS; stop aborts it; a fresh service
+  over the same NATS still sees it (restart loses nothing).
 
-Live episodes run the no-LLM ``noop_app`` (a Player-free environment plus idle
-agents); the service is pointed at it through an injected ``app_loader`` so the
-tests need no installed entry point, and ``noop_app``'s directory is exported on
-``PYTHONPATH`` so the spawned children can import it.
+Live episodes run the no-LLM ``noop_app``; the service is pointed at it through an
+injected ``app_loader``, and ``noop_app``'s directory is on ``PYTHONPATH`` so the
+spawned children can import it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-import socket
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,11 +37,10 @@ from freeagent import (
     ENVIRONMENT_FIELDS,
     AppSpec,
     Envelope,
-    EpisodeSubjects,
+    EpisodeMetadata,
+    MemoryTransport,
     SettableConfig,
     default_nats_url,
-    make_record,
-    write_parquet,
 )
 from freeagent.service import (
     ControlService,
@@ -50,20 +49,18 @@ from freeagent.service import (
     create_app,
     verify_nats_reachable,
 )
+from freeagent.subjects import EpisodeSubjects, stream_name
 
 TESTS_DIR = Path(__file__).parent
 NATS_URL = default_nats_url()
-#: A loopback port nothing listens on: a connect here is refused immediately, so
-#: the NATS-down path is exercised without a hang and without a real server.
+#: A loopback port nothing listens on: a connect here is refused immediately.
 DEAD_NATS_URL = "nats://127.0.0.1:14222"
 
 #: The REST/application name the tests register the noop app under.
 NOOP_APP = "noopapp"
-#: Long enough that a created episode stays RUNNING for the test to observe and
-#: stop it -- the abort, never a timeout, is what ends it.
+#: Long enough that a created episode stays RUNNING for the test to stop it.
 LONG_ENV = {"setup_timeout": 10.0, "episode_timeout": 30.0, "grace_period": 0.2}
 
-#: The noop app the service launches: two idle agents under one base environment.
 NOOP_SPEC = AppSpec(
     name=NOOP_APP,
     environment=NoopEnvironment,
@@ -85,6 +82,8 @@ def _noop_loader(name: str) -> AppSpec:
 
 
 def _nats_running() -> bool:
+    import socket
+
     try:
         with socket.create_connection(("localhost", 4222), timeout=0.5):
             return True
@@ -104,33 +103,31 @@ slow = pytest.mark.skipif(
 )
 
 
+def _client(service: ControlService) -> AsyncClient:
+    """An httpx client driving the app in-process (lifespan handled by the test)."""
+    app = create_app(service=service)
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://service")
+
+
 # ---------------------------------------------------------------------------
 # Fast: request-model validation (no NATS, no processes)
 # ---------------------------------------------------------------------------
 
 
 def test_live_is_the_default_mode() -> None:
-    request = CreateEpisodeRequest()
-    assert request.mode == "live"
+    assert CreateEpisodeRequest().mode == "live"
+
+
+def test_create_accepts_name_model_and_key() -> None:
+    request = CreateEpisodeRequest(name="my game", model="some-model", api_key="sk-test")
+    assert request.name == "my game"
+    assert request.model == "some-model"
+    assert request.api_key == "sk-test"
 
 
 def test_replay_requires_a_parquet_path() -> None:
     with pytest.raises(ValidationError, match="requires 'parquet_path'"):
         CreateEpisodeRequest(mode="replay")
-
-
-def test_parquet_path_is_replay_only() -> None:
-    with pytest.raises(ValidationError, match="applies only to replay mode"):
-        CreateEpisodeRequest(mode="live", parquet_path="/tmp/log.parquet")
-
-
-def test_replay_rejects_inapplicable_live_fields() -> None:
-    with pytest.raises(ValidationError, match="do not apply to replay mode"):
-        CreateEpisodeRequest(
-            mode="replay",
-            parquet_path="/tmp/log.parquet",
-            agents={"alice": {"config": {"model": "fake"}}},
-        )
 
 
 def test_unknown_field_is_rejected() -> None:
@@ -147,7 +144,6 @@ async def test_verify_nats_unreachable_fails_fast() -> None:
     started = time.monotonic()
     with pytest.raises(NatsUnreachableError):
         await verify_nats_reachable(DEAD_NATS_URL, timeout=3.0)
-    # A refused port returns at once; the bound is the no-hang guarantee.
     assert time.monotonic() - started < 3.0
 
 
@@ -162,7 +158,6 @@ async def test_create_returns_503_when_nats_is_down() -> None:
 
 
 async def test_create_returns_404_for_unknown_application() -> None:
-    # The app is resolved before NATS is probed, so a closed port is irrelevant.
     service = ControlService(nats_url=DEAD_NATS_URL, app_loader=_noop_loader)
     async with _client(service) as client:
         response = await client.post("/freeagent/no-such-app/episodes", json={"mode": "live"})
@@ -170,11 +165,128 @@ async def test_create_returns_404_for_unknown_application() -> None:
     assert "unknown application" in response.json()["detail"]
 
 
-async def test_get_unknown_episode_is_404() -> None:
+async def test_replay_mode_is_rejected_in_favour_of_import() -> None:
     service = ControlService(nats_url=DEAD_NATS_URL, app_loader=_noop_loader)
+    async with _client(service) as client:
+        response = await client.post(
+            f"/freeagent/{NOOP_APP}/episodes",
+            json={"mode": "replay", "parquet_path": "/data/log.parquet"},
+        )
+    assert response.status_code == 400
+    assert "import" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Fast: the durable record (JetStream) sourced from an in-memory transport
+# ---------------------------------------------------------------------------
+
+
+def _seed_episode(
+    transport: MemoryTransport,
+    *,
+    episode_id: str,
+    name: str,
+    status: str,
+    sealed: bool,
+    outcome: str | None = None,
+    created_at: datetime | None = None,
+) -> None:
+    """Write an episode stream + metadata into the in-memory durable record."""
+    subjects = EpisodeSubjects(app=NOOP_APP, episode_id=episode_id)
+    meta = EpisodeMetadata(
+        app=NOOP_APP,
+        name=name,
+        status=status,
+        mode="live",
+        outcome=outcome,
+        created_at=(created_at or datetime.now(UTC)).isoformat(),
+    ).to_stream_metadata()
+    transport.stream_meta[subjects.stream] = meta
+    transport.streams[subjects.stream] = (subjects.all_subjects,)
+    if sealed:
+        transport.sealed_streams.add(subjects.stream)
+
+
+def _durable_service(transport: MemoryTransport) -> ControlService:
+    return ControlService(nats_url=DEAD_NATS_URL, app_loader=_noop_loader, transport=transport)
+
+
+async def test_list_and_get_read_from_the_durable_record() -> None:
+    transport = MemoryTransport()
+    _seed_episode(transport, episode_id="alpha", name="amber-otter", status="running", sealed=False)
+    _seed_episode(
+        transport, episode_id="bravo", name="elephant", status="ended", sealed=True, outcome="won"
+    )
+    service = _durable_service(transport)
+    async with _client(service) as client:
+        listing = (await client.get("/freeagent/episodes")).json()
+        ids = {e["id"] for e in listing}
+        assert ids == {"alpha", "bravo"}
+        sealed = next(e for e in listing if e["id"] == "bravo")
+        assert sealed["sealed"] is True
+        assert sealed["status"] == "ended"
+        assert sealed["outcome"] == "won"
+        assert sealed["name"] == "elephant"
+
+        got = (await client.get(f"/freeagent/{NOOP_APP}/episodes/alpha")).json()
+        assert got["status"] == "running"
+        assert got["sealed"] is False
+
+
+async def test_get_unknown_episode_is_404() -> None:
+    service = _durable_service(MemoryTransport())  # empty but reachable record
     async with _client(service) as client:
         response = await client.get(f"/freeagent/{NOOP_APP}/episodes/nope")
     assert response.status_code == 404
+
+
+async def test_rename_updates_the_durable_record() -> None:
+    transport = MemoryTransport()
+    _seed_episode(transport, episode_id="bravo", name="elephant", status="ended", sealed=True)
+    service = _durable_service(transport)
+    async with _client(service) as client:
+        renamed = await client.patch(
+            f"/freeagent/{NOOP_APP}/episodes/bravo", json={"name": "pachyderm"}
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["name"] == "pachyderm"
+        # Durable: re-reading the record reflects the new name.
+        got = (await client.get(f"/freeagent/{NOOP_APP}/episodes/bravo")).json()
+        assert got["name"] == "pachyderm"
+
+
+async def test_delete_removes_the_stream() -> None:
+    transport = MemoryTransport()
+    _seed_episode(transport, episode_id="bravo", name="elephant", status="ended", sealed=True)
+    service = _durable_service(transport)
+    async with _client(service) as client:
+        deleted = await client.request("DELETE", f"/freeagent/{NOOP_APP}/episodes/bravo")
+        assert deleted.status_code == 204
+        assert stream_name(NOOP_APP, "bravo") not in transport.streams
+        gone = await client.get(f"/freeagent/{NOOP_APP}/episodes/bravo")
+        assert gone.status_code == 404
+
+
+async def test_restart_loses_nothing() -> None:
+    """A fresh service over the same durable record still sees every episode."""
+    transport = MemoryTransport()
+    _seed_episode(transport, episode_id="alpha", name="amber-otter", status="running", sealed=False)
+    _seed_episode(transport, episode_id="bravo", name="elephant", status="ended", sealed=True)
+
+    # The durable record (the transport) survives; the service does not.
+    first = _durable_service(transport)
+    async with _client(first) as client:
+        assert {e["id"] for e in (await client.get("/freeagent/episodes")).json()} == {
+            "alpha",
+            "bravo",
+        }
+    # A brand-new service instance, same record, no shared in-memory state.
+    second = _durable_service(transport)
+    async with _client(second) as client:
+        assert {e["id"] for e in (await client.get("/freeagent/episodes")).json()} == {
+            "alpha",
+            "bravo",
+        }
 
 
 async def test_teardown_of_empty_service_is_zero() -> None:
@@ -200,45 +312,56 @@ def _children_can_import_noop_app(monkeypatch: pytest.MonkeyPatch) -> None:
 @slow
 @requires_nats
 @pytest.mark.usefixtures("_children_can_import_noop_app")
-async def test_create_list_get_stop_teardown() -> None:
+async def test_create_list_get_stop_then_durable() -> None:
     service = ControlService(nats_url=NATS_URL, app_loader=_noop_loader)
     async with _client(service) as client:
+        episode_id: str | None = None
         try:
-            # --- create: a live episode comes up RUNNING.
             created = await client.post(
                 f"/freeagent/{NOOP_APP}/episodes",
-                json={"mode": "live", "environment": {"config": LONG_ENV}},
+                json={"mode": "live", "name": "first", "environment": {"config": LONG_ENV}},
             )
             assert created.status_code == 201
             view = created.json()
             episode_id = view["id"]
-            assert view["mode"] == "live"
             assert view["status"] == "running"
+            assert view["name"] == "first"
             assert view["app"] == NOOP_APP
-            # The REST id IS the subject id for a live episode.
             assert view["episode_id"] == episode_id
             assert view["subject_root"] == f"{NOOP_APP}.episode.{episode_id}"
 
-            # --- observable over NATS exactly like a run-launched episode: the
-            # environment confirms presence and broadcasts 'start' on control.
             await _await_start(view["subject_root"])
 
-            # --- list / get reflect reality.
+            # list/get read the durable JetStream record.
             listing = (await client.get("/freeagent/episodes")).json()
-            assert [e["id"] for e in listing] == [episode_id]
+            assert episode_id in [e["id"] for e in listing]
             got = (await client.get(f"/freeagent/{NOOP_APP}/episodes/{episode_id}")).json()
             assert got["status"] == "running"
 
-            # --- stop aborts gracefully: the episode settles 'aborted'.
+            # rename writes the durable record.
+            await client.patch(f"/freeagent/{NOOP_APP}/episodes/{episode_id}", json={"name": "two"})
+            assert (await client.get(f"/freeagent/{NOOP_APP}/episodes/{episode_id}")).json()[
+                "name"
+            ] == "two"
+
+            # stop aborts gracefully and seals.
             stopped = await client.post(f"/freeagent/{NOOP_APP}/episodes/{episode_id}/stop")
             assert stopped.status_code == 200
             assert stopped.json()["status"] == "aborted"
 
-            # --- teardown clears everything.
-            torn = await client.post("/freeagent/teardown")
-            assert torn.json() == {"stopped": 1}
-            assert (await client.get("/freeagent/episodes")).json() == []
+            # A restart-equivalent fresh service still sees it (sealed, durable).
+            fresh = ControlService(nats_url=NATS_URL, app_loader=_noop_loader)
+            try:
+                async with _client(fresh) as other:
+                    seen = (await other.get(f"/freeagent/{NOOP_APP}/episodes/{episode_id}")).json()
+                    assert seen["sealed"] is True
+                    assert seen["status"] == "aborted"
+            finally:
+                await fresh.teardown()
         finally:
+            if episode_id is not None:
+                # Clean up the persistent volume so the id is never reused.
+                await client.request("DELETE", f"/freeagent/{NOOP_APP}/episodes/{episode_id}")
             await service.teardown()
 
 
@@ -262,64 +385,13 @@ async def test_client_supplied_id_and_conflict() -> None:
             )
             assert conflict.status_code == 409
         finally:
-            await service.teardown()
-
-
-@slow
-@requires_nats
-async def test_replay_round_trips_onto_nats(tmp_path: Path) -> None:
-    recorded_id = f"rec-{os.getpid()}-{int(time.time())}"
-    log = tmp_path / "episode.parquet"
-    _write_episode_log(log, app=NOOP_APP, episode_id=recorded_id, count=3)
-
-    service = ControlService(nats_url=NATS_URL, app_loader=_noop_loader)
-    async with _client(service) as client:
-        try:
-            created = await client.post(
-                f"/freeagent/{NOOP_APP}/episodes",
-                json={"mode": "replay", "parquet_path": str(log)},
-            )
-            assert created.status_code == 201
-            view = created.json()
-            assert view["mode"] == "replay"
-            # The subject identity comes from the recording, not the REST id.
-            assert view["subject_root"] == f"{NOOP_APP}.episode.{recorded_id}"
-            assert view["episode_id"] == recorded_id
-
-            # Playback finishes; status reflects it.
-            await _await_status(client, NOOP_APP, view["id"], "ended")
-
-            # The replayed messages are on NATS, captured by the episode stream.
-            subjects = EpisodeSubjects(app=NOOP_APP, episode_id=recorded_id)
-            messages = await _read_stream(subjects, expected=3)
-            assert len(messages) == 3
-            assert all(env.episode_id == recorded_id for _, env in messages)
-        finally:
+            await client.request("DELETE", f"/freeagent/{NOOP_APP}/episodes/{chosen}")
             await service.teardown()
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _client(service: ControlService) -> AsyncClient:
-    """An httpx client driving the app in-process (lifespan handled by the test)."""
-    app = create_app(service=service)
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://service")
-
-
-async def _await_status(
-    client: AsyncClient, application: str, episode_id: str, want: str, *, within: float = 15.0
-) -> None:
-    """Poll GET until the episode reports *want* (or fail the test)."""
-    deadline = asyncio.get_running_loop().time() + within
-    while asyncio.get_running_loop().time() < deadline:
-        body = (await client.get(f"/freeagent/{application}/episodes/{episode_id}")).json()
-        if body["status"] == want:
-            return
-        await asyncio.sleep(0.2)
-    pytest.fail(f"episode never reached status {want!r}")
 
 
 async def _await_start(subject_root: str, *, within: float = 15.0) -> None:
@@ -343,7 +415,7 @@ async def _await_start(subject_root: str, *, within: float = 15.0) -> None:
                     ordered_consumer=True,
                     config=ConsumerConfig(deliver_policy=DeliverPolicy.ALL),
                 )
-            except Exception:  # stream not created yet; retry until the deadline
+            except Exception:
                 await asyncio.sleep(0.2)
                 continue
             try:
@@ -354,52 +426,3 @@ async def _await_start(subject_root: str, *, within: float = 15.0) -> None:
         pytest.fail("episode never broadcast 'start' on NATS")
     finally:
         await client.close()
-
-
-async def _read_stream(
-    subjects: EpisodeSubjects, *, expected: int, within: float = 10.0
-) -> list[tuple[str, Envelope]]:
-    """Read an episode's JetStream stream from sequence 1 until *expected* messages."""
-    client = await nats.connect(NATS_URL)
-    try:
-        js = client.jetstream()
-        messages: list[tuple[str, Envelope]] = []
-        complete = asyncio.Event()
-
-        async def callback(msg: object) -> None:
-            messages.append((msg.subject, Envelope.from_bytes(msg.data)))  # type: ignore[attr-defined]
-            if len(messages) >= expected:
-                complete.set()
-
-        sub = await js.subscribe(
-            subjects.all_subjects,
-            cb=callback,
-            ordered_consumer=True,
-            config=ConsumerConfig(deliver_policy=DeliverPolicy.ALL),
-        )
-        await asyncio.wait_for(complete.wait(), timeout=within)
-        await sub.unsubscribe()
-        return messages
-    finally:
-        await client.close()
-
-
-def _write_episode_log(path: Path, *, app: str, episode_id: str, count: int) -> None:
-    """Write a tiny recorder-compatible Parquet log for the replayer to read."""
-    subjects = EpisodeSubjects(app=app, episode_id=episode_id)
-    now = datetime.now(UTC)
-    records = [
-        make_record(
-            stream_seq=i + 1,
-            subject=subjects.public,
-            received_at=now,  # equal timestamps -> back-to-back replay (no waits)
-            data=Envelope(
-                episode_id=episode_id,
-                sender="alpha",
-                payload={"type": "number", "value": i},
-            ).to_bytes(),
-            fallback_episode_id=episode_id,
-        )
-        for i in range(count)
-    ]
-    write_parquet(records, path)

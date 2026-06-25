@@ -93,6 +93,14 @@ class Transport(Protocol):
         """Subscribe to a subject (wildcards allowed), delivering from sequence 1."""
         ...
 
+    async def list_streams(self) -> Sequence[str]:
+        """The names of every stream the server knows (the durable record)."""
+        ...
+
+    async def delete_stream(self, name: str) -> None:
+        """Delete the whole stream (the episode and all its messages)."""
+        ...
+
     async def stream_metadata(self, name: str) -> dict[str, str]:
         """The stream's current metadata (empty when it carries none)."""
         ...
@@ -206,6 +214,14 @@ class MemoryTransport:
                 sub.deliver(past_subject, data)
         self._subscriptions.append(sub)
         return sub
+
+    async def list_streams(self) -> Sequence[str]:
+        return list(self.streams)
+
+    async def delete_stream(self, name: str) -> None:
+        self.streams.pop(name, None)
+        self.stream_meta.pop(name, None)
+        self.sealed_streams.discard(name)
 
     async def stream_metadata(self, name: str) -> dict[str, str]:
         return dict(self.stream_meta.get(name, {}))
@@ -321,6 +337,16 @@ class NatsTransport:
         except BadRequestError as exc:
             # A sealed stream rejects appends; surface it as the typed error.
             raise SealedStreamError(f"cannot publish to {subject}: episode is sealed") from exc
+
+    async def list_streams(self) -> Sequence[str]:
+        infos = await self._jetstream().streams_info()
+        return [info.config.name for info in infos if info.config.name is not None]
+
+    async def delete_stream(self, name: str) -> None:
+        try:
+            await self._jetstream().delete_stream(name)
+        except NotFoundError:
+            return  # already gone: deletion is idempotent
 
     async def stream_metadata(self, name: str) -> dict[str, str]:
         info = await self._jetstream().stream_info(name)

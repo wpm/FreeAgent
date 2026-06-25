@@ -40,14 +40,12 @@ from .registry import (
     ControlService,
     EpisodeExistsError,
     EpisodeNotFoundError,
-    LiveEpisode,
-    ManagedEpisode,
     NatsUnreachableError,
-    ReplayEpisode,
     ServiceError,
     verify_nats_reachable,
 )
 from .server import DEFAULT_HOST, DEFAULT_PORT, run
+from .store import EpisodeRecord, EpisodeStore
 
 __all__ = [
     "DEFAULT_DEV_ORIGINS",
@@ -60,6 +58,8 @@ __all__ = [
     "EpisodeMessage",
     "EpisodeMode",
     "EpisodeNotFoundError",
+    "EpisodeRecord",
+    "EpisodeStore",
     "EpisodeView",
     "ExportEpisodeRequest",
     "ExportEpisodeResult",
@@ -67,11 +67,8 @@ __all__ = [
     "FeedMessageEvent",
     "FeedStatusEvent",
     "ImportEpisodeRequest",
-    "LiveEpisode",
-    "ManagedEpisode",
     "NatsUnreachableError",
     "RenameEpisodeRequest",
-    "ReplayEpisode",
     "ServiceError",
     "TeardownResult",
     "create_app",

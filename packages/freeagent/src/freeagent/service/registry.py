@@ -1,21 +1,22 @@
-"""The control service's in-memory episode registry and launch logic.
+"""The episode service's brain: JetStream-sourced CRUD + lifecycle control.
 
-:class:`ControlService` is the persistent piece's brain: it owns the set of
-running episodes and the operations the REST layer exposes -- create, list, get,
-stop, teardown -- with no web framework in sight, so it is testable on its own.
+:class:`ControlService` owns the operations the REST layer exposes -- create,
+list, get, rename, delete, stop, teardown -- with no web framework in sight, so
+it is testable on its own.
 
-It launches **live** episodes through the supervised
-:func:`~freeagent.start_episode` handle (one episode = one
-:class:`~freeagent.EpisodeHandle` driving its own child processes) and **replay**
-episodes by re-publishing a recorded Parquet log onto NATS via
-:class:`~freeagent.Replayer`. Either way the result is observable over NATS
-exactly like a ``run``-launched episode; the registry just remembers the mapping
-from a REST id to that episode's subject root and lifecycle.
+The atemporal change (ADR-0003): the **durable record is JetStream**, not an
+in-memory registry. ``list``/``get`` read the episode streams and their metadata
+(:class:`~freeagent.service.store.EpisodeStore`), so a service **restart loses
+nothing** -- the limitation ADR-0002 named is resolved. The service still holds a
+live :class:`~freeagent.EpisodeHandle` for each episode *it* launched, to drive
+``stop`` and to report the most current status while an episode is still being
+created (before its stream exists); but an episode's existence no longer depends
+on the service remembering it.
 
-**Known limitation (v1).** The registry is in memory only: a service restart
-forgets every episode it was tracking (the episodes' own child processes are
-torn down with the service, so nothing is orphaned, but history is not
-persisted). Persistence is deferred.
+``rename`` sets the friendly-name metadata; ``delete`` removes the whole stream.
+``create`` accepts a model and API key and threads them into agent config. The
+service is the sole JetStream client and stateless with respect to the durable
+record.
 """
 
 from __future__ import annotations
@@ -23,8 +24,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import secrets
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -32,25 +34,25 @@ from urllib.parse import urlsplit
 import nats
 from nats.errors import NoServersError
 
-from freeagent.cli.apps import AppSpec, load_app
+from freeagent.cli.apps import AppSpec, load_app, load_apps
 from freeagent.cli.config import ComponentSpec, EpisodeConfig, make_plan
-from freeagent.cli.orchestrate import EpisodeHandle, start_episode
+from freeagent.cli.orchestrate import EpisodeHandle, EpisodeStatus, start_episode
 from freeagent.names import fallback_episode_name
-from freeagent.replayer import Replayer, ReplayMessage, load_episode
-from freeagent.subjects import EpisodeSubjects, subject_root, validate_name
+from freeagent.subjects import subject_root, validate_name
 from freeagent.transport import NatsTransport, Transport
 
+from .models import EpisodeView
+from .store import EpisodeRecord, EpisodeStore
+
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable
 
     from .models import CreateEpisodeRequest
 
-#: How long an episode's id is, in random hex characters. Short enough to read
-#: in a listing, wide enough that ids are not reused across restarts.
+#: How long an episode's id is, in random hex characters.
 _ID_BYTES = 4
 
-#: Bound on the startup/create NATS reachability probe, so a black-hole host
-#: cannot hang a request waiting on a connection that never completes.
+#: Bound on the startup/create NATS reachability probe.
 _NATS_PROBE_TIMEOUT = 8.0
 
 #: Bound on tearing one episode down, so a wedged child cannot hang teardown.
@@ -58,7 +60,7 @@ _TEARDOWN_TIMEOUT = 30.0
 
 
 class ServiceError(Exception):
-    """Base for control-service errors the REST layer maps to status codes."""
+    """Base for episode-service errors the REST layer maps to status codes."""
 
 
 class NatsUnreachableError(ServiceError):
@@ -66,7 +68,7 @@ class NatsUnreachableError(ServiceError):
 
 
 class EpisodeNotFoundError(ServiceError):
-    """No episode is registered under the requested application and id (HTTP 404)."""
+    """No episode under the requested application and id (HTTP 404)."""
 
 
 class EpisodeExistsError(ServiceError):
@@ -94,17 +96,11 @@ def _host_port(url: str) -> tuple[str, int]:
 async def verify_nats_reachable(url: str, *, timeout: float = _NATS_PROBE_TIMEOUT) -> None:  # noqa: ASYNC109 -- the timeout is this probe's whole point: the bound that makes it non-hanging
     """Confirm a NATS server answers at *url*, or raise :class:`NatsUnreachableError`.
 
-    Two bounded stages, each guarded by ``wait_for`` so neither can hang:
-
-    1. a TCP reachability gate that a closed port refuses *immediately* -- the
-       common "NATS is down" case fails fast without waiting out nats-py's
-       reconnect backoff;
-    2. a full nats-py connect (reconnection disabled) to confirm something that
-       actually speaks NATS is listening, not just any open socket.
-
-    This is deliberately *not* :class:`~freeagent.NatsTransport`, whose reconnect
-    tuning is right for a long-lived episode connection but wrong for a one-shot
-    liveness check.
+    Two bounded stages, each guarded by ``wait_for`` so neither can hang: a TCP
+    reachability gate a closed port refuses immediately, then a full nats-py
+    connect (reconnection disabled) to confirm something that speaks NATS is
+    listening. Deliberately not :class:`~freeagent.NatsTransport`, whose
+    reconnect tuning is wrong for a one-shot liveness check.
     """
     host, port = _host_port(url)
     try:
@@ -133,167 +129,110 @@ async def verify_nats_reachable(url: str, *, timeout: float = _NATS_PROBE_TIMEOU
         await client.close()
 
 
-@dataclass
-class ManagedEpisode:
-    """One registered episode: its identity plus the live/replay state behind it.
+@lru_cache(maxsize=1)
+def _application_index() -> dict[str, str]:
+    """Map every installed app's undashed subject prefix to its dashed REST name.
 
-    The base carries everything the REST view needs that is the same for both
-    modes; :attr:`status`, :attr:`detail`, :meth:`stop`, and :meth:`teardown`
-    are mode-specific and supplied by the subclasses.
+    Cached: the installed-app set does not change within a process. Used to label
+    an episode read from JetStream (which stores the undashed ``app``) with the
+    REST application name a client addresses it by.
+    """
+    return {spec.name: rest_name for rest_name, spec in load_apps().items()}
+
+
+def _application_of(app: str) -> str:
+    """The dashed REST application name for an undashed subject prefix.
+
+    Falls back to the prefix itself for an app with no installed entry point
+    (e.g. an episode imported from a foreign log), so listing never fails.
+    """
+    return _application_index().get(app, app)
+
+
+@dataclass
+class _LiveEpisode:
+    """One episode the service launched: its handle plus the identity it carries.
+
+    The handle supervises the child processes in the background, so the live
+    status reflects reality without polling. This is what the service uses to
+    drive ``stop`` and to answer ``get`` for an episode whose stream does not yet
+    exist (the environment creates it a moment after launch).
     """
 
-    rest_id: str
+    handle: EpisodeHandle
     application: str
     app: str
     episode_id: str
-    mode: str
+    name: str
     nats_url: str
     created_at: datetime
-    _name: str | None = None
-
-    @property
-    def subject_root(self) -> str:
-        """The NATS subject root a viewer subscribes under for this episode."""
-        return subject_root(self.app, self.episode_id)
-
-    @property
-    def name(self) -> str:
-        """The episode's friendly title; a fallback derived from its identity.
-
-        ADR-0003 makes the friendly name a first-class, stored property; this
-        in-memory registry carries an override (set on rename) and otherwise
-        falls back to the engine's auto-generated name for the episode id.
-        """
-        return self._name if self._name is not None else fallback_episode_name(self.episode_id)
-
-    @name.setter
-    def name(self, value: str) -> None:
-        self._name = value
-
-    @property
-    def status(self) -> str:
-        raise NotImplementedError
-
-    @property
-    def sealed(self) -> bool:
-        """Whether the episode is complete and immutable (open/live vs. sealed).
-
-        The atemporal seal (ADR-0003) is a property of the JetStream stream; an
-        episode the in-memory registry still tracks as terminal is reported
-        sealed so the REST view matches the durable record.
-        """
-        return self.status in ("ended", "aborted", "error")
-
-    @property
-    def outcome(self) -> str | None:
-        """How the episode finished (won/lost/aborted/timed-out), orthogonal to
-        :attr:`sealed`; ``None`` while open or when no structured outcome exists."""
-        return None
-
-    @property
-    def detail(self) -> str | None:
-        return None
-
-    async def stop(self) -> None:
-        """Gracefully bring this episode to a clean end."""
-        raise NotImplementedError
-
-    async def teardown(self) -> None:
-        """Hard-stop this episode, leaving no child process behind."""
-        raise NotImplementedError
-
-
-@dataclass
-class LiveEpisode(ManagedEpisode):
-    """A live episode, backed by a supervised :class:`~freeagent.EpisodeHandle`.
-
-    The handle supervises the episode's child processes in the background, so
-    :attr:`status` reflects reality without the registry polling anything.
-    """
-
-    handle: EpisodeHandle = field(repr=False, default=None)  # type: ignore[assignment]
 
     @property
     def status(self) -> str:
         return str(self.handle.state)
 
     @property
-    def detail(self) -> str | None:
-        outcome = self.handle.outcome
-        return outcome.summary if outcome is not None else None
-
-    async def stop(self) -> None:
-        """Graceful operator-abort: the environment broadcasts ``shutdown``,
-        agents wind down, and the episode settles ``aborted``."""
-        await self.handle.abort(reason="control service stop")
-
-    async def teardown(self) -> None:
-        """Hard interrupt: tear every child process down at once and await it."""
-        self.handle.request_abort()
-        await self.handle.wait()
-
-
-@dataclass
-class ReplayEpisode(ManagedEpisode):
-    """A replay episode: a recorded log re-published onto NATS in the background.
-
-    A :class:`~freeagent.Replayer` drives playback as a background task; the
-    transport it publishes through is owned here and closed when playback ends
-    (whether it finishes, is stopped, or errors).
-    """
-
-    _transport: Transport = field(repr=False, default=None)  # type: ignore[assignment]
-    _replayer: Replayer = field(repr=False, default=None)  # type: ignore[assignment]
-    _status: str = "running"
-    _detail: str | None = None
-    _task: asyncio.Task[None] | None = field(repr=False, default=None)
-
-    def start(self) -> None:
-        """Begin playback in the background (call once, after construction)."""
-        self._task = asyncio.ensure_future(self._run())
-
-    async def _run(self) -> None:
-        try:
-            count = await self._replayer.play()
-        except Exception as exc:
-            self._status = "error"
-            self._detail = f"error ({exc})"
-        else:
-            # A stop() that won the race already latched a terminal status.
-            if self._status == "running":
-                self._status = "ended"
-                self._detail = f"replayed {count} message(s)"
-        finally:
-            await self._transport.close()
+    def sealed(self) -> bool:
+        return self.handle.state is not EpisodeStatus.RUNNING
 
     @property
-    def status(self) -> str:
-        return self._status
+    def outcome(self) -> str | None:
+        if self.handle.state is EpisodeStatus.ABORTED:
+            return "aborted"
+        if self.handle.state is EpisodeStatus.ERROR:
+            return "error"
+        return None
 
     @property
     def detail(self) -> str | None:
-        return self._detail
+        result = self.handle.outcome
+        return result.summary if result is not None else None
 
-    async def stop(self) -> None:
-        if self._status == "running":
-            self._status = "aborted"
-            self._detail = "stopped"
-        self._replayer.stop()
-        if self._task is not None:
-            with contextlib.suppress(Exception):
-                await self._task
+    def view(self) -> EpisodeView:
+        return EpisodeView(
+            id=self.episode_id,
+            application=self.application,
+            app=self.app,
+            episode_id=self.episode_id,
+            subject_root=subject_root(self.app, self.episode_id),
+            name=self.name,
+            mode="live",
+            status=self.status,
+            sealed=self.sealed,
+            outcome=self.outcome,
+            detail=self.detail,
+            nats_url=self.nats_url,
+            created_at=self.created_at,
+        )
 
-    async def teardown(self) -> None:
-        await self.stop()
+
+def _view_from_record(record: EpisodeRecord, *, nats_url: str) -> EpisodeView:
+    """Project a durable record onto the REST view."""
+    return EpisodeView(
+        id=record.episode_id,
+        application=record.application,
+        app=record.app,
+        episode_id=record.episode_id,
+        subject_root=subject_root(record.app, record.episode_id),
+        name=record.name,
+        mode=record.mode,  # type: ignore[arg-type]
+        status=record.status,
+        sealed=record.sealed,
+        outcome=record.outcome,
+        detail=None,
+        nats_url=nats_url,
+        created_at=record.created_at or _now(),
+    )
 
 
 class ControlService:
-    """Owns the running-episode set and the create/list/get/stop/teardown ops.
+    """Owns create/list/get/rename/delete/stop/teardown over the durable record.
 
-    Construct one per service process. *nats_url* is the default NATS URL used
-    when a create request does not override it; *app_loader* resolves a dashed
-    REST application name to its :class:`~freeagent.AppSpec` (injectable for
-    tests).
+    Construct one per service process. *nats_url* is the default NATS URL (the
+    durable record the service reads). *app_loader* resolves a dashed REST name
+    to its :class:`~freeagent.AppSpec` (injectable for tests). *transport*
+    injects a ready, connected transport for the durable store (tests use an
+    in-memory one); when omitted, the service lazily connects its own.
     """
 
     def __init__(
@@ -301,202 +240,227 @@ class ControlService:
         *,
         nats_url: str,
         app_loader: Callable[[str], AppSpec] = load_app,
+        transport: Transport | None = None,
     ) -> None:
         self._default_nats_url = nats_url
         self._app_loader = app_loader
-        self._episodes: dict[str, ManagedEpisode] = {}
+        self._handles: dict[str, _LiveEpisode] = {}
         self._lock = asyncio.Lock()
+        self._transport = transport
+        self._owns_transport = transport is None
 
     @property
     def default_nats_url(self) -> str:
         """The NATS URL used when a create request does not supply its own."""
         return self._default_nats_url
 
-    async def create(self, application: str, request: CreateEpisodeRequest) -> ManagedEpisode:
-        """Create (live) or replay an episode for *application*; register and return it.
+    # ------------------------------------------------------------------
+    # Durable store access (the JetStream source of truth)
+    # ------------------------------------------------------------------
+
+    async def _store(self) -> EpisodeStore:
+        """The durable-record view, lazily connecting the service's transport."""
+        transport = await self._ensure_transport()
+        return EpisodeStore(transport, application_of=_application_of)
+
+    async def _ensure_transport(self) -> Transport:
+        if self._transport is None:
+            transport = NatsTransport(self._default_nats_url)
+            try:
+                await transport.connect()
+            except Exception as exc:
+                raise _unreachable(self._default_nats_url) from exc
+            self._transport = transport
+        return self._transport
+
+    # ------------------------------------------------------------------
+    # Commands
+    # ------------------------------------------------------------------
+
+    async def create(self, application: str, request: CreateEpisodeRequest) -> EpisodeView:
+        """Launch a live episode for *application*; register and return its view.
 
         Resolves the app (``UnknownAppError`` -> 404), verifies NATS is reachable
         (``NatsUnreachableError`` -> 503), allocates or accepts an id
-        (``EpisodeExistsError`` -> 409), and launches. A bad config surfaces as
-        ``ConfigError`` -> 400.
+        (``EpisodeExistsError`` -> 409), and launches with the chosen model/key.
+        A ``replay`` request is rejected: replaying a recorded log is now an
+        import (``POST /freeagent/import``), per ADR-0003.
         """
+        if request.mode == "replay":
+            raise ValueError(
+                "replay mode is retired: import a recorded log with POST /freeagent/import"
+            )
         spec = self._app_loader(application)  # UnknownAppError when not installed
         nats_url = request.nats_url or self._default_nats_url
         await verify_nats_reachable(nats_url)
         async with self._lock:
-            rest_id = self._allocate_id(request.episode_id)
-            if request.mode == "replay":
-                episode = await self._launch_replay(application, spec, rest_id, nats_url, request)
-            else:
-                episode = await self._launch_live(application, spec, rest_id, nats_url, request)
-            self._episodes[rest_id] = episode
-            return episode
+            episode_id = self._allocate_id(request.episode_id)
+            live = await self._launch_live(application, spec, episode_id, nats_url, request)
+            self._handles[episode_id] = live
+            return live.view()
 
     async def _launch_live(
         self,
         application: str,
         spec: AppSpec,
-        rest_id: str,
+        episode_id: str,
         nats_url: str,
         request: CreateEpisodeRequest,
-    ) -> LiveEpisode:
-        """Launch a real episode of *spec* and wrap its supervised handle."""
+    ) -> _LiveEpisode:
+        """Launch a real episode of *spec* and wrap its supervised handle.
+
+        The friendly *name* (if any) rides into the environment config so the
+        engine writes it onto the stream; ``model`` and ``api_key`` ride into
+        every agent's config so the operator need not spell out per-agent blocks.
+        """
+        env_config = dict(request.environment.config)
+        if request.name:
+            env_config["name"] = request.name
+        agent_extra: dict[str, str] = {}
+        if request.model:
+            agent_extra["model"] = request.model
+        if request.api_key:
+            agent_extra["api_key"] = request.api_key
+        agents = {
+            name: ComponentSpec(
+                config={
+                    **dict(request.agents[name].config if name in request.agents else {}),
+                    **agent_extra,
+                }
+            )
+            for name in spec.roster
+        }
         config = EpisodeConfig(
-            episode_id=rest_id,
+            episode_id=episode_id,
             nats_url=nats_url,
-            environment=ComponentSpec(config=request.environment.config),
-            agents={
-                name: ComponentSpec(config=component.config)
-                for name, component in request.agents.items()
-            },
+            environment=ComponentSpec(config=env_config),
+            agents=agents,
         )
         plan = make_plan(config, app=spec.name, roster=spec.roster)
         parquet_log = Path(request.parquet_log) if request.parquet_log else None
         handle = await start_episode(plan, spec.environment, spec.roster, parquet_log)
-        return LiveEpisode(
-            rest_id=rest_id,
+        name = request.name or fallback_episode_name(episode_id)
+        return _LiveEpisode(
+            handle=handle,
             application=application,
             app=spec.name,
-            episode_id=plan.episode_id,
-            mode="live",
+            episode_id=episode_id,
+            name=name,
             nats_url=nats_url,
             created_at=_now(),
-            handle=handle,
         )
 
-    async def _launch_replay(
-        self,
-        application: str,
-        spec: AppSpec,  # noqa: ARG002 -- accepted for symmetry; replay needs only the log
-        rest_id: str,
-        nats_url: str,
-        request: CreateEpisodeRequest,
-    ) -> ReplayEpisode:
-        """Replay a recorded Parquet log onto NATS and wrap the playback task."""
-        assert request.parquet_path is not None  # guaranteed by request validation
-        messages = load_episode(Path(request.parquet_path))  # ReplayerError -> 400
-        if not messages:
-            from freeagent.replayer import ReplayerError
+    async def list(self) -> list[EpisodeView]:
+        """Every episode in the durable record, overlaid with live status.
 
-            raise ReplayerError(f"{request.parquet_path} contains no messages to replay")
-        subjects = _subjects_of(messages)
-        transport = NatsTransport(nats_url)
-        await transport.connect()
-        try:
-            await _ensure_streams(transport, messages)
-        except BaseException:
-            await transport.close()
-            raise
-        episode = ReplayEpisode(
-            rest_id=rest_id,
-            application=application,
-            app=subjects.app,
-            episode_id=subjects.episode_id,
-            mode="replay",
-            nats_url=nats_url,
-            created_at=_now(),
-            _transport=transport,
-            _replayer=Replayer(messages, transport),
-        )
-        episode.start()
-        return episode
-
-    def list(self) -> list[ManagedEpisode]:
-        """Every registered episode, in creation order."""
-        return list(self._episodes.values())
-
-    def get(self, application: str, rest_id: str) -> ManagedEpisode:
-        """The episode registered under *application* and *rest_id*.
-
-        Raises :class:`EpisodeNotFoundError` when no such episode exists, or when
-        one exists under that id but a *different* application.
+        The JetStream record is the authority for existence; a live handle the
+        service holds overrides status for an episode whose stream is not yet
+        written (the just-created, setup phase).
         """
-        episode = self._episodes.get(rest_id)
-        if episode is None or episode.application != application:
-            raise EpisodeNotFoundError(f"no episode {rest_id!r} for application {application!r}")
-        return episode
+        store = await self._store()
+        views: dict[str, EpisodeView] = {
+            record.episode_id: _view_from_record(record, nats_url=self._default_nats_url)
+            for record in await store.list()
+        }
+        for episode_id, live in self._handles.items():
+            views.setdefault(episode_id, live.view())
+        return sorted(views.values(), key=lambda v: v.created_at, reverse=True)
 
-    async def stop(self, application: str, rest_id: str) -> ManagedEpisode:
-        """Gracefully stop one episode and return its (now terminal) view."""
-        episode = self.get(application, rest_id)
-        await episode.stop()
-        return episode
+    async def get(self, application: str, episode_id: str) -> EpisodeView:
+        """The episode under *application* and *episode_id*, from the durable record.
+
+        Falls back to a live handle for an episode whose stream is not yet
+        written. Raises :class:`EpisodeNotFoundError` when neither knows it.
+        """
+        spec = self._app_loader(application)
+        record = await (await self._store()).get(spec.name, episode_id)
+        if record is not None:
+            return _view_from_record(record, nats_url=self._default_nats_url)
+        live = self._handles.get(episode_id)
+        if live is not None and live.application == application:
+            return live.view()
+        raise EpisodeNotFoundError(f"no episode {episode_id!r} for application {application!r}")
+
+    async def rename(self, application: str, episode_id: str, name: str) -> EpisodeView:
+        """Set an episode's friendly name and return its updated view."""
+        spec = self._app_loader(application)
+        store = await self._store()
+        if await store.get(spec.name, episode_id) is None and episode_id not in self._handles:
+            raise EpisodeNotFoundError(f"no episode {episode_id!r} for application {application!r}")
+        await store.rename(spec.name, episode_id, name)
+        live = self._handles.get(episode_id)
+        if live is not None:
+            live.name = name
+        return await self.get(application, episode_id)
+
+    async def delete(self, application: str, episode_id: str) -> None:
+        """Delete an episode: stop it if it is live, then remove its stream."""
+        spec = self._app_loader(application)
+        live = self._handles.pop(episode_id, None)
+        if live is not None:
+            await self._teardown_one(live)
+        await (await self._store()).delete(spec.name, episode_id)
+
+    async def stop(self, application: str, episode_id: str) -> EpisodeView:
+        """Gracefully stop one live episode and return its (terminal) view.
+
+        A graceful operator-abort: the environment broadcasts ``shutdown``,
+        agents wind down, and the episode settles ``aborted`` and seals.
+        """
+        live = self._handles.get(episode_id)
+        if live is None or live.application != application:
+            # Not a live episode the service owns. It may already be sealed in the
+            # durable record; report it if so, else it truly does not exist.
+            return await self.get(application, episode_id)
+        await live.handle.abort(reason="episode service stop")
+        return await self.get(application, episode_id)
 
     async def teardown(self) -> int:
-        """Bring every episode down and clear the registry; return how many.
+        """Bring every live episode down; return how many. Does not delete streams.
 
-        The registry is cleared first so an in-flight create cannot slip an
-        episode past the teardown, then each one is torn down concurrently with
-        a per-episode timeout backstop.
+        Teardown stops the service's child processes (so nothing is orphaned) but
+        leaves the durable record intact -- a stopped episode is sealed, not gone.
         """
         async with self._lock:
-            episodes = list(self._episodes.values())
-            self._episodes.clear()
+            live = list(self._handles.values())
+            self._handles.clear()
         await asyncio.gather(
-            *(self._teardown_one(episode) for episode in episodes),
-            return_exceptions=True,
+            *(self._teardown_one(episode) for episode in live), return_exceptions=True
         )
-        return len(episodes)
+        if self._owns_transport and self._transport is not None:
+            with contextlib.suppress(Exception):
+                await self._transport.close()
+            self._transport = None
+        return len(live)
 
     @staticmethod
-    async def _teardown_one(episode: ManagedEpisode) -> None:
-        """Tear one episode down, bounded so a wedged child cannot hang teardown."""
+    async def _teardown_one(live: _LiveEpisode) -> None:
+        """Tear one live episode down, bounded so a wedged child cannot hang it."""
         with contextlib.suppress(TimeoutError, asyncio.TimeoutError):
-            await asyncio.wait_for(episode.teardown(), timeout=_TEARDOWN_TIMEOUT)
+            live.handle.request_abort()
+            await asyncio.wait_for(live.handle.wait(), timeout=_TEARDOWN_TIMEOUT)
 
     def _allocate_id(self, requested: str | None) -> str:
         """Validate a client id, or mint a fresh short one; ensure it is free.
 
         Service-assigned ids are short random hex rather than a counter: random
-        ids are not reused after a restart, which matters because the NATS
-        JetStream volume is persistent and a reused ``<app>.episode.<id>`` would
-        collide with a prior episode's stream. A client may still supply its own
-        id (any ``[A-Za-z0-9_-]+``); a collision is a conflict, not a silent
-        overwrite.
+        ids are not reused after a restart, which matters because the JetStream
+        volume is persistent and a reused id would collide with a prior episode's
+        stream. A client may supply its own id; a live-handle collision is a
+        conflict (a durable-record collision surfaces when the env creates the
+        stream).
         """
         if requested is not None:
-            rest_id = validate_name(requested, kind="episode id")
-            if rest_id in self._episodes:
-                raise EpisodeExistsError(f"episode id {rest_id!r} is already in use")
-            return rest_id
+            episode_id = validate_name(requested, kind="episode id")
+            if episode_id in self._handles:
+                raise EpisodeExistsError(f"episode id {episode_id!r} is already in use")
+            return episode_id
         while True:
-            rest_id = secrets.token_hex(_ID_BYTES)
-            if rest_id not in self._episodes:
-                return rest_id
+            episode_id = secrets.token_hex(_ID_BYTES)
+            if episode_id not in self._handles:
+                return episode_id
 
 
 def _now() -> datetime:
     """Timezone-aware creation timestamp."""
     return datetime.now(UTC)
-
-
-def _subjects_of(messages: Iterable[ReplayMessage]) -> EpisodeSubjects:
-    """The episode identity a recorded log's subjects belong to.
-
-    Every row of a single episode log shares one ``<app>.episode.<id>`` root;
-    the first message is enough to recover it.
-    """
-    first = next(iter(messages))
-    parts = first.subject.split(".")
-    if len(parts) < 4 or parts[1] != "episode":
-        raise ValueError(f"recorded subject {first.subject!r} is not a FreeAgent episode subject")
-    return EpisodeSubjects(app=parts[0], episode_id=parts[2])
-
-
-async def _ensure_streams(transport: Transport, messages: Iterable[ReplayMessage]) -> None:
-    """Create the JetStream stream for every episode root present in *messages*.
-
-    Publishing replayed traffic through JetStream is what lets a viewer attach at
-    any moment and read from sequence 1, exactly as it does live.
-    """
-    roots: dict[str, str] = {}
-    for message in messages:
-        subjects = EpisodeSubjects.from_root(_root_of(message.subject))
-        roots.setdefault(subjects.stream, subjects.all_subjects)
-    for stream, all_subjects in roots.items():
-        await transport.ensure_stream(stream, [all_subjects])
-
-
-def _root_of(subject: str) -> str:
-    """The ``<app>.episode.<id>`` root of one episode subject."""
-    return ".".join(subject.split(".")[:3])
