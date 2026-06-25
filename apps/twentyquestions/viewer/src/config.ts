@@ -1,49 +1,59 @@
 /**
- * Viewer configuration: where to connect and which channel to watch.
+ * Viewer configuration: where the episode service lives.
  *
- * The viewer is read-only and shareable by URL (ADR-0001), so its configuration
- * comes from URL query parameters, falling back to build-time Vite env vars and
- * then to local-dev defaults. The episode's channel can be named two ways, per
- * the issue:
+ * The browser no longer speaks NATS (ADR-0003); it talks only to the episode
+ * service over HTTP/WebSocket. The base URL is resolved, in order of priority:
  *
- *   - app name + episode id  ?app=twentyquestions&episode=<id>
- *   - a full subject         ?subject=twentyquestions.episode.<id>.public
+ *   1. a persisted setting (localStorage, written by the Settings panel),
+ *   2. a `?service=` URL query parameter (a shareable override),
+ *   3. the build-time `VITE_SERVICE_URL` env var,
+ *   4. the local-dev default `http://localhost:8000` (the mock service).
  *
- * A full `subject`, when given, wins. The websocket server is `?server=...`.
+ * The settings store owns persistence; this module only resolves the *initial*
+ * value so a shared link or env override is honoured on first load.
  */
 
-/** Local-dev default websocket listener (see docker/nats/nats-server.conf). */
-const DEFAULT_SERVER = "ws://localhost:8080";
+/** Local-dev default: the mock episode service (`python -m freeagent.service.mock`). */
+export const DEFAULT_SERVICE_URL = "http://localhost:8000";
 
-/** This is the Twenty Questions viewer; its app name is fixed by default. */
-const DEFAULT_APP = "twentyquestions";
+/** The localStorage key under which the Settings panel persists the base URL. */
+export const SERVICE_URL_KEY = "freeagent.service.url";
 
-export interface ViewerConfig {
-  /** NATS websocket URL to connect to. */
-  server: string;
-  /** Public-channel subject to subscribe to; "" when no episode was named. */
-  subject: string;
-}
+/**
+ * Resolve the service base URL on startup. A persisted setting wins; then a
+ * `?service=` query override; then the Vite env var; then the local default.
+ */
+export function resolveServiceUrl(search: string = window.location.search): string {
+  const stored = readStored();
+  if (stored) return stored;
 
-/** The public broadcast subject for one episode: `<app>.episode.<id>.public`. */
-export function publicSubject(app: string, episode: string): string {
-  return `${app}.episode.${episode}.public`;
-}
-
-/** Resolve the viewer's configuration from the URL, env, and defaults. */
-export function resolveConfig(search: string = window.location.search): ViewerConfig {
   const params = new URLSearchParams(search);
+  const fromUrl = params.get("service");
+  if (fromUrl) return fromUrl;
+
   const env = import.meta.env;
+  return env.VITE_SERVICE_URL ?? DEFAULT_SERVICE_URL;
+}
 
-  const server = params.get("server") ?? env.VITE_NATS_WS_URL ?? DEFAULT_SERVER;
-
-  const fullSubject = params.get("subject");
-  if (fullSubject) {
-    return { server, subject: fullSubject };
+/** Read the persisted base URL, tolerating a storage-less environment. */
+function readStored(): string | null {
+  try {
+    return window.localStorage.getItem(SERVICE_URL_KEY);
+  } catch {
+    return null;
   }
+}
 
-  const app = params.get("app") ?? env.VITE_APP_NAME ?? DEFAULT_APP;
-  const episode = params.get("episode") ?? env.VITE_EPISODE_ID ?? "";
-  const subject = episode ? publicSubject(app, episode) : "";
-  return { server, subject };
+/**
+ * Derive the WebSocket origin from an HTTP base URL: `http://` -> `ws://`,
+ * `https://` -> `wss://`, preserving host and port. Used to build the per-episode
+ * feed URL from the same configured base the REST calls use.
+ */
+export function wsOrigin(httpBase: string): string {
+  const url = new URL(httpBase);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  // Drop any path/query the base might carry; the feed path is appended by the client.
+  url.pathname = "";
+  url.search = "";
+  return url.toString().replace(/\/$/, "");
 }
