@@ -1,0 +1,15 @@
+{
+  "additionalProperties": false,
+  "description": "The body of a rename request: set an episode's friendly name.",
+  "properties": {
+    "name": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "type": "object",
+  "title": "RenameEpisodeRequest"
+}

@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "description": "The body of an import request: play a Parquet log into a fresh stream.\n\n``parquet_path`` is a path on the service's mounted volume. ``episode_id``\noptionally pins the new episode's id (else one is assigned); ``name``\noptionally titles it (else a fallback is used).",
+  "properties": {
+    "parquet_path": {
+      "type": "string"
+    },
+    "episode_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "parquet_path"
+  ],
+  "type": "object",
+  "title": "ImportEpisodeRequest"
+}

@@ -56,6 +56,28 @@ def stream_name(app: str, episode_id: str) -> str:
     return f"{app}_episode_{episode_id}"
 
 
+#: The normalized logical channels of an episode subject, in the order they
+#: appear after the ``<app>.episode.<id>`` root. ``agent`` and ``reply`` and
+#: ``log`` carry a further token (the agent/request/participant name).
+CHANNELS: frozenset[str] = frozenset({"public", "control", "env", "reply", "agent", "log"})
+
+
+def channel_of(subject: str) -> str:
+    """The normalized logical channel of an episode *subject*.
+
+    Maps a concrete NATS subject (``<app>.episode.<id>.<channel>[. ...]``) onto
+    the channel token a UI cares about (``public``, ``control``, ``env``,
+    ``reply``, ``agent``, ``log``), or ``"other"`` for anything that does not fit
+    the layout. This is the single place the service turns a wire subject into
+    the normalized ``channel`` the feed carries, so the UI never parses subjects.
+    """
+    parts = subject.split(".")
+    if len(parts) < 4 or parts[1] != "episode":
+        return "other"
+    channel = parts[3]
+    return channel if channel in CHANNELS else "other"
+
+
 @dataclass(frozen=True, slots=True)
 class EpisodeSubjects:
     """Helper mapping one episode's logical channels to concrete NATS subjects.

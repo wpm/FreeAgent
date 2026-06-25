@@ -1,0 +1,14 @@
+{
+  "additionalProperties": false,
+  "description": "The body of an export request: drain a sealed episode to Parquet.\n\n``parquet_path`` is the destination on the service's mounted volume; it must\nnot already exist (a finished log is never overwritten).",
+  "properties": {
+    "parquet_path": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "parquet_path"
+  ],
+  "type": "object",
+  "title": "ExportEpisodeRequest"
+}

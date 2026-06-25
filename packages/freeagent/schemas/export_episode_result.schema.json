@@ -1,0 +1,17 @@
+{
+  "description": "The result of an export: where it was written and how many rows.",
+  "properties": {
+    "parquet_path": {
+      "type": "string"
+    },
+    "rows": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "parquet_path",
+    "rows"
+  ],
+  "type": "object",
+  "title": "ExportEpisodeResult"
+}

@@ -35,6 +35,7 @@ from nats.errors import NoServersError
 from freeagent.cli.apps import AppSpec, load_app
 from freeagent.cli.config import ComponentSpec, EpisodeConfig, make_plan
 from freeagent.cli.orchestrate import EpisodeHandle, start_episode
+from freeagent.names import fallback_episode_name
 from freeagent.replayer import Replayer, ReplayMessage, load_episode
 from freeagent.subjects import EpisodeSubjects, subject_root, validate_name
 from freeagent.transport import NatsTransport, Transport
@@ -148,6 +149,7 @@ class ManagedEpisode:
     mode: str
     nats_url: str
     created_at: datetime
+    _name: str | None = None
 
     @property
     def subject_root(self) -> str:
@@ -155,8 +157,38 @@ class ManagedEpisode:
         return subject_root(self.app, self.episode_id)
 
     @property
+    def name(self) -> str:
+        """The episode's friendly title; a fallback derived from its identity.
+
+        ADR-0003 makes the friendly name a first-class, stored property; this
+        in-memory registry carries an override (set on rename) and otherwise
+        falls back to the engine's auto-generated name for the episode id.
+        """
+        return self._name if self._name is not None else fallback_episode_name(self.episode_id)
+
+    @name.setter
+    def name(self, value: str) -> None:
+        self._name = value
+
+    @property
     def status(self) -> str:
         raise NotImplementedError
+
+    @property
+    def sealed(self) -> bool:
+        """Whether the episode is complete and immutable (open/live vs. sealed).
+
+        The atemporal seal (ADR-0003) is a property of the JetStream stream; an
+        episode the in-memory registry still tracks as terminal is reported
+        sealed so the REST view matches the durable record.
+        """
+        return self.status in ("ended", "aborted", "error")
+
+    @property
+    def outcome(self) -> str | None:
+        """How the episode finished (won/lost/aborted/timed-out), orthogonal to
+        :attr:`sealed`; ``None`` while open or when no structured outcome exists."""
+        return None
 
     @property
     def detail(self) -> str | None:
