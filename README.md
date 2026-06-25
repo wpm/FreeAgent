@@ -58,21 +58,20 @@ free-agent replay out/twentyquestions-fake.parquet --nats-url nats://localhost:4
 
 `replay` is a top-level command, a sibling of the per-application sub-commands, because the Parquet log is uniform across every application — one tool replays any app's episode and never needs app-specific code. Messages are published on their original subjects in `stream_seq` order; inter-message timing is preserved by default, scaled by `--speed` (e.g. `--speed 2.0`), or dropped entirely with `--as-fast-as-possible`. Start is the command; stop is Ctrl-C. Pause and seek live on the library's `Replayer` class for an embedding GUI to drive.
 
-## Episode service and the UI
+## Episode service (the backend)
 
-The CLI launches one episode and blocks. The **episode service** is the long-running alternative: a small REST API (plus a per-episode WebSocket feed) that creates, lists, observes, renames, deletes, and stops episodes on demand — the same supervised launch as `run`, driven over HTTP. An episode is a durable, named, **JetStream-resident** object ([ADR-0003](docs/decision-history/0003-the-atemporal-episode.md)): the service's source of truth is JetStream, not in-memory state, so a restart loses nothing.
+The CLI launches one episode and blocks. The **episode service** is the long-running alternative: a small, **app-independent** REST API (plus a per-episode WebSocket feed) that creates, lists, observes, renames, deletes, and stops episodes on demand, driven over HTTP. It serves **no UI** and bundles no application ([ADR-0004](docs/decision-history/0004-app-independent-service.md)) — a UI is a separate process that calls it cross-origin (see [the viewer](#watching-a-game-in-the-browser)). An episode is a durable, named, **JetStream-resident** object ([ADR-0003](docs/decision-history/0003-the-atemporal-episode.md)): the service's source of truth is JetStream, not in-memory state, so a restart loses nothing.
 
-The simplest way to use it is the **two-service Docker network** — NATS (internal) plus the service (which serves the REST API, the feed, and the built UI from one origin). One command brings it up and opens the Twenty Questions UI:
+The simplest way to run the backend is the **two-service Docker network** — NATS (internal) plus the service (the only published port). See [`docker/README.md`](docker/README.md):
 
 ```sh
-./docker/twenty-questions.sh        # build, bring up, open http://localhost:8000
+docker compose -f docker/compose.yml up --build   # REST API on http://localhost:8000
 ```
 
-See [`docker/README.md`](docker/README.md). To run the service directly:
+Or run the service directly:
 
 ```sh
-free-agent serve                        # REST + feed on 127.0.0.1:8000
-free-agent serve --ui-dir path/to/dist  # also serve a built UI bundle (one origin)
+free-agent serve        # REST + feed on 127.0.0.1:8000
 ```
 
 It binds **loopback with no auth** by default, consistent with the local NATS testbed (see [SECURITY.md](SECURITY.md)). The REST resources live under `/freeagent/<application>/<episode>`:
@@ -99,7 +98,18 @@ curl -s -XPOST localhost:8000/freeagent/twenty-questions/episodes \
 curl -s localhost:8000/freeagent/episodes
 ```
 
-The browser **never speaks NATS** (ADR-0003): the UI talks only to the service, which relays a small normalized feed (a message was appended, the status/seal changed, the connection's liveness changed). For UI development without NATS, a canned **mock** implements the whole contract: `uv run python -m freeagent.service.mock`.
+The browser **never speaks NATS** (ADR-0003): a UI talks only to the service, which relays a small normalized feed (a message was appended, the status/seal changed, the connection's liveness changed). For UI development without NATS, a canned **mock** implements the whole contract: `uv run python -m freeagent.service.mock`.
+
+### Watching a game in the browser
+
+The Twenty Questions **viewer** is a separate web app (Vite + Svelte) that you run on the host; it is **not** part of the backend image or the Docker network ([ADR-0004](docs/decision-history/0004-app-independent-service.md)). With the backend up (above), start the viewer and point it at the service:
+
+```sh
+pnpm install                                  # once, to fetch the JS toolchain
+pnpm --filter twentyquestions-viewer run dev  # http://localhost:5173
+```
+
+By default it talks to the service at `http://localhost:8000`; override that in the viewer's **Settings** panel (or with `?service=…`). See [`apps/twentyquestions/viewer/README.md`](apps/twentyquestions/viewer/README.md).
 
 ## Project structure
 

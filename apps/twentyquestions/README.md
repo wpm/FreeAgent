@@ -66,30 +66,32 @@ file that doesn't yet exist) to save the full transcript for replaying later.
 
 ### Watching one game in the browser (the viewer)
 
-Most people want to *watch* a single game from start to finish. Open three
-terminals from the repository root:
+The viewer talks **only to the episode service** — never NATS directly
+(ADR-0003/0004) — so watching a game means running the **backend** (the service
++ NATS) and then the **viewer** as a separate host process. Open two terminals
+from the repository root:
 
 ```sh
-# Terminal 1 -- start NATS (the message bus the engine and viewer share):
-docker compose -f docker/nats/docker-compose.yml up -d
+# Terminal 1 -- bring up the backend (NATS + the episode service):
+docker compose -f docker/compose.yml up --build       # REST API on :8000
 
-# Terminal 2 -- run one game. It prints "episode_id=<id>" when it finishes;
-# set "episode_id:" in the YAML beforehand if you want to know the id up front.
-uv run free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions-fake.yml
-
-# Terminal 3 -- start the viewer and open it pointed at that episode:
-pnpm --filter twentyquestions-viewer run dev
-#   then open http://localhost:5173/?episode=<id>
+# Terminal 2 -- start the viewer (a separate host process):
+pnpm install
+pnpm --filter twentyquestions-viewer run dev          # http://localhost:5173
 ```
 
-The viewer is read-only — it just watches — and reconnects on its own, so you
-can open it *before* the game starts and it will light up the moment the
-episode begins. The transcript shows the whole conversation: the Players
-deliberating, the questions they spend, the Host's answers, and finally the
-Host's game-over announcement. Because it always reads the episode from the
-beginning, you see the complete game even if you join late.
+In the browser, the viewer talks to the service at `http://localhost:8000` by
+default (change it in **Settings**). Set your model and provider API key in
+Settings (kept in the browser, never on the bus), then **start a game** from the
+Twenty Questions composer and watch the transcript stream live.
 
-You can also watch a **recorded** game: run with `--parquet-log` to save it,
-then replay the file onto NATS and point the viewer at it — the replay looks
-exactly like the live game. See the [viewer README](viewer/README.md) for the
+The viewer is read-only once a game is running — it just watches — and reads each
+episode from the beginning, so you see the complete game even if you join late:
+the Players deliberating, the questions they spend, the Host's answers, and the
+Host's game-over announcement. A sealed (finished) game **replays through the
+exact same view**.
+
+Prefer the command line? You can still run a game with the engine CLI (the
+section above) against the same NATS the backend uses; it appears in the viewer's
+episode list like any other. See the [viewer README](viewer/README.md) for the
 full set of options, including how to share a game by URL.

@@ -1,6 +1,7 @@
 # ADR-0003: The atemporal episode
 
-**Status:** Accepted
+**Status:** Accepted (partially superseded by
+[ADR-0004](0004-app-independent-service.md))
 **Date:** 2026-06-23
 **Deciders:** Bill McNeill
 **Supersedes in part:** ADR-0001 (browser-subscribes-to-NATS; replay as Parquet
@@ -9,6 +10,16 @@ in-memory registry as the source of truth for what episodes exist). The wire
 contract, monorepo layout, schema-as-contract, engine fold model, control
 primitives (`EpisodeHandle`, `AppSpec`, operator-abort), and the REST-façade
 boundary from those ADRs all stand.
+
+> **Note (superseded in part):** this ADR makes the `freeagent` service both the
+> **host of the static UI bundle** (one origin to the browser) and the episode
+> **launcher/supervisor**. [ADR-0004](0004-app-independent-service.md) supersedes
+> the UI-hosting decision: the service is now an **app-independent** REST/JetStream
+> API that serves no UI and bundles no application, and a UI is a separate host
+> process that calls it cross-origin. Everything else here — the JetStream-resident
+> episode, sealing, the per-episode feed, Parquet edge I/O, and the REST contract —
+> still stands. (Removing the in-process launcher/supervisor is tracked separately;
+> see ADR-0004.)
 
 ## Context
 

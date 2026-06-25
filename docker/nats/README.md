@@ -8,7 +8,7 @@ docker compose -f docker/nats/docker-compose.yml up -d
 
 Clients connect at `nats://localhost:4222`, and JetStream state persists across restarts. Each episode gets its own stream, which the environment creates and the recorder drains.
 
-This compose file is for **local development and the test suite** — it brings up *only* NATS. The full application (NATS + the episode service + the UI, on one private network) lives in [`../compose.yml`](../compose.yml); see [`../README.md`](../README.md). The browser no longer speaks NATS (ADR-0003), so there is no websocket listener here.
+This compose file is for **local development and the test suite** — it brings up *only* NATS. The full backend (NATS + the app-independent episode service, on one private network) lives in [`../compose.yml`](../compose.yml); see [`../README.md`](../README.md). A UI is a separate host process and never speaks NATS (ADR-0003/0004), so there is no websocket listener here.
 
 The server configuration lives in [`nats-server.conf`](./nats-server.conf), mounted into the container; the JetStream block is defined there.
 
