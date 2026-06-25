@@ -16,7 +16,10 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY packages packages
 COPY apps/twentyquestions/engine/pyproject.toml apps/twentyquestions/engine/README.md apps/twentyquestions/engine/
-RUN uv sync --frozen --no-dev --package freeagent
+# `--extra service` pulls the web stack (FastAPI/uvicorn) the service needs: it
+# lives behind a `service` extra now (ADR-0005) so the fat worker image can omit
+# it. `--package freeagent` still excludes the app engines.
+RUN uv sync --frozen --no-dev --package freeagent --extra service
 
 ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8000

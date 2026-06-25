@@ -41,14 +41,37 @@ pnpm --filter twentyquestions-viewer run dev  # http://localhost:5173
 | ----------- | --------------------------------------- | -------------------- | ------------------- |
 | `nats`      | `nats:2.12-alpine`                      | *(none)*             | `nats://nats:4222`  |
 | `freeagent` | built from [`freeagent/Dockerfile`][df] | `${FREEAGENT_PORT:-8000}` | `http://freeagent:8000` |
+| `worker`    | built from [`worker/Dockerfile`][wf]    | *(none)*             | *(no server)*       |
 
 [df]: ./freeagent/Dockerfile
+[wf]: ./worker/Dockerfile
 
 The `freeagent` image is a single Python stage that installs **only** the
 `freeagent` library from the uv workspace (`uv sync --frozen --package
-freeagent`) — no UI bundle and no application engine. The service is started with
-`free-agent serve --host 0.0.0.0` and reaches NATS at `nats://nats:4222`
-(`FREEAGENT_NATS_URL`).
+freeagent --extra service`) — no UI bundle and no application engine. The web
+stack (FastAPI/uvicorn) lives behind a `service` extra so the worker can omit it.
+The service is started with `free-agent serve --host 0.0.0.0` and reaches NATS at
+`nats://nats:4222` (`FREEAGENT_NATS_URL`).
+
+## Workers (ADR-0005)
+
+The `worker` service is the **fat** image: it installs the `freeagent` library
+**plus** the application engines (`uv sync --frozen --package twentyquestions`),
+so it can import the roles a manifest names. A worker is a long-lived,
+app-agnostic supervisor — `free-agent work` — that pulls episode manifests off
+the in-network NATS work queue and forks each as a child process. It publishes
+**no** port and serves no UI.
+
+Workers are stateless and horizontally scalable. Bring up *N* of them with:
+
+```sh
+docker compose -f docker/compose.yml up --build --scale worker=2
+```
+
+(There is deliberately no `container_name` on the service — it would forbid
+replicas.) A worker against an empty queue connects to NATS, binds the shared
+durable consumer, and idles on its pull loop. A fuller operator guide for the
+worker pool is issue #57.
 
 ## Just NATS (development and tests)
 
