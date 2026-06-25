@@ -90,12 +90,15 @@ from .subjects import (
 from .transport import (
     MemoryTransport,
     NatsTransport,
+    PulledMessage,
+    PullSubscription,
     SealedStreamError,
     Subscription,
     Transport,
     TransportError,
 )
 from .workqueue import (
+    WORK_QUEUE_CONSUMER,
     WORK_QUEUE_STREAM,
     WORK_QUEUE_SUBJECT_PREFIX,
     WORK_QUEUE_SUBJECTS,
@@ -121,6 +124,7 @@ __all__ = [
     "OPERATOR_ABORT_TYPE",
     "OPERATOR_SENDER",
     "PARQUET_SCHEMA",
+    "WORK_QUEUE_CONSUMER",
     "WORK_QUEUE_STREAM",
     "WORK_QUEUE_SUBJECTS",
     "WORK_QUEUE_SUBJECT_PREFIX",
@@ -148,6 +152,8 @@ __all__ = [
     "ModelResolutionError",
     "NatsTransport",
     "ParquetLogOption",
+    "PullSubscription",
+    "PulledMessage",
     "RecorderError",
     "ReplayMessage",
     "Replayer",
