@@ -43,10 +43,14 @@ from freeagent.cli.apps import UnknownAppError
 from freeagent.cli.config import ConfigError, default_nats_url
 from freeagent.replayer import ReplayerError
 
+from .edgeio import EdgeIOError
 from .feed import register_feed_route
 from .models import (
     CreateEpisodeRequest,
     EpisodeView,
+    ExportEpisodeRequest,
+    ExportEpisodeResult,
+    ImportEpisodeRequest,
     RenameEpisodeRequest,
     TeardownResult,
 )
@@ -182,6 +186,27 @@ def _register_routes(app: FastAPI) -> None:
     async def stop_episode(application: str, episode_id: str, request: Request) -> EpisodeView:
         return await control(request).stop(application, episode_id)
 
+    @app.post(
+        "/freeagent/{application}/episodes/{episode_id}/export",
+        response_model=ExportEpisodeResult,
+        tags=["edge-io"],
+    )
+    async def export_episode(
+        application: str, episode_id: str, body: ExportEpisodeRequest, request: Request
+    ) -> ExportEpisodeResult:
+        return await control(request).export(application, episode_id, body.parquet_path)
+
+    @app.post(
+        "/freeagent/import",
+        response_model=EpisodeView,
+        status_code=status.HTTP_201_CREATED,
+        tags=["edge-io"],
+    )
+    async def import_episode(body: ImportEpisodeRequest, request: Request) -> EpisodeView:
+        return await control(request).import_(
+            body.parquet_path, episode_id=body.episode_id, name=body.name
+        )
+
     @app.post("/freeagent/teardown", response_model=TeardownResult, tags=["service"])
     async def teardown(request: Request) -> TeardownResult:
         return TeardownResult(stopped=await control(request).teardown())
@@ -229,6 +254,10 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(ReplayerError)
     async def _bad_replay(_request: Request, exc: ReplayerError) -> JSONResponse:
+        return problem(status.HTTP_400_BAD_REQUEST, str(exc))
+
+    @app.exception_handler(EdgeIOError)
+    async def _bad_edge_io(_request: Request, exc: EdgeIOError) -> JSONResponse:
         return problem(status.HTTP_400_BAD_REQUEST, str(exc))
 
     @app.exception_handler(ConfigError)

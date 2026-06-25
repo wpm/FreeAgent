@@ -20,6 +20,7 @@ See :func:`run` (and ``python -m freeagent.service``) to serve it.
 from __future__ import annotations
 
 from .app import DEFAULT_DEV_ORIGINS, create_app
+from .edgeio import EdgeIOError, ImportResult, export_episode, import_episode
 from .feed import EpisodeFeed, NatsStreamSource, StreamRow, StreamSource, to_episode_message
 from .mock import create_mock_app
 from .models import (
@@ -55,6 +56,7 @@ __all__ = [
     "ComponentConfig",
     "ControlService",
     "CreateEpisodeRequest",
+    "EdgeIOError",
     "EpisodeExistsError",
     "EpisodeFeed",
     "EpisodeMessage",
@@ -69,6 +71,7 @@ __all__ = [
     "FeedMessageEvent",
     "FeedStatusEvent",
     "ImportEpisodeRequest",
+    "ImportResult",
     "NatsStreamSource",
     "NatsUnreachableError",
     "RenameEpisodeRequest",
@@ -78,6 +81,8 @@ __all__ = [
     "TeardownResult",
     "create_app",
     "create_mock_app",
+    "export_episode",
+    "import_episode",
     "run",
     "to_episode_message",
     "verify_nats_reachable",
