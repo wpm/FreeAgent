@@ -58,6 +58,15 @@ ABORT_ENV = {"setup_timeout": 0.5, "episode_timeout": 5.0, "grace_period": 0.2}
 # setup window (the abort, not a slow join, must be what ends it) and a long
 # episode timeout (it must not end on its own before the test aborts it).
 LONG_ENV = {"setup_timeout": 10.0, "episode_timeout": 30.0, "grace_period": 0.2}
+# Like LONG_ENV but with the mid-episode liveness probe enabled and fast, so a
+# killed child is detected and aborts the episode well before the 30s timeout.
+LIVENESS_ENV = {
+    "setup_timeout": 10.0,
+    "episode_timeout": 30.0,
+    "grace_period": 0.2,
+    "liveness_interval": 0.3,
+    "liveness_timeout": 0.6,
+}
 
 
 def _noop_plan(env_config: dict[str, object]) -> EpisodePlan:
@@ -162,6 +171,37 @@ async def test_handle_abort_drives_graceful_aborted_shutdown() -> None:
     assert outcome.status is EpisodeStatus.ABORTED
     assert outcome.exit_code == 2
     assert handle.state is EpisodeStatus.ABORTED
+    assert all(proc.returncode is not None for proc in handle.processes)
+
+
+@slow
+@requires_nats
+async def test_killing_a_child_mid_episode_aborts_via_liveness() -> None:
+    """A lost role aborts the episode (ADR-0005): kill an agent child mid-run.
+
+    Real child processes over real NATS: once the episode is RUNNING, SIGKILL one
+    agent's process so it vanishes from the bus. The environment's mid-episode
+    liveness probe stops getting that role's presence reply, declares it lost, and
+    drives the graceful abort -- the environment exits with the aborted code, so
+    the outcome is ABORTED (exit 2). No role is ever re-run.
+    """
+    agents = {"alpha": NoopAgent, "beta": NoopAgent}
+    handle = await start_episode(_noop_plan(LIVENESS_ENV), NoopEnvironment, agents)
+    # Let the episode come up with both agents present.
+    await asyncio.sleep(2.0)
+    assert handle.state is EpisodeStatus.RUNNING
+
+    # Kill one agent child outright (not a graceful stop): it disappears from the
+    # bus without a goodbye, exactly the failure liveness exists to catch.
+    victim = handle.agent_procs[0]
+    victim.kill()
+
+    outcome = await asyncio.wait_for(handle.wait(), timeout=20.0)
+
+    assert outcome.status is EpisodeStatus.ABORTED
+    assert outcome.exit_code == 2
+    assert handle.state is EpisodeStatus.ABORTED
+    # Every child is cleaned up -- the surviving agent was wound down, no respawn.
     assert all(proc.returncode is not None for proc in handle.processes)
 
 

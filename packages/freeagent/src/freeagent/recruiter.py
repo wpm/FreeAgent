@@ -81,17 +81,23 @@ def build_manifests(spec: AppSpec | ManifestSpec, plan: EpisodePlan) -> list[Man
         )
         for name, config in plan.agent_configs.items()
     ]
-    manifests.append(
-        Manifest(
-            role="environment",
-            cls=manifest_spec.environment,
-            app=plan.app,
-            roster=list(plan.agent_configs),
-            episode_id=plan.episode_id,
-            config=plan.environment_config,
-            nats_url=plan.nats_url,
-        )
+    environment = Manifest(
+        role="environment",
+        cls=manifest_spec.environment,
+        app=plan.app,
+        roster=list(plan.agent_configs),
+        episode_id=plan.episode_id,
+        config=plan.environment_config,
+        nats_url=plan.nats_url,
     )
+    manifests.append(environment)
+    # Stamp the environment manifest with the *whole* recruited set (agents +
+    # the environment itself) so the environment child can write "what should be
+    # running" into the durable record at stream creation (ADR-0005). The
+    # environment manifest carries no PID and no process handle -- only the
+    # manifests that define the roster. set_manifest_set drops each member's own
+    # ``manifest_set`` so the durable record is not nested recursively.
+    environment.set_manifest_set(manifests)
     return manifests
 
 

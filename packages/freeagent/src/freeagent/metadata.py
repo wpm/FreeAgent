@@ -15,7 +15,9 @@ the service never disagree on the shape.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
+from typing import Any
 
 #: Namespace prefix on every key, so episode metadata never collides with
 #: server- or operator-set stream metadata.
@@ -27,6 +29,15 @@ KEY_STATUS = _PREFIX + "status"
 KEY_OUTCOME = _PREFIX + "outcome"
 KEY_MODE = _PREFIX + "mode"
 KEY_CREATED_AT = _PREFIX + "created_at"
+#: The recruited manifest set (ADR-0005): the JSON-encoded list of manifests
+#: the recruiter scheduled for this episode -- *what should be running*. Never
+#: a PID: liveness is the gap between this set and presence on the bus.
+KEY_MANIFEST_SET = _PREFIX + "manifest_set"
+#: The resolved engine versions (ADR-0005): a JSON object mapping each
+#: ``module:QualName`` class ref to its resolved ``distribution==version``
+#: stamp -- *what ran*. Write-only provenance, the difference between an RL
+#: trajectory you can reproduce and one you cannot.
+KEY_RESOLVED_VERSIONS = _PREFIX + "resolved_versions"
 
 
 @dataclass(slots=True)
@@ -47,9 +58,24 @@ class EpisodeMetadata:
     mode: str = "live"
     outcome: str | None = None
     created_at: str | None = None
+    #: The recruited manifest set (ADR-0005): the manifests scheduled for this
+    #: episode, as a list of plain dicts (each manifest's ``model_dump``). This
+    #: is *what should be running*; presence on the bus is *what is*, and the
+    #: gap between them is liveness. Empty list when the stream carries none
+    #: (e.g. a pre-ADR-0005 episode, or one imported from a foreign log).
+    manifest_set: list[dict[str, Any]] = field(default_factory=list)
+    #: The resolved engine versions (ADR-0005): a map from each manifest's
+    #: ``module:QualName`` class ref to its resolved ``distribution==version``
+    #: stamp -- *what ran*. Write-only provenance. Empty when nothing is stamped.
+    resolved_versions: dict[str, str] = field(default_factory=dict)
 
     def to_stream_metadata(self) -> dict[str, str]:
-        """Encode to the flat ``dict[str, str]`` JetStream stores."""
+        """Encode to the flat ``dict[str, str]`` JetStream stores.
+
+        The manifest set and resolved versions are JSON-serialized (JetStream
+        metadata values are strings); both are omitted when empty so a stream
+        carrying neither stays minimal.
+        """
         data = {
             KEY_APP: self.app,
             KEY_NAME: self.name,
@@ -60,6 +86,10 @@ class EpisodeMetadata:
             data[KEY_OUTCOME] = self.outcome
         if self.created_at is not None:
             data[KEY_CREATED_AT] = self.created_at
+        if self.manifest_set:
+            data[KEY_MANIFEST_SET] = json.dumps(self.manifest_set)
+        if self.resolved_versions:
+            data[KEY_RESOLVED_VERSIONS] = json.dumps(self.resolved_versions)
         return data
 
     @classmethod
@@ -80,4 +110,37 @@ class EpisodeMetadata:
             mode=metadata.get(KEY_MODE, "live"),
             outcome=metadata.get(KEY_OUTCOME),
             created_at=metadata.get(KEY_CREATED_AT),
+            manifest_set=_decode_json_list(metadata.get(KEY_MANIFEST_SET)),
+            resolved_versions=_decode_json_dict(metadata.get(KEY_RESOLVED_VERSIONS)),
         )
+
+
+def _decode_json_list(value: str | None) -> list[dict[str, Any]]:
+    """Decode a JSON-encoded list of manifest dicts, tolerant of garbage.
+
+    A missing or malformed value decodes to an empty list rather than raising:
+    the manifest set is provenance, never load-bearing for reading an episode,
+    so a stranger stream or a truncated value must never crash enumeration.
+    """
+    if not value:
+        return []
+    try:
+        decoded = json.loads(value)
+    except (ValueError, TypeError):
+        return []
+    if isinstance(decoded, list):
+        return [item for item in decoded if isinstance(item, dict)]
+    return []
+
+
+def _decode_json_dict(value: str | None) -> dict[str, str]:
+    """Decode a JSON-encoded ``str -> str`` map, tolerant of garbage (see above)."""
+    if not value:
+        return {}
+    try:
+        decoded = json.loads(value)
+    except (ValueError, TypeError):
+        return {}
+    if isinstance(decoded, dict):
+        return {k: v for k, v in decoded.items() if isinstance(k, str) and isinstance(v, str)}
+    return {}

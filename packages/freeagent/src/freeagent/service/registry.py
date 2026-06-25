@@ -255,6 +255,8 @@ def _view_from_record(record: EpisodeRecord, *, nats_url: str) -> EpisodeView:
         detail=None,
         nats_url=nats_url,
         created_at=record.created_at or _now(),
+        manifest_set=record.manifest_set,
+        resolved_versions=record.resolved_versions,
     )
 
 

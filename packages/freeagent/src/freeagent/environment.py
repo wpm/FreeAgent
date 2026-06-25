@@ -43,8 +43,15 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import ValidationError
 
-from .config import DEFAULT_EPISODE_TIMEOUT, DEFAULT_GRACE_PERIOD, DEFAULT_SETUP_TIMEOUT
+from .config import (
+    DEFAULT_EPISODE_TIMEOUT,
+    DEFAULT_GRACE_PERIOD,
+    DEFAULT_LIVENESS_INTERVAL,
+    DEFAULT_LIVENESS_TIMEOUT,
+    DEFAULT_SETUP_TIMEOUT,
+)
 from .envelope import Envelope
+from .manifest import resolved_version_for
 from .metadata import KEY_NAME, KEY_OUTCOME, KEY_STATUS, EpisodeMetadata
 from .names import fallback_episode_name
 from .subjects import ENV_NAME, EpisodeSubjects, validate_name
@@ -93,6 +100,10 @@ _EPISODE_TIMER = "freeagent.episode_timeout"
 _SHUTDOWN_TIMER = "freeagent.shutdown"
 _ABORT_SIGNAL = "freeagent.operator_abort"
 _GRACE_TIMER = "freeagent.grace_period"
+#: Periodic mid-episode liveness probe: re-request presence from the roster.
+_LIVENESS_TIMER = "freeagent.liveness_probe"
+#: The deadline after a probe by which every probed member must have answered.
+_LIVENESS_DEADLINE_TIMER = "freeagent.liveness_deadline"
 
 OPERATOR_ABORT_TYPE = "freeagent.abort"
 """Management ``type`` of an operator-abort request on the environment inbox.
@@ -102,6 +113,35 @@ sent on ``<root>.env``, it asks the environment to abort gracefully -- broadcast
 ``shutdown``, run the grace period, and settle in ``aborted``. Lifecycle
 authority stays with the environment: the message is a request, not a command.
 """
+
+
+def _resolve_versions(manifest_set: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+    """Resolve each manifest's class ref to its installed ``distribution==version``.
+
+    Imports every distinct ``module:QualName`` named in the set and resolves the
+    installed distribution shipping it (:func:`freeagent.manifest.resolved_version_for`).
+    A ref that cannot be imported, or whose package has no installed distribution
+    metadata, is skipped -- the stamp is write-only provenance, never a launch
+    gate, so a loose or test-only class is a no-op rather than an error. The lazy
+    import of :func:`freeagent.cli.child.import_class` avoids the module cycle
+    (``cli.child`` imports this module).
+    """
+    from .cli.child import import_class
+
+    versions: dict[str, str] = {}
+    for manifest in manifest_set:
+        ref = manifest.get("class")
+        if not isinstance(ref, str) or ref in versions:
+            continue
+        try:
+            cls = import_class(ref)
+        except Exception:
+            logger.debug("env: could not import %r to stamp resolved version", ref)
+            continue
+        stamp = resolved_version_for(cls)
+        if stamp is not None:
+            versions[ref] = stamp
+    return versions
 
 
 def _management_type(payload: Any) -> str | None:
@@ -135,7 +175,10 @@ class Environment:
         fixed list of expected agent IDs (assigned top-down -- duplicates
         rejected); ``episode_id`` is auto-generated when ``None``. ``config``
         keys (seconds): ``setup_timeout`` (default 30), ``episode_timeout``
-        (default 600), ``grace_period`` (default 5).
+        (default 600), ``grace_period`` (default 5), ``liveness_interval``
+        (default 15; 0 disables the mid-episode liveness probe), and
+        ``liveness_timeout`` (default 10; the per-probe response deadline before
+        a present role is declared lost and the episode aborts).
         """
         validate_name(app, kind="application name")
         names = list(roster)
@@ -155,6 +198,15 @@ class Environment:
         self.setup_timeout = float(self.config.get("setup_timeout", DEFAULT_SETUP_TIMEOUT))
         self.episode_timeout = float(self.config.get("episode_timeout", DEFAULT_EPISODE_TIMEOUT))
         self.grace_period = float(self.config.get("grace_period", DEFAULT_GRACE_PERIOD))
+        # Mid-episode liveness (ADR-0005): a role present at start that stops
+        # answering a periodic presence re-probe past the deadline is *lost*, and
+        # a lost role aborts the episode. ``liveness_interval`` of 0 disables the
+        # probe entirely (the default is conservative so short episodes never see
+        # it); ``liveness_timeout`` is the per-probe response deadline.
+        self.liveness_interval = float(
+            self.config.get("liveness_interval", DEFAULT_LIVENESS_INTERVAL)
+        )
+        self.liveness_timeout = float(self.config.get("liveness_timeout", DEFAULT_LIVENESS_TIMEOUT))
         self._subjects = EpisodeSubjects(app=app, episode_id=self.episode_id)
         self._state = EpisodeState.SETUP
         self._terminal_state = EpisodeState.ENDED
@@ -180,6 +232,17 @@ class Environment:
         self._nonces: dict[str, str] = {}
         self._present: set[str] = set()
         self._pending_requests: dict[str, str] = {}
+        # The recruited manifest set ("what should be running") and the resolved
+        # engine versions ("what ran"), written into the durable record at stream
+        # creation (ADR-0005). Empty until the worker's child stamps them via
+        # set_manifest_set; a hand-built (non-recruiter) launch leaves them empty.
+        self._manifest_set: list[dict[str, Any]] = []
+        self._resolved_versions: dict[str, str] = {}
+        # Liveness probe bookkeeping (mid-episode, RUNNING only). Each probe
+        # round records who it asked (``_liveness_probed``) and who answered
+        # (``_liveness_seen``); the deadline timer compares the two.
+        self._liveness_probed: set[str] = set()
+        self._liveness_seen: set[str] = set()
 
     # ------------------------------------------------------------------
     # Identity / state
@@ -216,6 +279,41 @@ class Environment:
         """
         self._friendly_name = name
         self._name_app_contributed = True
+
+    @property
+    def manifest_set(self) -> list[dict[str, Any]]:
+        """The recruited manifest set written into the durable record (ADR-0005).
+
+        *What should be running*: the manifests the recruiter scheduled for this
+        episode, as plain dicts. Empty on a hand-built launch the recruiter did
+        not stamp. Never carries a PID -- liveness is the gap between this set and
+        presence on the bus.
+        """
+        return list(self._manifest_set)
+
+    @property
+    def resolved_versions(self) -> dict[str, str]:
+        """The resolved engine versions written into the durable record (ADR-0005).
+
+        *What ran*: a map from each manifest's ``module:QualName`` class ref to
+        its installed ``distribution==version`` stamp, resolved when the manifest
+        set was set (the child imports each class). Write-only provenance.
+        """
+        return dict(self._resolved_versions)
+
+    def set_manifest_set(self, manifest_set: list[dict[str, Any]]) -> None:
+        """Record the recruited manifest set and stamp its resolved versions.
+
+        Called by the worker's environment child before :meth:`run`/:meth:`serve`
+        (ADR-0005). The set is written verbatim into the durable record at stream
+        creation; the resolved versions are stamped here by importing each
+        manifest's class (the child is "fat" -- it has the engines installed) and
+        resolving the installed distribution. A class that cannot be imported or
+        has no installed distribution is simply left unstamped: provenance is
+        best-effort, never load-bearing, so a missing version never blocks launch.
+        """
+        self._manifest_set = [dict(manifest) for manifest in manifest_set]
+        self._resolved_versions = _resolve_versions(self._manifest_set)
 
     def outcome_label(self) -> str | None:
         """How the episode finished -- ``aborted``/``timed_out``/``None``.
@@ -411,6 +509,8 @@ class Environment:
             status=str(self._state),
             mode="live",
             created_at=datetime.now(UTC).isoformat(),
+            manifest_set=self._manifest_set,
+            resolved_versions=self._resolved_versions,
         ).to_stream_metadata()
 
     async def _write_status(self, status: EpisodeState) -> None:
@@ -544,6 +644,10 @@ class Environment:
         elif event.name == _GRACE_TIMER:
             if self._state is EpisodeState.STOPPING:
                 self._set_state(self._terminal_state)
+        elif event.name == _LIVENESS_TIMER:
+            await self._run_liveness_probe()
+        elif event.name == _LIVENESS_DEADLINE_TIMER:
+            self._check_liveness_deadline()
         elif event.name.startswith(_MANAGEMENT_PREFIX):  # pragma: no cover - defensive
             logger.warning("env: unknown framework timer %s", event.name)
         else:
@@ -557,7 +661,9 @@ class Environment:
             return
         known = self._nonces.get(name)
         if known is not None and known != nonce:
-            # Two processes launched under the same agent name.
+            # Two processes launched under the same agent name. Never accepted as
+            # a liveness reply (a re-run role must not silence the loss it would
+            # otherwise trigger) -- it is a duplicate join, not a heartbeat.
             if self._state is EpisodeState.SETUP:
                 await self._abort(f"duplicate agent name {name!r}: presence nonce mismatch")
             else:
@@ -565,6 +671,11 @@ class Environment:
             return
         self._nonces[name] = nonce
         self._present.add(name)
+        # A matching-nonce reply during RUNNING is the answer to a liveness probe:
+        # the same process that joined is still alive. Record it so the deadline
+        # timer does not declare it lost.
+        if self._state is EpisodeState.RUNNING:
+            self._liveness_seen.add(name)
         if self._state is EpisodeState.SETUP and self._present >= set(self.roster):
             await self._start_episode()
 
@@ -574,6 +685,54 @@ class Environment:
         await self._write_status(EpisodeState.RUNNING)
         await self.broadcast_control({"type": "start"})
         self.schedule_timer(self.episode_timeout, _EPISODE_TIMER)
+        # Arm the first mid-episode liveness probe (ADR-0005). Skipped for an
+        # empty roster (nobody to lose) or when the probe is disabled.
+        if self.liveness_interval > 0 and self.roster:
+            self.schedule_timer(self.liveness_interval, _LIVENESS_TIMER)
+
+    async def _run_liveness_probe(self) -> None:
+        """Re-request presence from every still-present role, then arm the deadline.
+
+        The mid-episode liveness check (ADR-0005): only roles that were present at
+        start (in :attr:`_present`) are probed -- a role that never joined was
+        already handled by the setup timeout, and we never expect a reply from
+        someone who is not in the episode. Each round records who it asked
+        (``_liveness_probed``) and resets who has answered (``_liveness_seen``);
+        the deadline timer compares them. The next probe is re-armed here so the
+        check repeats for the life of the episode. A no-op outside RUNNING (a probe
+        timer can fire just as the episode enters stopping).
+        """
+        if self._state is not EpisodeState.RUNNING:
+            return
+        self._liveness_probed = set(self._present)
+        self._liveness_seen = set()
+        for name in self._liveness_probed:
+            request_id = uuid.uuid4().hex
+            self._pending_requests[request_id] = name
+            envelope = Envelope(
+                episode_id=self.episode_id,
+                sender=ENV_NAME,
+                payload={"type": "freeagent.presence_request", "request_id": request_id},
+            )
+            await self._transport.publish(self._subjects.agent(name), envelope.to_bytes())  # type: ignore[union-attr]
+        self.schedule_timer(self.liveness_timeout, _LIVENESS_DEADLINE_TIMER)
+        self.schedule_timer(self.liveness_interval, _LIVENESS_TIMER)
+
+    def _check_liveness_deadline(self) -> None:
+        """A role probed last round that did not answer in time is lost -> abort.
+
+        Reached the response deadline: any member that was probed but is absent
+        from ``_liveness_seen`` has gone silent past the timeout -- its child
+        vanished from a live episode -- so the episode aborts gracefully. We
+        never re-run or re-recruit the role (that is the whole point); the
+        duplicate-join nonce check already rejects a process re-joining under the
+        same name. A no-op outside RUNNING.
+        """
+        if self._state is not EpisodeState.RUNNING:
+            return
+        lost = sorted(self._liveness_probed - self._liveness_seen)
+        if lost:
+            self.initiate_abort(f"lost role(s) {lost}: no presence reply within liveness timeout")
 
     async def _enter_stopping(
         self, reason: Any, terminal: EpisodeState = EpisodeState.ENDED
