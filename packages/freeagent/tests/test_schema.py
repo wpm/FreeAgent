@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from freeagent.envelope import Envelope
+from freeagent.manifest import Manifest
 from freeagent.schema import (
     DEFAULT_OUTPUT_DIR,
     FRAMEWORK_MODELS,
@@ -18,8 +19,10 @@ from freeagent.schema import (
 )
 
 
-def test_envelope_is_the_exported_framework_model() -> None:
-    expected = {"envelope": Envelope}
+def test_framework_models_are_the_envelope_and_the_manifest() -> None:
+    # The envelope is the wire message (ADR-0001); the manifest is the unit of
+    # work a worker pulls (ADR-0005). Both are single-sourced here.
+    expected = {"envelope": Envelope, "manifest": Manifest}
     assert expected == FRAMEWORK_MODELS
 
 
