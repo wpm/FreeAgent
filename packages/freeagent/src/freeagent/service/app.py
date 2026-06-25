@@ -43,6 +43,7 @@ from freeagent.cli.apps import UnknownAppError
 from freeagent.cli.config import ConfigError, default_nats_url
 from freeagent.replayer import ReplayerError
 
+from .feed import register_feed_route
 from .models import (
     CreateEpisodeRequest,
     EpisodeView,
@@ -121,6 +122,7 @@ def create_app(
         allow_headers=["*"],
     )
     _register_routes(app)
+    register_feed_route(app)
     _register_exception_handlers(app)
     _mount_ui(app, ui_dir if ui_dir is not None else os.environ.get(UI_DIR_ENV_VAR))
     return app
