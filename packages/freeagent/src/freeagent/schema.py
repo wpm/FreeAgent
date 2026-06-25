@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .envelope import Envelope
+from .manifest import Manifest
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -30,7 +31,7 @@ DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "schemas"
 
 #: The framework wire models, single-sourced here. The key is the artifact
 #: stem: ``envelope`` -> ``envelope.schema.json``.
-FRAMEWORK_MODELS: dict[str, type[BaseModel]] = {"envelope": Envelope}
+FRAMEWORK_MODELS: dict[str, type[BaseModel]] = {"envelope": Envelope, "manifest": Manifest}
 
 
 def _clean(node: object) -> None:

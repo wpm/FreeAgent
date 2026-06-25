@@ -60,6 +60,7 @@ from .logging import (
     configure_logging,
     log_level,
 )
+from .manifest import MANIFEST_VERSION, Manifest, resolved_version_for
 from .metadata import EpisodeMetadata
 from .names import fallback_episode_name
 from .recorder import (
@@ -106,6 +107,7 @@ __all__ = [
     "LLM",
     "LLM_AGENT_FIELDS",
     "LOG_LEVEL_ENV_VAR",
+    "MANIFEST_VERSION",
     "MODEL_ENV_VAR",
     "NAME_PATTERN",
     "NATS_URL_ENV_VAR",
@@ -130,6 +132,7 @@ __all__ = [
     "FakeLLM",
     "FakeLLMError",
     "LLMAgent",
+    "Manifest",
     "MemoryTransport",
     "MessageRecord",
     "ModelResolutionError",
@@ -163,6 +166,7 @@ __all__ = [
     "record_episode",
     "replay_episode",
     "resolve_model",
+    "resolved_version_for",
     "run_episode",
     "start_episode",
     "stream_name",
