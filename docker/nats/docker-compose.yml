@@ -1,3 +1,10 @@
+# Standalone NATS for local development and the test suite.
+#
+# This brings up *only* NATS, with its client and monitoring ports published to
+# the host, for running episodes from the CLI or the test suite against a local
+# server. The full two-service application network (NATS + the episode service +
+# UI) lives in ../compose.yml (ADR-0003). The websocket port is gone: the browser
+# no longer speaks NATS.
 services:
   nats:
     image: nats:2.12-alpine
@@ -5,7 +12,6 @@ services:
     ports:
       - "${NATS_CLIENT_PORT:-4222}:4222"    # client connections
       - "${NATS_MONITOR_PORT:-8222}:8222"   # HTTP monitoring
-      - "${NATS_WS_PORT:-8080}:8080"        # websocket (nats.ws) for browser viewers
     volumes:
       - ./nats-server.conf:/etc/nats/nats-server.conf:ro
       - nats-data:/data

@@ -1,114 +1,80 @@
 # Twenty Questions viewer
 
 The Twenty Questions **viewer** — a TypeScript web app (Vite + Svelte) that
-renders an episode as a chat-room live transcript. It observes the episode
-**entirely over NATS**, subscribing to the public channel over websockets and
-never publishing: human interaction is a non-goal for now. The
-transport is the maintained [nats.js](https://github.com/nats-io/nats.js) v3
-browser client ([`@nats-io/nats-core`](https://www.npmjs.com/package/@nats-io/nats-core)'s
-`wsconnect` plus [`@nats-io/jetstream`](https://www.npmjs.com/package/@nats-io/jetstream)).
-It is the single-language sibling of
-[`../engine`](../engine), which holds the Python application, and a member of the
-root JavaScript workspace (`pnpm-workspace.yaml` globs `apps/*/viewer`). Keeping
-the TypeScript tree out of `engine/` is deliberate: it stops the Python tooling
-(ruff, pytest, packaging) from globbing a foreign subtree.
+renders an episode as a chat-room transcript. It talks **only to the episode
+service** (ADR-0003) over HTTP and a per-episode WebSocket feed — **never NATS**.
+The service mediates the wire; the browser consumes a small, normalized feed of
+events (a message was appended, the status/seal changed, the connection's
+liveness changed). It is the single-language sibling of [`../engine`](../engine),
+which holds the Python application, and a member of the root JavaScript workspace
+(`pnpm-workspace.yaml` globs `apps/*/viewer`).
 
-## One code path for live and replay
+## Shape: a generic shell + an app skin
 
-The viewer cannot tell a live episode from a replay, and has exactly one code
-path for both. It reads the episode's JetStream stream from sequence
-1 (an ordered consumer with `DeliverPolicy.ALL`), exactly as the engine does, so
-the whole transcript renders in `stream_seq` order whether it joined at the
-start, mid-episode, or after the fact. A replay re-publishes a recorded episode
-onto NATS with byte-identical subjects, so the same subscription just works.
+The viewer is factored **generic-left / app-right** (ADR-0003):
+
+- **`src/shell/`** — the pan-application shell, which knows nothing about any one
+  game: the episode-service client (`service.ts`), settings (`settings.svelte.ts`
+  / `SettingsPanel.svelte` — connection URL, model, API key kept in browser local
+  storage, light/dark theme), the generic left-pane episode list
+  (`EpisodeList.svelte` — friendly names, live/sealed status, select, new,
+  rename, right-click-delete), and a right-pane plugin `registry.ts`.
+- **`src/skins/twentyquestions/`** — the app skin registered as the right pane
+  for `twenty-questions`: a feed view-model (`feed.svelte.ts`) and the
+  presentation (`TwentyQuestions.svelte`) — the transcript, status/budget chips,
+  and the start-game composer.
+
+## One view for live and replay
+
+The skin renders the **same view** whether an episode is live or a sealed replay:
+it consumes the service's feed, which streams an episode's full history and then
+tails live appends, marking the boundary but never letting an observer tell live
+from replay (the invariant now lives at the Python → UI boundary, ADR-0003). A
+sealed episode is simply the same read with no further appends.
 
 ## Running it
 
-The viewer needs a NATS server with the websocket listener enabled (see
-[`docker/nats`](../../../docker/nats)); the default is `ws://localhost:8080`.
+The viewer needs the **episode service** (which it talks to for both REST and the
+feed). The easy path is the full Docker network, which serves the UI from the
+service's own origin:
+
+```sh
+./docker/twenty-questions.sh        # build, bring up, open http://localhost:8000
+```
+
+For UI development against the live service or the canned **mock**:
 
 ```sh
 # From the repo root (installs the whole JS workspace):
 pnpm install
 
-# From this directory:
-pnpm run dev        # Vite dev server (http://localhost:5173)
-pnpm run build      # static production bundle in dist/
+# A no-NATS mock implementing the whole contract with canned data:
+uv run python -m freeagent.service.mock        # serves http://localhost:8000
+
+# From this directory — the Vite dev server (point its connection at the service):
+pnpm run dev        # http://localhost:5173
+pnpm run build      # static production bundle in dist/ (what the service serves)
 pnpm run preview    # serve the built bundle
 pnpm run typecheck  # svelte-check (also the schema contract's compile test)
-pnpm run test       # browser-mode test (needs NATS + a Playwright browser)
+pnpm run test       # vitest (currently no unit tests; passes clean)
 ```
-
-### Browser test
-
-`src/viewer.browser.test.ts` is a [Vitest browser-mode](https://vitest.dev/guide/browser/)
-test: it loads the viewer in a real headless Chromium, seeds a few public-channel
-frames onto a live NATS exactly as an episode (or replay) would, and asserts the
-chat transcript — including the Host's outcome line — renders and the connection
-reports itself live. Unlike a Node/jsdom test it exercises the genuine
-`wsconnect` WebSocket transport and Svelte rendering, which is the only way to
-cover the in-browser path. It needs a NATS server with the websocket listener
-(`ws://localhost:8080`, or `VITE_NATS_WS_URL`) and the Playwright browser
-(`pnpm exec playwright install chromium`). CI runs it in the `viewers` job.
 
 ### Configuring the connection
 
-Connection settings come from URL query parameters (the viewer is read-only and
-shareable by URL), so a link encodes exactly what to watch. The channel can be
-named two ways:
+The service base URL is resolved from, in order: the **Settings** panel (stored
+in browser local storage), a `?service=` URL query parameter, the build-time
+`VITE_SERVICE_URL`, then the default `http://localhost:8000`. The WebSocket feed
+origin is derived from the same base. The model and provider **API key** are set
+in Settings and kept in the browser — the key only ever rides inside a
+create-episode request body, never on the bus.
 
-- **app name + episode id** — `?app=twentyquestions&episode=<id>`
-- **a full subject** — `?subject=twentyquestions.episode.<id>.public`
-
-and the server is `?server=ws://localhost:8080`. A full `subject` wins when both
-are given. The same fields are editable in the UI's connect bar. Build-time
-defaults can be set with `VITE_NATS_WS_URL`, `VITE_APP_NAME`, and
-`VITE_EPISODE_ID`. When the URL already names an episode the viewer connects on
-load; otherwise fill in the connect bar and press **Connect**. The status
-indicator shows connecting / waiting-for-episode / live / reconnecting, and the
-client auto-reconnects, so the viewer may be opened before the episode starts and
-will light up when it does.
-
-### Against a live episode
-
-```sh
-# Terminal 1 — start NATS (client 4222, websocket 8080):
-docker compose -f docker/nats/docker-compose.yml up -d
-
-# Terminal 2 — run a live episode (give it a known id so you can link to it):
-free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions-fake.yml
-
-# Terminal 3 — the viewer; open the printed URL with the episode id:
-pnpm --filter twentyquestions-viewer run dev
-#   http://localhost:5173/?episode=<id-printed-by-run>
-```
-
-The run prints `episode_id=<id>` on exit; set `episode_id:` in the YAML to fix it
-ahead of time. The transcript shows the public-channel conversation — Player
-deliberation, the questions and the Host's answers — ending with the Host's
-in-world game-over announcement.
-
-### Against a replay
-
-```sh
-# Record an episode:
-free-agent twenty-questions run apps/twentyquestions/examples/twentyquestions-fake.yml \
-  --parquet-log out/twentyquestions-fake.parquet
-
-# Replay it onto a separate, local NATS and point the viewer there:
-free-agent replay out/twentyquestions-fake.parquet --nats-url nats://localhost:4223
-#   open the viewer with ?server=ws://localhost:8081&episode=<id>
-```
-
-The replay shows the same transcript as the live run, through the same code path.
-
-## Generated message types
+## Generated contract types
 
 `src/generated/` holds TypeScript types generated from the FreeAgent JSON
-Schema — the framework envelope (`packages/freeagent/schemas/`) and this app's
-wire payloads (`../schemas/`). They are committed, but **do not edit them by
-hand**: they are regenerated from the Pydantic models that are the single
-source of truth (see the repo-root README, "Message schemas").
+Schema — the framework envelope and the **episode-service contract**
+(`packages/freeagent/schemas/`) plus this app's wire payloads (`../schemas/`).
+They are committed, but **do not edit them by hand**: they are regenerated from
+the Pydantic models that are the single source of truth.
 
 ```sh
 # From the repo root — regenerates JSON Schema from Pydantic, then types:
@@ -118,8 +84,8 @@ pnpm run schemas
 pnpm run generate
 ```
 
-`src/messages.ts` builds the viewer-facing message types on the generated
-output (e.g. narrowing an `Envelope` to the Host's `GameOver` signal), and
-`src/viewer.svelte.ts` decodes every wire frame through them. Importing the
-generated types also serves as the contract's compile test — `pnpm run
-typecheck` fails if they drift or go missing.
+`src/contract.ts` composes the generated interfaces into the resource types and
+the `FeedEvent` discriminated union the UI works with (with type guards), and
+`src/contract.samples.ts` type-checks sample payloads against them. Importing the
+generated types also serves as the contract's compile test — `pnpm run typecheck`
+fails if they drift or go missing.
