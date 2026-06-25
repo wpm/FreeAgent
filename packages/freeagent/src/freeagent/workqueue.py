@@ -16,6 +16,8 @@ subjects without importing each other:
   is published under.
 * :data:`WORK_QUEUE_SUBJECTS` -- the wildcard the stream captures (and the
   shared consumer binds), covering every app's manifests.
+* :data:`WORK_QUEUE_CONSUMER` -- the one shared durable pull consumer name every
+  worker binds (never a per-instance consumer).
 * :func:`work_subject` -- the per-episode subject one episode's manifests are
   published to, ``freeagent.work.<app>.<episode_id>``. Per-episode tokens keep
   the wire legible and let a debugger watch one episode without filtering, while
@@ -43,6 +45,13 @@ WORK_QUEUE_SUBJECT_PREFIX = "freeagent.work"
 #: every app's per-episode manifest subjects. The shared pull consumer binds
 #: this same wildcard, so one consumer drains every episode's manifests.
 WORK_QUEUE_SUBJECTS: tuple[str, ...] = (f"{WORK_QUEUE_SUBJECT_PREFIX}.>",)
+
+#: The ONE shared durable pull consumer every worker binds (ADR-0005). Never a
+#: per-instance consumer: every worker binding this same durable name means a
+#: manifest is delivered to exactly one of them, so two workers each run a unit
+#: of work at most once. A per-instance consumer would instead fan every
+#: manifest to every worker and launch each role N times.
+WORK_QUEUE_CONSUMER = "freeagent_workers"
 
 
 def work_subject(app: str, episode_id: str) -> str:
