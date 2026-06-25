@@ -60,6 +60,8 @@ from .logging import (
     configure_logging,
     log_level,
 )
+from .metadata import EpisodeMetadata
+from .names import fallback_episode_name
 from .recorder import (
     PARQUET_SCHEMA,
     MessageRecord,
@@ -86,6 +88,7 @@ from .subjects import (
 from .transport import (
     MemoryTransport,
     NatsTransport,
+    SealedStreamError,
     Subscription,
     Transport,
     TransportError,
@@ -118,6 +121,7 @@ __all__ = [
     "Environment",
     "EpisodeConfig",
     "EpisodeHandle",
+    "EpisodeMetadata",
     "EpisodeOutcome",
     "EpisodePlan",
     "EpisodeState",
@@ -135,6 +139,7 @@ __all__ = [
     "ReplayMessage",
     "Replayer",
     "ReplayerError",
+    "SealedStreamError",
     "SettableConfig",
     "Subscription",
     "Transport",
@@ -145,6 +150,7 @@ __all__ = [
     "configure_logging",
     "create_llm",
     "default_nats_url",
+    "fallback_episode_name",
     "load_app",
     "load_apps",
     "load_config",
