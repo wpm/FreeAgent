@@ -12,7 +12,10 @@ dependencies = [
     "pyyaml>=6.0.3",
     "typer>=0.26.7",
     "fastapi>=0.115",
-    "uvicorn>=0.34",
+    # The [standard] extra pulls in `websockets`, which uvicorn needs to serve
+    # the per-episode feed WebSocket (#42). Without it the upgrade is rejected
+    # ("Unsupported upgrade request") and the feed 404s -- see issue #47.
+    "uvicorn[standard]>=0.34",
 ]
 
 [project.scripts]
