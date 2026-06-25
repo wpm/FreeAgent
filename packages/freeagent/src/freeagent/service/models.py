@@ -130,9 +130,10 @@ class RenameEpisodeRequest(BaseModel):
 class ImportEpisodeRequest(BaseModel):
     """The body of an import request: play a Parquet log into a fresh stream.
 
-    ``parquet_path`` is a path on the service's mounted volume. ``episode_id``
-    optionally pins the new episode's id (else one is assigned); ``name``
-    optionally titles it (else a fallback is used).
+    ``parquet_path`` is a path **within** the service's mounted Parquet volume
+    (``$FREEAGENT_PARQUET_DIR``); it is resolved relative to that directory and
+    may not escape it. ``episode_id`` optionally pins the new episode's id (else
+    one is assigned); ``name`` optionally titles it (else a fallback is used).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -145,8 +146,10 @@ class ImportEpisodeRequest(BaseModel):
 class ExportEpisodeRequest(BaseModel):
     """The body of an export request: drain a sealed episode to Parquet.
 
-    ``parquet_path`` is the destination on the service's mounted volume; it must
-    not already exist (a finished log is never overwritten).
+    ``parquet_path`` is the destination **within** the service's mounted Parquet
+    volume (``$FREEAGENT_PARQUET_DIR``); it is resolved relative to that directory
+    and may not escape it, and it must not already exist (a finished log is never
+    overwritten).
     """
 
     model_config = ConfigDict(extra="forbid")
