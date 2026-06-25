@@ -28,18 +28,27 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from freeagent.cli.child import class_ref
+from freeagent.cli.apps import AppSpec, ManifestSpec
 from freeagent.manifest import Manifest
 from freeagent.subjects import subject_root
 from freeagent.workqueue import WORK_QUEUE_STREAM, WORK_QUEUE_SUBJECTS, work_subject
 
 if TYPE_CHECKING:
-    from freeagent.cli.apps import AppSpec
     from freeagent.cli.config import EpisodePlan
     from freeagent.transport import Transport
 
 
-def build_manifests(spec: AppSpec, plan: EpisodePlan) -> list[Manifest]:
+def _as_manifest_spec(spec: AppSpec | ManifestSpec) -> ManifestSpec:
+    """Normalize either spec form to an engine-free :class:`ManifestSpec`.
+
+    A fat caller passes an :class:`AppSpec` (live classes); the slim service
+    passes a :class:`ManifestSpec` (class-ref strings it resolved without
+    importing the engine). Either way the recruiter works from strings only.
+    """
+    return spec.manifest_spec() if isinstance(spec, AppSpec) else spec
+
+
+def build_manifests(spec: AppSpec | ManifestSpec, plan: EpisodePlan) -> list[Manifest]:
     """Build the episode's manifest set from an app and a resolved plan.
 
     Returns ``N + 1`` manifests: one ``agent`` manifest per roster member
@@ -50,16 +59,21 @@ def build_manifests(spec: AppSpec, plan: EpisodePlan) -> list[Manifest]:
     agent carries the episode's ``subject_root`` and its roster ``agent_id``;
     the environment carries the app name, the roster, and the episode id.
 
-    The roster classes come from the app's :attr:`AppSpec.roster`; their
-    per-agent config comes from the plan, so an operator's overrides flow
-    through unchanged. Pure: it touches no transport (see :func:`enqueue_episode`
-    for the side-effecting front door).
+    *spec* is either an :class:`~freeagent.cli.apps.AppSpec` (live classes, the
+    CLI/fat path) or a :class:`~freeagent.cli.apps.ManifestSpec` (class-ref
+    strings, the slim worker-pool service path). Both yield identical manifests,
+    because the manifest carries the class only as a ``module:QualName`` *string*
+    -- so building a manifest set never imports an engine. The roster names and
+    per-agent config come from the plan, so an operator's overrides flow through
+    unchanged. Pure: it touches no transport (see :func:`enqueue_episode` for the
+    side-effecting front door).
     """
+    manifest_spec = _as_manifest_spec(spec)
     root = subject_root(plan.app, plan.episode_id)
     manifests: list[Manifest] = [
         Manifest(
             role="agent",
-            cls=class_ref(spec.roster[name]),
+            cls=manifest_spec.roster[name],
             subject_root=root,
             agent_id=name,
             config=config,
@@ -70,7 +84,7 @@ def build_manifests(spec: AppSpec, plan: EpisodePlan) -> list[Manifest]:
     manifests.append(
         Manifest(
             role="environment",
-            cls=class_ref(spec.environment),
+            cls=manifest_spec.environment,
             app=plan.app,
             roster=list(plan.agent_configs),
             episode_id=plan.episode_id,
@@ -82,7 +96,7 @@ def build_manifests(spec: AppSpec, plan: EpisodePlan) -> list[Manifest]:
 
 
 async def enqueue_episode(
-    transport: Transport, *, spec: AppSpec, plan: EpisodePlan
+    transport: Transport, *, spec: AppSpec | ManifestSpec, plan: EpisodePlan
 ) -> list[Manifest]:
     """Build *and enqueue* the episode's manifest set; return what was enqueued.
 
@@ -92,6 +106,10 @@ async def enqueue_episode(
     (:func:`freeagent.workqueue.work_subject`). Returns the manifests in the
     order they were enqueued (agents first, then the environment) so a caller --
     the control service's ``create`` (#54) -- has the exact set it scheduled.
+
+    *spec* is an :class:`~freeagent.cli.apps.AppSpec` or a
+    :class:`~freeagent.cli.apps.ManifestSpec` (see :func:`build_manifests`); the
+    slim service passes the latter so enqueuing imports no engine.
 
     *transport* must already be connected. The recruiter does not own the
     transport's lifecycle; the caller connects and closes it.

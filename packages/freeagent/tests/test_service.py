@@ -8,18 +8,22 @@ Three tiers:
   (list/get/rename/delete and *restart durability*) driven against an injected
   :class:`MemoryTransport` seeded with episode streams + metadata, exactly as the
   real durable record looks. This is the heart of ADR-0003 and runs without NATS.
+  This tier also covers the worker-pool ``create`` (ADR-0005): it *enqueues* the
+  episode's manifests onto the shared work queue and holds **no** handle, and a
+  ``stop`` publishes an operator-abort on the episode's ``.env`` subject.
 * **Slow** (opt-in ``FREEAGENT_SLOW_TEST``, skipped without NATS) -- create
-  launches a real episode, observable over NATS; stop aborts it; a fresh service
-  over the same NATS still sees it (restart loses nothing).
+  enqueues an episode's manifests, observable on the real work queue; a fresh
+  service over the same NATS still sees a recorded episode (restart loses
+  nothing).
 
-Live episodes run the no-LLM ``noop_app``; the service is pointed at it through an
-injected ``app_loader``, and ``noop_app``'s directory is on ``PYTHONPATH`` so the
-spawned children can import it.
+The service is pointed at the noop app through an injected ``manifest_loader``
+that returns its :class:`~freeagent.cli.apps.ManifestSpec` -- the class-ref
+strings, never the live classes -- so ``create`` resolves an app and enqueues
+manifests **without importing any engine** (the slim worker-pool image).
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
 import time
 from datetime import UTC, datetime
@@ -28,7 +32,6 @@ from pathlib import Path
 import nats
 import pytest
 from httpx import ASGITransport, AsyncClient
-from nats.js.api import ConsumerConfig, DeliverPolicy
 from noop_app import NoopAgent, NoopEnvironment
 from pydantic import ValidationError
 
@@ -38,10 +41,14 @@ from freeagent import (
     AppSpec,
     Envelope,
     EpisodeMetadata,
+    Manifest,
     MemoryTransport,
     SettableConfig,
     default_nats_url,
 )
+from freeagent.cli.apps import ManifestSpec
+from freeagent.cli.child import class_ref
+from freeagent.environment import OPERATOR_ABORT_TYPE
 from freeagent.service import (
     ControlService,
     CreateEpisodeRequest,
@@ -50,16 +57,14 @@ from freeagent.service import (
     verify_nats_reachable,
 )
 from freeagent.subjects import EpisodeSubjects, stream_name
+from freeagent.workqueue import WORK_QUEUE_STREAM, work_subject
 
-TESTS_DIR = Path(__file__).parent
 NATS_URL = default_nats_url()
 #: A loopback port nothing listens on: a connect here is refused immediately.
 DEAD_NATS_URL = "nats://127.0.0.1:14222"
 
 #: The REST/application name the tests register the noop app under.
 NOOP_APP = "noopapp"
-#: Long enough that a created episode stays RUNNING for the test to stop it.
-LONG_ENV = {"setup_timeout": 10.0, "episode_timeout": 30.0, "grace_period": 0.2}
 
 NOOP_SPEC = AppSpec(
     name=NOOP_APP,
@@ -70,14 +75,20 @@ NOOP_SPEC = AppSpec(
         agents={"alpha": AGENT_FIELDS, "beta": AGENT_FIELDS},
     ),
 )
+#: The engine-free manifest spec the service resolves -- class-ref strings only.
+NOOP_MANIFEST = NOOP_SPEC.manifest_spec()
 
 
-def _noop_loader(name: str) -> AppSpec:
-    """Resolve only the noop app; anything else is an unknown application."""
+def _noop_loader(name: str) -> ManifestSpec:
+    """Resolve only the noop app's :class:`ManifestSpec`; else unknown application.
+
+    Returns class-ref *strings*, mirroring ``load_manifest_spec`` -- the service
+    never sees a live engine class, so ``create`` imports no engine.
+    """
     from freeagent.cli.apps import UnknownAppError
 
     if name == NOOP_APP:
-        return NOOP_SPEC
+        return NOOP_MANIFEST
     raise UnknownAppError(f"unknown application {name!r}; installed applications: {NOOP_APP}")
 
 
@@ -148,7 +159,7 @@ async def test_verify_nats_unreachable_fails_fast() -> None:
 
 
 async def test_create_returns_503_when_nats_is_down() -> None:
-    service = ControlService(nats_url=DEAD_NATS_URL, app_loader=_noop_loader)
+    service = ControlService(nats_url=DEAD_NATS_URL, manifest_loader=_noop_loader)
     async with _client(service) as client:
         started = time.monotonic()
         response = await client.post(f"/freeagent/{NOOP_APP}/episodes", json={"mode": "live"})
@@ -158,7 +169,7 @@ async def test_create_returns_503_when_nats_is_down() -> None:
 
 
 async def test_create_returns_404_for_unknown_application() -> None:
-    service = ControlService(nats_url=DEAD_NATS_URL, app_loader=_noop_loader)
+    service = ControlService(nats_url=DEAD_NATS_URL, manifest_loader=_noop_loader)
     async with _client(service) as client:
         response = await client.post("/freeagent/no-such-app/episodes", json={"mode": "live"})
     assert response.status_code == 404
@@ -166,7 +177,7 @@ async def test_create_returns_404_for_unknown_application() -> None:
 
 
 async def test_replay_mode_is_rejected_in_favour_of_import() -> None:
-    service = ControlService(nats_url=DEAD_NATS_URL, app_loader=_noop_loader)
+    service = ControlService(nats_url=DEAD_NATS_URL, manifest_loader=_noop_loader)
     async with _client(service) as client:
         response = await client.post(
             f"/freeagent/{NOOP_APP}/episodes",
@@ -208,7 +219,7 @@ def _seed_episode(
 
 
 def _durable_service(transport: MemoryTransport) -> ControlService:
-    return ControlService(nats_url=DEAD_NATS_URL, app_loader=_noop_loader, transport=transport)
+    return ControlService(nats_url=DEAD_NATS_URL, manifest_loader=_noop_loader, transport=transport)
 
 
 async def test_list_and_get_read_from_the_durable_record() -> None:
@@ -290,11 +301,180 @@ async def test_restart_loses_nothing() -> None:
 
 
 async def test_teardown_of_empty_service_is_zero() -> None:
-    service = ControlService(nats_url=DEAD_NATS_URL, app_loader=_noop_loader)
+    service = ControlService(nats_url=DEAD_NATS_URL, manifest_loader=_noop_loader)
     async with _client(service) as client:
         response = await client.post("/freeagent/teardown")
     assert response.status_code == 200
     assert response.json() == {"stopped": 0}
+
+
+# ---------------------------------------------------------------------------
+# Fast: provision-only create -- enqueue manifests, hold no handle (ADR-0005)
+# ---------------------------------------------------------------------------
+
+
+def _enqueued_manifests(transport: MemoryTransport, episode_id: str) -> list[Manifest]:
+    """The manifests published to *episode_id*'s work-queue subject, decoded."""
+    subject = work_subject(NOOP_APP, episode_id)
+    return [Manifest.model_validate_json(data) for s, data in transport.history if s == subject]
+
+
+async def test_create_enqueues_manifests_and_holds_no_handle() -> None:
+    """``create`` provisions: it enqueues the manifest set and retains no handle."""
+    transport = MemoryTransport()
+    await transport.connect()
+    service = _durable_service(transport)
+    async with _client(service) as client:
+        created = await client.post(
+            f"/freeagent/{NOOP_APP}/episodes",
+            json={"mode": "live", "episode_id": "ep1", "name": "first"},
+        )
+        assert created.status_code == 201
+        view = created.json()
+        assert view["id"] == "ep1"
+        assert view["app"] == NOOP_APP
+        assert view["name"] == "first"
+        # No worker has launched anything yet, so the episode is in setup.
+        assert view["status"] == "setup"
+        assert view["sealed"] is False
+        assert view["subject_root"] == f"{NOOP_APP}.episode.ep1"
+
+    # The manifest set landed on the shared work queue: N agents + 1 environment.
+    assert WORK_QUEUE_STREAM in transport.work_queue_streams
+    manifests = _enqueued_manifests(transport, "ep1")
+    assert [m.role for m in manifests] == ["agent", "agent", "environment"]
+    env = next(m for m in manifests if m.role == "environment")
+    assert env.cls == class_ref(NoopEnvironment)
+    assert env.app == NOOP_APP
+    assert env.roster == ["alpha", "beta"]
+    # The service holds no per-episode handle: provision-only.
+    assert service._handles == {}  # type: ignore[attr-defined]
+
+
+async def test_create_assigns_a_short_id_when_none_is_given() -> None:
+    """Omitting ``episode_id`` mints a fresh short id and enqueues under it."""
+    transport = MemoryTransport()
+    await transport.connect()
+    service = _durable_service(transport)
+    async with _client(service) as client:
+        created = await client.post(f"/freeagent/{NOOP_APP}/episodes", json={"mode": "live"})
+        assert created.status_code == 201
+        episode_id = created.json()["id"]
+    assert episode_id  # a non-empty assigned id
+    # The manifests landed under the assigned id's work-queue subject.
+    assert _enqueued_manifests(transport, episode_id)
+
+
+async def test_create_threads_name_model_and_key_into_manifests() -> None:
+    """``model``/``api_key`` ride into agent config; ``name`` into the env config."""
+    transport = MemoryTransport()
+    await transport.connect()
+    service = _durable_service(transport)
+    async with _client(service) as client:
+        await client.post(
+            f"/freeagent/{NOOP_APP}/episodes",
+            json={
+                "mode": "live",
+                "episode_id": "ep1",
+                "name": "titled",
+                "model": "fake",
+                "api_key": "sk-test",
+                "agents": {"alpha": {"config": {"grace_period": 0.5}}},
+            },
+        )
+    manifests = _enqueued_manifests(transport, "ep1")
+    alpha = next(m for m in manifests if m.agent_id == "alpha")
+    assert alpha.config == {"grace_period": 0.5, "model": "fake", "api_key": "sk-test"}
+    env = next(m for m in manifests if m.role == "environment")
+    assert env.config["name"] == "titled"
+
+
+async def test_create_without_engine_installed_does_not_404() -> None:
+    """The slim-image acceptance: an app whose engine is *not importable* still creates.
+
+    ``ghost_engine`` is installed on no machine; a fat worker would import it, but
+    the service only needs the class-ref strings to build manifests. ``create``
+    must enqueue a well-formed manifest set and never raise the
+    ``404 unknown application`` the old in-process ``load_app`` produced.
+    """
+    transport = MemoryTransport()
+    await transport.connect()
+    ghost = ManifestSpec(
+        name="ghostapp",
+        environment="ghost_engine.env:GhostEnvironment",
+        roster={"solo": "ghost_engine.agent:GhostAgent"},
+    )
+
+    def _ghost_loader(name: str) -> ManifestSpec:
+        from freeagent.cli.apps import UnknownAppError
+
+        if name == "ghost-app":
+            return ghost
+        raise UnknownAppError(f"unknown application {name!r}")
+
+    service = ControlService(
+        nats_url=DEAD_NATS_URL, manifest_loader=_ghost_loader, transport=transport
+    )
+    async with _client(service) as client:
+        created = await client.post(
+            "/freeagent/ghost-app/episodes",
+            json={"mode": "live", "episode_id": "g1"},
+        )
+        assert created.status_code == 201
+        assert created.json()["app"] == "ghostapp"
+    subject = work_subject("ghostapp", "g1")
+    manifests = [
+        Manifest.model_validate_json(data) for s, data in transport.history if s == subject
+    ]
+    assert [m.role for m in manifests] == ["agent", "environment"]
+    env = next(m for m in manifests if m.role == "environment")
+    assert env.cls == "ghost_engine.env:GhostEnvironment"
+
+
+async def test_create_conflict_on_a_recorded_id() -> None:
+    """A client id already present in the durable record is a 409 conflict."""
+    transport = MemoryTransport()
+    _seed_episode(transport, episode_id="taken", name="x", status="running", sealed=False)
+    service = _durable_service(transport)
+    async with _client(service) as client:
+        response = await client.post(
+            f"/freeagent/{NOOP_APP}/episodes",
+            json={"mode": "live", "episode_id": "taken"},
+        )
+    assert response.status_code == 409
+
+
+async def test_stop_publishes_an_operator_abort() -> None:
+    """``stop`` is the graceful operator-abort over the episode's ``.env`` subject."""
+    transport = MemoryTransport()
+    _seed_episode(transport, episode_id="ep1", name="x", status="running", sealed=False)
+    service = _durable_service(transport)
+    subjects = EpisodeSubjects(app=NOOP_APP, episode_id="ep1")
+    async with _client(service) as client:
+        stopped = await client.post(f"/freeagent/{NOOP_APP}/episodes/ep1/stop")
+        assert stopped.status_code == 200
+    abort = [Envelope.from_bytes(data) for s, data in transport.history if s == subjects.env]
+    assert len(abort) == 1
+    assert isinstance(abort[0].payload, dict)
+    assert abort[0].payload["type"] == OPERATOR_ABORT_TYPE
+
+
+async def test_stop_unknown_episode_is_404() -> None:
+    """Stopping an episode the durable record does not know is a clean 404."""
+    service = _durable_service(MemoryTransport())
+    async with _client(service) as client:
+        response = await client.post(f"/freeagent/{NOOP_APP}/episodes/nope/stop")
+    assert response.status_code == 404
+
+
+async def test_teardown_holds_no_children_and_closes_its_transport() -> None:
+    """With no handles, teardown brings down nothing and reports zero.
+
+    The service owns no child processes (a worker does), so teardown only closes
+    a service-owned transport; an injected transport is left to its owner.
+    """
+    service = ControlService(nats_url=DEAD_NATS_URL, manifest_loader=_noop_loader)
+    assert await service.teardown() == 0
 
 
 @pytest.mark.parametrize("escaping", ["../../etc/passwd", "/etc/passwd", "a/../../escape.parquet"])
@@ -303,7 +483,9 @@ async def test_export_rejects_a_parquet_path_outside_the_volume(
 ) -> None:
     """A parquet_path that escapes the configured Parquet directory is a 400 and
     never reaches NATS (path-injection containment)."""
-    service = ControlService(nats_url=DEAD_NATS_URL, app_loader=_noop_loader, parquet_dir=tmp_path)
+    service = ControlService(
+        nats_url=DEAD_NATS_URL, manifest_loader=_noop_loader, parquet_dir=tmp_path
+    )
     async with _client(service) as client:
         response = await client.post(
             f"/freeagent/{NOOP_APP}/episodes/whatever/export",
@@ -318,7 +500,9 @@ async def test_import_rejects_a_parquet_path_outside_the_volume(
     tmp_path: Path, escaping: str
 ) -> None:
     """Import confines its source path the same way export confines its output."""
-    service = ControlService(nats_url=DEAD_NATS_URL, app_loader=_noop_loader, parquet_dir=tmp_path)
+    service = ControlService(
+        nats_url=DEAD_NATS_URL, manifest_loader=_noop_loader, parquet_dir=tmp_path
+    )
     async with _client(service) as client:
         response = await client.post("/freeagent/import", json={"parquet_path": escaping})
     assert response.status_code == 400
@@ -326,131 +510,89 @@ async def test_import_rejects_a_parquet_path_outside_the_volume(
 
 
 # ---------------------------------------------------------------------------
-# Slow: the real API against a real NATS server and real child processes
+# Slow: the real API against a real NATS server and the real work queue
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def _children_can_import_noop_app(monkeypatch: pytest.MonkeyPatch) -> None:
-    existing = os.environ.get("PYTHONPATH", "")
-    joined = str(TESTS_DIR) if not existing else f"{TESTS_DIR}{os.pathsep}{existing}"
-    monkeypatch.setenv("PYTHONPATH", joined)
 
 
 @slow
 @requires_nats
-@pytest.mark.usefixtures("_children_can_import_noop_app")
-async def test_create_list_get_stop_then_durable() -> None:
-    service = ControlService(nats_url=NATS_URL, app_loader=_noop_loader)
+async def test_create_enqueues_onto_the_real_work_queue() -> None:
+    """``create`` lands a well-formed manifest set on the real JetStream work queue.
+
+    No worker runs here (that is #52), so the episode never reaches ``running``;
+    this test asserts the provisioning side only: the right number of manifests
+    are durably on the shared work-queue stream under this episode's subject.
+
+    The work-queue stream forbids overlapping filtered consumers (one shared
+    durable, by design), so the count is read from per-subject stream state
+    rather than by binding a competing consumer.
+    """
+    service = ControlService(nats_url=NATS_URL, manifest_loader=_noop_loader)
+    chosen = f"wq-{os.getpid()}-{int(time.time())}"
+    subject = work_subject(NOOP_APP, chosen)
     async with _client(service) as client:
-        episode_id: str | None = None
         try:
             created = await client.post(
                 f"/freeagent/{NOOP_APP}/episodes",
-                json={"mode": "live", "name": "first", "environment": {"config": LONG_ENV}},
+                json={"mode": "live", "episode_id": chosen, "name": "first"},
             )
             assert created.status_code == 201
             view = created.json()
-            episode_id = view["id"]
-            assert view["status"] == "running"
-            assert view["name"] == "first"
+            assert view["status"] == "setup"
             assert view["app"] == NOOP_APP
-            assert view["episode_id"] == episode_id
-            assert view["subject_root"] == f"{NOOP_APP}.episode.{episode_id}"
 
-            await _await_start(view["subject_root"])
-
-            # list/get read the durable JetStream record.
-            listing = (await client.get("/freeagent/episodes")).json()
-            assert episode_id in [e["id"] for e in listing]
-            got = (await client.get(f"/freeagent/{NOOP_APP}/episodes/{episode_id}")).json()
-            assert got["status"] == "running"
-
-            # rename writes the durable record.
-            await client.patch(f"/freeagent/{NOOP_APP}/episodes/{episode_id}", json={"name": "two"})
-            assert (await client.get(f"/freeagent/{NOOP_APP}/episodes/{episode_id}")).json()[
-                "name"
-            ] == "two"
-
-            # stop aborts gracefully and seals.
-            stopped = await client.post(f"/freeagent/{NOOP_APP}/episodes/{episode_id}/stop")
-            assert stopped.status_code == 200
-            assert stopped.json()["status"] == "aborted"
-
-            # A restart-equivalent fresh service still sees it (sealed, durable).
-            fresh = ControlService(nats_url=NATS_URL, app_loader=_noop_loader)
+            # Read this episode's manifest count off the shared stream's per-subject
+            # state, without creating a (forbidden) overlapping filtered consumer.
+            client_nats = await nats.connect(NATS_URL)
             try:
-                async with _client(fresh) as other:
-                    seen = (await other.get(f"/freeagent/{NOOP_APP}/episodes/{episode_id}")).json()
-                    assert seen["sealed"] is True
-                    assert seen["status"] == "aborted"
+                js = client_nats.jetstream()
+                info = await js.stream_info(WORK_QUEUE_STREAM, subjects_filter=subject)
+                per_subject = dict(info.state.subjects or {})
             finally:
-                await fresh.teardown()
+                await client_nats.close()
+            # Two agents + one environment for the noop app's roster.
+            assert per_subject.get(subject) == 3
         finally:
-            if episode_id is not None:
-                # Clean up the persistent volume so the id is never reused.
-                await client.request("DELETE", f"/freeagent/{NOOP_APP}/episodes/{episode_id}")
             await service.teardown()
 
 
 @slow
 @requires_nats
-async def test_client_supplied_id_and_conflict() -> None:
-    service = ControlService(nats_url=NATS_URL, app_loader=_noop_loader)
-    chosen = f"chosen-{os.getpid()}-{int(time.time())}"  # unique on the persistent volume
-    async with _client(service) as client:
+async def test_client_supplied_id_conflicts_with_a_recorded_episode() -> None:
+    """A second create on an id already in the durable record is a 409."""
+    transport_service = ControlService(nats_url=NATS_URL, manifest_loader=_noop_loader)
+    chosen = f"dup-{os.getpid()}-{int(time.time())}"
+    async with _client(transport_service) as client:
         try:
-            first = await client.post(
-                f"/freeagent/{NOOP_APP}/episodes",
-                json={"mode": "live", "episode_id": chosen, "environment": {"config": LONG_ENV}},
-            )
-            assert first.status_code == 201
-            assert first.json()["id"] == chosen
+            # Seed the durable record directly by writing a stream + metadata.
+            subjects = EpisodeSubjects(app=NOOP_APP, episode_id=chosen)
+            client_nats = await nats.connect(NATS_URL)
+            try:
+                js = client_nats.jetstream()
+                meta = EpisodeMetadata(
+                    app=NOOP_APP,
+                    name="seed",
+                    status="running",
+                    mode="live",
+                    created_at=datetime.now(UTC).isoformat(),
+                ).to_stream_metadata()
+                from nats.js.api import StreamConfig
+
+                await js.add_stream(
+                    StreamConfig(
+                        name=subjects.stream,
+                        subjects=[subjects.all_subjects],
+                        metadata=meta,
+                    )
+                )
+            finally:
+                await client_nats.close()
 
             conflict = await client.post(
                 f"/freeagent/{NOOP_APP}/episodes",
-                json={"mode": "live", "episode_id": chosen, "environment": {"config": LONG_ENV}},
+                json={"mode": "live", "episode_id": chosen},
             )
             assert conflict.status_code == 409
         finally:
             await client.request("DELETE", f"/freeagent/{NOOP_APP}/episodes/{chosen}")
-            await service.teardown()
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-async def _await_start(subject_root: str, *, within: float = 15.0) -> None:
-    """Subscribe to the episode's control subject and wait for the 'start' gun."""
-    client = await nats.connect(NATS_URL)
-    started = asyncio.Event()
-
-    async def on_message(msg: object) -> None:
-        envelope = Envelope.from_bytes(msg.data)  # type: ignore[attr-defined]
-        if isinstance(envelope.payload, dict) and envelope.payload.get("type") == "start":
-            started.set()
-
-    try:
-        js = client.jetstream()
-        deadline = asyncio.get_running_loop().time() + within
-        while asyncio.get_running_loop().time() < deadline:
-            try:
-                sub = await js.subscribe(
-                    f"{subject_root}.control",
-                    cb=on_message,
-                    ordered_consumer=True,
-                    config=ConsumerConfig(deliver_policy=DeliverPolicy.ALL),
-                )
-            except Exception:
-                await asyncio.sleep(0.2)
-                continue
-            try:
-                await asyncio.wait_for(started.wait(), timeout=within)
-            finally:
-                await sub.unsubscribe()
-            return
-        pytest.fail("episode never broadcast 'start' on NATS")
-    finally:
-        await client.close()
+            await transport_service.teardown()

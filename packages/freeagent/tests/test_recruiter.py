@@ -62,6 +62,36 @@ def _plan(app: AppSpec, **config: object) -> EpisodePlan:
     return make_plan(episode_config, app=app.name, roster=app.roster)
 
 
+def test_build_manifests_from_a_manifest_spec_matches_the_appspec() -> None:
+    """A :class:`ManifestSpec` (class-ref strings, engine-free) builds the same set.
+
+    This is the slim-service path: the recruiter never touches a class object,
+    only the ``module:QualName`` strings the spec carries -- so an engine that is
+    not importable in the service still produces well-formed manifests.
+    """
+    plan = _plan(NOOP_APP)
+    from_classes = build_manifests(NOOP_APP, plan)
+    from_strings = build_manifests(NOOP_APP.manifest_spec(), plan)
+    assert [m.model_dump() for m in from_strings] == [m.model_dump() for m in from_classes]
+
+
+def test_build_manifests_from_a_manifest_spec_with_unimportable_refs() -> None:
+    """The crux: refs to a never-importable engine still build a valid manifest set."""
+    from freeagent.cli.apps import ManifestSpec
+
+    spec = ManifestSpec(
+        name="ghost",
+        environment="ghost_engine.env:GhostEnvironment",
+        roster={"solo": "ghost_engine.agent:GhostAgent"},
+    )
+    plan = make_plan(EpisodeConfig(episode_id="ep1"), app="ghost", roster=["solo"])
+    manifests = build_manifests(spec, plan)
+    env = next(m for m in manifests if m.role == "environment")
+    agent = next(m for m in manifests if m.role == "agent")
+    assert env.cls == "ghost_engine.env:GhostEnvironment"
+    assert agent.cls == "ghost_engine.agent:GhostAgent"
+
+
 def test_build_manifests_returns_n_plus_one() -> None:
     manifests = build_manifests(COLLATZ_APP, _plan(COLLATZ_APP))
     # Two agents + one environment.

@@ -24,6 +24,13 @@ from freeagent import (
     load_apps,
 )
 from freeagent.cli import apps as apps_module
+from freeagent.cli.apps import (
+    MANIFEST_ENTRY_POINT_GROUP,
+    ManifestSpec,
+    load_manifest_spec,
+    load_manifest_specs,
+)
+from freeagent.cli.child import class_ref
 
 
 class _FakeEntryPoint:
@@ -137,3 +144,100 @@ def test_appspec_allows_roster_member_with_no_settable_fields() -> None:
         settable_config=SettableConfig(agents={"alpha": ()}),  # beta omitted, fine
     )
     assert set(spec.roster) == {"alpha", "beta"}
+
+
+# ---------------------------------------------------------------------------
+# ManifestSpec: the engine-free, class-ref-string description (ADR-0005, #54)
+# ---------------------------------------------------------------------------
+
+
+class _FakeManifestEntryPoint:
+    """Just enough of ``EntryPoint`` for ``load_manifest_specs``.
+
+    A manifest entry point resolves to a :class:`ManifestSpec` -- the engine-free,
+    class-ref-string description an app advertises on the ``freeagent.manifests``
+    group. Its module carries *strings*, not engine classes, so ``load()`` imports
+    no engine code (the whole point of the slim-image path).
+    """
+
+    def __init__(self, name: str, value: str, obj: object) -> None:
+        self.name = name
+        self.value = value
+        self._obj = obj
+
+    def load(self) -> object:
+        return self._obj
+
+
+def _patch_manifest_entry_points(
+    monkeypatch: pytest.MonkeyPatch, entries: list[_FakeManifestEntryPoint]
+) -> None:
+    def fake_entry_points(*, group: str) -> list[_FakeManifestEntryPoint]:
+        assert group == MANIFEST_ENTRY_POINT_GROUP
+        return entries
+
+    monkeypatch.setattr(apps_module, "entry_points", fake_entry_points)
+
+
+def test_appspec_builds_its_manifest_spec_from_live_classes() -> None:
+    """``AppSpec.manifest_spec`` projects the live classes onto class-ref strings."""
+    manifest_spec = APP.manifest_spec()
+    assert manifest_spec.name == "noopapp"
+    assert manifest_spec.environment == class_ref(NoopEnvironment)
+    assert manifest_spec.roster == {"alpha": class_ref(NoopAgent)}
+
+
+def test_load_manifest_specs_keys_by_rest_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Discovery keys each :class:`ManifestSpec` by its dashed REST name."""
+    spec = APP.manifest_spec()
+    _patch_manifest_entry_points(
+        monkeypatch, [_FakeManifestEntryPoint("noop", "noop_app:MANIFEST", spec)]
+    )
+    specs = load_manifest_specs()
+    assert set(specs) == {"noop"}
+    assert specs["noop"] == spec
+
+
+def test_load_manifest_spec_unknown_name_is_a_clean_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = APP.manifest_spec()
+    _patch_manifest_entry_points(
+        monkeypatch, [_FakeManifestEntryPoint("noop", "noop_app:MANIFEST", spec)]
+    )
+    with pytest.raises(UnknownAppError, match=r"unknown application 'nope'.*noop"):
+        load_manifest_spec("nope")
+
+
+def test_load_manifest_specs_rejects_a_non_manifest_entry_point(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_manifest_entry_points(
+        monkeypatch, [_FakeManifestEntryPoint("broken", "noop_app:NoopAgent", NoopAgent)]
+    )
+    with pytest.raises(TypeError, match="not a ManifestSpec"):
+        load_manifest_specs()
+
+
+def test_load_manifest_spec_works_when_engine_is_not_importable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The crux of the slim-image 404 fix: refs to a never-importable module resolve.
+
+    ``ghost_engine`` is not installed anywhere; a fat worker would have it, but
+    the slim service must still resolve the manifest spec (just the strings) and
+    never raise an import/unknown-app error. The ManifestSpec carries the refs as
+    strings, so resolving it imports nothing.
+    """
+    spec = ManifestSpec(
+        name="ghost",
+        environment="ghost_engine.env:GhostEnvironment",
+        roster={"solo": "ghost_engine.agent:GhostAgent"},
+    )
+    _patch_manifest_entry_points(
+        monkeypatch, [_FakeManifestEntryPoint("ghost-app", "ghost_manifest:MANIFEST", spec)]
+    )
+    resolved = load_manifest_spec("ghost-app")
+    assert resolved.name == "ghost"
+    assert resolved.environment == "ghost_engine.env:GhostEnvironment"
+    assert resolved.roster == {"solo": "ghost_engine.agent:GhostAgent"}
