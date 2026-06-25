@@ -30,3 +30,4 @@ and the community hub at [adr.github.io](https://adr.github.io/).
 | [0002](0002-control-plane-service.md) | A persistent control-plane service over a REST façade | Accepted (partially superseded by 0003) |
 | [0003](0003-the-atemporal-episode.md) | The atemporal episode | Accepted (partially superseded by 0004) |
 | [0004](0004-app-independent-service.md) | The app-independent episode service | Accepted |
+| [0005](0005-the-worker-pool.md) | The worker pool — distributed episode execution over a work queue | Accepted |

@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR-0005 — diagrams</title>
+<style>
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #fafafa; color: #1a1a1a; }
+  header { padding: 16px 24px; border-bottom: 1px solid #e2e2e2; background: #fff; position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header p { font-size: 13px; margin: 4px 0 0; color: #666; }
+  .wrap { padding: 24px; }
+  section { margin-bottom: 32px; }
+  h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; color: #333; }
+  .mermaid { background: #fff; border: 1px solid #e2e2e2; border-radius: 8px; padding: 24px; overflow: auto; }
+  .mermaid svg { max-width: none !important; height: auto !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ADR-0005 — the worker pool: diagrams</h1>
+  <p>Companion to docs/decision-history/0005-the-worker-pool.md. Browser zoom (⌘+ / ⌘−) or pinch; each panel scrolls.</p>
+</header>
+<div class="wrap">
+
+<section>
+  <h2>1 · Machine &amp; process map (one machine in v1)</h2>
+  <pre class="mermaid">
+flowchart TB
+    subgraph nats["NATS host (Docker) — assumed to exist"]
+        SRV["nats-server + JetStream<br/>(1 process)"]
+        WQ[("work-queue stream<br/>+ 1 shared dispatch consumer")]
+        EP[("per-episode streams<br/>+ read consumers")]
+        SRV --- WQ
+        SRV --- EP
+    end
+    subgraph svc["Service (1 long-lived process)"]
+        S["REST / feed — provision only"]
+        R["recruiter: build manifest set"]
+        S --> R
+    end
+    subgraph uihost["UI host (separate, cross-origin)"]
+        U["viewer (static / pnpm dev)"]
+    end
+    subgraph pool["Worker pool (scale = replica count)"]
+        W1["worker (long-lived)<br/>FreeAgent + engines"]
+        W2["worker (long-lived)<br/>FreeAgent + engines"]
+    end
+    subgraph epA["episode A children"]
+        ENVA["env proc"]
+        A1["agent proc"]
+        A2["agent proc"]
+    end
+    subgraph epB["episode B children"]
+        ENVB["env proc"]
+        B1["agent proc"]
+    end
+    R -->|enqueue N+1 manifests| WQ
+    W1 -->|pull + ack| WQ
+    W2 -->|pull + ack| WQ
+    W1 -.forks.-> ENVA
+    W1 -.forks.-> A1
+    W2 -.forks.-> A2
+    W2 -.forks.-> ENVB
+    W2 -.forks.-> B1
+    ENVA <--> EP
+    A1 <--> EP
+    A2 <--> EP
+    ENVB <--> EP
+    B1 <--> EP
+    U -->|REST + feed| S
+    S -->|feed read consumer| EP
+  </pre>
+</section>
+
+<section>
+  <h2>2 · Work-queue dispatch (competing consumers)</h2>
+  <pre class="mermaid">
+flowchart LR
+    R["recruiter<br/>(in service)"] -->|publish manifests| WQ[("work-queue stream<br/>retention: workqueue")]
+    WQ --- DC{{"shared durable<br/>pull consumer"}}
+    DC -->|"each manifest<br/>to exactly one"| W1["worker 1"]
+    DC --> W2["worker 2"]
+    DC --> W3["worker 3"]
+    W1 -.ack.-> DC
+    W2 -.ack.-> DC
+    W3 -.ack.-> DC
+  </pre>
+</section>
+
+<section>
+  <h2>3 · Three process tiers</h2>
+  <pre class="mermaid">
+flowchart TB
+    S["SERVICE — 1 process<br/>provision only, holds no handles"]
+    subgraph workers["WORKERS — long-lived, ×M (stateless, identical)"]
+        W1["worker"]
+        W2["worker"]
+    end
+    subgraph children["CHILDREN — short-lived, one role of one episode"]
+        direction LR
+        C1["env (ep A)"]
+        C2["agent (ep A)"]
+        C3["agent (ep B)"]
+        C4["env (ep B)"]
+    end
+    S -->|enqueue| Q[("work queue")]
+    Q --> W1
+    Q --> W2
+    W1 -->|forks| C1
+    W1 -->|forks| C2
+    W1 -->|forks| C3
+    W2 -->|forks| C4
+  </pre>
+</section>
+
+<section>
+  <h2>4 · Two control planes (lifecycle)</h2>
+  <pre class="mermaid">
+sequenceDiagram
+    participant Rec as Recruiter (service)
+    participant Q as Work queue
+    participant Wk as Worker
+    participant Ch as Child (agent/env)
+    participant Bus as Episode subjects (NATS)
+    Rec->>Q: enqueue manifest
+    Wk->>Q: pull manifest
+    Wk->>Ch: fork child process
+    Ch-->>Wk: up (survived connect)
+    Wk->>Q: ack (placement done)
+    Note over Ch,Bus: IN-BAND lifecycle — environment-led, child autonomous
+    Ch->>Bus: presence reply
+    Bus->>Ch: start (control broadcast)
+    Bus->>Ch: shutdown (control broadcast)
+    Ch-->>Wk: exits cleanly (winds down on shutdown)
+    Wk->>Wk: reap
+    Note over Wk,Ch: OUT-OF-BAND — only the worker holds the PID
+    Wk--xCh: SIGTERM→SIGKILL (only if a straggler ignores shutdown)
+  </pre>
+</section>
+
+<section>
+  <h2>5 · Acknowledge on confirmed creation</h2>
+  <pre class="mermaid">
+flowchart TD
+    P["pull manifest"] --> F["fork child"]
+    F --> Q{"child survived<br/>connect?"}
+    Q -- "no (early exit 3)" --> NA["do NOT ack"]
+    NA --> RD["redelivered → another worker retries the launch"]
+    Q -- "yes" --> AK["ack — work-queue forgets it"]
+    AK --> SUP["OS-supervise child for rest of life"]
+  </pre>
+</section>
+
+<section>
+  <h2>6 · Deployment — two images, one package</h2>
+  <pre class="mermaid">
+flowchart TB
+    subgraph net["Private Docker network (one machine, v1)"]
+        N["nats — JetStream<br/>no published ports"]
+        SV["service — image: slim<br/>(library only, no engines)<br/>:8000 published"]
+        subgraph wk["worker — image: fat (library + engines)"]
+            WR["replicas: N · no ports · no container_name"]
+        end
+        SV --> N
+        WR --> N
+    end
+    H["UI host — cross-origin, outside the network"] --> SV
+  </pre>
+</section>
+
+</div>
+<script type="module">
+  import mermaid from "https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "default", flowchart: { useMaxWidth: false }, sequence: { useMaxWidth: false } });
+</script>
+</body>
+</html>
