@@ -1,4 +1,4 @@
-"""The episode service's brain: JetStream-sourced CRUD + lifecycle control.
+"""The episode service's brain: JetStream-sourced CRUD + provision-only launch.
 
 :class:`ControlService` owns the operations the REST layer exposes -- create,
 list, get, rename, delete, stop, teardown -- with no web framework in sight, so
@@ -7,11 +7,33 @@ it is testable on its own.
 The atemporal change (ADR-0003): the **durable record is JetStream**, not an
 in-memory registry. ``list``/``get`` read the episode streams and their metadata
 (:class:`~freeagent.service.store.EpisodeStore`), so a service **restart loses
-nothing** -- the limitation ADR-0002 named is resolved. The service still holds a
-live :class:`~freeagent.EpisodeHandle` for each episode *it* launched, to drive
-``stop`` and to report the most current status while an episode is still being
-created (before its stream exists); but an episode's existence no longer depends
-on the service remembering it.
+nothing**.
+
+The worker-pool change (ADR-0005): ``create`` is now **provision-only**. It no
+longer launches an episode's agents in-process and holds no
+:class:`~freeagent.EpisodeHandle`. Instead it asks the **recruiter** to enqueue
+the episode's manifest set onto the shared JetStream work queue
+(:mod:`freeagent.workqueue`); a pool of generic workers (#52) later pulls each
+manifest and launches it. The service therefore owns **no child processes** and
+stores **no PID** -- the durable record is the only truth.
+
+Two consequences of holding no handle:
+
+* The service resolves an app through its **engine-free**
+  :class:`~freeagent.cli.apps.ManifestSpec` (class-ref *strings*, never live
+  classes), so ``create`` enqueues manifests **without importing the engine** --
+  the slim worker-pool image can ``create`` for an app whose engine it lacks,
+  with no ``404 unknown application`` (ADR-0005, the wart ADR-0004 accepted).
+* ``create`` returns a **synthesized provisioning view** (status ``setup``):
+  there is no stream yet (a worker's environment child creates it during setup),
+  and the service keeps no record of what it scheduled. ``get``/``list`` read
+  JetStream; once the environment writes the stream, the durable record is
+  authoritative. There is a brief window after ``create`` and before the stream
+  exists during which ``get`` returns 404 -- acceptable, because ADR-0005 makes
+  the durable record (not a held handle) the single source of truth.
+* ``stop`` is the graceful operator-abort over the episode's ``<root>.env``
+  subject (ADR-0002): the environment, run by a worker's child, honors it over
+  NATS exactly as before -- no handle needed.
 
 ``rename`` sets the friendly-name metadata; ``delete`` removes the whole stream.
 ``create`` accepts a model and API key and threads them into agent config. The
@@ -25,7 +47,6 @@ import asyncio
 import contextlib
 import os
 import secrets
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -35,10 +56,11 @@ from urllib.parse import urlsplit
 import nats
 from nats.errors import NoServersError
 
-from freeagent.cli.apps import AppSpec, load_app, load_apps
+from freeagent.cli.apps import ManifestSpec, load_manifest_spec, load_manifest_specs
 from freeagent.cli.config import ComponentSpec, EpisodeConfig, make_plan
-from freeagent.cli.orchestrate import EpisodeHandle, EpisodeStatus, start_episode
+from freeagent.control import publish_operator_abort
 from freeagent.names import fallback_episode_name
+from freeagent.recruiter import enqueue_episode
 from freeagent.subjects import subject_root, validate_name
 from freeagent.transport import NatsTransport, Transport
 
@@ -55,9 +77,6 @@ _ID_BYTES = 4
 
 #: Bound on the startup/create NATS reachability probe.
 _NATS_PROBE_TIMEOUT = 8.0
-
-#: Bound on tearing one episode down, so a wedged child cannot hang teardown.
-_TEARDOWN_TIMEOUT = 30.0
 
 #: Environment variable naming the directory edge I/O (import/export) is confined
 #: to. A request's ``parquet_path`` is resolved *within* this directory and may
@@ -170,9 +189,11 @@ def _application_index() -> dict[str, str]:
 
     Cached: the installed-app set does not change within a process. Used to label
     an episode read from JetStream (which stores the undashed ``app``) with the
-    REST application name a client addresses it by.
+    REST application name a client addresses it by. Reads the engine-free
+    :class:`~freeagent.cli.apps.ManifestSpec` discovery channel (ADR-0005), so a
+    slim service builds this mapping without importing any engine.
     """
-    return {spec.name: rest_name for rest_name, spec in load_apps().items()}
+    return {spec.name: rest_name for rest_name, spec in load_manifest_specs().items()}
 
 
 def _application_of(app: str) -> str:
@@ -184,61 +205,38 @@ def _application_of(app: str) -> str:
     return _application_index().get(app, app)
 
 
-@dataclass
-class _LiveEpisode:
-    """One episode the service launched: its handle plus the identity it carries.
+def _provisioning_view(
+    *,
+    application: str,
+    app: str,
+    episode_id: str,
+    name: str,
+    nats_url: str,
+    created_at: datetime,
+) -> EpisodeView:
+    """Synthesize the view ``create`` returns once it has enqueued the manifests.
 
-    The handle supervises the child processes in the background, so the live
-    status reflects reality without polling. This is what the service uses to
-    drive ``stop`` and to answer ``get`` for an episode whose stream does not yet
-    exist (the environment creates it a moment after launch).
+    The service holds no handle and the durable record does not exist yet (a
+    worker's environment child creates the stream during setup, ADR-0005), so
+    ``create`` returns what it just *scheduled*: the identity plus a ``setup``
+    status. As soon as the environment writes the stream, ``get``/``list`` read
+    the durable record, which is then authoritative.
     """
-
-    handle: EpisodeHandle
-    application: str
-    app: str
-    episode_id: str
-    name: str
-    nats_url: str
-    created_at: datetime
-
-    @property
-    def status(self) -> str:
-        return str(self.handle.state)
-
-    @property
-    def sealed(self) -> bool:
-        return self.handle.state is not EpisodeStatus.RUNNING
-
-    @property
-    def outcome(self) -> str | None:
-        if self.handle.state is EpisodeStatus.ABORTED:
-            return "aborted"
-        if self.handle.state is EpisodeStatus.ERROR:
-            return "error"
-        return None
-
-    @property
-    def detail(self) -> str | None:
-        result = self.handle.outcome
-        return result.summary if result is not None else None
-
-    def view(self) -> EpisodeView:
-        return EpisodeView(
-            id=self.episode_id,
-            application=self.application,
-            app=self.app,
-            episode_id=self.episode_id,
-            subject_root=subject_root(self.app, self.episode_id),
-            name=self.name,
-            mode="live",
-            status=self.status,
-            sealed=self.sealed,
-            outcome=self.outcome,
-            detail=self.detail,
-            nats_url=self.nats_url,
-            created_at=self.created_at,
-        )
+    return EpisodeView(
+        id=episode_id,
+        application=application,
+        app=app,
+        episode_id=episode_id,
+        subject_root=subject_root(app, episode_id),
+        name=name,
+        mode="live",
+        status="setup",
+        sealed=False,
+        outcome=None,
+        detail=None,
+        nats_url=nats_url,
+        created_at=created_at,
+    )
 
 
 def _view_from_record(record: EpisodeRecord, *, nats_url: str) -> EpisodeView:
@@ -257,6 +255,8 @@ def _view_from_record(record: EpisodeRecord, *, nats_url: str) -> EpisodeView:
         detail=None,
         nats_url=nats_url,
         created_at=record.created_at or _now(),
+        manifest_set=record.manifest_set,
+        resolved_versions=record.resolved_versions,
     )
 
 
@@ -264,26 +264,33 @@ class ControlService:
     """Owns create/list/get/rename/delete/stop/teardown over the durable record.
 
     Construct one per service process. *nats_url* is the default NATS URL (the
-    durable record the service reads). *app_loader* resolves a dashed REST name
-    to its :class:`~freeagent.AppSpec` (injectable for tests). *transport*
-    injects a ready, connected transport for the durable store (tests use an
-    in-memory one); when omitted, the service lazily connects its own.
-    *parquet_dir* (or ``$FREEAGENT_PARQUET_DIR``) is the directory edge I/O is
-    confined to; a request's ``parquet_path`` is resolved within it and may not
-    escape it.
+    durable record the service reads). *manifest_loader* resolves a dashed REST
+    name to its engine-free :class:`~freeagent.cli.apps.ManifestSpec` (class-ref
+    strings, injectable for tests); the default reads the app's discovery entry
+    point **without importing the engine**, so a slim image can ``create``.
+    *transport* injects a ready, connected transport for the durable store and
+    the work-queue publish (tests use an in-memory one); when omitted, the
+    service lazily connects its own. *parquet_dir* (or
+    ``$FREEAGENT_PARQUET_DIR``) is the directory edge I/O is confined to; a
+    request's ``parquet_path`` is resolved within it and may not escape it.
+
+    The service holds **no** episode handles (ADR-0005): launching is the worker
+    pool's job. ``self._handles`` is retained only as an always-empty marker for
+    that invariant -- a created episode lives in JetStream, never in the service.
     """
 
     def __init__(
         self,
         *,
         nats_url: str,
-        app_loader: Callable[[str], AppSpec] = load_app,
+        manifest_loader: Callable[[str], ManifestSpec] = load_manifest_spec,
         transport: Transport | None = None,
         parquet_dir: str | Path | None = None,
     ) -> None:
         self._default_nats_url = nats_url
-        self._app_loader = app_loader
-        self._handles: dict[str, _LiveEpisode] = {}
+        self._manifest_loader = manifest_loader
+        #: Always empty: the service provisions and holds no handle (ADR-0005).
+        self._handles: dict[str, object] = {}
         self._lock = asyncio.Lock()
         self._transport = transport
         self._owns_transport = transport is None
@@ -323,40 +330,49 @@ class ControlService:
     # ------------------------------------------------------------------
 
     async def create(self, application: str, request: CreateEpisodeRequest) -> EpisodeView:
-        """Launch a live episode for *application*; register and return its view.
+        """Provision a live episode for *application*: enqueue its manifests.
 
-        Resolves the app (``UnknownAppError`` -> 404), verifies NATS is reachable
+        Provision-only (ADR-0005): the service resolves the app's engine-free
+        manifest spec (``UnknownAppError`` -> 404), verifies NATS is reachable
         (``NatsUnreachableError`` -> 503), allocates or accepts an id
-        (``EpisodeExistsError`` -> 409), and launches with the chosen model/key.
-        A ``replay`` request is rejected: replaying a recorded log is now an
-        import (``POST /freeagent/import``), per ADR-0003.
+        (``EpisodeExistsError`` -> 409), and **enqueues** the episode's manifest
+        set onto the shared work queue via the recruiter. A pool of workers (#52)
+        launches it. The service holds **no** handle; it returns a synthesized
+        ``setup`` view (the stream does not exist yet -- a worker's environment
+        child creates it). A ``replay`` request is rejected: replaying a recorded
+        log is now an import (``POST /freeagent/import``), per ADR-0003.
         """
         if request.mode == "replay":
             raise ValueError(
                 "replay mode is retired: import a recorded log with POST /freeagent/import"
             )
-        spec = self._app_loader(application)  # UnknownAppError when not installed
+        spec = self._manifest_loader(application)  # UnknownAppError when not installed
         nats_url = request.nats_url or self._default_nats_url
-        await verify_nats_reachable(nats_url)
+        # Probe only when we would connect our own transport: an already-connected
+        # injected transport (tests; a warm service) proves NATS is reachable, and
+        # the recruiter publishes over it -- a redundant probe would force the
+        # default URL even when a request overrides it.
+        if self._transport is None:
+            await verify_nats_reachable(nats_url)
         async with self._lock:
-            episode_id = self._allocate_id(request.episode_id)
-            live = await self._launch_live(application, spec, episode_id, nats_url, request)
-            self._handles[episode_id] = live
-            return live.view()
+            episode_id = await self._allocate_id(spec, request.episode_id)
+            return await self._enqueue(application, spec, episode_id, nats_url, request)
 
-    async def _launch_live(
+    async def _enqueue(
         self,
         application: str,
-        spec: AppSpec,
+        spec: ManifestSpec,
         episode_id: str,
         nats_url: str,
         request: CreateEpisodeRequest,
-    ) -> _LiveEpisode:
-        """Launch a real episode of *spec* and wrap its supervised handle.
+    ) -> EpisodeView:
+        """Build the episode's plan, enqueue its manifests, return a setup view.
 
         The friendly *name* (if any) rides into the environment config so the
-        engine writes it onto the stream; ``model`` and ``api_key`` ride into
-        every agent's config so the operator need not spell out per-agent blocks.
+        worker's environment child writes it onto the stream; ``model`` and
+        ``api_key`` ride into every agent's config so the operator need not spell
+        out per-agent blocks. Recording (``parquet_log``) is no longer started
+        here -- the worker owns launching; the field is ignored on this path.
         """
         env_config = dict(request.environment.config)
         if request.name:
@@ -382,11 +398,10 @@ class ControlService:
             agents=agents,
         )
         plan = make_plan(config, app=spec.name, roster=spec.roster)
-        parquet_log = Path(request.parquet_log) if request.parquet_log else None
-        handle = await start_episode(plan, spec.environment, spec.roster, parquet_log)
+        transport = await self._ensure_transport()
+        await enqueue_episode(transport, spec=spec, plan=plan)
         name = request.name or fallback_episode_name(episode_id)
-        return _LiveEpisode(
-            handle=handle,
+        return _provisioning_view(
             application=application,
             app=spec.name,
             episode_id=episode_id,
@@ -396,54 +411,51 @@ class ControlService:
         )
 
     async def list(self) -> list[EpisodeView]:
-        """Every episode in the durable record, overlaid with live status.
+        """Every episode in the durable record, newest first.
 
-        The JetStream record is the authority for existence; a live handle the
-        service holds overrides status for an episode whose stream is not yet
-        written (the just-created, setup phase).
+        The JetStream record is the sole authority for existence (ADR-0005): the
+        service holds no handle, so a just-provisioned episode appears here only
+        once a worker's environment child has written its stream.
         """
         store = await self._store()
-        views: dict[str, EpisodeView] = {
-            record.episode_id: _view_from_record(record, nats_url=self._default_nats_url)
+        views = [
+            _view_from_record(record, nats_url=self._default_nats_url)
             for record in await store.list()
-        }
-        for episode_id, live in self._handles.items():
-            views.setdefault(episode_id, live.view())
-        return sorted(views.values(), key=lambda v: v.created_at, reverse=True)
+        ]
+        return sorted(views, key=lambda v: v.created_at, reverse=True)
 
     async def get(self, application: str, episode_id: str) -> EpisodeView:
         """The episode under *application* and *episode_id*, from the durable record.
 
-        Falls back to a live handle for an episode whose stream is not yet
-        written. Raises :class:`EpisodeNotFoundError` when neither knows it.
+        Reads only JetStream (ADR-0005). Raises :class:`EpisodeNotFoundError`
+        when the durable record does not know it -- including the brief window
+        after ``create`` and before a worker's environment child has written the
+        stream.
         """
-        spec = self._app_loader(application)
+        spec = self._manifest_loader(application)
         record = await (await self._store()).get(spec.name, episode_id)
         if record is not None:
             return _view_from_record(record, nats_url=self._default_nats_url)
-        live = self._handles.get(episode_id)
-        if live is not None and live.application == application:
-            return live.view()
         raise EpisodeNotFoundError(f"no episode {episode_id!r} for application {application!r}")
 
     async def rename(self, application: str, episode_id: str, name: str) -> EpisodeView:
         """Set an episode's friendly name and return its updated view."""
-        spec = self._app_loader(application)
+        spec = self._manifest_loader(application)
         store = await self._store()
-        if await store.get(spec.name, episode_id) is None and episode_id not in self._handles:
+        if await store.get(spec.name, episode_id) is None:
             raise EpisodeNotFoundError(f"no episode {episode_id!r} for application {application!r}")
         await store.rename(spec.name, episode_id, name)
-        live = self._handles.get(episode_id)
-        if live is not None:
-            live.name = name
         return await self.get(application, episode_id)
 
     async def delete(self, application: str, episode_id: str) -> None:
-        """Delete an episode: stop it if it is live, then remove its stream."""
-        spec = self._app_loader(application)
-        live = self._handles.pop(episode_id, None)
-        if live is not None:
-            await self._teardown_one(live)
+        """Delete an episode: remove its stream from the durable record.
+
+        The service owns no child processes (a worker does), so there is nothing
+        local to bring down -- deleting the stream is the whole operation. A
+        still-running episode's worker children notice the vanished stream and
+        wind down (ADR-0005's "a lost room aborts the episode").
+        """
+        spec = self._manifest_loader(application)
         await (await self._store()).delete(spec.name, episode_id)
 
     async def export(
@@ -456,7 +468,7 @@ class ControlService:
         """
         from .edgeio import export_episode  # local import: avoids an import cycle
 
-        spec = self._app_loader(application)
+        spec = self._manifest_loader(application)
         output = _resolve_within(self._parquet_dir, parquet_path)
         rows = await export_episode(
             nats_url=self._default_nats_url,
@@ -487,62 +499,63 @@ class ControlService:
         return _view_from_record(record, nats_url=self._default_nats_url)
 
     async def stop(self, application: str, episode_id: str) -> EpisodeView:
-        """Gracefully stop one live episode and return its (terminal) view.
+        """Gracefully stop one episode and return its current view.
 
-        A graceful operator-abort: the environment broadcasts ``shutdown``,
-        agents wind down, and the episode settles ``aborted`` and seals.
+        A graceful **operator-abort** over the episode's ``<root>.env`` subject
+        (ADR-0002/0005): the service holds no handle, so it publishes the request
+        (:func:`~freeagent.control.publish_operator_abort`) and the environment --
+        run by a worker's child -- broadcasts ``shutdown``, agents wind down, and
+        the episode settles ``aborted`` and seals. The episode must exist in the
+        durable record; otherwise this is a clean 404 (the same window-before-the-
+        stream caveat as ``get``).
         """
-        live = self._handles.get(episode_id)
-        if live is None or live.application != application:
-            # Not a live episode the service owns. It may already be sealed in the
-            # durable record; report it if so, else it truly does not exist.
-            return await self.get(application, episode_id)
-        await live.handle.abort(reason="episode service stop")
+        spec = self._manifest_loader(application)
+        record = await (await self._store()).get(spec.name, episode_id)
+        if record is None:
+            raise EpisodeNotFoundError(f"no episode {episode_id!r} for application {application!r}")
+        if not record.sealed:
+            transport = await self._ensure_transport()
+            await publish_operator_abort(
+                transport, spec.name, episode_id, reason="episode service stop"
+            )
         return await self.get(application, episode_id)
 
     async def teardown(self) -> int:
-        """Bring every live episode down; return how many. Does not delete streams.
+        """A no-op over episodes; closes a service-owned transport. Returns 0.
 
-        Teardown stops the service's child processes (so nothing is orphaned) but
-        leaves the durable record intact -- a stopped episode is sealed, not gone.
+        The service owns no child processes (ADR-0005: a worker forks and reaps
+        them), so there is nothing to bring down -- teardown only releases a
+        transport the service connected itself, leaving the durable record intact.
+        Always returns ``0`` (no episodes were stopped here), preserving the
+        ``{"stopped": N}`` shape the REST layer reports.
         """
-        async with self._lock:
-            live = list(self._handles.values())
-            self._handles.clear()
-        await asyncio.gather(
-            *(self._teardown_one(episode) for episode in live), return_exceptions=True
-        )
         if self._owns_transport and self._transport is not None:
             with contextlib.suppress(Exception):
                 await self._transport.close()
             self._transport = None
-        return len(live)
+        return 0
 
-    @staticmethod
-    async def _teardown_one(live: _LiveEpisode) -> None:
-        """Tear one live episode down, bounded so a wedged child cannot hang it."""
-        with contextlib.suppress(TimeoutError, asyncio.TimeoutError):
-            live.handle.request_abort()
-            await asyncio.wait_for(live.handle.wait(), timeout=_TEARDOWN_TIMEOUT)
-
-    def _allocate_id(self, requested: str | None) -> str:
+    async def _allocate_id(self, spec: ManifestSpec, requested: str | None) -> str:
         """Validate a client id, or mint a fresh short one; ensure it is free.
 
         Service-assigned ids are short random hex rather than a counter: random
         ids are not reused after a restart, which matters because the JetStream
         volume is persistent and a reused id would collide with a prior episode's
-        stream. A client may supply its own id; a live-handle collision is a
-        conflict (a durable-record collision surfaces when the env creates the
-        stream).
+        stream. A client may supply its own id; a collision with an existing
+        durable record is a conflict. With no held handles (ADR-0005), the
+        durable record is the only place a collision can be detected here -- a
+        same-instant double-create of an unwritten id is resolved when the
+        environment creates the stream.
         """
+        store = await self._store()
         if requested is not None:
             episode_id = validate_name(requested, kind="episode id")
-            if episode_id in self._handles:
+            if await store.get(spec.name, episode_id) is not None:
                 raise EpisodeExistsError(f"episode id {episode_id!r} is already in use")
             return episode_id
         while True:
             episode_id = secrets.token_hex(_ID_BYTES)
-            if episode_id not in self._handles:
+            if await store.get(spec.name, episode_id) is None:
                 return episode_id
 
 

@@ -14,9 +14,9 @@ reads the same streams.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from freeagent.metadata import KEY_NAME, EpisodeMetadata
 from freeagent.names import fallback_episode_name
@@ -30,7 +30,12 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True)
 class EpisodeRecord:
-    """One episode as it exists in the durable record (its stream)."""
+    """One episode as it exists in the durable record (its stream).
+
+    Carries the ADR-0005 provenance the environment wrote at stream creation:
+    :attr:`manifest_set` (*what should be running*) and :attr:`resolved_versions`
+    (*what ran*). Never a PID -- the durable record holds no process handle.
+    """
 
     episode_id: str
     app: str
@@ -41,6 +46,8 @@ class EpisodeRecord:
     outcome: str | None
     mode: str
     created_at: datetime | None
+    manifest_set: list[dict[str, Any]] = field(default_factory=list)
+    resolved_versions: dict[str, str] = field(default_factory=dict)
 
 
 def _parse_created_at(value: str | None) -> datetime | None:
@@ -116,4 +123,6 @@ class EpisodeStore:
             outcome=metadata.outcome,
             mode=metadata.mode,
             created_at=_parse_created_at(metadata.created_at),
+            manifest_set=metadata.manifest_set,
+            resolved_versions=metadata.resolved_versions,
         )

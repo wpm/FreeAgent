@@ -11,6 +11,15 @@ dependencies = [
     "pydantic>=2.13.4",
     "pyyaml>=6.0.3",
     "typer>=0.26.7",
+]
+
+# The web stack lives behind a `service` extra so the fat worker image (ADR-0005)
+# can omit it: the worker forks episode children and never serves HTTP, so it has
+# no use for FastAPI/uvicorn. The service image installs `freeagent[service]`;
+# `free-agent serve` imports the web stack lazily (see cli/serve.py), so the CLI
+# still loads without the extra.
+[project.optional-dependencies]
+service = [
     "fastapi>=0.115",
     # The [standard] extra pulls in `websockets`, which uvicorn needs to serve
     # the per-episode feed WebSocket (#42). Without it the upgrade is rejected

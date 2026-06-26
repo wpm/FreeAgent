@@ -7,6 +7,12 @@ dependencies = [
     "freeagent",
     "pydantic>=2.13.4",
     "typer>=0.26.7",
+    # The engine-free launch identity ships as its own slim distribution (ADR-0005)
+    # so the episode service can register the `freeagent.manifests` entry point
+    # without installing the engine. The engine depends on it only so the parity
+    # test (test_manifest_spec) can import `twentyquestions_manifest` alongside the
+    # live AppSpec; it is not imported by engine code at runtime.
+    "twentyquestions-manifest",
 ]
 
 [project.entry-points."freeagent.apps"]
@@ -21,3 +27,4 @@ packages = ["src/twentyquestions"]
 
 [tool.uv.sources]
 freeagent = { workspace = true }
+twentyquestions-manifest = { workspace = true }

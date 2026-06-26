@@ -195,6 +195,15 @@ class EpisodeView(BaseModel):
     detail: str | None = None
     nats_url: str
     created_at: datetime
+    #: The recruited manifest set (ADR-0005): *what should be running* -- the
+    #: manifests scheduled for this episode, as plain dicts. Never a PID. Empty
+    #: until a worker's environment child writes the stream (and for episodes
+    #: that predate the worker pool, or were imported from a foreign log).
+    manifest_set: list[dict[str, Any]] = Field(default_factory=list)
+    #: The resolved engine versions (ADR-0005): *what ran* -- a map from each
+    #: manifest's ``module:QualName`` class ref to its ``distribution==version``
+    #: stamp. Write-only provenance; empty when nothing is stamped.
+    resolved_versions: dict[str, str] = Field(default_factory=dict)
 
 
 class EpisodeMessage(BaseModel):

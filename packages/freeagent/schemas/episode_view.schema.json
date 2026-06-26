@@ -61,6 +61,19 @@
     "created_at": {
       "format": "date-time",
       "type": "string"
+    },
+    "manifest_set": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "resolved_versions": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
     }
   },
   "required": [

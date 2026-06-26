@@ -4,7 +4,11 @@ version = "1.0.0"
 description = "FreeAgent workspace root: the freeagent library plus its companion applications."
 requires-python = ">=3.12"
 dependencies = [
-    "freeagent",
+    # The workspace root is the full dev/test environment. Its test suite imports
+    # the episode service, so pull the web stack the `service` extra now gates --
+    # it was a base dep until ADR-0005 moved it behind the extra so the fat worker
+    # image can omit FastAPI/uvicorn.
+    "freeagent[service]",
     "twentyquestions",
 ]
 
@@ -20,12 +24,17 @@ dev = [
 # half lives in apps/<app>/engine, so the uv workspace globs that, not apps/*.
 # A TypeScript apps/<app>/viewer sibling is governed by the root JS workspace
 # (pnpm-workspace.yaml) instead, keeping the two toolchains from colliding.
+#
+# An app may also ship an engine-free `manifest` sibling (ADR-0005): a tiny,
+# string-only distribution the slim episode service installs to register the
+# app's `freeagent.manifests` entry point without pulling in the engine.
 [tool.uv.workspace]
-members = ["packages/*", "apps/*/engine"]
+members = ["packages/*", "apps/*/engine", "apps/*/manifest"]
 
 [tool.uv.sources]
 freeagent = { workspace = true }
 twentyquestions = { workspace = true }
+twentyquestions-manifest = { workspace = true }
 
 [tool.ruff]
 line-length = 100

@@ -13,6 +13,7 @@ from .cli import (
     AGENT_FIELDS,
     ENVIRONMENT_FIELDS,
     LLM_AGENT_FIELDS,
+    MANIFEST_ENTRY_POINT_GROUP,
     NATS_URL_ENV_VAR,
     AppSpec,
     ConfigError,
@@ -22,6 +23,7 @@ from .cli import (
     EpisodeOutcome,
     EpisodePlan,
     EpisodeStatus,
+    ManifestSpec,
     ParquetLogOption,
     SettableConfig,
     UnknownAppError,
@@ -30,6 +32,8 @@ from .cli import (
     load_app,
     load_apps,
     load_config,
+    load_manifest_spec,
+    load_manifest_specs,
     make_plan,
     run_episode,
     start_episode,
@@ -60,6 +64,7 @@ from .logging import (
     configure_logging,
     log_level,
 )
+from .manifest import MANIFEST_VERSION, Manifest, resolved_version_for
 from .metadata import EpisodeMetadata
 from .names import fallback_episode_name
 from .recorder import (
@@ -70,6 +75,7 @@ from .recorder import (
     record_episode,
     write_parquet,
 )
+from .recruiter import build_manifests, enqueue_episode
 from .replayer import (
     Replayer,
     ReplayerError,
@@ -88,10 +94,19 @@ from .subjects import (
 from .transport import (
     MemoryTransport,
     NatsTransport,
+    PulledMessage,
+    PullSubscription,
     SealedStreamError,
     Subscription,
     Transport,
     TransportError,
+)
+from .workqueue import (
+    WORK_QUEUE_CONSUMER,
+    WORK_QUEUE_STREAM,
+    WORK_QUEUE_SUBJECT_PREFIX,
+    WORK_QUEUE_SUBJECTS,
+    work_subject,
 )
 
 __all__ = [
@@ -106,12 +121,18 @@ __all__ = [
     "LLM",
     "LLM_AGENT_FIELDS",
     "LOG_LEVEL_ENV_VAR",
+    "MANIFEST_ENTRY_POINT_GROUP",
+    "MANIFEST_VERSION",
     "MODEL_ENV_VAR",
     "NAME_PATTERN",
     "NATS_URL_ENV_VAR",
     "OPERATOR_ABORT_TYPE",
     "OPERATOR_SENDER",
     "PARQUET_SCHEMA",
+    "WORK_QUEUE_CONSUMER",
+    "WORK_QUEUE_STREAM",
+    "WORK_QUEUE_SUBJECTS",
+    "WORK_QUEUE_SUBJECT_PREFIX",
     "Agent",
     "AppSpec",
     "ConfigError",
@@ -130,11 +151,15 @@ __all__ = [
     "FakeLLM",
     "FakeLLMError",
     "LLMAgent",
+    "Manifest",
+    "ManifestSpec",
     "MemoryTransport",
     "MessageRecord",
     "ModelResolutionError",
     "NatsTransport",
     "ParquetLogOption",
+    "PullSubscription",
+    "PulledMessage",
     "RecorderError",
     "ReplayMessage",
     "Replayer",
@@ -146,15 +171,19 @@ __all__ = [
     "TransportError",
     "UnknownAppError",
     "abort_episode",
+    "build_manifests",
     "build_root_app",
     "configure_logging",
     "create_llm",
     "default_nats_url",
+    "enqueue_episode",
     "fallback_episode_name",
     "load_app",
     "load_apps",
     "load_config",
     "load_episode",
+    "load_manifest_spec",
+    "load_manifest_specs",
     "log_level",
     "make_plan",
     "make_record",
@@ -163,10 +192,12 @@ __all__ = [
     "record_episode",
     "replay_episode",
     "resolve_model",
+    "resolved_version_for",
     "run_episode",
     "start_episode",
     "stream_name",
     "subject_root",
     "validate_name",
+    "work_subject",
     "write_parquet",
 ]

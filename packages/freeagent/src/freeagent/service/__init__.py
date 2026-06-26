@@ -1,11 +1,14 @@
-"""The FreeAgent control service: a long-running REST API over running episodes.
+"""The FreeAgent control service: a long-running REST API over episodes.
 
 The persistent piece of the control plane. It hosts a small REST API under
-``/freeagent/<application>/<episode>`` and owns an in-memory registry of running
-episodes, launching them live through the supervised
-:func:`~freeagent.start_episode` handle or by replaying a recorded log, and
-aborting them gracefully through the operator protocol -- all observable over
-NATS exactly like a ``run``-launched episode.
+``/freeagent/<application>/<episode>`` and is **provision-only** (ADR-0005): a
+create *enqueues* an episode's manifest set onto the shared work queue (a pool of
+workers launches it) and the service holds **no** process handle. ``list``/
+``get`` read the durable JetStream record (ADR-0003); ``stop`` aborts gracefully
+through the operator protocol over the episode's ``.env`` subject -- all
+observable over NATS exactly like a ``run``-launched episode. Because it launches
+nothing in-process, the slim service image can ``create`` an episode for an app
+whose **engine it does not have installed**.
 
 Two layers, separately usable:
 

@@ -58,27 +58,36 @@ free-agent replay out/twentyquestions-fake.parquet --nats-url nats://localhost:4
 
 `replay` is a top-level command, a sibling of the per-application sub-commands, because the Parquet log is uniform across every application — one tool replays any app's episode and never needs app-specific code. Messages are published on their original subjects in `stream_seq` order; inter-message timing is preserved by default, scaled by `--speed` (e.g. `--speed 2.0`), or dropped entirely with `--as-fast-as-possible`. Start is the command; stop is Ctrl-C. Pause and seek live on the library's `Replayer` class for an embedding GUI to drive.
 
-## Episode service (the backend)
+## Episode service and the worker pool (the backend)
 
-The CLI launches one episode and blocks. The **episode service** is the long-running alternative: a small, **app-independent** REST API (plus a per-episode WebSocket feed) that creates, lists, observes, renames, deletes, and stops episodes on demand, driven over HTTP. It serves **no UI** and bundles no application ([ADR-0004](docs/decision-history/0004-app-independent-service.md)) — a UI is a separate process that calls it cross-origin (see [the viewer](#watching-a-game-in-the-browser)). An episode is a durable, named, **JetStream-resident** object ([ADR-0003](docs/decision-history/0003-the-atemporal-episode.md)): the service's source of truth is JetStream, not in-memory state, so a restart loses nothing.
+The CLI launches one episode and blocks. The **backend** is the long-running, scalable alternative ([ADR-0005](docs/decision-history/0005-the-worker-pool.md)), made of two app-agnostic process tiers plus NATS:
 
-The simplest way to run the backend is the **two-service Docker network** — NATS (internal) plus the service (the only published port). See [`docker/README.md`](docker/README.md):
+- **`free-agent serve`** — the **episode service**: a small, **app-independent** REST API (plus a per-episode WebSocket feed) that creates, lists, observes, renames, deletes, and stops episodes over HTTP. It serves **no UI** and bundles no application ([ADR-0004](docs/decision-history/0004-app-independent-service.md)) — a UI is a separate process that calls it cross-origin (see [the viewer](#watching-a-game-in-the-browser)). It is **provision-only**: `create` does not launch anything in the service process. It asks the recruiter to **enqueue** the episode's work (one *manifest* per role) onto a shared JetStream work queue and returns, holding no process handle. An episode is a durable, named, **JetStream-resident** object ([ADR-0003](docs/decision-history/0003-the-atemporal-episode.md)): the source of truth is JetStream, so a restart loses nothing.
+- **`free-agent work`** — a **worker**: a long-lived, app-agnostic supervisor that pulls a manifest off the work queue, forks one child process for that role, confirms it is up, acks, and supervises it at the OS level. Workers are stateless and identical; run as many as you like and the queue load-balances across them by spare capacity. The episode's lifecycle still runs environment-led over NATS exactly as for a CLI-launched episode — the worker only launches, reaps, and hard-kills stragglers.
+
+Because a manifest *references* engine code by import path rather than carrying it, the backend ships as **two images**: a **slim service** (library only — it launches nothing, so it needs no engine) and a **fat worker** (library + the app engines, which it imports to run a role).
+
+The simplest way to run the whole backend is the **Docker network** — NATS (internal), the service (the only published port), and a scalable pool of workers. See [`docker/README.md`](docker/README.md):
 
 ```sh
-docker compose -f docker/compose.yml up --build   # REST API on http://localhost:8000
+# NATS + service + 2 workers, all on one private network.
+docker compose -f docker/compose.yml up --build --scale worker=2   # REST API on http://localhost:8000
 ```
 
-Or run the service directly:
+Or run the tiers directly against a local NATS (`docker compose -f docker/nats/docker-compose.yml up -d`):
 
 ```sh
-free-agent serve        # REST + feed on 127.0.0.1:8000
+free-agent serve        # REST + feed on 127.0.0.1:8000 (provision-only)
+free-agent work         # a worker; start as many as you want, each pulls from the shared queue
 ```
+
+`create` enqueues an episode's manifests; the workers pull them and fork the children; the feed then shows the episode just as if the CLI had launched it.
 
 It binds **loopback with no auth** by default, consistent with the local NATS testbed (see [SECURITY.md](SECURITY.md)). The REST resources live under `/freeagent/<application>/<episode>`:
 
 | Method & path | Does |
 | --- | --- |
-| `POST   /freeagent/{application}/episodes` | create a **live** episode |
+| `POST   /freeagent/{application}/episodes` | provision an episode (enqueue its manifests for the worker pool) |
 | `GET    /freeagent/episodes` | list every episode (from the durable record) |
 | `GET    /freeagent/{application}/episodes/{episode}` | one episode's status |
 | `PATCH  /freeagent/{application}/episodes/{episode}` | rename (friendly name) |
@@ -91,7 +100,7 @@ It binds **loopback with no auth** by default, consistent with the local NATS te
 The create body carries the settable config — an optional `episode_id` and `name`, a `model` and `api_key` threaded into agent config, and per-component `config` blocks (the Host's `secret`, timeouts) — plus an optional `parquet_log` to record the run.
 
 ```sh
-# Create a live episode, then watch the service's view of it.
+# Provision an episode (its manifests go on the work queue), then watch the service's view of it.
 curl -s -XPOST localhost:8000/freeagent/twenty-questions/episodes \
   -H 'content-type: application/json' \
   -d '{"name":"otters","agents":{"host":{"config":{"secret":"otter"}}}}'
