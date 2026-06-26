@@ -13,6 +13,7 @@ service's view of the app.
 from __future__ import annotations
 
 import twentyquestions_manifest
+
 from twentyquestions.cli import APP
 
 
