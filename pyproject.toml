@@ -24,12 +24,17 @@ dev = [
 # half lives in apps/<app>/engine, so the uv workspace globs that, not apps/*.
 # A TypeScript apps/<app>/viewer sibling is governed by the root JS workspace
 # (pnpm-workspace.yaml) instead, keeping the two toolchains from colliding.
+#
+# An app may also ship an engine-free `manifest` sibling (ADR-0005): a tiny,
+# string-only distribution the slim episode service installs to register the
+# app's `freeagent.manifests` entry point without pulling in the engine.
 [tool.uv.workspace]
-members = ["packages/*", "apps/*/engine"]
+members = ["packages/*", "apps/*/engine", "apps/*/manifest"]
 
 [tool.uv.sources]
 freeagent = { workspace = true }
 twentyquestions = { workspace = true }
+twentyquestions-manifest = { workspace = true }
 
 [tool.ruff]
 line-length = 100

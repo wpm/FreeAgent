@@ -7,6 +7,7 @@ members = [
     "freeagent",
     "freeagent-workspace",
     "twentyquestions",
+    "twentyquestions-manifest",
 ]
 
 [[package]]
@@ -1752,6 +1753,7 @@ source = { editable = "apps/twentyquestions/engine" }
 dependencies = [
     { name = "freeagent" },
     { name = "pydantic" },
+    { name = "twentyquestions-manifest" },
     { name = "typer" },
 ]
 
@@ -1759,8 +1761,20 @@ dependencies = [
 requires-dist = [
     { name = "freeagent", editable = "packages/freeagent" },
     { name = "pydantic", specifier = ">=2.13.4" },
+    { name = "twentyquestions-manifest", editable = "apps/twentyquestions/manifest" },
     { name = "typer", specifier = ">=0.26.7" },
 ]
+
+[[package]]
+name = "twentyquestions-manifest"
+version = "1.0.0"
+source = { editable = "apps/twentyquestions/manifest" }
+dependencies = [
+    { name = "freeagent" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "freeagent", editable = "packages/freeagent" }]
 
 [[package]]
 name = "typer"
