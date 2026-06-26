@@ -46,6 +46,39 @@ def test_manifest_set_and_versions_roundtrip() -> None:
     assert decoded.resolved_versions == versions
 
 
+def test_api_key_is_redacted_from_manifest_set_on_the_wire() -> None:
+    """A per-episode api_key must never be persisted into stream metadata (#68)."""
+    manifest_set = [
+        {
+            "role": "agent",
+            "class": "pkg.mod:Alice",
+            "agent_id": "alice",
+            "config": {"model": "anthropic/claude", "api_key": "sk-secret", "secret": "keep"},
+        },
+        {"role": "environment", "class": "pkg.mod:Env", "roster": ["alice"]},
+    ]
+    meta = EpisodeMetadata(
+        app="demo", name="brave-otter", status="running", manifest_set=manifest_set
+    )
+    encoded = meta.to_stream_metadata()
+    # The secret must not appear anywhere in the durable string.
+    assert "sk-secret" not in encoded[KEY_MANIFEST_SET]
+    on_wire = json.loads(encoded[KEY_MANIFEST_SET])
+    assert "api_key" not in on_wire[0]["config"]
+    # Everything else in the config is preserved untouched.
+    assert on_wire[0]["config"] == {"model": "anthropic/claude", "secret": "keep"}
+    # The caller's manifest set is not mutated as a side effect.
+    assert manifest_set[0]["config"]["api_key"] == "sk-secret"
+
+
+def test_redaction_tolerates_manifests_without_a_config() -> None:
+    manifest_set = [{"role": "environment", "class": "pkg.mod:Env", "roster": ["alice"]}]
+    encoded = EpisodeMetadata(
+        app="demo", name="x", status="running", manifest_set=manifest_set
+    ).to_stream_metadata()
+    assert json.loads(encoded[KEY_MANIFEST_SET]) == manifest_set
+
+
 def test_decode_tolerates_missing_keys() -> None:
     decoded = EpisodeMetadata.from_stream_metadata(
         {"freeagent_app": "demo", "freeagent_name": "x", "freeagent_status": "ended"}

@@ -214,6 +214,20 @@ def test_llm_agent_model_resolution_uses_the_standard_chain(
     assert isinstance(agent.llm, FakeLLM)
 
 
+def test_llm_agent_passes_config_api_key_to_create_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_create_llm(**kwargs: Any) -> FakeLLM:
+        captured.update(kwargs)
+        return FakeLLM()
+
+    monkeypatch.setattr("freeagent.llm_agent.create_llm", fake_create_llm)
+    LLMAgent(ROOT, "speaker", {"model": "fake", "api_key": "sk-from-config"})
+    assert captured["api_key"] == "sk-from-config"
+
+
 async def test_decision_schema_is_the_pinned_speak_message_shape() -> None:
     assert set(Decision.model_fields) == {"speak", "message"}
     decision = Decision.model_validate({"speak": True, "message": "x"})
