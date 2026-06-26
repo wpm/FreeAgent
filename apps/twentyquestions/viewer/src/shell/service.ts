@@ -38,6 +38,33 @@ export class ServiceError extends Error {
   }
 }
 
+/**
+ * Build a `ServiceError` for a failed response, appending the server's `detail`
+ * when the body carries one.
+ *
+ * The service's error handlers (e.g. `UnknownAppError` in `freeagent/service/app.py`)
+ * return `{"detail": "..."}` -- the actual explanation. A status alone reads like a
+ * routing bug; the detail says *why*. We read the body defensively: a non-JSON or
+ * empty body, or one without a string `detail`, just yields the status-only message.
+ */
+async function serviceError(
+  method: string,
+  url: string,
+  response: Response,
+): Promise<ServiceError> {
+  let message = `${method} ${url} -> ${response.status}`;
+  try {
+    const body: unknown = await response.json();
+    const detail = (body as { detail?: unknown })?.detail;
+    if (typeof detail === "string" && detail) {
+      message += `: ${detail}`;
+    }
+  } catch {
+    // A non-JSON or empty body carries no detail; the status-only message stands.
+  }
+  return new ServiceError(response.status, message);
+}
+
 /** Issue a JSON request and decode the body, raising `ServiceError` on failure. */
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -45,7 +72,7 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
     headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
   });
   if (!response.ok) {
-    throw new ServiceError(response.status, `${init?.method ?? "GET"} ${url} -> ${response.status}`);
+    throw await serviceError(init?.method ?? "GET", url, response);
   }
   return (await response.json()) as T;
 }
@@ -100,7 +127,7 @@ export async function deleteEpisode(
   const url = `${trimBase(base)}/freeagent/${application}/episodes/${episodeId}`;
   const response = await fetch(url, { method: "DELETE" });
   if (!response.ok && response.status !== 204) {
-    throw new ServiceError(response.status, `DELETE ${url} -> ${response.status}`);
+    throw await serviceError("DELETE", url, response);
   }
 }
 

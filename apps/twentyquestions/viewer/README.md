@@ -18,7 +18,9 @@ The viewer is factored **generic-left / app-right** (ADR-0003):
   / `SettingsPanel.svelte` — connection URL, model, API key kept in browser local
   storage, light/dark theme), the generic left-pane episode list
   (`EpisodeList.svelte` — friendly names, live/sealed status, select, new,
-  rename, right-click-delete), and a right-pane plugin `registry.ts`.
+  rename, right-click-delete), a general-purpose toast stack (`toasts.svelte.ts`
+  / `ToastStack.svelte` — dismissible error notifications any skin can raise;
+  they persist until acknowledged), and a right-pane plugin `registry.ts`.
 - **`src/skins/twentyquestions/`** — the app skin registered as the right pane
   for `twenty-questions`: a feed view-model (`feed.svelte.ts`) and the
   presentation (`TwentyQuestions.svelte`) — the transcript, status/budget chips,

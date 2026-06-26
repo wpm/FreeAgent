@@ -13,6 +13,7 @@
   import type { PluginProps } from "../../shell/registry";
   import { createEpisode } from "../../shell/service";
   import { settings } from "../../shell/settings.svelte";
+  import { toasts } from "../../shell/toasts.svelte";
   import Transcript from "../../lib/Transcript.svelte";
   import ConnectionStatus from "../../lib/ConnectionStatus.svelte";
   import { FeedViewModel } from "./feed.svelte";
@@ -49,7 +50,6 @@
   let model = $state(settings.model);
   let name = $state("");
   let creating = $state(false);
-  let createError = $state<string | null>(null);
 
   // Keep the model field in step with settings until the operator edits it.
   $effect(() => {
@@ -59,7 +59,6 @@
   async function startGame() {
     if (!secret.trim() || creating) return;
     creating = true;
-    createError = null;
     try {
       const created = await createEpisode(settings.serviceUrl, APPLICATION, {
         name: name.trim() || undefined,
@@ -71,7 +70,7 @@
       name = "";
       onCreated(created);
     } catch (e) {
-      createError = e instanceof Error ? e.message : String(e);
+      toasts.add(e instanceof Error ? e.message : String(e));
     } finally {
       creating = false;
     }
@@ -101,9 +100,6 @@
           <span>Model</span>
           <input bind:value={model} placeholder="claude-haiku-4-5-20251001" autocomplete="off" />
         </label>
-        {#if createError}
-          <p class="error">{createError}</p>
-        {/if}
         <div class="actions">
           {#if composing}
             <button type="button" class="secondary" onclick={onCancelCompose}>Cancel</button>
@@ -282,11 +278,5 @@
     background: var(--surface);
     color: var(--muted);
     border-color: var(--border);
-  }
-
-  .error {
-    margin: 0;
-    font-size: 0.78rem;
-    color: #dc2626;
   }
 </style>

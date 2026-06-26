@@ -12,6 +12,7 @@
   import type { EpisodeView } from "./contract";
   import EpisodeList from "./shell/EpisodeList.svelte";
   import SettingsPanel from "./shell/SettingsPanel.svelte";
+  import ToastStack from "./shell/ToastStack.svelte";
   import { DEFAULT_APPLICATION, getPlugin } from "./shell/registry";
   import { settings } from "./shell/settings.svelte";
 
@@ -76,6 +77,9 @@
   {#if showSettings}
     <SettingsPanel onClose={() => (showSettings = false)} />
   {/if}
+
+  <!-- Shell-level toast stack: any pane raises errors here; they persist until dismissed. -->
+  <ToastStack />
 </div>
 
 <style>
