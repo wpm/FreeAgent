@@ -100,9 +100,11 @@ class LLM:
         model: str | None = None,
         *,
         configured: str | None = None,
+        api_key: str | None = None,
         telemetry: TelemetryCallback | None = None,
     ) -> None:
         self.model = resolve_model(model, configured)
+        self._api_key = api_key
         self._telemetry = telemetry
 
     async def complete(
@@ -141,6 +143,10 @@ class LLM:
         kwargs: dict[str, Any] = {}
         if schema is not None:
             kwargs["response_format"] = schema
+        # Omit api_key entirely when unset so litellm falls back to the
+        # provider env var -- the path local/CLI runs rely on (#68).
+        if self._api_key is not None:
+            kwargs["api_key"] = self._api_key
         response = await litellm.acompletion(model=self.model, messages=messages, **kwargs)
         content = response.choices[0].message.content  # type: ignore[union-attr,index]
         if not isinstance(content, str):
@@ -326,17 +332,19 @@ def create_llm(
     model: str | None = None,
     *,
     configured: str | None = None,
+    api_key: str | None = None,
     telemetry: TelemetryCallback | None = None,
 ) -> LLM:
     """Create the right client for a resolved model string.
 
     ``"fake"`` -> the shared-script :class:`FakeLLM`; ``"fake:<path>"`` -> a
     canned-file :class:`FakeLLM`; anything else -> the real litellm-backed
-    :class:`LLM`.
+    :class:`LLM`. ``api_key`` (the per-episode key the UI supplies, ADR-0005)
+    is handed to the real :class:`LLM`; the keyless fake paths ignore it.
     """
     resolved = resolve_model(model, configured)
     if resolved == "fake":
         return FakeLLM(shared=True, telemetry=telemetry)
     if resolved.startswith("fake:"):
         return FakeLLM(resolved[len("fake:") :], telemetry=telemetry)
-    return LLM(resolved, telemetry=telemetry)
+    return LLM(resolved, api_key=api_key, telemetry=telemetry)

@@ -245,3 +245,56 @@ async def test_telemetry_callback_receives_prompt_completion_and_timing() -> Non
     assert json.loads(record["response"]) == {"speak": True, "message": "yo"}
     assert record["schema"] == "Verdict"
     assert record["duration_s"] >= 0
+
+
+# ---------------------------------------------------------------------------
+# api_key threading into litellm.acompletion
+# ---------------------------------------------------------------------------
+
+
+class _FakeMessage:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakeChoice:
+    def __init__(self, content: str) -> None:
+        self.message = _FakeMessage(content)
+
+
+class _FakeResponse:
+    def __init__(self, content: str) -> None:
+        self.choices = [_FakeChoice(content)]
+
+
+@pytest.fixture
+def capture_acompletion(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Replace ``litellm.acompletion`` with a stub recording its kwargs."""
+    import litellm
+
+    calls: list[dict[str, Any]] = []
+
+    async def fake_acompletion(**kwargs: Any) -> _FakeResponse:
+        calls.append(kwargs)
+        return _FakeResponse("ok")
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    return calls
+
+
+async def test_config_api_key_reaches_litellm(
+    clean_env: pytest.MonkeyPatch, capture_acompletion: list[dict[str, Any]]
+) -> None:
+    llm = create_llm("anthropic/claude-haiku-4-5", api_key="sk-from-config")
+    assert await llm.complete("hi") == "ok"
+    assert capture_acompletion[0]["api_key"] == "sk-from-config"
+
+
+async def test_no_api_key_omits_the_kwarg_so_env_var_path_still_works(
+    clean_env: pytest.MonkeyPatch, capture_acompletion: list[dict[str, Any]]
+) -> None:
+    # No api_key supplied: litellm must fall back to the environment, so the
+    # kwarg is omitted entirely rather than passed as None.
+    llm = create_llm("anthropic/claude-haiku-4-5")
+    assert await llm.complete("hi") == "ok"
+    assert "api_key" not in capture_acompletion[0]

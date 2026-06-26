@@ -97,6 +97,7 @@ class LLMAgent(Agent):
         telemetry_on = bool(self.config.get("llm_telemetry", True))
         self.llm: LLM = create_llm(
             configured=self.config.get("model"),
+            api_key=self.config.get("api_key"),
             telemetry=self.log_event if telemetry_on else None,
         )
         prompt = self.config.get("system_prompt")

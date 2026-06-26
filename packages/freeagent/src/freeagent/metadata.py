@@ -23,6 +23,13 @@ from typing import Any
 #: server- or operator-set stream metadata.
 _PREFIX = "freeagent_"
 
+#: Manifest ``config`` keys that carry secrets and must never be persisted into
+#: the durable record (#68). They are delivered transiently to the live worker
+#: child off the work queue, but are stripped before the manifest set is written
+#: to stream metadata -- which is durable and echoed verbatim by the episode
+#: list/get/feed responses.
+_REDACTED_CONFIG_KEYS = frozenset({"api_key"})
+
 KEY_APP = _PREFIX + "app"
 KEY_NAME = _PREFIX + "name"
 KEY_STATUS = _PREFIX + "status"
@@ -87,7 +94,7 @@ class EpisodeMetadata:
         if self.created_at is not None:
             data[KEY_CREATED_AT] = self.created_at
         if self.manifest_set:
-            data[KEY_MANIFEST_SET] = json.dumps(self.manifest_set)
+            data[KEY_MANIFEST_SET] = json.dumps(_redact_manifest_set(self.manifest_set))
         if self.resolved_versions:
             data[KEY_RESOLVED_VERSIONS] = json.dumps(self.resolved_versions)
         return data
@@ -113,6 +120,28 @@ class EpisodeMetadata:
             manifest_set=_decode_json_list(metadata.get(KEY_MANIFEST_SET)),
             resolved_versions=_decode_json_dict(metadata.get(KEY_RESOLVED_VERSIONS)),
         )
+
+
+def _redact_manifest_set(manifest_set: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy *manifest_set* with secret config keys stripped (#68).
+
+    Returns a deep-enough copy -- the caller's manifests (and their configs) are
+    never mutated -- with :data:`_REDACTED_CONFIG_KEYS` removed from each
+    manifest's ``config``. A manifest with no ``config`` (or a non-dict one) is
+    passed through unchanged.
+    """
+    redacted: list[dict[str, Any]] = []
+    for manifest in manifest_set:
+        config = manifest.get("config")
+        if isinstance(config, dict) and _REDACTED_CONFIG_KEYS.intersection(config):
+            clean = dict(manifest)
+            clean["config"] = {
+                key: value for key, value in config.items() if key not in _REDACTED_CONFIG_KEYS
+            }
+            redacted.append(clean)
+        else:
+            redacted.append(manifest)
+    return redacted
 
 
 def _decode_json_list(value: str | None) -> list[dict[str, Any]]:
