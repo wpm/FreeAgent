@@ -22,9 +22,12 @@ WORKDIR /app
 # (ADR-0005), so the worker -- which forks episode children and serves no HTTP --
 # omits FastAPI/uvicorn. The engine `src` IS copied (unlike the service image,
 # which copies only the engine manifest) so the roles a manifest names import.
+# The engine depends on its `twentyquestions-manifest` sibling, so that source is
+# copied too for the workspace to resolve.
 COPY pyproject.toml uv.lock README.md ./
 COPY packages packages
 COPY apps/twentyquestions/engine apps/twentyquestions/engine
+COPY apps/twentyquestions/manifest apps/twentyquestions/manifest
 RUN uv sync --frozen --no-dev --package twentyquestions
 
 ENV PATH="/app/.venv/bin:$PATH"
