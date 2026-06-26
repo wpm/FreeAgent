@@ -326,6 +326,9 @@
     padding: 0.4rem 0.85rem;
     font-size: 0.75rem;
     color: #dc2626;
+    /* The banner now shows the full server message (often a long URL); wrap and
+       break it rather than overflowing the narrow left pane. */
+    word-break: break-word;
   }
 
   .menu {
