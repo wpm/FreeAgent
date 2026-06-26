@@ -14,6 +14,7 @@
   import type { EpisodeView } from "../contract";
   import { settings } from "./settings.svelte";
   import { deleteEpisode, listEpisodes, renameEpisode } from "./service";
+  import { toasts } from "./toasts.svelte";
 
   let {
     selectedId,
@@ -26,6 +27,9 @@
   } = $props();
 
   let episodes = $state<EpisodeView[]>([]);
+  // The polling/refresh error: a single inline banner. It must not spam a toast
+  // every poll, so the continuous "can't reach the service" state stays inline;
+  // discrete user actions (rename, delete) raise dismissible toasts instead.
   let error = $state<string | null>(null);
 
   // Inline-rename state: the id being edited and its working title.
@@ -68,7 +72,7 @@
       await renameEpisode(settings.serviceUrl, episode.application, episode.episode_id, { name });
       await refresh();
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      toasts.add(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -83,7 +87,7 @@
       await deleteEpisode(settings.serviceUrl, episode.application, episode.episode_id);
       await refresh();
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      toasts.add(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -111,7 +115,7 @@
   </header>
 
   {#if error}
-    <p class="error" title={error}>Cannot reach service</p>
+    <p class="error">{error}</p>
   {/if}
 
   <ul>
@@ -322,6 +326,9 @@
     padding: 0.4rem 0.85rem;
     font-size: 0.75rem;
     color: #dc2626;
+    /* The banner now shows the full server message (often a long URL); wrap and
+       break it rather than overflowing the narrow left pane. */
+    word-break: break-word;
   }
 
   .menu {
