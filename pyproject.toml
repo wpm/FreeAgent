@@ -9,6 +9,17 @@ dependencies = [
     "freeagent-worker",
 ]
 
+[project.scripts]
+start = "freeagent.start:start"
+stop = "freeagent.start:stop"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/freeagent"]
+
 [tool.uv.workspace]
 members = ["packages/*"]
 
