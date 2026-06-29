@@ -1,0 +1,45 @@
+[project]
+name = "freeagent"
+version = "0.1.0"
+description = "Real time multi-agent framework"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "freeagent-api",
+    "freeagent-worker",
+]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+freeagent-api = { workspace = true }
+freeagent-worker = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "httpx2>=0.1",
+    "mypy>=1.13",
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = [
+    "packages/freeagent-api/src",
+    "packages/freeagent-worker/src",
+]
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

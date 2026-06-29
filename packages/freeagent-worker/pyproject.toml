@@ -1,0 +1,19 @@
+[project]
+name = "freeagent-worker"
+version = "0.1.0"
+description = "Free Agent worker command line app"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.15",
+]
+
+[project.scripts]
+freeagent-worker = "freeagent.worker.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/freeagent"]

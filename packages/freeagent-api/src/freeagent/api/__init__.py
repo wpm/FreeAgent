@@ -1,0 +1,1 @@
+"""Free Agent FastAPI server."""

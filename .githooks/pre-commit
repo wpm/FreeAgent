@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Versioned pre-commit hook: format and lint the tree, fixing what's fixable.
+#
+# This lives in the repo so everyone who clones gets the same procedure. To
+# enable it, point git at this directory once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# It runs ruff's formatter and linter with auto-fix. If either changes a file,
+# the commit is aborted with the fixes left in the working tree -- review them
+# and `git add` before committing again. If nothing was fixed but lint errors
+# remain (not auto-fixable), the commit is likewise aborted.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Prefer `uv run` so the pinned ruff is used; fall back to a bare `ruff`.
+if command -v uv >/dev/null 2>&1; then
+    ruff() { uv run ruff "$@"; }
+elif command -v ruff >/dev/null 2>&1; then
+    ruff() { command ruff "$@"; }
+else
+    echo "pre-commit: ruff not found (install it, or install uv)" >&2
+    exit 1
+fi
+
+before="$(git diff --name-only)"
+
+echo "pre-commit: ruff format"
+ruff format .
+
+echo "pre-commit: ruff check --fix"
+# Don't let a fixable-but-unfixed finding abort before we report; capture status.
+lint_status=0
+ruff check --fix . || lint_status=$?
+
+after="$(git diff --name-only)"
+
+if [ "$before" != "$after" ]; then
+    echo >&2
+    echo "pre-commit: formatting/lint fixes were applied. Review and re-stage:" >&2
+    git --no-pager diff --name-only >&2
+    exit 1
+fi
+
+if [ "$lint_status" -ne 0 ]; then
+    echo >&2
+    echo "pre-commit: lint errors remain that ruff can't fix automatically." >&2
+    exit "$lint_status"
+fi
+
+echo "pre-commit: clean"
