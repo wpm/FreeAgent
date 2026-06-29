@@ -468,9 +468,13 @@ class _NatsSubscription:
 class _NatsPullSubscription:
     """Wraps nats-py's ``PullSubscription`` as a :class:`PullSubscription`.
 
-    The one behavioural shim is ``fetch``: nats-py raises ``TimeoutError`` when a
-    batch window elapses with no message; the worker's loop wants that to be an
-    ordinary empty poll, so we translate it into an empty list.
+    The one behavioural shim is ``fetch``: nats-py raises a timeout when a batch
+    window elapses with no message; the worker's loop wants that to be an ordinary
+    empty poll, so we translate it into an empty list. nats-py raises *two*
+    different timeout types here -- the ``batch == 1`` path raises
+    ``nats.errors.TimeoutError`` while the batched ``_fetch_n`` path raises stdlib
+    ``asyncio.TimeoutError`` -- so we must catch both, or an idle worker pulling a
+    batch crashes instead of looping.
     """
 
     def __init__(self, inner: object) -> None:
@@ -479,7 +483,7 @@ class _NatsPullSubscription:
     async def fetch(self, batch: int, timeout: float) -> Sequence[PulledMessage]:  # noqa: ASYNC109
         try:
             msgs = await self._inner.fetch(batch, timeout=timeout)  # type: ignore[attr-defined]
-        except NatsTimeoutError:
+        except (NatsTimeoutError, TimeoutError):
             return []
         return list(msgs)
 
