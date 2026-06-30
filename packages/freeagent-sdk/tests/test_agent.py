@@ -6,6 +6,7 @@ fake NATS client, so no live server is required.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 
 import pytest
@@ -69,8 +70,24 @@ class FakeMsg:
         self.data = data
 
 
+class RecordingAgent(Agent):
+    """A concrete agent whose process() records the messages it handles."""
+
+    def __init__(self, name: str, *subjects: str) -> None:
+        super().__init__(name, *subjects)
+        self.processed: list[Message] = []
+
+    async def process(self, message: Message) -> None:
+        self.processed.append(message)
+
+
+def test_agent_is_abstract() -> None:
+    with pytest.raises(TypeError):
+        Agent("a", "subject")  # type: ignore[abstract]
+
+
 async def test_callback_decodes_payload_onto_queue() -> None:
-    agent = Agent("worker", "jobs")
+    agent = RecordingAgent("worker", "jobs")
     await agent.callback(FakeMsg(b'{"type": "PERCEPTION"}'))  # type: ignore[arg-type]
 
     assert agent.queue.qsize() == 1
@@ -79,16 +96,56 @@ async def test_callback_decodes_payload_onto_queue() -> None:
 
 
 async def test_callback_rejects_invalid_payload() -> None:
-    agent = Agent("worker", "jobs")
+    agent = RecordingAgent("worker", "jobs")
     with pytest.raises(ValueError):
         await agent.callback(FakeMsg(b'{"type": "NONSENSE"}'))  # type: ignore[arg-type]
     assert agent.queue.empty()
 
 
-async def test_start_connects_and_subscribes(
+async def test_run_processes_queued_messages_in_order() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    sent = [Message(type=t) for t in (MessageType.PERCEPTION, MessageType.THOUGHT)]
+    for message in sent:
+        agent.queue.put_nowait(message)
+
+    task = asyncio.create_task(agent.run())
+    await agent.queue.join()  # wait until every queued message is processed
+    task.cancel()
+
+    assert agent.processed == sent
+
+
+async def test_run_is_cancellable() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    task = asyncio.create_task(agent.run())
+
+    # With an empty queue the loop is parked on queue.get(); cancelling ends it.
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_run_marks_task_done_even_when_process_raises() -> None:
+    class Boom(Agent):
+        async def process(self, message: Message) -> None:
+            raise ValueError("boom")
+
+    agent = Boom("worker", "jobs")
+    agent.queue.put_nowait(Message(type=MessageType.EVENT))
+
+    task = asyncio.create_task(agent.run())
+    # run() re-raises out of the loop, but task_done must still have fired so
+    # join() does not hang.
+    with pytest.raises(ValueError, match="boom"):
+        await task
+    await asyncio.wait_for(agent.queue.join(), timeout=1)
+
+
+async def test_start_connects_subscribes_and_launches_run_loop(
     fake_connect: Callable[[], FakeClient],
 ) -> None:
-    agent = Agent("worker", "jobs", "events")
+    agent = RecordingAgent("worker", "jobs", "events")
     await agent.start()
 
     client = fake_connect()
@@ -99,23 +156,49 @@ async def test_start_connects_and_subscribes(
         assert sub.queue == "worker"
         assert sub.cb == agent.callback
 
-
-async def test_stop_unsubscribes_and_disconnects(
-    fake_connect: Callable[[], FakeClient],
-) -> None:
-    agent = Agent("worker", "jobs", "events")
-    await agent.start()
-    client = fake_connect()
+    # start() launches the run loop as a background task that is still running.
+    assert agent.task is not None
+    assert not agent.task.done()
 
     await agent.stop()
 
+
+async def test_stop_cancels_run_loop_unsubscribes_and_disconnects(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    agent = RecordingAgent("worker", "jobs", "events")
+    await agent.start()
+    client = fake_connect()
+    task = agent.task
+    assert task is not None
+
+    await agent.stop()
+
+    # The run loop is stopped and its handle cleared.
+    assert task.cancelled()
+    assert agent.task is None
+    # NATS is torn down.
     assert all(s.unsubscribed for s in client.subscriptions)
     assert client.closed is True
     assert agent.subscriptions == []
     assert agent.client is None
 
 
+async def test_stop_drains_a_started_agents_messages() -> None:
+    # End to end: a message delivered via callback is processed by the run loop
+    # that start() launches, then stop() shuts everything down.
+    agent = RecordingAgent("worker")
+    agent.task = asyncio.create_task(agent.run())
+    await agent.callback(FakeMsg(b'{"type": "EVENT"}'))  # type: ignore[arg-type]
+
+    await agent.queue.join()
+    assert agent.processed == [Message(type=MessageType.EVENT)]
+
+    await agent.stop()
+    assert agent.task is None
+
+
 async def test_stop_without_start_is_safe() -> None:
-    agent = Agent("worker", "jobs")
-    # Never started: no client, no subscriptions. stop() must not raise.
+    agent = RecordingAgent("worker", "jobs")
+    # Never started: no task, no client, no subscriptions. stop() must not raise.
     await agent.stop()
