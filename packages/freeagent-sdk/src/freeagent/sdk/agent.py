@@ -11,7 +11,6 @@ import asyncio
 from abc import ABC, abstractmethod
 from asyncio import Queue, Task
 from contextlib import suppress
-from enum import StrEnum
 from typing import final
 
 import nats
@@ -20,15 +19,11 @@ from nats.aio.msg import Msg
 from nats.aio.subscription import Subscription
 from pydantic import BaseModel
 
-
-class MessageType(StrEnum):
-    PERCEPTION = "PERCEPTION"
-    THOUGHT = "THOUGHT"
-    STOP = "STOP"
+STOP_AGENT = "STOP"
 
 
 class Message(BaseModel):
-    type: MessageType
+    type: str
 
 
 class Agent(ABC):
@@ -105,7 +100,7 @@ class Agent(ABC):
         while True:
             message = await self.queue.get()
             try:
-                if message.type == MessageType.STOP:
+                if message.type == STOP_AGENT:
                     break
                 await self.process(message)
             finally:

@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 from freeagent.sdk import Agent
-from freeagent.sdk.agent import Message, MessageType
+from freeagent.sdk.agent import STOP_AGENT, Message
 from nats.aio.msg import Msg
 
 Handler = Callable[[Msg], Awaitable[None]]
@@ -26,7 +26,7 @@ class FakeSubscription:
         self.cb = cb
         self.unsubscribed = False
 
-    async def unsubscribe(self, limit: int = 0) -> None:
+    async def unsubscribe(self) -> None:
         self.unsubscribed = True
 
 
@@ -54,7 +54,7 @@ def fake_connect(monkeypatch: pytest.MonkeyPatch) -> Callable[[], FakeClient]:
     """Patch nats.connect to hand out a FakeClient, and expose the latest one."""
     created: list[FakeClient] = []
 
-    async def _connect(servers: object, **options: object) -> FakeClient:
+    async def _connect(_, **__) -> FakeClient:
         client = FakeClient()
         created.append(client)
         return client
@@ -98,14 +98,7 @@ async def test_callback_decodes_payload_onto_queue() -> None:
 
     assert agent.queue.qsize() == 1
     message = agent.queue.get_nowait()
-    assert message == Message(type=MessageType.PERCEPTION)
-
-
-async def test_callback_rejects_invalid_payload() -> None:
-    agent = RecordingAgent("worker", "jobs")
-    with pytest.raises(ValueError):
-        await agent.callback(FakeMsg(b'{"type": "NONSENSE"}'))  # type: ignore[arg-type]
-    assert agent.queue.empty()
+    assert message == Message(type="PERCEPTION")
 
 
 async def test_run_loop_processes_queued_messages_in_order(
@@ -113,7 +106,7 @@ async def test_run_loop_processes_queued_messages_in_order(
 ) -> None:
     agent = RecordingAgent("worker", "jobs")
     await agent.start()
-    sent = [Message(type=t) for t in (MessageType.PERCEPTION, MessageType.THOUGHT)]
+    sent = [Message(type=t) for t in ("PERCEPTION", "THOUGHT")]
     for message in sent:
         agent.queue.put_nowait(message)
 
@@ -148,11 +141,11 @@ async def test_stop_message_is_not_processed_before_a_real_one(
     # A message ahead of STOP is processed; STOP halts the loop after it.
     agent = RecordingAgent("worker", "jobs")
     await agent.start()
-    agent.queue.put_nowait(Message(type=MessageType.PERCEPTION))
-    agent.queue.put_nowait(Message(type=MessageType.STOP))
+    agent.queue.put_nowait(Message(type="PERCEPTION"))
+    agent.queue.put_nowait(Message(type=STOP_AGENT))
 
     await asyncio.wait_for(_until(lambda: agent.task is None), timeout=1)
-    assert agent.processed == [Message(type=MessageType.PERCEPTION)]
+    assert agent.processed == [Message(type="PERCEPTION")]
 
 
 async def test_stop_path_is_final_and_cannot_be_overridden() -> None:
@@ -213,7 +206,7 @@ async def test_started_agent_processes_a_delivered_message(
     await agent.callback(FakeMsg(b'{"type": "THOUGHT"}'))  # type: ignore[arg-type]
 
     await agent.queue.join()
-    assert agent.processed == [Message(type=MessageType.THOUGHT)]
+    assert agent.processed == [Message(type="THOUGHT")]
 
     await agent.stop()
     assert agent.task is None
@@ -229,7 +222,7 @@ async def test_run_loop_marks_task_done_even_when_process_raises(
     agent = Boom("worker", "jobs")
     await agent.start()
     assert agent.task is not None
-    agent.queue.put_nowait(Message(type=MessageType.PERCEPTION))
+    agent.queue.put_nowait(Message(type="PERCEPTION"))
 
     # The loop task fails out, but task_done must still have fired so a join()
     # does not hang.
