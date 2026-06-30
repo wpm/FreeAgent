@@ -7,15 +7,27 @@ connecting to NATS and subscribing to a set of subjects. Subclasses implement
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from asyncio import Queue
+from enum import StrEnum
 
 import nats
 from nats.aio.client import Client
 from nats.aio.msg import Msg
 from nats.aio.subscription import Subscription
+from pydantic import BaseModel
 
 
-class Agent(ABC):
+class MessageType(StrEnum):
+    PERCEPTION = "PERCEPTION"
+    THOUGHT = "THOUGHT"
+    EVENT = "EVENT"
+
+
+class Message(BaseModel):
+    type: MessageType
+
+
+class Agent:
     """An independent process in a Free Agent application.
 
     Subclass it and override :meth:`callback` to handle incoming messages.
@@ -37,33 +49,30 @@ class Agent(ABC):
         self.name = name
         self.subjects = subjects
         self.servers = servers
-        self._client: Client | None = None
-        self._subscriptions: list[Subscription] = []
+        self.client: Client | None = None
+        self.subscriptions: list[Subscription] = []
+        self.queue = Queue[Message]()
 
     async def start(self) -> None:
         """Connect to NATS and subscribe to the agent's subjects."""
         client = await nats.connect(self.servers)
-        self._client = client
+        self.client = client
         for subject in self.subjects:
             subscription = await client.subscribe(subject, queue=self.name, cb=self.callback)
-            self._subscriptions.append(subscription)
+            self.subscriptions.append(subscription)
 
     async def stop(self) -> None:
         """Unsubscribe from the subjects and disconnect from NATS."""
-        for subscription in self._subscriptions:
+        for subscription in self.subscriptions:
             await subscription.unsubscribe()
-        self._subscriptions.clear()
-        if self._client is not None:
-            await self._client.close()
-            self._client = None
+        self.subscriptions.clear()
+        if self.client is not None:
+            await self.client.close()
+            self.client = None
 
-    @abstractmethod
     async def callback(self, message: Msg) -> None:
-        """Handle a message delivered to one of the agent's subjects.
-
-        Subclasses override this. The default raises, so an agent that forgets
-        to implement it fails loudly.
+        """Decode a NATS message into a :class:`Message` and enqueue it.
 
         :param message: The NATS message that arrived on a subscribed subject.
         """
-        raise NotImplementedError
+        await self.queue.put(Message.model_validate_json(message.data))

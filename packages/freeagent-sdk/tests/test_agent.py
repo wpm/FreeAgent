@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 from freeagent.sdk import Agent
+from freeagent.sdk.agent import Message, MessageType
 from nats.aio.msg import Msg
 
 Handler = Callable[[Msg], Awaitable[None]]
@@ -61,37 +62,33 @@ def fake_connect(monkeypatch: pytest.MonkeyPatch) -> Callable[[], FakeClient]:
     return lambda: created[-1]
 
 
-class Echo(Agent):
-    """A concrete agent that records the messages it receives."""
+class FakeMsg:
+    """A stand-in for nats.aio.msg.Msg carrying a raw payload."""
 
-    def __init__(self, name: str, *subjects: str) -> None:
-        super().__init__(name, *subjects)
-        self.received: list[Msg] = []
-
-    async def callback(self, message: Msg) -> None:
-        self.received.append(message)
+    def __init__(self, data: bytes) -> None:
+        self.data = data
 
 
-def test_agent_is_abstract() -> None:
-    with pytest.raises(TypeError):
-        Agent("a", "subject")  # type: ignore[abstract]
+async def test_callback_decodes_payload_onto_queue() -> None:
+    agent = Agent("worker", "jobs")
+    await agent.callback(FakeMsg(b'{"type": "PERCEPTION"}'))  # type: ignore[arg-type]
+
+    assert agent.queue.qsize() == 1
+    message = agent.queue.get_nowait()
+    assert message == Message(type=MessageType.PERCEPTION)
 
 
-async def test_default_callback_raises() -> None:
-    # A subclass that delegates to the base callback gets NotImplementedError.
-    class Lazy(Agent):
-        async def callback(self, message: Msg) -> None:
-            await super().callback(message)
-
-    agent = Lazy("lazy", "subject")
-    with pytest.raises(NotImplementedError):
-        await agent.callback(None)  # type: ignore[arg-type]
+async def test_callback_rejects_invalid_payload() -> None:
+    agent = Agent("worker", "jobs")
+    with pytest.raises(ValueError):
+        await agent.callback(FakeMsg(b'{"type": "NONSENSE"}'))  # type: ignore[arg-type]
+    assert agent.queue.empty()
 
 
 async def test_start_connects_and_subscribes(
     fake_connect: Callable[[], FakeClient],
 ) -> None:
-    agent = Echo("worker", "jobs", "events")
+    agent = Agent("worker", "jobs", "events")
     await agent.start()
 
     client = fake_connect()
@@ -106,7 +103,7 @@ async def test_start_connects_and_subscribes(
 async def test_stop_unsubscribes_and_disconnects(
     fake_connect: Callable[[], FakeClient],
 ) -> None:
-    agent = Echo("worker", "jobs", "events")
+    agent = Agent("worker", "jobs", "events")
     await agent.start()
     client = fake_connect()
 
@@ -114,11 +111,11 @@ async def test_stop_unsubscribes_and_disconnects(
 
     assert all(s.unsubscribed for s in client.subscriptions)
     assert client.closed is True
-    assert agent._subscriptions == []
-    assert agent._client is None
+    assert agent.subscriptions == []
+    assert agent.client is None
 
 
 async def test_stop_without_start_is_safe() -> None:
-    agent = Echo("worker", "jobs")
+    agent = Agent("worker", "jobs")
     # Never started: no client, no subscriptions. stop() must not raise.
     await agent.stop()
