@@ -50,21 +50,23 @@ def stop() -> None:
 
 
 def reformat() -> None:
-    """Reformat docstrings across the repo with docformatter.
+    """Format and lint-fix the repo: docformatter, then ruff format, then ruff check --fix.
 
     Runs docformatter recursively over the source trees only (not the repo root), since
     docformatter's own dir walk doesn't prune hidden/cache directories and aborts the entire walk
-    the moment it meets one, rather than just skipping it.
+    the moment it meets one, rather than just skipping it. Exits with the first nonzero return code,
+    if any, after all three tools have run.
     """
-    returncode = subprocess.run(
+    source_dirs = [str(REPO_ROOT / "src"), str(REPO_ROOT / "packages")]
+    docformatter_code = subprocess.run(
         [
             "docformatter",
             "--in-place",
             "--recursive",
             "--wrap-summaries=100",
             "--wrap-descriptions=100",
-            str(REPO_ROOT / "src"),
-            str(REPO_ROOT / "packages"),
+            "--force-wrap",
+            *source_dirs,
             "--exclude",
             ".mypy_cache",
             ".ruff_cache",
@@ -72,7 +74,13 @@ def reformat() -> None:
             "__pycache__",
         ]
     ).returncode
-    sys.exit(returncode)
+    # docformatter exits 3 when it rewrites files; that's not a failure here.
+    docformatter_code = 0 if docformatter_code == 3 else docformatter_code
+
+    ruff_format_code = subprocess.run(["ruff", "format", *source_dirs]).returncode
+    ruff_check_code = subprocess.run(["ruff", "check", "--fix", *source_dirs]).returncode
+
+    sys.exit(docformatter_code or ruff_format_code or ruff_check_code)
 
 
 if __name__ == "__main__":

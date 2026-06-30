@@ -14,32 +14,20 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-# Prefer `uv run` so the pinned tools are used; fall back to bare executables.
-if command -v uv >/dev/null 2>&1; then
-    ruff() { uv run ruff "$@"; }
-    reformat() { uv run reformat; }
-elif command -v ruff >/dev/null 2>&1; then
-    ruff() { command ruff "$@"; }
-    reformat() { command docformatter --in-place --recursive --wrap-summaries=100 --wrap-descriptions=100 src packages --exclude .mypy_cache .ruff_cache .pytest_cache __pycache__; }
-else
-    echo "pre-commit: ruff not found (install it, or install uv)" >&2
+# `reformat` runs docformatter, ruff format, and ruff check --fix in one go.
+if ! command -v uv >/dev/null 2>&1; then
+    echo "pre-commit: uv not found (install it to run reformat)" >&2
     exit 1
 fi
+reformat() { uv run reformat; }
 
 before="$(git diff --name-only)"
 
-echo "pre-commit: docformatter"
-# docformatter exits 3 when it rewrites files; the before/after diff below is
-# what actually gates the commit, so don't let that abort the run here.
-reformat || true
-
-echo "pre-commit: ruff format"
-ruff format .
-
-echo "pre-commit: ruff check --fix"
-# Don't let a fixable-but-unfixed finding abort before we report; capture status.
+echo "pre-commit: reformat (docformatter, ruff format, ruff check --fix)"
+# Don't let a fixable-but-unfixed lint finding abort before we report; the
+# before/after diff below is what actually gates the commit.
 lint_status=0
-ruff check --fix . || lint_status=$?
+reformat || lint_status=$?
 
 after="$(git diff --name-only)"
 
