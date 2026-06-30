@@ -1,8 +1,8 @@
 """Base class for Free Agent agent processes.
 
-An agent is an independent process that joins a Free Agent application by
-connecting to NATS and subscribing to a set of subjects. Subclasses implement
-:meth:`callback` to handle the messages that arrive on those subjects.
+An agent is an independent process that joins a Free Agent application by connecting to NATS and
+subscribing to a set of subjects. Subclasses implement :meth:`callback` to handle the messages that
+arrive on those subjects.
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ from nats.aio.msg import Msg
 from nats.aio.subscription import Subscription
 from pydantic import BaseModel
 
+CONTROL_SUBJECT = "control"
+START_AGENT = "START"
 STOP_AGENT = "STOP"
 
 
@@ -34,81 +36,115 @@ class Agent(ABC):
     decoded messages onto :attr:`queue`), and launches a run loop that drains
     the queue into :meth:`process`.
 
+    In addition to specified subjects, all agents subscribe to a `CONTROL_SUBJECT`
+    on which they receive requests from the environment such as lifecycle
+    commands. All agents support `START_AGENT` and `STOP_AGENT` messages.
+    `START_AGENT` starts the agent's message queue and has to be receive before the agent will do
+    anything else.
+    `STOP_AGENT` shuts down all activity.
+    Both of these messages are idempotent.
+    Derived classes may handle other control messages.
+
     The agent shuts down either when
     :meth:`stop` is called or when a STOP message reaches the queue; both paths
     unsubscribe and disconnect. The loop and shutdown sequence are final, so
     subclasses cannot change how the agent stops.
 
-    :param name: Identifier for this agent, used as the queue group when
-        subscribing so multiple instances load-balance.
+    :param episode_root: The root NATS subject for this agent's episode.
+    :param name: Identifier for this agent
     :param subjects: NATS subjects this agent subscribes to.
     :param servers: NATS server URL(s) to connect to.
     """
 
     def __init__(
         self,
+        episode_root: str,
         name: str,
         *subjects: str,
         servers: str | list[str] = "nats://localhost:4222",
     ) -> None:
+        self.episode_root = episode_root
         self.name = name
-        self.subjects = subjects
+        if CONTROL_SUBJECT in subjects:
+            raise ValueError(f"{CONTROL_SUBJECT} is a reserved subject.")
+        self.subjects = [
+            f"{episode_root}.{name}.{subject}" for subject in list(subjects) + [CONTROL_SUBJECT]
+        ]
         self.servers = servers
         self.client: Client | None = None
         self.subscriptions: list[Subscription] = []
-        self.queue = Queue[Message]()
+        self.queue: Queue[tuple[Message, bool]] = Queue()
         self.task: Task[None] | None = None
 
     @final
-    async def start(self) -> None:
+    async def connect(self) -> None:
         """Connect to NATS, subscribe to the subjects, and start the run loop."""
         client = await nats.connect(self.servers)
         self.client = client
         for subject in self.subjects:
             subscription = await client.subscribe(subject, queue=self.name, cb=self.callback)
             self.subscriptions.append(subscription)
-        self.task = asyncio.create_task(self.__run())
 
     @final
-    async def stop(self) -> None:
+    async def close(self) -> None:
         """Stop the run loop, unsubscribe from the subjects, and disconnect.
 
-        Safe to call more than once and from outside the loop. A STOP message on
-        the queue triggers the same teardown from within the loop.
+        Safe to call more than once and from outside the loop. A STOP message on the queue triggers
+        the same teardown from within the loop.
         """
-        if self.task is not None and self.task is not asyncio.current_task():
-            self.task.cancel()
+        task = self.task
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
             with suppress(asyncio.CancelledError):
-                await self.task
-        await self.__teardown()
+                await task
+        await self.__stop()
 
-    async def callback(self, message: Msg) -> None:
+    async def callback(self, msg: Msg) -> None:
         """Decode a NATS message into a :class:`Message` and enqueue it.
 
-        :param message: The NATS message that arrived on a subscribed subject.
+        :param msg: The NATS message that arrived on a subscribed subject.
         """
-        await self.queue.put(Message.model_validate_json(message.data))
+        is_control = msg.subject == CONTROL_SUBJECT
+        message = Message.model_validate_json(msg.data)
+        match is_control, message.type:
+            case True, msg_type if msg_type == START_AGENT:
+                self.task = asyncio.create_task(self.__start())
+            case True, msg_type if msg_type == STOP_AGENT:
+                await self.__stop()
+            case _:
+                await self.queue.put((message, is_control))
+
+    @abstractmethod
+    async def process(self, message: Message, is_control: bool) -> None:
+        """Handle one decoded message off the queue.
+
+        Subclasses implement this to give the agent its behaviour.
+
+        :param message: The message pulled from :attr:`queue`.
+        :param is_control: is this a control message from the environment?
+        """
+        raise NotImplementedError
 
     @final
-    async def __run(self) -> None:
+    async def __start(self) -> None:
         """Drain the queue into :meth:`process` until a STOP message arrives.
 
-        A STOP message halts the loop the moment it is dequeued (messages ahead
-        of it are still processed) and tears the agent down. This shutdown path
+        A STOP control message from the environment halts the loop the moment it is dequeued
+        (messages ahead of it are still processed) and tears the agent down. This shutdown path
         cannot be overridden by subclasses.
         """
         while True:
-            message = await self.queue.get()
+            message, is_control = await self.queue.get()
             try:
-                if message.type == STOP_AGENT:
+                if is_control and message.type == STOP_AGENT:
                     break
-                await self.process(message)
+                await self.process(message, is_control)
             finally:
                 self.queue.task_done()
-        await self.__teardown()
+        await self.__stop()
 
     @final
-    async def __teardown(self) -> None:
+    async def __stop(self) -> None:
         """Unsubscribe from every subject and disconnect from NATS.
 
         Idempotent: clears the task handle, subscriptions, and client so it can
@@ -121,13 +157,3 @@ class Agent(ABC):
         if self.client is not None:
             await self.client.close()
             self.client = None
-
-    @abstractmethod
-    async def process(self, message: Message) -> None:
-        """Handle one decoded message off the queue.
-
-        Subclasses implement this to give the agent its behaviour.
-
-        :param message: The message pulled from :attr:`queue`.
-        """
-        raise NotImplementedError

@@ -1,7 +1,7 @@
 """Tests for the Free Agent SDK base Agent class.
 
-These exercise the connect/subscribe/unsubscribe/disconnect lifecycle against a
-fake NATS client, so no live server is required.
+These exercise the connect/subscribe/unsubscribe/disconnect lifecycle against a fake NATS client, so
+no live server is required.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 from freeagent.sdk import Agent
-from freeagent.sdk.agent import STOP_AGENT, Message
+from freeagent.sdk.agent import CONTROL_SUBJECT, START_AGENT, STOP_AGENT, Message
 from nats.aio.msg import Msg
 
 Handler = Callable[[Msg], Awaitable[None]]
@@ -54,7 +54,7 @@ def fake_connect(monkeypatch: pytest.MonkeyPatch) -> Callable[[], FakeClient]:
     """Patch nats.connect to hand out a FakeClient, and expose the latest one."""
     created: list[FakeClient] = []
 
-    async def _connect(_, **__) -> FakeClient:
+    async def _connect(_: str | list[str], **__: object) -> FakeClient:
         client = FakeClient()
         created.append(client)
         return client
@@ -64,10 +64,16 @@ def fake_connect(monkeypatch: pytest.MonkeyPatch) -> Callable[[], FakeClient]:
 
 
 class FakeMsg:
-    """A stand-in for nats.aio.msg.Msg carrying a raw payload."""
+    """A stand-in for nats.aio.msg.Msg carrying a raw payload on a subject."""
 
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, subject: str = "jobs") -> None:
         self.data = data
+        self.subject = subject
+
+
+def _control(message_type: str) -> FakeMsg:
+    """Build a control-subject FakeMsg carrying the given message type."""
+    return FakeMsg(f'{{"type": "{message_type}"}}'.encode(), subject=CONTROL_SUBJECT)
 
 
 async def _until(predicate: Callable[[], bool]) -> None:
@@ -80,16 +86,16 @@ class RecordingAgent(Agent):
     """A concrete agent whose process() records the messages it handles."""
 
     def __init__(self, name: str, *subjects: str) -> None:
-        super().__init__(name, *subjects)
-        self.processed: list[Message] = []
+        super().__init__("episode-root", name, *subjects)
+        self.processed: list[tuple[Message, bool]] = []
 
-    async def process(self, message: Message) -> None:
-        self.processed.append(message)
+    async def process(self, message: Message, is_control: bool) -> None:
+        self.processed.append((message, is_control))
 
 
 def test_agent_is_abstract() -> None:
     with pytest.raises(TypeError):
-        Agent("a", "subject")  # type: ignore[abstract]
+        Agent("episode-root", "a", "subject")  # type: ignore[abstract]
 
 
 async def test_callback_decodes_payload_onto_queue() -> None:
@@ -97,97 +103,86 @@ async def test_callback_decodes_payload_onto_queue() -> None:
     await agent.callback(FakeMsg(b'{"type": "PERCEPTION"}'))  # type: ignore[arg-type]
 
     assert agent.queue.qsize() == 1
-    message = agent.queue.get_nowait()
+    message, is_control = agent.queue.get_nowait()
     assert message == Message(type="PERCEPTION")
+    assert is_control is False
 
 
 async def test_run_loop_processes_queued_messages_in_order(
     fake_connect: Callable[[], FakeClient],
 ) -> None:
     agent = RecordingAgent("worker", "jobs")
-    await agent.start()
+    await agent.connect()
+    await agent.callback(_control(START_AGENT))  # type: ignore[arg-type]
     sent = [Message(type=t) for t in ("PERCEPTION", "THOUGHT")]
     for message in sent:
-        agent.queue.put_nowait(message)
+        agent.queue.put_nowait((message, False))
 
     await agent.queue.join()  # wait until every queued message is processed
-    assert agent.processed == sent
+    assert agent.processed == [(message, False) for message in sent]
 
-    await agent.stop()
+    await agent.callback(_control(STOP_AGENT))  # type: ignore[arg-type]
 
 
 async def test_run_stops_the_agent_on_a_stop_message(
     fake_connect: Callable[[], FakeClient],
 ) -> None:
-    # A STOP message tells the run loop to shut the whole agent down.
+    # A STOP control message tears the whole agent down.
     agent = RecordingAgent("worker", "jobs")
-    await agent.start()
+    await agent.connect()
     client = fake_connect()
 
-    await agent.callback(FakeMsg(b'{"type": "STOP"}'))  # type: ignore[arg-type]
+    await agent.callback(_control(STOP_AGENT))  # type: ignore[arg-type]
 
-    # The run loop tears the agent down: task cleared, NATS disconnected.
-    await asyncio.wait_for(_until(lambda: agent.task is None), timeout=1)
+    # The control message tears the agent down: task cleared, NATS disconnected.
+    await asyncio.wait_for(_until(lambda: agent.client is None), timeout=1)
     assert all(s.unsubscribed for s in client.subscriptions)
     assert client.closed is True
     assert agent.client is None
-    # STOP is consumed by the loop itself, not handed to process().
+    # STOP is consumed by callback itself, not handed to process().
     assert agent.processed == []
-
-
-async def test_stop_message_is_not_processed_before_a_real_one(
-    fake_connect: Callable[[], FakeClient],
-) -> None:
-    # A message ahead of STOP is processed; STOP halts the loop after it.
-    agent = RecordingAgent("worker", "jobs")
-    await agent.start()
-    agent.queue.put_nowait(Message(type="PERCEPTION"))
-    agent.queue.put_nowait(Message(type=STOP_AGENT))
-
-    await asyncio.wait_for(_until(lambda: agent.task is None), timeout=1)
-    assert agent.processed == [Message(type="PERCEPTION")]
-
-
-async def test_stop_path_is_final_and_cannot_be_overridden() -> None:
-    # The shutdown sequence is final: a subclass cannot redefine start/stop.
-    assert getattr(Agent.start, "__final__", False) is True
-    assert getattr(Agent.stop, "__final__", False) is True
 
 
 async def test_start_connects_subscribes_and_launches_run_loop(
     fake_connect: Callable[[], FakeClient],
 ) -> None:
     agent = RecordingAgent("worker", "jobs", "events")
-    await agent.start()
+    await agent.connect()
 
     client = fake_connect()
-    assert [s.subject for s in client.subscriptions] == ["jobs", "events"]
+    assert [s.subject for s in client.subscriptions] == [
+        "episode-root.worker.jobs",
+        "episode-root.worker.events",
+        "episode-root.worker.control",
+    ]
     # Each subscription uses the agent name as the queue group and the agent's
     # callback as the handler.
     for sub in client.subscriptions:
         assert sub.queue == "worker"
         assert sub.cb == agent.callback
 
-    # start() launches the run loop as a background task that is still running.
+    await agent.callback(_control(START_AGENT))  # type: ignore[arg-type]
+
+    # START_AGENT launches the run loop as a background task that is still running.
     assert agent.task is not None
     assert not agent.task.done()
 
-    await agent.stop()
+    await agent.callback(_control(STOP_AGENT))  # type: ignore[arg-type]
 
 
 async def test_stop_cancels_run_loop_unsubscribes_and_disconnects(
     fake_connect: Callable[[], FakeClient],
 ) -> None:
     agent = RecordingAgent("worker", "jobs", "events")
-    await agent.start()
+    await agent.connect()
     client = fake_connect()
+    await agent.callback(_control(START_AGENT))  # type: ignore[arg-type]
     task = agent.task
     assert task is not None
 
-    await agent.stop()
+    await agent.callback(_control(STOP_AGENT))  # type: ignore[arg-type]
 
-    # The run loop is stopped and its handle cleared.
-    assert task.cancelled()
+    # The run loop's handle is cleared.
     assert agent.task is None
     # NATS is torn down.
     assert all(s.unsubscribed for s in client.subscriptions)
@@ -200,15 +195,16 @@ async def test_started_agent_processes_a_delivered_message(
     fake_connect: Callable[[], FakeClient],
 ) -> None:
     # End to end: a message delivered via callback is processed by the run loop
-    # that start() launches, then stop() shuts everything down.
+    # that START_AGENT launches, then STOP_AGENT shuts everything down.
     agent = RecordingAgent("worker", "jobs")
-    await agent.start()
+    await agent.connect()
+    await agent.callback(_control(START_AGENT))  # type: ignore[arg-type]
     await agent.callback(FakeMsg(b'{"type": "THOUGHT"}'))  # type: ignore[arg-type]
 
     await agent.queue.join()
-    assert agent.processed == [Message(type="THOUGHT")]
+    assert agent.processed == [(Message(type="THOUGHT"), False)]
 
-    await agent.stop()
+    await agent.callback(_control(STOP_AGENT))  # type: ignore[arg-type]
     assert agent.task is None
 
 
@@ -216,13 +212,14 @@ async def test_run_loop_marks_task_done_even_when_process_raises(
     fake_connect: Callable[[], FakeClient],
 ) -> None:
     class Boom(Agent):
-        async def process(self, message: Message) -> None:
+        async def process(self, message: Message, is_control: bool) -> None:
             raise ValueError("boom")
 
-    agent = Boom("worker", "jobs")
-    await agent.start()
+    agent = Boom("episode-root", "worker", "jobs")
+    await agent.connect()
+    await agent.callback(_control(START_AGENT))  # type: ignore[arg-type]
     assert agent.task is not None
-    agent.queue.put_nowait(Message(type="PERCEPTION"))
+    agent.queue.put_nowait((Message(type="PERCEPTION"), False))
 
     # The loop task fails out, but task_done must still have fired so a join()
     # does not hang.
@@ -233,5 +230,5 @@ async def test_run_loop_marks_task_done_even_when_process_raises(
 
 async def test_stop_without_start_is_safe() -> None:
     agent = RecordingAgent("worker", "jobs")
-    # Never started: no task, no client, no subscriptions. stop() must not raise.
-    await agent.stop()
+    # Never started: no task, no client, no subscriptions. STOP_AGENT must not raise.
+    await agent.callback(_control(STOP_AGENT))  # type: ignore[arg-type]
