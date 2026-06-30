@@ -1,8 +1,8 @@
 """On/off switch for the Free Agent docker network.
 
-Launches and tears down every backing service (currently just NATS) that Free
-Agent needs to run. Resolves the compose file relative to the repository root so
-the commands work regardless of the current working directory.
+Launches and tears down every backing service (currently just NATS) that Free Agent needs to run.
+Resolves the compose file relative to the repository root so the commands work regardless of the
+current working directory.
 """
 
 import subprocess
@@ -28,9 +28,8 @@ def _compose(*args: str) -> int:
 def start() -> None:
     """Bring up the Free Agent docker network and wait for it to be healthy.
 
-    Runs `docker compose up` detached, waiting until every service with a
-    healthcheck reports healthy. Exits with docker's return code so failures
-    propagate to the caller.
+    Runs `docker compose up` detached, waiting until every service with a healthcheck reports
+    healthy. Exits with docker's return code so failures propagate to the caller.
     """
     returncode = _compose("up", "--detach", "--wait")
     if returncode == 0:
@@ -41,12 +40,38 @@ def start() -> None:
 def stop() -> None:
     """Tear down the Free Agent docker network.
 
-    Runs `docker compose down`, stopping and removing the containers and network
-    (named volumes are preserved). Exits with docker's return code.
+    Runs `docker compose down`, stopping and removing the containers and network (named volumes are
+    preserved). Exits with docker's return code.
     """
     returncode = _compose("down")
     if returncode == 0:
         print("Free Agent network is down.")
+    sys.exit(returncode)
+
+
+def reformat() -> None:
+    """Reformat docstrings across the repo with docformatter.
+
+    Runs docformatter recursively over the source trees only (not the repo root), since
+    docformatter's own dir walk doesn't prune hidden/cache directories and aborts the entire walk
+    the moment it meets one, rather than just skipping it.
+    """
+    returncode = subprocess.run(
+        [
+            "docformatter",
+            "--in-place",
+            "--recursive",
+            "--wrap-summaries=100",
+            "--wrap-descriptions=100",
+            str(REPO_ROOT / "src"),
+            str(REPO_ROOT / "packages"),
+            "--exclude",
+            ".mypy_cache",
+            ".ruff_cache",
+            ".pytest_cache",
+            "__pycache__",
+        ]
+    ).returncode
     sys.exit(returncode)
 
 

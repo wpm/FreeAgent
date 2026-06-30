@@ -14,17 +14,24 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-# Prefer `uv run` so the pinned ruff is used; fall back to a bare `ruff`.
+# Prefer `uv run` so the pinned tools are used; fall back to bare executables.
 if command -v uv >/dev/null 2>&1; then
     ruff() { uv run ruff "$@"; }
+    reformat() { uv run reformat; }
 elif command -v ruff >/dev/null 2>&1; then
     ruff() { command ruff "$@"; }
+    reformat() { command docformatter --in-place --recursive --wrap-summaries=100 --wrap-descriptions=100 src packages --exclude .mypy_cache .ruff_cache .pytest_cache __pycache__; }
 else
     echo "pre-commit: ruff not found (install it, or install uv)" >&2
     exit 1
 fi
 
 before="$(git diff --name-only)"
+
+echo "pre-commit: docformatter"
+# docformatter exits 3 when it rewrites files; the before/after diff below is
+# what actually gates the commit, so don't let that abort the run here.
+reformat || true
 
 echo "pre-commit: ruff format"
 ruff format .

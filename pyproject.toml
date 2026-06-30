@@ -13,6 +13,7 @@ dependencies = [
 [project.scripts]
 start = "freeagent.start:start"
 stop = "freeagent.start:stop"
+reformat = "freeagent.start:reformat"
 
 [build-system]
 requires = ["hatchling"]
@@ -36,6 +37,7 @@ dev = [
     "httpx2>=0.1",
     "mypy>=1.13",
     "ruff>=0.8",
+    "docformatter>=1.7",
 ]
 
 [tool.ruff]
