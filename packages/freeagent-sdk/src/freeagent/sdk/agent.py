@@ -223,13 +223,13 @@ class Agent(Entity):
             if msg.reply:
                 await msg.respond(Ack(running=True).model_dump_json().encode())
         else:
-            if msg.reply:
-                await msg.respond(Ack(running=False).model_dump_json().encode())
             if self.task is not None:
                 self.task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self.task
                 self.task = None
+            if msg.reply:
+                await msg.respond(Ack(running=False).model_dump_json().encode())
             await self.stop()
 
     @final
