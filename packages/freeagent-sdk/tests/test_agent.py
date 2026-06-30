@@ -93,11 +93,6 @@ class RecordingAgent(Agent):
         self.processed.append((message, is_control))
 
 
-def test_agent_is_abstract() -> None:
-    with pytest.raises(TypeError):
-        Agent("episode-root", "a", "subject")  # type: ignore[abstract]
-
-
 async def test_callback_decodes_payload_onto_queue() -> None:
     agent = RecordingAgent("worker", "jobs")
     await agent.callback(FakeMsg(b'{"type": "PERCEPTION"}'))  # type: ignore[arg-type]

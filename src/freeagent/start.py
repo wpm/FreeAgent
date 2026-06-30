@@ -1,8 +1,8 @@
 """On/off switch for the Free Agent docker network.
 
-Launches and tears down every backing service (currently just NATS) that Free Agent needs to run.
-Resolves the compose file relative to the repository root so the commands work regardless of the
-current working directory.
+Launches and tears down every backing service that Free Agent needs to run. Resolves the compose
+file relative to the repository root so the commands work regardless of the current working
+directory.
 """
 
 import subprocess
