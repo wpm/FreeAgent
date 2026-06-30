@@ -40,8 +40,7 @@ class Ack(Message):
 class Entity:
     """Base class for Free Agent agent processes.
 
-    An entity is an independent process that joins a Free Agent application by connecting to NATS
-    and subscribing to a set of subjects.
+    An entity is an independent Free Agent process that communicates over NATS.
     """
 
     def __init__(
@@ -157,24 +156,19 @@ class Agent(Entity):
     """Agents are independent entities in a Free Agent application that interact with each other
     within a shared Environment.
 
-    Subclass it and implement :meth:`process` to handle incoming messages.
-    :meth:`start` connects to NATS, subscribes to ``subjects`` (which feeds
-    decoded messages onto :attr:`queue`), and launches a run loop that drains
-    the queue into :meth:`process`.
+    Subclass it and implement :meth:`process_message` to handle incoming messages. :meth:`start`
+    connects to NATS, subscribes to ``subjects`` (which feeds decoded messages onto :attr:`queue`),
+    and is followed by a `START_AGENT` control command that launches a run loop draining the queue
+    into :meth:`process_message`.
 
-    In addition to specified subjects, all agents subscribe to a `CONTROL_SUBJECT`
-    on which they receive requests from the environment such as lifecycle
-    commands. All agents support `START_AGENT` and `STOP_AGENT` messages.
-    `START_AGENT` starts the agent's message queue and has to be receive before the agent will do
-    anything else.
-    `STOP_AGENT` shuts down all activity.
-    Both of these messages are idempotent.
-    Derived classes may handle other control messages.
-
-    The agent shuts down either when
-    :meth:`stop` is called or when a STOP message reaches the queue; both paths
-    unsubscribe and disconnect. The loop and shutdown sequence are final, so
-    subclasses cannot change how the agent stops.
+    In addition to specified subjects, all agents subscribe to a `CONTROL_SUBJECT` on which they
+    receive control commands from the environment, handled by :meth:`process_command` rather than
+    the queue. All agents support `START_AGENT` and `STOP_AGENT`; both are idempotent. `START_AGENT`
+    launches the run loop and must be received before the agent does anything else. `STOP_AGENT`
+    cancels the run loop and tears the agent down: unsubscribing and disconnecting from NATS. A
+    control command sent as a NATS request is replied to with an :class:`Ack` reporting whether the
+    run loop is running after the command was handled. Derived classes may handle other control
+    commands by overriding :meth:`process_command`.
 
     :param episode_root: The root NATS subject for this agent's episode.
     :param name: Identifier for this agent
