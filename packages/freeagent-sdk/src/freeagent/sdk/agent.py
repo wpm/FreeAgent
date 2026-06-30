@@ -93,6 +93,24 @@ class Entity:
         """
         pass
 
+    async def request(self, subject: str, message: Message) -> Msg:
+        if self.client is None:
+            await self.start()
+        assert self.client is not None
+        return await self.client.request(
+            subject,
+            message.model_dump_json().encode(),
+        )
+
+    async def publish(self, subject: str, message: Message) -> None:
+        if self.client is None:
+            await self.start()
+        assert self.client is not None
+        await self.client.publish(
+            subject,
+            message.model_dump_json().encode(),
+        )
+
 
 class Environment(Entity):
     """
@@ -132,24 +150,6 @@ class Environment(Entity):
                 )
                 for agent in self.agents
             ]
-        )
-
-    async def request(self, subject: str, message: Message) -> Msg:
-        if self.client is None:
-            await self.start()
-        assert self.client is not None
-        return await self.client.request(
-            subject,
-            message.model_dump_json().encode(),
-        )
-
-    async def publish(self, subject: str, message: Message) -> None:
-        if self.client is None:
-            await self.start()
-        assert self.client is not None
-        await self.client.publish(
-            subject,
-            message.model_dump_json().encode(),
         )
 
 
