@@ -20,7 +20,7 @@ START_AGENT = "START"
 # Stop an agent.
 STOP_AGENT = "STOP"
 # Acknowledge a control command.
-ACK = "ack"
+ACK = "ACK"
 
 
 DEFAULT_NATS_SERVER = "nats://localhost:4222"
@@ -97,15 +97,6 @@ class Entity:
             await self.start()
         assert self.client is not None
         return await self.client.request(
-            subject,
-            message.model_dump_json().encode(),
-        )
-
-    async def publish(self, subject: str, message: Message) -> None:
-        if self.client is None:
-            await self.start()
-        assert self.client is not None
-        await self.client.publish(
             subject,
             message.model_dump_json().encode(),
         )
