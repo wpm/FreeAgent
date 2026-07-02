@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 from freeagent.sdk import Agent
-from freeagent.sdk.agent import CONTROL_SUBJECT, START_AGENT, STOP_AGENT, Ack, Message
+from freeagent.sdk.message import Message
 from nats.aio.msg import Msg
 
 Handler = Callable[[Msg], Awaitable[None]]
