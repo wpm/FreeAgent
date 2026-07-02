@@ -9,7 +9,8 @@
 # It runs ruff's formatter and linter with auto-fix. If either changes a file,
 # the commit is aborted with the fixes left in the working tree -- review them
 # and `git add` before committing again. If nothing was fixed but lint errors
-# remain (not auto-fixable), the commit is likewise aborted.
+# remain (not auto-fixable), the commit is likewise aborted. It then runs mypy;
+# any type error also aborts the commit.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -42,6 +43,25 @@ if [ "$lint_status" -ne 0 ]; then
     echo >&2
     echo "pre-commit: lint errors remain that ruff can't fix automatically." >&2
     exit "$lint_status"
+fi
+
+echo
+echo "pre-commit: mypy"
+# `freeagent-sdk` sets its own mypy_path (src, tests) in its own pyproject.toml,
+# so it must run from its own directory: running it from the repo root would
+# resolve its files under two module names ("sdk.entity" and
+# "freeagent.sdk.entity") and mypy aborts with "Source file found twice under
+# different module names".
+if ! uv run mypy src/ packages/freeagent-api/src packages/freeagent-api/tests \
+    packages/freeagent-worker/src packages/freeagent-worker/tests; then
+    echo >&2
+    echo "pre-commit: mypy found type errors." >&2
+    exit 1
+fi
+if ! (cd packages/freeagent-sdk && uv run mypy src/ tests/); then
+    echo >&2
+    echo "pre-commit: mypy found type errors in freeagent-sdk." >&2
+    exit 1
 fi
 
 echo "pre-commit: clean"

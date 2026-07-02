@@ -23,5 +23,5 @@ strict = true
 # `freeagent.sdk.*`. Without this, running mypy from this directory resolves the
 # same file under two module names (`sdk.agent` and `freeagent.sdk.agent`) and
 # aborts with "Source file found twice under different module names".
-mypy_path = ["src"]
+mypy_path = ["src", "tests"]
 explicit_package_bases = true
