@@ -240,8 +240,13 @@ class Agent(Entity):
         *subjects: str,
         servers: str | list[str] = DEFAULT_NATS_SERVER,
     ) -> None:
-        self.subjects = [f"{episode_root}.{AGENTS}.{name}.{subject}" for subject in list(subjects)]
-        super().__init__(servers, episode_root, name, *subjects)
+        prefix = f"{AGENTS}.{name}"
+        super().__init__(
+            servers,
+            episode_root,
+            prefix,
+            *(f"{prefix}.{subject}" for subject in subjects),
+        )
         self.queue: Queue[tuple[Msg | None, Message]] = Queue()
         self.task: Task[None] | None = None
 
