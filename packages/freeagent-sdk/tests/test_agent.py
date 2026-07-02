@@ -9,45 +9,12 @@ messages, so no live server is required.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 
 import pytest
+from fixtures import FakeClient, FakeMsg, Ping, RecordingAgent, Shout
 from freeagent.sdk.entity import AGENTS, Agent
-from freeagent.sdk.message import Ack, Command, Message, StartEntity, StopEntity
-from nats.aio.msg import Msg
-
-Handler = Callable[[Msg], Awaitable[None]]
-
-
-class FakeSubscription:
-    """Records whether it was unsubscribed, and how many times."""
-
-    def __init__(self, subject: str, cb: Handler) -> None:
-        self.subject = subject
-        self.cb = cb
-        self.unsubscribe_calls = 0
-
-    async def unsubscribe(self) -> None:
-        self.unsubscribe_calls += 1
-
-
-class FakeClient:
-    """A stand-in for nats.aio.client.Client that records interactions."""
-
-    def __init__(self) -> None:
-        self.subscriptions: list[FakeSubscription] = []
-        self.closed = False
-        self.close_calls = 0
-
-    async def subscribe(self, subject: str, cb: Handler | None = None) -> FakeSubscription:
-        assert cb is not None
-        sub = FakeSubscription(subject, cb)
-        self.subscriptions.append(sub)
-        return sub
-
-    async def close(self) -> None:
-        self.closed = True
-        self.close_calls += 1
+from freeagent.sdk.message import Ack, Message, StartEntity, StopEntity
 
 
 @pytest.fixture
@@ -70,48 +37,9 @@ def fake_connect(created_clients: list[FakeClient]) -> Callable[[], FakeClient]:
     return lambda: created_clients[-1]
 
 
-class FakeMsg:
-    """A stand-in for nats.aio.msg.Msg carrying a raw payload."""
-
-    def __init__(self, data: bytes, reply: str = "") -> None:
-        self.data = data
-        self.reply = reply
-        self.responses: list[bytes] = []
-
-    async def respond(self, data: bytes) -> None:
-        self.responses.append(data)
-
-
 def _msg(message: Message, reply: str = "") -> FakeMsg:
     """Build a FakeMsg carrying the given message, optionally as a NATS request."""
     return FakeMsg(message.to_bytes(), reply=reply)
-
-
-class Ping(Message):
-    """A plain, in-domain message used to exercise the queue."""
-
-    label: str = ""
-
-
-class Shout(Command):
-    """An application-defined command, used to exercise process_command()."""
-
-    label: str = ""
-
-
-class RecordingAgent(Agent):
-    """A concrete agent whose process_message() and process_command() record what they handle."""
-
-    def __init__(self, name: str, *subjects: str) -> None:
-        super().__init__("episode-root", name, *subjects)
-        self.processed: list[Message] = []
-        self.commands: list[Command] = []
-
-    async def process_message(self, message: Message) -> None:
-        self.processed.append(message)
-
-    async def process_command(self, msg: Msg, command: Command) -> None:
-        self.commands.append(command)
 
 
 async def test_init_subscribes_under_agents_and_the_agent_name() -> None:
