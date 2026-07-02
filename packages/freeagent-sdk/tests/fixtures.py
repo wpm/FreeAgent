@@ -63,6 +63,11 @@ class FakeMsg:
         self.reply = reply
         self.responses: list[bytes] = []
 
+    @classmethod
+    def for_message(cls, message: Message, reply: str = "") -> FakeMsg:
+        """Build a FakeMsg carrying the given message, optionally as a NATS request."""
+        return cls(message.to_bytes(), reply=reply)
+
     async def respond(self, data: bytes) -> None:
         self.responses.append(data)
 
