@@ -5,6 +5,6 @@ other over NATS. The base classes here give those processes a common lifecycle: 
 publish and subscribe to subjects, and shut down cleanly.
 """
 
-from freeagent.sdk.agent import Agent
+from freeagent.sdk.entity import Agent
 
 __all__ = ["Agent"]
