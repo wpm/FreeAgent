@@ -15,8 +15,9 @@ from freeagent.sdk.message import Ack, Command, Message, StartEntity, StopEntity
 
 def test_to_bytes_encodes_as_utf8_json() -> None:
     message = Product(x=2.0, y=3.0)
-
-    assert message.to_bytes() == b'{"type":"Product","x":2.0,"y":3.0,"x_times_y":null}'
+    assert message.to_bytes() == b'{"type":"Product","x":2.0,"y":3.0}'
+    message = message()
+    assert message.to_bytes() == b'{"type":"Product","x":2.0,"y":3.0,"x_times_y":6.0}'
 
 
 def test_to_bytes_returns_bytes_not_str() -> None:

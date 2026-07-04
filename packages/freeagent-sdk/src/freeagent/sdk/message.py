@@ -45,6 +45,7 @@ class Message(BaseModel):
     _by_type: ClassVar[dict[str, type[Message]]] = {}
 
     type: str = ""
+    protocol: str | None = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -106,7 +107,7 @@ class Message(BaseModel):
 
         :return: This message, encoded as UTF-8 JSON.
         """
-        return self.model_dump_json().encode()
+        return self.model_dump_json(exclude_none=True).encode()
 
 
 Message._by_type[Message.__name__] = Message
