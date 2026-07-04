@@ -100,14 +100,18 @@ class Message(BaseModel):
 
         The JSON's ``type`` tag (see :attr:`type`) is looked up among all known :class:`Message`
         subclasses, so calling this on the base :class:`Message` class returns the right concrete
-        subclass rather than a plain :class:`Message`. Parameters are as for
-        :meth:`pydantic.BaseModel.model_validate_json`.
+        subclass rather than a plain :class:`Message`.
 
         An unknown ``type`` tag is an error here; callers that expect unknown types (e.g. the
         control-plane API relaying application messages opaquely) should use :meth:`try_decode`
         instead.
 
         :param json_data: The JSON, as produced by :meth:`to_bytes`.
+        :param strict: As for :meth:`pydantic.BaseModel.model_validate_json`.
+        :param extra: As for :meth:`pydantic.BaseModel.model_validate_json`.
+        :param context: As for :meth:`pydantic.BaseModel.model_validate_json`.
+        :param by_alias: As for :meth:`pydantic.BaseModel.model_validate_json`.
+        :param by_name: As for :meth:`pydantic.BaseModel.model_validate_json`.
         :return: The decoded message, as an instance of its original concrete subclass.
         :raises UnknownMessageType: If the JSON's ``type`` tag doesn't name a known
             :class:`Message` subclass.
