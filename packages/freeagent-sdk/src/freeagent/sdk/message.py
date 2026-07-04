@@ -116,7 +116,10 @@ class Message(BaseModel):
         :raises UnknownMessageType: If the JSON's ``message_type`` tag doesn't name a known
             :class:`Message` subclass.
         """
-        tagged = super().model_validate_json(
+        # The declared type restates model_validate_json's Self return as Message: mypy narrows it
+        # already, but some IDE checkers bind Self to BaseModel across the super() proxy and would
+        # otherwise flag tagged.message_type below as an unresolved attribute.
+        tagged: Message = super().model_validate_json(
             json_data,
             strict=strict,
             extra=extra,
