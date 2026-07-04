@@ -1,0 +1,61 @@
+name: CI
+
+# Runs the test suite on every push and pull request targeting the rewrite line of development.
+# The unit tier needs no NATS binary; the integration tier runs against a pinned `nats-server`
+# release installed in its own step (ADR-0008), so nothing but the binary is required — no Docker,
+# no testcontainers.
+on:
+  push:
+    branches: [rewrite, main]
+  pull_request:
+    branches: [rewrite, main]
+
+# A newer push to the same branch/PR cancels an in-flight run for it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # Pinned so CI is reproducible; bump deliberately. `nats-server` is a single static Go binary.
+      NATS_SERVER_VERSION: v2.14.2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install nats-server (pinned)
+        run: |
+          set -euo pipefail
+          version="${NATS_SERVER_VERSION}"
+          archive="nats-server-${version}-linux-amd64"
+          url="https://github.com/nats-io/nats-server/releases/download/${version}/${archive}.tar.gz"
+          curl -sSfL "${url}" -o /tmp/nats-server.tar.gz
+          tar -xzf /tmp/nats-server.tar.gz -C /tmp
+          sudo install "/tmp/${archive}/nats-server" /usr/local/bin/nats-server
+          nats-server --version
+
+      - name: Sync dependencies
+        run: uv sync --all-packages
+
+      - name: Lint (ruff)
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Type-check (mypy)
+        run: |
+          uv run mypy src/ packages/freeagent-api/src packages/freeagent-api/tests \
+            packages/freeagent-worker/src packages/freeagent-worker/tests
+          (cd packages/freeagent-sdk && uv run mypy src/ tests/)
+
+      - name: Run tests (unit + integration)
+        run: uv run pytest
