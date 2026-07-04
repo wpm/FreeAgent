@@ -24,3 +24,4 @@ repository.
 - After a PR clears all checks, run `/review` and address all the comments.
 - When creating a PR for an issue, ensure that it when it closes, the issue
   closes as well.
+- Keep the history linear: no merges.
