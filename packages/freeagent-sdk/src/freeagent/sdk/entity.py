@@ -246,13 +246,17 @@ class Environment(Entity):
         :class:`~freeagent.sdk.message.StopEntity` teardown command to every agent, and disconnects.
         The :class:`~freeagent.sdk.message.EpisodeComplete` is published before the broadcast so an
         observer sees the definite end marker ahead of the agents tearing down; the broadcast still
-        runs, and the environment still disconnects, even if it raises or times out.
+        runs, and the environment still disconnects, even if either the publish or the broadcast
+        raises or times out. Teardown is the invariant; the end marker is a best-effort
+        observability signal that must not be able to strand agents by failing first.
         """
         if self.client is None:
             return
         try:
-            await self.publish(f"{self.episode_root}.{ENVIRONMENT}", EpisodeComplete())
-            await wait_for(self.broadcast_to_agents(StopEntity()), self.timeout)
+            try:
+                await self.publish(f"{self.episode_root}.{ENVIRONMENT}", EpisodeComplete())
+            finally:
+                await wait_for(self.broadcast_to_agents(StopEntity()), self.timeout)
         finally:
             await super().stop()
 
@@ -260,23 +264,24 @@ class Environment(Entity):
         """Stop a single agent while the rest of the episode keeps running.
 
         Sends :class:`~freeagent.sdk.message.StopAgent` to ``agent`` as a NATS request, bounded by
-        :attr:`timeout` the same way :meth:`broadcast_to_agents`'s requests are, and records the
+        :attr:`timeout` the same way :meth:`broadcast_to_agents`'s requests are, then records the
         agent in :attr:`stopped_agents`. Idempotent, matching the agent-side teardown: stopping an
         already-stopped agent is a no-op that sends nothing.
+
+        The agent is recorded only *after* the request succeeds, so a request that raises or times
+        out leaves :attr:`stopped_agents` unchanged and a later call retries rather than being
+        swallowed by the guard — safe because the agent-side teardown is itself idempotent.
 
         :param agent: The name of the agent to stop.
         """
         if agent in self.stopped_agents:
             return
-        self.stopped_agents.add(agent)
-        await wait_for(
-            self.request(
-                f"{self.episode_root}.{AGENTS}.{agent}",
-                StopAgent(),
-                timeout=self.timeout,
-            ),
-            self.timeout,
+        await self.request(
+            f"{self.episode_root}.{AGENTS}.{agent}",
+            StopAgent(),
+            timeout=self.timeout,
         )
+        self.stopped_agents.add(agent)
 
     async def broadcast_to_agents(self, message: Message, postfix: str | None = None) -> list[Msg]:
         """Send ``message`` as a NATS request to every agent in :attr:`agents`, in parallel.
