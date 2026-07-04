@@ -29,5 +29,8 @@ and the community hub at [adr.github.io](https://adr.github.io/).
 | [0001](0001-gui-viewers-over-nats.md) | GUI viewers over NATS with NATS-based playback | Accepted (partially superseded by 0003) |
 | [0002](0002-control-plane-service.md) | A persistent control-plane service over a REST façade | Accepted (partially superseded by 0003) |
 | [0003](0003-the-atemporal-episode.md) | The atemporal episode | Accepted (partially superseded by 0004) |
-| [0004](0004-app-independent-service.md) | The app-independent episode service | Accepted |
-| [0005](0005-the-worker-pool.md) | The worker pool — distributed episode execution over a work queue | Accepted |
+| [0004](0004-app-independent-service.md) | The app-independent episode service | Accepted (partially superseded by 0006) |
+| [0005](0005-the-worker-pool.md) | The worker pool — distributed episode execution over a work queue | Accepted (partially superseded by 0008) |
+| [0006](0006-entry-point-application-loading.md) | Entry-point application loading | Proposed |
+| [0007](0007-control-plane-data-plane-split.md) | Control plane / data plane split | Proposed |
+| [0008](0008-core-nats-before-jetstream.md) | Core NATS now, JetStream before training data | Proposed |
