@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 from fixtures import FakeClient, Ping
 from freeagent.sdk.entity import DEFAULT_REQUEST_TIMEOUT, UNBOUNDED_TIMEOUT, Entity
+from freeagent.sdk.message import Message
 
 
 async def test_request_passes_the_constructor_default_timeout(
@@ -58,3 +59,36 @@ async def test_request_with_explicit_none_waits_effectively_unbounded(
 
     client = fake_connect()
     assert client.request_timeouts == [UNBOUNDED_TIMEOUT]
+
+
+async def test_publish_connects_first_when_not_already_connected(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    # Like request, publish must connect on demand: an entity that was never started can still
+    # publish. This covers the connect-if-None branch.
+    entity = Entity("nats://localhost:4222", "episode-root")
+    assert entity.client is None
+
+    await entity.publish("episode-root.somewhere", Ping(label="hi"))
+
+    client = fake_connect()
+    assert entity.client is not None
+    assert [subject for subject, _ in client.published] == ["episode-root.somewhere"]
+    ((_, payload),) = client.published
+    assert Message.model_validate_json(payload) == Ping(label="hi")
+
+
+async def test_publish_reuses_an_existing_connection(
+    created_clients: list[FakeClient],
+) -> None:
+    entity = Entity("nats://localhost:4222", "episode-root")
+    await entity.start()
+    client = created_clients[-1]
+
+    await entity.publish("episode-root.somewhere", Ping())
+
+    # No reconnect: the already-connected client is the one that published.
+    assert entity.client is not None
+    assert [subject for subject, _ in client.published] == ["episode-root.somewhere"]
+    # Only one client was ever created — publish didn't open a second connection.
+    assert len(created_clients) == 1

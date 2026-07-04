@@ -209,6 +209,93 @@ async def test_stop_agent_request_carries_the_broadcast_timeout(
     assert client.request_timeouts == [0.25]
 
 
+async def test_stop_on_an_unstarted_environment_is_a_no_op(
+    created_clients: list[FakeClient],
+) -> None:
+    # Never connected: stop must return early without publishing, broadcasting, or connecting.
+    env = Environment("episode-root", "alice")
+
+    await env.stop()
+
+    assert created_clients == []
+    assert env.client is None
+
+
+async def test_stop_agent_does_not_record_the_agent_when_the_request_fails(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    # A request that fails (as nats-py's request raises TimeoutError when its own timeout fires)
+    # must not mark the agent stopped, so a retry still fires rather than being swallowed by the
+    # idempotency guard.
+    env = Environment("episode-root", "alice", timeout=0.01)
+    await env.start()
+    client = fake_connect()
+
+    async def times_out(_: str, __: bytes, **___: object) -> None:
+        raise TimeoutError
+
+    client.request = times_out  # type: ignore[assignment]
+
+    with pytest.raises(TimeoutError):
+        await env.stop_agent("alice")
+
+    assert env.stopped_agents == set()
+
+
+async def test_stop_agent_retries_after_a_failed_request(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    env = Environment("episode-root", "alice", timeout=0.01)
+    await env.start()
+    client = fake_connect()
+    responsive_request = client.request
+
+    async def times_out(_: str, __: bytes, **___: object) -> None:
+        raise TimeoutError
+
+    client.request = times_out  # type: ignore[assignment]
+    with pytest.raises(TimeoutError):
+        await env.stop_agent("alice")
+
+    # Restore the responsive client; the retry must actually send, not early-return.
+    client.request = responsive_request  # type: ignore[method-assign]
+    client.requests.clear()
+
+    await env.stop_agent("alice")
+
+    assert [subject for subject, _ in client.requests] == [agent_subject("episode-root", "alice")]
+    assert env.stopped_agents == {"alice"}
+
+
+async def test_stop_still_broadcasts_stop_entity_when_the_episode_marker_fails(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    # EpisodeComplete is a best-effort marker; a failed publish must not strand agents by skipping
+    # the StopEntity teardown broadcast.
+    env = Environment("episode-root", "alice", "bob")
+    await env.start()
+    client = fake_connect()
+    client.requests.clear()
+
+    async def boom(_: str, __: bytes) -> None:
+        raise RuntimeError("publish failed")
+
+    client.publish = boom  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="publish failed"):
+        await env.stop()
+
+    # The StopEntity broadcast still reached every agent, and the environment still disconnected.
+    assert [subject for subject, _ in client.requests] == [
+        agent_subject("episode-root", "alice"),
+        agent_subject("episode-root", "bob"),
+    ]
+    for _, payload in client.requests:
+        assert Message.model_validate_json(payload) == StopEntity()
+    assert client.closed is True
+    assert env.client is None
+
+
 async def test_stop_publishes_episode_complete_on_the_environment_subject(
     fake_connect: Callable[[], FakeClient],
 ) -> None:
