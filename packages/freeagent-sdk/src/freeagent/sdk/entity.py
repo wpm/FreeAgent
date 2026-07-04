@@ -37,6 +37,15 @@ from nats.aio.subscription import Subscription
 DEFAULT_NATS_SERVER = "nats://localhost:4222"
 """Default NATS server URL used when an :class:`Entity` isn't given one explicitly."""
 
+DEFAULT_REQUEST_TIMEOUT = 1.0
+"""Default seconds an :class:`Entity.request` waits for a reply when no timeout is given.
+
+Under the ack-then-work pattern a short request timeout is a *feature*: a caller waits only for the
+receiving entity to acknowledge, not for it to finish the work it kicks off inside its handler. The
+value is made explicit here rather than inherited from nats-py's silent 0.5 s default so it can be
+seen and configured.
+"""
+
 ENVIRONMENT = "environment"
 """Subject segment claimed by the :class:`Environment`."""
 
@@ -55,6 +64,8 @@ class Entity:
     :param servers: NATS server URL(s) to connect to.
     :param episode_root: The root NATS subject for this entity's episode.
     :param subjects: NATS subjects this entity subscribes to, appended to ``episode_root``.
+    :param timeout: Default seconds :meth:`request` waits for a reply, overridable per call. See
+        :data:`DEFAULT_REQUEST_TIMEOUT` for why this is explicit.
     """
 
     def __init__(
@@ -62,10 +73,12 @@ class Entity:
         servers: str | list[str],
         episode_root: str,
         *subjects: str,
+        timeout: float = DEFAULT_REQUEST_TIMEOUT,
     ) -> None:
         self.episode_root = episode_root
         self.subjects = [f"{episode_root}.{subject}" for subject in list(subjects)]
         self.servers = servers
+        self.timeout = timeout
         self.client: Client | None = None
         self.subscriptions: list[Subscription] = []
 
@@ -107,13 +120,15 @@ class Entity:
         """
         pass
 
-    async def request(self, subject: str, message: Message) -> Msg:
+    async def request(self, subject: str, message: Message, timeout: float | None = None) -> Msg:
         """Send a message as a NATS request and wait for the reply.
 
         Connects first via :meth:`start` if not already connected.
 
         :param subject: The NATS subject to send the request to.
         :param message: The message to send.
+        :param timeout: Seconds to wait for the reply. Defaults to this entity's :attr:`timeout`
+            (itself :data:`DEFAULT_REQUEST_TIMEOUT` unless overridden at construction).
         :return: The raw NATS reply message.
         """
         if self.client is None:
@@ -122,6 +137,7 @@ class Entity:
         return await self.client.request(
             subject,
             message.model_dump_json().encode(),
+            timeout=self.timeout if timeout is None else timeout,
         )
 
 
@@ -139,7 +155,10 @@ class Environment(Entity):
     :param servers: NATS server URL(s) to connect to.
     :param timeout: Seconds to wait for every agent to acknowledge a broadcast
         :class:`~freeagent.sdk.message.StartEntity`/:class:`~freeagent.sdk.message.StopEntity`
-        command, or ``None`` to wait indefinitely.
+        command, or ``None`` to wait indefinitely. Stored as :attr:`broadcast_timeout`; distinct
+        from the per-request :attr:`Entity.timeout`.
+    :param request_timeout: Default seconds each individual broadcast request waits for a reply; see
+        :data:`DEFAULT_REQUEST_TIMEOUT`.
     """
 
     def __init__(
@@ -148,10 +167,11 @@ class Environment(Entity):
         *agents: str,
         servers: str | list[str] = DEFAULT_NATS_SERVER,
         timeout: float | None = None,
+        request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
     ) -> None:
-        super().__init__(servers, episode_root, ENVIRONMENT)
+        super().__init__(servers, episode_root, ENVIRONMENT, timeout=request_timeout)
         self.agents = agents
-        self.timeout = timeout
+        self.broadcast_timeout = timeout
 
     async def start(self) -> None:
         """Connect to NATS, then broadcast :class:`~freeagent.sdk.message.StartEntity` to every
@@ -161,7 +181,7 @@ class Environment(Entity):
         behavior.
         """
         await super().start()
-        await wait_for(self.broadcast_to_agents(StartEntity()), self.timeout)
+        await wait_for(self.broadcast_to_agents(StartEntity()), self.broadcast_timeout)
 
     async def stop(self) -> None:
         """Broadcast :class:`~freeagent.sdk.message.StopEntity` to every agent, then disconnect.
@@ -173,7 +193,7 @@ class Environment(Entity):
         if self.client is None:
             return
         try:
-            await wait_for(self.broadcast_to_agents(StopEntity()), self.timeout)
+            await wait_for(self.broadcast_to_agents(StopEntity()), self.broadcast_timeout)
         finally:
             await super().stop()
 
@@ -231,6 +251,8 @@ class Agent(Entity):
     :param subjects: Additional NATS subjects this agent subscribes to, beyond its own
         ``{episode_root}.agents.{name}``.
     :param servers: NATS server URL(s) to connect to.
+    :param timeout: Default seconds :meth:`Entity.request` waits for a reply; see
+        :data:`DEFAULT_REQUEST_TIMEOUT`.
     """
 
     def __init__(
@@ -239,6 +261,7 @@ class Agent(Entity):
         name: str,
         *subjects: str,
         servers: str | list[str] = DEFAULT_NATS_SERVER,
+        timeout: float = DEFAULT_REQUEST_TIMEOUT,
     ) -> None:
         prefix = f"{AGENTS}.{name}"
         super().__init__(
@@ -246,6 +269,7 @@ class Agent(Entity):
             episode_root,
             prefix,
             *(f"{prefix}.{subject}" for subject in subjects),
+            timeout=timeout,
         )
         self.queue: Queue[tuple[Msg | None, Message]] = Queue()
         self.task: Task[None] | None = None

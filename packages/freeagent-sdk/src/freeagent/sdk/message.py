@@ -50,6 +50,13 @@ class Message(BaseModel):
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         cls.model_fields["type"].default = cls.__name__
+        existing = Message._by_type.get(cls.__name__)
+        if existing is not None:
+            raise TypeError(
+                f'Duplicate Message subclass name "{cls.__name__}": already registered by '
+                f"{existing.__module__}.{existing.__qualname__}. Message type tags are bare class "
+                f"names and must be unique across all loaded applications."
+            )
         Message._by_type[cls.__name__] = cls
 
     def __init__(self, **data: Any) -> None:
@@ -74,6 +81,10 @@ class Message(BaseModel):
         subclasses, so calling this on the base :class:`Message` class returns the right concrete
         subclass rather than a plain :class:`Message`. Parameters are as for
         :meth:`pydantic.BaseModel.model_validate_json`.
+
+        An unknown ``type`` tag is an error here; callers that expect unknown types (e.g. the
+        control-plane API relaying application messages opaquely) should use :meth:`try_decode`
+        instead.
 
         :param json_data: The JSON, as produced by :meth:`to_bytes`.
         :return: The decoded message, as an instance of its original concrete subclass.
@@ -101,6 +112,25 @@ class Message(BaseModel):
             by_alias=by_alias,
             by_name=by_name,
         )
+
+    @classmethod
+    def try_decode(cls, json_data: str | bytes | bytearray) -> Message | None:
+        """Decode JSON like :meth:`model_validate_json`, but return ``None`` for an unknown type.
+
+        Where :meth:`model_validate_json` raises on a ``type`` tag that names no known
+        :class:`Message` subclass, this returns ``None`` instead — for callers that meet unknown
+        types *by design*, such as the control-plane API decoding only SDK messages and relaying
+        application-defined ones opaquely. Malformed JSON and validation failures still raise; only
+        the "not a known type" case is turned into ``None``.
+
+        :param json_data: The JSON, as produced by :meth:`to_bytes`.
+        :return: The decoded message as its concrete subclass, or ``None`` if its ``type`` tag names
+            no known :class:`Message` subclass.
+        """
+        tagged = super().model_validate_json(json_data)
+        if Message._by_type.get(tagged.type) is None:
+            return None
+        return cls.model_validate_json(json_data)
 
     def to_bytes(self) -> bytes:
         """Serialize this message to the JSON bytes sent over NATS.

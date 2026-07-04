@@ -44,6 +44,7 @@ class FakeClient:
         self.closed = False
         self.close_calls = 0
         self.requests: list[tuple[str, bytes]] = []
+        self.request_timeouts: list[object] = []
 
     async def subscribe(self, subject: str, cb: Handler | None = None) -> FakeSubscription:
         assert cb is not None
@@ -51,9 +52,12 @@ class FakeClient:
         self.subscriptions.append(sub)
         return sub
 
-    async def request(self, subject: str, payload: bytes, **_: object) -> FakeMsg:
-        """Record the request and reply with a bare Ack, as a real agent would."""
+    async def request(
+        self, subject: str, payload: bytes, timeout: object = None, **_: object
+    ) -> FakeMsg:
+        """Record the request (and its timeout) and reply with a bare Ack, as a real agent would."""
         self.requests.append((subject, payload))
+        self.request_timeouts.append(timeout)
         return FakeMsg.for_message(Ack())
 
     async def close(self) -> None:
