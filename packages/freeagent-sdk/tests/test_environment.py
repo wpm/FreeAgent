@@ -15,7 +15,7 @@ from collections.abc import Callable
 
 import pytest
 from fixtures import FakeClient
-from freeagent.sdk.entity import _UNBOUNDED_TIMEOUT, AGENTS, ENVIRONMENT, Agent, Environment
+from freeagent.sdk.entity import AGENTS, ENVIRONMENT, UNBOUNDED_TIMEOUT, Agent, Environment
 from freeagent.sdk.message import Ack, Message, StartEntity, StopEntity
 
 
@@ -131,7 +131,7 @@ async def test_broadcast_requests_are_unbounded_when_timeout_is_none(
 
     # Default broadcast timeout is None (wait indefinitely); the request is given the unbounded
     # sentinel value rather than nats-py's default.
-    assert client.request_timeouts == [_UNBOUNDED_TIMEOUT]
+    assert client.request_timeouts == [UNBOUNDED_TIMEOUT]
 
 
 async def test_environment_subscribes_under_environment_subject(

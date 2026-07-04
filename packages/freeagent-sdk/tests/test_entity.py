@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from fixtures import FakeClient, Ping
-from freeagent.sdk.entity import _UNBOUNDED_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, Entity
+from freeagent.sdk.entity import DEFAULT_REQUEST_TIMEOUT, UNBOUNDED_TIMEOUT, Entity
 
 
 async def test_request_passes_the_constructor_default_timeout(
@@ -57,4 +57,4 @@ async def test_request_with_explicit_none_waits_effectively_unbounded(
     await entity.request("episode-root.somewhere", Ping(), timeout=None)
 
     client = fake_connect()
-    assert client.request_timeouts == [_UNBOUNDED_TIMEOUT]
+    assert client.request_timeouts == [UNBOUNDED_TIMEOUT]

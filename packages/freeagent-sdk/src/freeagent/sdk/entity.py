@@ -58,7 +58,7 @@ Distinguishes "caller didn't pass a timeout" (fall back to :attr:`Entity.timeout
 ``None`` (wait indefinitely), which a plain ``None`` default couldn't.
 """
 
-_UNBOUNDED_TIMEOUT: Final = 315_360_000.0
+UNBOUNDED_TIMEOUT: Final = 315_360_000.0
 """Ten years in seconds: the value passed to nats-py to mean "effectively no client-side timeout".
 
 nats-py's ``request`` takes a ``float`` and does arithmetic on it, so it can't be given ``None``; a
@@ -161,7 +161,7 @@ class Entity:
         return await self.client.request(
             subject,
             message.model_dump_json().encode(),
-            timeout=_UNBOUNDED_TIMEOUT if resolved is None else resolved,
+            timeout=UNBOUNDED_TIMEOUT if resolved is None else resolved,
         )
 
 
