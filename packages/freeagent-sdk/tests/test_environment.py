@@ -99,7 +99,7 @@ async def test_stop_disconnects_even_when_the_broadcast_times_out(
     await env.start()
     client = fake_connect()
 
-    async def hangs(subject: str, payload: bytes, **_: object) -> None:
+    async def hangs(_: str, __: bytes, **___: object) -> None:
         await asyncio.sleep(10)
 
     client.request = hangs  # type: ignore[assignment]
