@@ -4,8 +4,8 @@ Every value sent over NATS is a :class:`Message`, encoded as JSON.
 :class:`~freeagent.sdk.entity.Entity` subclasses tell messages apart by their concrete pydantic
 type when they arrive, via :meth:`Message.model_validate_json` and a ``match`` statement (see
 :meth:`~freeagent.sdk.entity.Agent.handle_incoming_message`) rather than by which subject they were
-received on. Every :class:`Message` carries its concrete class name as a ``type`` tag so that
-decoding via the base :class:`Message` class (rather than the original concrete subclass) still
+received on. Every :class:`Message` carries its concrete class name as a ``message_type`` tag so
+that decoding via the base :class:`Message` class (rather than the original concrete subclass) still
 recovers the right subclass; see :meth:`Message.model_validate_json`.
 
 Messages come in two flavors, distinguished by how :class:`~freeagent.sdk.entity.Agent` handles
@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class UnknownMessageType(ValueError):
-    """Raised when a :class:`Message`'s ``type`` tag names no known subclass.
+    """Raised when a :class:`Message`'s ``message_type`` tag names no known subclass.
 
     A subclass of :class:`ValueError` so existing ``except ValueError`` handlers around
     :meth:`Message.model_validate_json` keep working, but distinct enough for
@@ -46,31 +46,31 @@ class Message(BaseModel):
     :meth:`Message.model_validate_json`, which uses pydantic's normal validation to pick the right
     subclass.
 
-    :ivar type: The concrete class's name, set automatically and used to pick the right subclass
-        on decode. Subclasses should not set or override this field themselves.
+    :ivar message_type: The concrete class's name, set automatically and used to pick the right
+        subclass on decode. Subclasses should not set or override this field themselves.
     """
 
     model_config = ConfigDict(polymorphic_serialization=True)
 
     _by_type: ClassVar[dict[str, type[Message]]] = {}
 
-    type: str = ""
+    message_type: str = ""
     protocol: str | None = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Register the subclass under its bare class name, rejecting cross-module collisions.
 
         Every :class:`Message` subclass is indexed in :attr:`_by_type` by its bare class name, which
-        is also its ``type`` tag on the wire. Two subclasses from *different* modules sharing a name
-        (e.g. two applications both defining ``Chain``) would silently mis-decode each other's
-        messages, so that is rejected at class-definition time. A name already registered from the
-        *same* module is treated as a benign re-definition (e.g. ``importlib.reload``) and simply
-        re-registers.
+        is also its ``message_type`` tag on the wire. Two subclasses from *different* modules
+        sharing a name (e.g. two applications both defining ``Chain``) would silently mis-decode
+        each other's messages, so that is rejected at class-definition time. A name already
+        registered from the *same* module is treated as a benign re-definition (e.g.
+        ``importlib.reload``) and simply re-registers.
 
         :raises TypeError: If a different module already registered a subclass with this name.
         """
         super().__init_subclass__(**kwargs)
-        cls.model_fields["type"].default = cls.__name__
+        cls.model_fields["message_type"].default = cls.__name__
         existing = Message._by_type.get(cls.__name__)
         if existing is not None and existing.__module__ != cls.__module__:
             raise TypeError(
@@ -81,7 +81,7 @@ class Message(BaseModel):
         Message._by_type[cls.__name__] = cls
 
     def __init__(self, **data: Any) -> None:
-        data.setdefault("type", self.__class__.__name__)
+        data.setdefault("message_type", self.__class__.__name__)
         super().__init__(**data)
 
     @classmethod
@@ -98,12 +98,12 @@ class Message(BaseModel):
         """Decode JSON into an instance of whichever :class:`Message` subclass it was encoded
         from.
 
-        The JSON's ``type`` tag (see :attr:`type`) is looked up among all known :class:`Message`
-        subclasses, so calling this on the base :class:`Message` class returns the right concrete
-        subclass rather than a plain :class:`Message`.
+        The JSON's ``message_type`` tag (see :attr:`message_type`) is looked up among all known
+        :class:`Message` subclasses, so calling this on the base :class:`Message` class returns the
+        right concrete subclass rather than a plain :class:`Message`.
 
-        An unknown ``type`` tag is an error here; callers that expect unknown types (e.g. the
-        control-plane API relaying application messages opaquely) should use :meth:`try_decode`
+        An unknown ``message_type`` tag is an error here; callers that expect unknown types (e.g.
+        the control-plane API relaying application messages opaquely) should use :meth:`try_decode`
         instead.
 
         :param json_data: The JSON, as produced by :meth:`to_bytes`.
@@ -113,7 +113,7 @@ class Message(BaseModel):
         :param by_alias: As for :meth:`pydantic.BaseModel.model_validate_json`.
         :param by_name: As for :meth:`pydantic.BaseModel.model_validate_json`.
         :return: The decoded message, as an instance of its original concrete subclass.
-        :raises UnknownMessageType: If the JSON's ``type`` tag doesn't name a known
+        :raises UnknownMessageType: If the JSON's ``message_type`` tag doesn't name a known
             :class:`Message` subclass.
         """
         tagged = super().model_validate_json(
@@ -124,9 +124,9 @@ class Message(BaseModel):
             by_alias=by_alias,
             by_name=by_name,
         )
-        subclass = Message._by_type.get(tagged.type)
+        subclass = Message._by_type.get(tagged.message_type)
         if subclass is None:
-            raise UnknownMessageType(f'Unknown message type "{tagged.type}"')
+            raise UnknownMessageType(f'Unknown message type "{tagged.message_type}"')
         if subclass is cls:
             return tagged
         return subclass.model_validate_json(
@@ -142,20 +142,20 @@ class Message(BaseModel):
     def try_decode(cls, json_data: str | bytes | bytearray) -> Message | None:
         """Decode JSON like :meth:`model_validate_json`, but return ``None`` for an unknown type.
 
-        Where :meth:`model_validate_json` raises on a ``type`` tag that names no known
+        Where :meth:`model_validate_json` raises on a ``message_type`` tag that names no known
         :class:`Message` subclass, this returns ``None`` instead — for callers that meet unknown
         types *by design*, such as the control-plane API decoding only SDK messages and relaying
         application-defined ones opaquely. Malformed JSON and validation failures still raise; only
         the "not a known type" case is turned into ``None``.
 
         :param json_data: The JSON, as produced by :meth:`to_bytes`.
-        :return: The decoded message as its concrete subclass, or ``None`` if its ``type`` tag names
-            no known :class:`Message` subclass.
+        :return: The decoded message as its concrete subclass, or ``None`` if its ``message_type``
+            tag names no known :class:`Message` subclass.
         """
-        # Always dispatch through the base Message so the ``type`` tag is read leniently and matched
-        # against the whole registry. Going through ``cls`` would validate strictly as ``cls`` while
-        # reading the tag, so ``Product.try_decode`` of an unknown/other type would raise a
-        # validation error instead of returning None.
+        # Always dispatch through the base Message so the ``message_type`` tag is read leniently and
+        # matched against the whole registry. Going through ``cls`` would validate strictly as
+        # ``cls`` while reading the tag, so ``Product.try_decode`` of an unknown/other type would
+        # raise a validation error instead of returning None.
         try:
             return Message.model_validate_json(json_data)
         except UnknownMessageType:

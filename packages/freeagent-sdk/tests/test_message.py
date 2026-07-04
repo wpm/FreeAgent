@@ -2,8 +2,8 @@
 
 These exercise encoding to bytes and decoding back, for the base :class:`Message` and its built-in
 subclasses, plus an application-defined subclass with its own fields. Every :class:`Message`
-carries a ``type`` tag naming its concrete class, so decoding via the base class recovers the
-original subclass rather than a plain :class:`Message`.
+carries a ``message_type`` tag naming its concrete class, so decoding via the base class recovers
+the original subclass rather than a plain :class:`Message`.
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ from freeagent.sdk.message import Ack, Command, Message, StartEntity, StopEntity
 
 def test_to_bytes_encodes_as_utf8_json() -> None:
     message = Product(x=2.0, y=3.0)
-    assert message.to_bytes() == b'{"type":"Product","x":2.0,"y":3.0}'
+    assert message.to_bytes() == b'{"message_type":"Product","x":2.0,"y":3.0}'
     message = message()
-    assert message.to_bytes() == b'{"type":"Product","x":2.0,"y":3.0,"x_times_y":6.0}'
+    assert message.to_bytes() == b'{"message_type":"Product","x":2.0,"y":3.0,"x_times_y":6.0}'
 
 
 def test_to_bytes_returns_bytes_not_str() -> None:
@@ -28,7 +28,7 @@ def test_to_bytes_returns_bytes_not_str() -> None:
 
 @pytest.mark.parametrize("cls", [Message, Ack, Command, StartEntity, StopEntity])
 def test_type_defaults_to_the_concrete_class_name(cls: type[Message]) -> None:
-    assert cls().type == cls.__name__
+    assert cls().message_type == cls.__name__
 
 
 @pytest.mark.parametrize("cls", [Message, Ack, Command, StartEntity, StopEntity])
@@ -71,7 +71,7 @@ def test_model_validate_json_rejects_json_missing_required_fields() -> None:
 
 def test_model_validate_json_rejects_an_unknown_type_tag() -> None:
     with pytest.raises(ValueError, match="Bogus"):
-        Message.model_validate_json(b'{"type": "Bogus"}')
+        Message.model_validate_json(b'{"message_type": "Bogus"}')
 
 
 def test_duplicate_subclass_name_across_modules_raises_at_class_definition_time(
@@ -96,13 +96,13 @@ def test_reimporting_the_same_module_does_not_raise(
 
 
 def test_try_decode_returns_none_for_an_unknown_type_tag() -> None:
-    assert Message.try_decode(b'{"type": "Bogus"}') is None
+    assert Message.try_decode(b'{"message_type": "Bogus"}') is None
 
 
 def test_subclass_try_decode_returns_none_for_an_unknown_type_tag() -> None:
     # try_decode called on a subclass must still decode the tag against the whole registry, not
     # validate strictly as that subclass, so an unknown tag yields None rather than raising.
-    assert Product.try_decode(b'{"type": "Bogus"}') is None
+    assert Product.try_decode(b'{"message_type": "Bogus"}') is None
 
 
 def test_try_decode_returns_the_concrete_subclass_for_a_known_type_tag() -> None:
@@ -123,4 +123,4 @@ def test_try_decode_still_raises_when_a_known_type_fails_validation() -> None:
     # A known type tag whose payload is missing required fields is a validation failure, not an
     # unknown type: try_decode must let it raise rather than swallowing it into None.
     with pytest.raises(ValueError):
-        Message.try_decode(b'{"type": "Product", "x": 1.0}')
+        Message.try_decode(b'{"message_type": "Product", "x": 1.0}')
