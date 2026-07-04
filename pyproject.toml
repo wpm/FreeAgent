@@ -58,3 +58,9 @@ explicit_package_bases = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Unregistered markers are errors, so a typo'd marker fails loudly rather than silently
+# selecting nothing.
+addopts = "--strict-markers"
+markers = [
+    "integration: exercises a real nats-server subprocess; excluded by `-m \"not integration\"`.",
+]
