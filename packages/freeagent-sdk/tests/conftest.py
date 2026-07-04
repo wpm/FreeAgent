@@ -1,9 +1,27 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import pytest
 from fixtures import FakeClient
+from freeagent.sdk.message import Message
+
+
+@pytest.fixture
+def isolated_message_registry() -> Iterator[None]:
+    """Snapshot and restore :attr:`Message._by_type` around a test.
+
+    Registering a :class:`~freeagent.sdk.message.Message` subclass mutates the process-global
+    registry, and defining one (or importing a module that does) inside a test would otherwise leak
+    that entry into every later test. Tests that define or import :class:`Message` subclasses use
+    this to keep the registry pristine.
+    """
+    snapshot = dict(Message._by_type)
+    try:
+        yield
+    finally:
+        Message._by_type.clear()
+        Message._by_type.update(snapshot)
 
 
 @pytest.fixture

@@ -27,6 +27,16 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict
 
 
+class UnknownMessageType(ValueError):
+    """Raised when a :class:`Message`'s ``type`` tag names no known subclass.
+
+    A subclass of :class:`ValueError` so existing ``except ValueError`` handlers around
+    :meth:`Message.model_validate_json` keep working, but distinct enough for
+    :meth:`Message.try_decode` to catch *only* the unknown-type case and turn it into ``None``,
+    without also swallowing genuine validation failures.
+    """
+
+
 class Message(BaseModel):
     """A message passed between entities, or queued internally by an entity for its own
     consumption.
@@ -48,10 +58,21 @@ class Message(BaseModel):
     protocol: str | None = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Register the subclass under its bare class name, rejecting cross-module collisions.
+
+        Every :class:`Message` subclass is indexed in :attr:`_by_type` by its bare class name, which
+        is also its ``type`` tag on the wire. Two subclasses from *different* modules sharing a name
+        (e.g. two applications both defining ``Chain``) would silently mis-decode each other's
+        messages, so that is rejected at class-definition time. A name already registered from the
+        *same* module is treated as a benign re-definition (e.g. ``importlib.reload``) and simply
+        re-registers.
+
+        :raises TypeError: If a different module already registered a subclass with this name.
+        """
         super().__init_subclass__(**kwargs)
         cls.model_fields["type"].default = cls.__name__
         existing = Message._by_type.get(cls.__name__)
-        if existing is not None:
+        if existing is not None and existing.__module__ != cls.__module__:
             raise TypeError(
                 f'Duplicate Message subclass name "{cls.__name__}": already registered by '
                 f"{existing.__module__}.{existing.__qualname__}. Message type tags are bare class "
@@ -88,8 +109,8 @@ class Message(BaseModel):
 
         :param json_data: The JSON, as produced by :meth:`to_bytes`.
         :return: The decoded message, as an instance of its original concrete subclass.
-        :raises ValueError: If the JSON's ``type`` tag doesn't name a known :class:`Message`
-            subclass.
+        :raises UnknownMessageType: If the JSON's ``type`` tag doesn't name a known
+            :class:`Message` subclass.
         """
         tagged = super().model_validate_json(
             json_data,
@@ -101,7 +122,7 @@ class Message(BaseModel):
         )
         subclass = Message._by_type.get(tagged.type)
         if subclass is None:
-            raise ValueError(f'Unknown message type "{tagged.type}"')
+            raise UnknownMessageType(f'Unknown message type "{tagged.type}"')
         if subclass is cls:
             return tagged
         return subclass.model_validate_json(
@@ -127,10 +148,14 @@ class Message(BaseModel):
         :return: The decoded message as its concrete subclass, or ``None`` if its ``type`` tag names
             no known :class:`Message` subclass.
         """
-        tagged = super().model_validate_json(json_data)
-        if Message._by_type.get(tagged.type) is None:
+        # Always dispatch through the base Message so the ``type`` tag is read leniently and matched
+        # against the whole registry. Going through ``cls`` would validate strictly as ``cls`` while
+        # reading the tag, so ``Product.try_decode`` of an unknown/other type would raise a
+        # validation error instead of returning None.
+        try:
+            return Message.model_validate_json(json_data)
+        except UnknownMessageType:
             return None
-        return cls.model_validate_json(json_data)
 
     def to_bytes(self) -> bytes:
         """Serialize this message to the JSON bytes sent over NATS.

@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from fixtures import FakeClient, Ping
-from freeagent.sdk.entity import DEFAULT_REQUEST_TIMEOUT, Entity
+from freeagent.sdk.entity import _UNBOUNDED_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, Entity
 
 
 async def test_request_passes_the_constructor_default_timeout(
@@ -45,3 +45,16 @@ async def test_request_per_call_timeout_overrides_the_constructor_default(
 
     client = fake_connect()
     assert client.request_timeouts == [0.1]
+
+
+async def test_request_with_explicit_none_waits_effectively_unbounded(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    # nats-py can't take None; an explicit None means "wait indefinitely", translated at the
+    # boundary to a very large finite timeout rather than the entity default.
+    entity = Entity("nats://localhost:4222", "episode-root", timeout=2.5)
+
+    await entity.request("episode-root.somewhere", Ping(), timeout=None)
+
+    client = fake_connect()
+    assert client.request_timeouts == [_UNBOUNDED_TIMEOUT]
