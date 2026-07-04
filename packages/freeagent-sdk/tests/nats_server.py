@@ -53,14 +53,28 @@ def _free_port() -> int:
         return port
 
 
-def _wait_until_accepting(port: int, deadline: float) -> None:
-    """Block until ``port`` accepts a TCP connection, or raise once ``deadline`` passes.
+def _wait_until_accepting(process: subprocess.Popen[bytes], port: int, deadline: float) -> None:
+    """Block until ``port`` accepts a TCP connection, or raise if the server dies or ``deadline``
+    passes.
 
+    Checks the subprocess between connection attempts: if ``nats-server`` exits before it starts
+    listening — the port was stolen after :func:`_free_port` released it, a bad flag, the port was
+    already bound — this fails immediately with the exit code instead of spinning until the full
+    startup timeout on a port that will never come up.
+
+    :param process: The ``nats-server`` subprocess being waited on.
     :param port: The loopback port the server is expected to listen on.
     :param deadline: Monotonic-clock time by which the server must be accepting connections.
+    :raises RuntimeError: If the server process exits before it accepts a connection.
     :raises TimeoutError: If the server is not accepting connections by ``deadline``.
     """
     while True:
+        exit_code = process.poll()
+        if exit_code is not None:
+            raise RuntimeError(
+                f"{NATS_SERVER_BINARY} exited with code {exit_code} before accepting connections "
+                f"on port {port}"
+            )
         try:
             with closing(socket.create_connection(("127.0.0.1", port), timeout=_POLL_INTERVAL)):
                 return
@@ -99,7 +113,7 @@ def running_nats_server() -> Iterator[str]:
         stderr=subprocess.DEVNULL,
     )
     try:
-        _wait_until_accepting(port, time.monotonic() + STARTUP_TIMEOUT)
+        _wait_until_accepting(process, port, time.monotonic() + STARTUP_TIMEOUT)
         yield f"nats://127.0.0.1:{port}"
     finally:
         process.terminate()

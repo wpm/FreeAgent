@@ -19,8 +19,8 @@ from collections.abc import Callable
 import pytest
 from fixtures import Ping
 from freeagent.sdk import Agent
-from freeagent.sdk.entity import Entity, Environment
-from freeagent.sdk.message import Ack, Message, StartEntity
+from freeagent.sdk.entity import Environment
+from freeagent.sdk.message import Ack, Message
 
 pytestmark = pytest.mark.integration
 
@@ -110,36 +110,44 @@ async def test_two_episode_roots_cannot_see_each_others_messages(nats_server: st
     message published under one root must never reach a subscriber under another. Here two agents
     named identically live under two different roots; a message sent to the first root's agent is
     processed only there, and the second agent's queue stays empty.
+
+    Both agents are driven through a real :class:`Environment` per root, so ``StartEntity`` launches
+    each run loop and ``StopEntity`` cancels it on teardown (leaving no pending task at loop close).
+    A positive control keeps the isolation claim from passing vacuously: beta receives a message on
+    its *own* root and must process it, proving beta is genuinely live and subscribed — so beta's
+    silence about alpha's message is real isolation, not an inert agent.
     """
     alpha_agent = RecordingAgent("episode.alpha", "worker", nats_server)
     beta_agent = RecordingAgent("episode.beta", "worker", nats_server)
     await alpha_agent.start()
     await beta_agent.start()
 
-    sender = Entity(nats_server, "episode.alpha")
+    alpha_env = Environment("episode.alpha", "worker", servers=nats_server, timeout=5.0)
+    beta_env = Environment("episode.beta", "worker", servers=nats_server, timeout=5.0)
+    await alpha_env.start()  # StartEntity → launches alpha's run loop.
+    await beta_env.start()  # StartEntity → launches beta's run loop.
     try:
-        await sender.start()
-        # Launch each agent's run loop so queued plain messages are drained into process_message.
-        await sender.request("episode.alpha.agents.worker", StartEntity(), timeout=5.0)
-        await sender.request("episode.beta.agents.worker", StartEntity(), timeout=5.0)
-
-        # A plain message addressed to alpha's worker; its Ack reply confirms alpha processed it.
-        reply = await sender.request(
-            "episode.alpha.agents.worker", Ping(label="for-alpha"), timeout=5.0
-        )
+        # A plain message to alpha's worker only; its Ack reply confirms alpha processed it.
+        [reply] = await alpha_env.broadcast_to_agents(Ping(label="for-alpha"))
         assert Message.model_validate_json(reply.data) == Ack()
+        assert await asyncio.wait_for(alpha_agent.processed.get(), timeout=5.0) == Ping(
+            label="for-alpha"
+        )
 
-        processed = await asyncio.wait_for(alpha_agent.processed.get(), timeout=5.0)
-        assert processed == Ping(label="for-alpha")
-
-        # The other root's agent must never have seen it. Give delivery a real chance to (wrongly)
-        # happen before concluding it didn't.
+        # Beta never saw alpha's message. Give delivery a real chance to (wrongly) happen first.
         await asyncio.sleep(0.2)
         assert beta_agent.processed.empty()
+
+        # Positive control: beta *does* receive a message addressed to its own root, so the empty
+        # queue above is isolation, not an inert agent.
+        [beta_reply] = await beta_env.broadcast_to_agents(Ping(label="for-beta"))
+        assert Message.model_validate_json(beta_reply.data) == Ack()
+        assert await asyncio.wait_for(beta_agent.processed.get(), timeout=5.0) == Ping(
+            label="for-beta"
+        )
     finally:
-        await sender.stop()
-        await alpha_agent.stop()
-        await beta_agent.stop()
+        await alpha_env.stop()  # StopEntity → cancels alpha's run loop.
+        await beta_env.stop()  # StopEntity → cancels beta's run loop.
 
 
 async def test_episode_root_fixture_is_unique_per_test(episode_root: str) -> None:

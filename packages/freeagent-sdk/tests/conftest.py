@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Iterator
 
 import pytest
@@ -68,10 +69,14 @@ def episode_root(request: pytest.FixtureRequest) -> str:
     Every integration test roots its entities under a subject unique to that test, so two tests
     sharing the one session server never collide in the subject namespace. The node id is a stable,
     per-test string; NATS subject tokens can't contain the ``.``/``/``/whitespace that node ids
-    carry, so those are mapped to ``_``.
+    carry, so those are mapped to ``_`` for a readable subject. Because that mapping is lossy (two
+    node ids differing only in punctuation would sanitize identically), a short digest of the raw
+    node id is appended so distinct tests always get distinct roots.
 
     :param request: The active pytest request, whose ``node.nodeid`` names the running test.
     :return: A subject-safe episode root unique to the current test.
     """
-    sanitized = "".join(c if c.isalnum() or c in "-_" else "_" for c in request.node.nodeid)
-    return f"episode.{sanitized}"
+    node_id = request.node.nodeid
+    readable = "".join(c if c.isalnum() or c in "-_" else "_" for c in node_id)
+    digest = hashlib.sha1(node_id.encode(), usedforsecurity=False).hexdigest()[:8]
+    return f"episode.{readable}.{digest}"
