@@ -14,7 +14,7 @@ from collections.abc import Callable
 import pytest
 from fixtures import FakeClient, FakeMsg, Ping, RecordingAgent, Shout
 from freeagent.sdk.entity import AGENTS, Agent
-from freeagent.sdk.message import Ack, Message, StartEntity, StopEntity
+from freeagent.sdk.message import Ack, Message, StartEntity, StopAgent, StopEntity
 
 
 async def test_init_subscribes_under_agents_and_the_agent_name() -> None:
@@ -186,6 +186,104 @@ async def test_stop_entity_is_not_handed_to_process_message() -> None:
     await agent.handle_incoming_message(FakeMsg.for_message(StopEntity()))  # type: ignore[arg-type]
 
     assert agent.processed == []
+
+
+async def test_stop_agent_cancels_the_run_loop_unsubscribes_and_disconnects(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    # StopAgent tears the targeted agent down exactly as StopEntity does; only targeting differs.
+    agent = RecordingAgent("worker", "jobs")
+    await agent.start()
+    client = fake_connect()
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    task = agent.task
+    assert task is not None
+
+    await agent.handle_incoming_message(FakeMsg.for_message(StopAgent()))  # type: ignore[arg-type]
+
+    assert agent.task is None
+    assert task.cancelled()
+    assert all(sub.unsubscribe_calls == 1 for sub in client.subscriptions)
+    assert client.closed is True
+    assert agent.client is None
+
+
+async def test_stop_agent_replies_with_ack_when_sent_as_a_request() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    msg = FakeMsg.for_message(StopAgent(), reply="reply-inbox")
+
+    await agent.handle_incoming_message(msg)  # type: ignore[arg-type]
+
+    assert msg.responses == [Ack().to_bytes()]
+
+
+async def test_stop_agent_without_a_running_task_is_safe() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    # Never started: no task, no client, no subscriptions. StopAgent must not raise.
+    await agent.handle_incoming_message(FakeMsg.for_message(StopAgent()))  # type: ignore[arg-type]
+
+    assert agent.task is None
+
+
+async def test_stop_agent_is_idempotent(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    # Stopping an already-stopped agent matches StopEntity: the second stop cancels nothing, closes
+    # nothing again, and still re-acks.
+    agent = RecordingAgent("worker", "jobs")
+    await agent.start()
+    client = fake_connect()
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+
+    await agent.handle_incoming_message(FakeMsg.for_message(StopAgent()))  # type: ignore[arg-type]
+    msg = FakeMsg.for_message(StopAgent(), reply="reply-inbox")
+    await agent.handle_incoming_message(msg)  # type: ignore[arg-type]
+
+    assert agent.task is None
+    assert client.close_calls == 1
+    assert msg.responses == [Ack().to_bytes()]
+
+
+async def test_stop_agent_stops_only_the_targeted_agent_leaving_others_running(
+    created_clients: list[FakeClient],
+) -> None:
+    # Two agents in the same episode: stopping one via StopAgent must not touch the other. Drive
+    # each agent's handler directly (as its own NATS subscription would), so the two are wired to
+    # separate fake clients and can be inspected independently.
+    alice = RecordingAgent("alice", "jobs")
+    bob = RecordingAgent("bob", "jobs")
+    await alice.start()
+    await bob.start()
+    alice_client, bob_client = created_clients
+    await alice.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    await bob.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    bob_task = bob.task
+    assert bob_task is not None
+
+    await alice.handle_incoming_message(FakeMsg.for_message(StopAgent()))  # type: ignore[arg-type]
+
+    # Alice is fully torn down.
+    assert alice.task is None
+    assert alice.client is None
+    assert alice_client.closed is True
+    # Bob keeps running: run loop alive, still connected, subscriptions intact.
+    assert bob.task is bob_task
+    assert not bob_task.done()
+    assert bob.client is not None
+    assert bob_client.closed is False
+
+    bob_task.cancel()
+
+
+async def test_stop_agent_is_not_handed_to_process_message_or_process_command() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+
+    await agent.handle_incoming_message(FakeMsg.for_message(StopAgent()))  # type: ignore[arg-type]
+
+    assert agent.processed == []
+    assert agent.commands == []
 
 
 async def test_command_is_dispatched_to_process_command() -> None:

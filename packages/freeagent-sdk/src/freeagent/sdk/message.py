@@ -16,8 +16,13 @@ them:
   :meth:`~freeagent.sdk.entity.Agent.process_message`.
 - :class:`Command` and its subclasses are out-of-domain: they are handled immediately, inline in
   :meth:`~freeagent.sdk.entity.Agent.handle_incoming_message`, ahead of anything already queued.
-  :class:`StartEntity` and :class:`StopEntity` are the commands every entity understands; subclass
-  :class:`Command` and override :meth:`~freeagent.sdk.entity.Agent.process_command` to add more.
+  :class:`StartEntity`, :class:`StopEntity`, and :class:`StopAgent` are the commands every entity
+  understands; subclass :class:`Command` and override
+  :meth:`~freeagent.sdk.entity.Agent.process_command` to add more.
+
+Alongside those commands the SDK defines :class:`EpisodeComplete`, a plain :class:`Message` (not a
+:class:`Command`) the :class:`~freeagent.sdk.entity.Environment` publishes as the last message of an
+episode to mark its definite end for observers.
 """
 
 from __future__ import annotations
@@ -38,8 +43,7 @@ class UnknownMessageType(ValueError):
 
 
 class Message(BaseModel):
-    """A message passed between entities, or queued internally by an entity for its own
-    consumption.
+    """A message passed between entities, or queued internally by an entity for its own consumption.
 
     Subclass this to define an application's in-domain message types. Instances are serialized to
     JSON with :meth:`to_bytes` and reconstructed on the receiving end with
@@ -95,8 +99,7 @@ class Message(BaseModel):
         by_alias: bool | None = None,
         by_name: bool | None = None,
     ) -> Message:
-        """Decode JSON into an instance of whichever :class:`Message` subclass it was encoded
-        from.
+        """Decode JSON into an instance of whichever :class:`Message` subclass it was encoded from.
 
         The JSON's ``message_type`` tag (see :attr:`message_type`) is looked up among all known
         :class:`Message` subclasses, so calling this on the base :class:`Message` class returns the
@@ -207,4 +210,33 @@ class StopEntity(Command):
 
     Handled directly by :meth:`~freeagent.sdk.entity.Agent.handle_incoming_message`, which cancels
     the running task (if any) and calls :meth:`~freeagent.sdk.entity.Entity.stop`.
+
+    Broadcast to every agent by :meth:`~freeagent.sdk.entity.Environment.stop` as the episode-wide
+    teardown; to stop a single agent while the rest of the episode continues, use :class:`StopAgent`
+    instead.
+    """
+
+
+class StopAgent(Command):
+    """Command a single :class:`~freeagent.sdk.entity.Agent` to stop, while the episode continues.
+
+    Sent by the :class:`~freeagent.sdk.entity.Environment` to *one* agent (via
+    :meth:`~freeagent.sdk.entity.Environment.stop_agent`), unlike the broadcast :class:`StopEntity`
+    teardown that ends the whole episode. On receipt the agent cancels its run loop and tears itself
+    down exactly as for :class:`StopEntity` — the difference is targeting, not teardown semantics —
+    and, like :class:`StopEntity`, doing so is idempotent and replied to with an :class:`Ack`.
+    """
+
+
+class EpisodeComplete(Message):
+    """The last message of an episode, marking its definite end for any observer.
+
+    Published (not broadcast as a request) by the :class:`~freeagent.sdk.entity.Environment` on its
+    own ``{episode_root}.environment`` subject as the final message of an episode, immediately
+    before the environment broadcasts :class:`StopEntity` and tears itself down; see
+    :meth:`~freeagent.sdk.entity.Environment.stop`.
+
+    A plain :class:`Message` rather than a :class:`Command`: it is not directed at an agent's run
+    loop but observed off the wire by the control-plane API (and, later, archives), for which an
+    episode record without a definite end marker cannot be trusted as training data (ADR-0008).
     """

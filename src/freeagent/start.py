@@ -65,7 +65,6 @@ def reformat() -> None:
             "--recursive",
             "--wrap-summaries=100",
             "--wrap-descriptions=100",
-            "--force-wrap",
             *source_dirs,
             "--exclude",
             ".mypy_cache",

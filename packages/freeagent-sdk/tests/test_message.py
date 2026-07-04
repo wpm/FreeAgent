@@ -1,9 +1,9 @@
 """Tests for :mod:`freeagent.sdk.message`.
 
 These exercise encoding to bytes and decoding back, for the base :class:`Message` and its built-in
-subclasses, plus an application-defined subclass with its own fields. Every :class:`Message`
-carries a ``message_type`` tag naming its concrete class, so decoding via the base class recovers
-the original subclass rather than a plain :class:`Message`.
+subclasses, plus an application-defined subclass with its own fields. Every :class:`Message` carries
+a ``message_type`` tag naming its concrete class, so decoding via the base class recovers the
+original subclass rather than a plain :class:`Message`.
 """
 
 from __future__ import annotations
@@ -12,7 +12,15 @@ import importlib
 
 import pytest
 from fixtures import Product
-from freeagent.sdk.message import Ack, Command, Message, StartEntity, StopEntity
+from freeagent.sdk.message import (
+    Ack,
+    Command,
+    EpisodeComplete,
+    Message,
+    StartEntity,
+    StopAgent,
+    StopEntity,
+)
 
 
 def test_to_bytes_encodes_as_utf8_json() -> None:
@@ -26,12 +34,16 @@ def test_to_bytes_returns_bytes_not_str() -> None:
     assert isinstance(Ack().to_bytes(), bytes)
 
 
-@pytest.mark.parametrize("cls", [Message, Ack, Command, StartEntity, StopEntity])
+@pytest.mark.parametrize(
+    "cls", [Message, Ack, Command, StartEntity, StopEntity, StopAgent, EpisodeComplete]
+)
 def test_type_defaults_to_the_concrete_class_name(cls: type[Message]) -> None:
     assert cls().message_type == cls.__name__
 
 
-@pytest.mark.parametrize("cls", [Message, Ack, Command, StartEntity, StopEntity])
+@pytest.mark.parametrize(
+    "cls", [Message, Ack, Command, StartEntity, StopEntity, StopAgent, EpisodeComplete]
+)
 def test_fieldless_message_round_trips_through_its_own_class(cls: type[Message]) -> None:
     message = cls()
 
@@ -57,6 +69,27 @@ def test_decoding_via_the_base_class_recovers_the_concrete_subclass() -> None:
 
     assert type(decoded) is Product
     assert decoded == message
+
+
+@pytest.mark.parametrize("cls", [StopAgent, EpisodeComplete])
+def test_control_plane_types_decode_via_the_base_class(cls: type[Message]) -> None:
+    # Both new control-plane types must be recoverable through the polymorphic registry, so an
+    # observer decoding via the base Message class gets back the concrete subclass.
+    decoded = Message.model_validate_json(cls().to_bytes())
+
+    assert type(decoded) is cls
+
+
+def test_stop_agent_is_a_command() -> None:
+    # StopAgent is handled inline like other commands, not queued as an in-domain message.
+    assert issubclass(StopAgent, Command)
+
+
+def test_episode_complete_is_a_plain_message_not_a_command() -> None:
+    # EpisodeComplete is observed off the wire, not directed at an agent's run loop, so it must not
+    # be a Command (which the Agent would otherwise hand to process_command).
+    assert issubclass(EpisodeComplete, Message)
+    assert not issubclass(EpisodeComplete, Command)
 
 
 def test_model_validate_json_rejects_malformed_json() -> None:

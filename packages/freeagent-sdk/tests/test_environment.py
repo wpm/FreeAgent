@@ -2,8 +2,8 @@
 
 These pin the subject-naming contract between :class:`~freeagent.sdk.entity.Environment` and
 :class:`~freeagent.sdk.entity.Agent`: :meth:`Environment.broadcast_to_agents` must send to exactly
-the subjects an :class:`Agent` subscribes to. Expected subjects are built from the same ``AGENTS``
-/ ``ENVIRONMENT`` constants the implementation uses on the *Agent* side, so a send/subscribe
+the subjects an :class:`Agent` subscribes to. Expected subjects are built from the same ``AGENTS`` /
+``ENVIRONMENT`` constants the implementation uses on the *Agent* side, so a send/subscribe
 divergence (e.g. dropping the ``agents.`` segment on the send side) fails a test here rather than
 both drifting together.
 """
@@ -14,9 +14,16 @@ import asyncio
 from collections.abc import Callable
 
 import pytest
-from fixtures import FakeClient
+from fixtures import FakeClient, FakeMsg
 from freeagent.sdk.entity import AGENTS, ENVIRONMENT, UNBOUNDED_TIMEOUT, Agent, Environment
-from freeagent.sdk.message import Ack, Message, StartEntity, StopEntity
+from freeagent.sdk.message import (
+    Ack,
+    EpisodeComplete,
+    Message,
+    StartEntity,
+    StopAgent,
+    StopEntity,
+)
 
 
 def agent_subject(episode_root: str, name: str) -> str:
@@ -143,3 +150,122 @@ async def test_environment_subscribes_under_environment_subject(
 
     client = fake_connect()
     assert [s.subject for s in client.subscriptions] == [f"episode-root.{ENVIRONMENT}"]
+
+
+async def test_stop_agent_sends_stop_agent_to_exactly_the_targeted_agent(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    env = Environment("episode-root", "alice", "bob")
+    await env.start()
+    client = fake_connect()
+    client.requests.clear()
+
+    await env.stop_agent("alice")
+
+    # Exactly the one targeted agent's subject is requested; bob (still running) is untouched.
+    assert [subject for subject, _ in client.requests] == [agent_subject("episode-root", "alice")]
+    for _, payload in client.requests:
+        assert Message.model_validate_json(payload) == StopAgent()
+
+
+async def test_stop_agent_records_the_stopped_agent(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    env = Environment("episode-root", "alice", "bob")
+    await env.start()
+
+    await env.stop_agent("alice")
+
+    assert env.stopped_agents == {"alice"}
+
+
+async def test_stop_agent_is_idempotent(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    env = Environment("episode-root", "alice", "bob")
+    await env.start()
+    client = fake_connect()
+    client.requests.clear()
+
+    await env.stop_agent("alice")
+    await env.stop_agent("alice")
+
+    # The second stop of an already-stopped agent sends nothing, matching agent-side idempotency.
+    assert [subject for subject, _ in client.requests] == [agent_subject("episode-root", "alice")]
+    assert env.stopped_agents == {"alice"}
+
+
+async def test_stop_agent_request_carries_the_broadcast_timeout(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    env = Environment("episode-root", "alice", "bob", timeout=0.25)
+    await env.start()
+    client = fake_connect()
+    client.request_timeouts.clear()
+
+    await env.stop_agent("alice")
+
+    # The targeted request is bounded exactly like a broadcast request, never nats-py's default.
+    assert client.request_timeouts == [0.25]
+
+
+async def test_stop_publishes_episode_complete_on_the_environment_subject(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    env = Environment("episode-root", "alice", "bob")
+    await env.start()
+    client = fake_connect()
+
+    await env.stop()
+
+    assert [subject for subject, _ in client.published] == [f"episode-root.{ENVIRONMENT}"]
+    ((_, payload),) = client.published
+    assert Message.model_validate_json(payload) == EpisodeComplete()
+
+
+async def test_stop_publishes_episode_complete_exactly_once(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    env = Environment("episode-root", "alice", "bob")
+    await env.start()
+    client = fake_connect()
+
+    await env.stop()
+
+    episode_completes = [
+        payload
+        for _, payload in client.published
+        if isinstance(Message.model_validate_json(payload), EpisodeComplete)
+    ]
+    assert len(episode_completes) == 1
+
+
+async def test_stop_emits_episode_complete_before_broadcasting_stop_entity(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    # The end marker must precede teardown so an observer sees the definite end of the episode ahead
+    # of the agents stopping. Record the interleaving of publishes and requests as they happen.
+    env = Environment("episode-root", "alice")
+    await env.start()
+    client = fake_connect()
+
+    order: list[str] = []
+    real_publish = client.publish
+    real_request = client.request
+
+    async def recording_publish(subject: str, payload: bytes) -> None:
+        order.append("publish")
+        await real_publish(subject, payload)
+
+    async def recording_request(
+        subject: str, payload: bytes, timeout: float = 0.5, **kwargs: object
+    ) -> FakeMsg:
+        order.append("request")
+        return await real_request(subject, payload, timeout=timeout, **kwargs)
+
+    client.publish = recording_publish  # type: ignore[method-assign]
+    client.request = recording_request  # type: ignore[method-assign]
+
+    await env.stop()
+
+    assert order == ["publish", "request"]

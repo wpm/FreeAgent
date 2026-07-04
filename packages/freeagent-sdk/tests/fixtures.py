@@ -45,6 +45,7 @@ class FakeClient:
         self.close_calls = 0
         self.requests: list[tuple[str, bytes]] = []
         self.request_timeouts: list[float] = []
+        self.published: list[tuple[str, bytes]] = []
 
     async def subscribe(self, subject: str, cb: Handler | None = None) -> FakeSubscription:
         assert cb is not None
@@ -59,6 +60,10 @@ class FakeClient:
         self.requests.append((subject, payload))
         self.request_timeouts.append(timeout)
         return FakeMsg.for_message(Ack())
+
+    async def publish(self, subject: str, payload: bytes) -> None:
+        """Record a fire-and-forget publish (no reply), as a real client would send it."""
+        self.published.append((subject, payload))
 
     async def close(self) -> None:
         self.closed = True

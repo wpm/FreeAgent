@@ -1,9 +1,9 @@
 """Tests for :class:`freeagent.sdk.entity.Entity`'s request/timeout contract.
 
 Under the ack-then-work pattern a request timeout is a *feature*: it bounds how long a caller waits
-for an entity to acknowledge before it starts working inside its handler. These pin that the
-timeout is explicit and configurable — a constructor-level default, overridable per call — rather
-than nats-py's inherited 0.5 s default, which no call path may rely on.
+for an entity to acknowledge before it starts working inside its handler. These pin that the timeout
+is explicit and configurable — a constructor-level default, overridable per call — rather than the
+0.5 s default inherited from nats-py, which no call path may rely on.
 """
 
 from __future__ import annotations

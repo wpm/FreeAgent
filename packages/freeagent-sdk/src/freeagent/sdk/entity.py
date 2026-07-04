@@ -29,7 +29,15 @@ from asyncio import Queue, Task, gather, wait_for
 from typing import Final, final
 
 import nats
-from freeagent.sdk.message import Ack, Command, Message, StartEntity, StopEntity
+from freeagent.sdk.message import (
+    Ack,
+    Command,
+    EpisodeComplete,
+    Message,
+    StartEntity,
+    StopAgent,
+    StopEntity,
+)
 from nats.aio.client import Client
 from nats.aio.msg import Msg
 from nats.aio.subscription import Subscription
@@ -78,8 +86,8 @@ class Entity:
 
     An entity is an independent Free Agent process that communicates with the rest of its episode
     over NATS. It tracks its own connection and subscriptions and knows how to tear both down; on
-    its own it doesn't do anything with incoming messages; :meth:`handle_incoming_message` is a
-    no-op here, so subclasses such as :class:`Agent` override it to add behavior.
+    its own it doesn't do anything with incoming messages; :meth:`handle_incoming_message` does
+    nothing here, so subclasses such as :class:`Agent` override it to add behavior.
 
     :param servers: NATS server URL(s) to connect to.
     :param episode_root: The root NATS subject for this entity's episode.
@@ -164,15 +172,34 @@ class Entity:
             timeout=UNBOUNDED_TIMEOUT if resolved is None else resolved,
         )
 
+    async def publish(self, subject: str, message: Message) -> None:
+        """Publish a message on a subject without waiting for a reply.
+
+        Unlike :meth:`request`, this is fire-and-forget: it neither expects nor waits for an
+        :class:`~freeagent.sdk.message.Ack`. Used for messages that are observed off the wire rather
+        than answered, such as the :class:`~freeagent.sdk.message.EpisodeComplete` marker the
+        :class:`Environment` emits at the end of an episode. Connects first via :meth:`start` if not
+        already connected.
+
+        :param subject: The NATS subject to publish to.
+        :param message: The message to publish.
+        """
+        if self.client is None:
+            await self.start()
+        assert self.client is not None
+        await self.client.publish(subject, message.to_bytes())
+
 
 class Environment(Entity):
-    """The environment manages an episode's agents' lifecycles and enforces a shared reality
-    among them.
+    """The environment manages an episode's agents' lifecycles and enforces a shared reality among
+    them.
 
     There is exactly one :class:`Environment` per episode. :meth:`start` connects to NATS and then
     broadcasts a :class:`~freeagent.sdk.message.StartEntity` command to every agent named in
-    ``agents``, via :meth:`broadcast_to_agents`; :meth:`stop` does the reverse, broadcasting
-    :class:`~freeagent.sdk.message.StopEntity` before disconnecting itself.
+    ``agents``, via :meth:`broadcast_to_agents`; :meth:`stop` does the reverse, publishing a final
+    :class:`~freeagent.sdk.message.EpisodeComplete` marker and then broadcasting
+    :class:`~freeagent.sdk.message.StopEntity` before disconnecting itself. To stop a single agent
+    mid-episode, while the others keep running, use :meth:`stop_agent`.
 
     :param episode_root: The root NATS subject for this episode.
     :param agents: Names of the agents that participate in this episode.
@@ -182,6 +209,9 @@ class Environment(Entity):
         command, or ``None`` to wait indefinitely. This is the broadcast-wide bound; each
         individual request is bounded by the same value (see :meth:`broadcast_to_agents`), so no
         request falls back to nats-py's silent default.
+
+    :ivar stopped_agents: Names of the agents this environment has stopped via :meth:`stop_agent`,
+        so a repeat stop of an already-stopped agent can be recognized as a no-op.
     """
 
     def __init__(
@@ -194,6 +224,7 @@ class Environment(Entity):
         super().__init__(servers, episode_root, ENVIRONMENT)
         self.agents = agents
         self.timeout = timeout
+        self.stopped_agents: set[str] = set()
 
     async def start(self) -> None:
         """Connect to NATS, then broadcast :class:`~freeagent.sdk.message.StartEntity` to every
@@ -206,26 +237,54 @@ class Environment(Entity):
         await wait_for(self.broadcast_to_agents(StartEntity()), self.timeout)
 
     async def stop(self) -> None:
-        """Broadcast :class:`~freeagent.sdk.message.StopEntity` to every agent, then disconnect.
+        """Mark the episode complete, broadcast :class:`~freeagent.sdk.message.StopEntity`, then
+        disconnect.
 
-        Overrides :meth:`Entity.stop`. Does nothing if not currently connected; otherwise
-        broadcasts the stop command before disconnecting, even if the broadcast raises or times
-        out.
+        Overrides :meth:`Entity.stop`. Does nothing if not currently connected; otherwise, in order:
+        publishes a single :class:`~freeagent.sdk.message.EpisodeComplete` on the environment's own
+        subject as the last message of the episode, broadcasts the
+        :class:`~freeagent.sdk.message.StopEntity` teardown command to every agent, and disconnects.
+        The :class:`~freeagent.sdk.message.EpisodeComplete` is published before the broadcast so an
+        observer sees the definite end marker ahead of the agents tearing down; the broadcast still
+        runs, and the environment still disconnects, even if it raises or times out.
         """
         if self.client is None:
             return
         try:
+            await self.publish(f"{self.episode_root}.{ENVIRONMENT}", EpisodeComplete())
             await wait_for(self.broadcast_to_agents(StopEntity()), self.timeout)
         finally:
             await super().stop()
+
+    async def stop_agent(self, agent: str) -> None:
+        """Stop a single agent while the rest of the episode keeps running.
+
+        Sends :class:`~freeagent.sdk.message.StopAgent` to ``agent`` as a NATS request, bounded by
+        :attr:`timeout` the same way :meth:`broadcast_to_agents`'s requests are, and records the
+        agent in :attr:`stopped_agents`. Idempotent, matching the agent-side teardown: stopping an
+        already-stopped agent is a no-op that sends nothing.
+
+        :param agent: The name of the agent to stop.
+        """
+        if agent in self.stopped_agents:
+            return
+        self.stopped_agents.add(agent)
+        await wait_for(
+            self.request(
+                f"{self.episode_root}.{AGENTS}.{agent}",
+                StopAgent(),
+                timeout=self.timeout,
+            ),
+            self.timeout,
+        )
 
     async def broadcast_to_agents(self, message: Message, postfix: str | None = None) -> list[Msg]:
         """Send ``message`` as a NATS request to every agent in :attr:`agents`, in parallel.
 
         Each request is bounded by :attr:`timeout` — the same value that bounds the whole broadcast
         — so an individual request never falls back to nats-py's silent default. When
-        :attr:`timeout` is ``None`` (wait indefinitely) the surrounding
-        :func:`~asyncio.wait_for` is the only bound.
+        :attr:`timeout` is ``None`` (wait indefinitely) the surrounding :func:`~asyncio.wait_for` is
+        the only bound.
 
         :param message: The message to send to each agent.
         :param postfix: If given, appended (as ``.postfix``) to each agent's subject, to target a
@@ -263,14 +322,16 @@ class Agent(Entity):
     - A :class:`~freeagent.sdk.message.StartEntity` command launches :meth:`run` as a background
       task, which drains :attr:`queue` into :meth:`process_message` one message at a time. An
       agent must receive this before it processes anything else.
-    - A :class:`~freeagent.sdk.message.StopEntity` command cancels the run loop and tears the
-      agent down, via :meth:`Entity.stop`: unsubscribing and disconnecting from NATS.
+    - A :class:`~freeagent.sdk.message.StopEntity` command (broadcast to end the whole episode) or a
+      :class:`~freeagent.sdk.message.StopAgent` command (targeted at this one agent) cancels the run
+      loop and tears the agent down, via :meth:`Entity.stop`: unsubscribing and disconnecting from
+      NATS. The two differ only in targeting; the teardown they trigger is identical.
     - Any other :class:`~freeagent.sdk.message.Command` is dispatched to :meth:`process_command`,
       which subclasses may override to handle application-specific commands.
     - Anything else is pushed onto :attr:`queue` for :meth:`process_message` to handle in turn.
 
-    Both :class:`~freeagent.sdk.message.StartEntity` and
-    :class:`~freeagent.sdk.message.StopEntity` are idempotent, and both are replied to with an
+    :class:`~freeagent.sdk.message.StartEntity`, :class:`~freeagent.sdk.message.StopEntity`, and
+    :class:`~freeagent.sdk.message.StopAgent` are all idempotent, and all are replied to with an
     :class:`~freeagent.sdk.message.Ack` (when the incoming message was a NATS request) reporting
     whether the run loop is active after the command was handled.
 
@@ -318,18 +379,30 @@ class Agent(Entity):
             case StartEntity():
                 self.task = asyncio.create_task(self.run())
                 await self.respond(msg, Ack())
-            case StopEntity():
-                if self.task is not None:
-                    self.task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await self.task
-                    self.task = None
-                await self.respond(msg, Ack())
-                await self.stop()
+            case StopEntity() | StopAgent():
+                await self._teardown(msg)
             case Command():
                 await self.process_command(msg, message)
             case _:
                 await self.queue.put((msg, message))
+
+    async def _teardown(self, msg: Msg) -> None:
+        """Cancel the run loop (if any), reply :class:`~freeagent.sdk.message.Ack`, and disconnect.
+
+        The shared handling for both :class:`~freeagent.sdk.message.StopEntity` (episode-wide
+        broadcast teardown) and :class:`~freeagent.sdk.message.StopAgent` (this agent only); the two
+        differ in targeting, not in what stopping does. Idempotent: a second stop after the run loop
+        is already gone cancels nothing and simply re-acks, matching :class:`Entity.stop`.
+
+        :param msg: The original NATS message, used to reply to the requester via :meth:`respond`.
+        """
+        if self.task is not None:
+            self.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.task
+            self.task = None
+        await self.respond(msg, Ack())
+        await self.stop()
 
     @final
     async def run(self) -> None:
@@ -365,8 +438,8 @@ class Agent(Entity):
     async def process_message(self, message: Message) -> Message | None:
         """Handle a message pulled from :attr:`queue`.
 
-        Subclasses implement this to give the agent its behavior; it is called once per message,
-        in the order the messages were received, by :meth:`run`.
+        Subclasses implement this to give the agent its behavior; it is called once per message, in
+        the order the messages were received, by :meth:`run`.
 
         :param message: The message pulled from :attr:`queue`.
         :return: An optional reply message to send back to the sender. If ``None``, :meth:`run`
