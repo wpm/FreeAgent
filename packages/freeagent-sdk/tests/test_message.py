@@ -70,3 +70,31 @@ def test_model_validate_json_rejects_json_missing_required_fields() -> None:
 def test_model_validate_json_rejects_an_unknown_type_tag() -> None:
     with pytest.raises(ValueError, match="Bogus"):
         Message.model_validate_json(b'{"type": "Bogus"}')
+
+
+def test_duplicate_subclass_name_raises_at_class_definition_time() -> None:
+    class Duplicated(Message):
+        pass
+
+    with pytest.raises(TypeError, match="Duplicated"):
+
+        class Duplicated(Message):  # type: ignore[no-redef]  # noqa: F811
+            pass
+
+
+def test_try_decode_returns_none_for_an_unknown_type_tag() -> None:
+    assert Message.try_decode(b'{"type": "Bogus"}') is None
+
+
+def test_try_decode_returns_the_concrete_subclass_for_a_known_type_tag() -> None:
+    message = Product(x=2.0, y=3.0)
+
+    decoded = Message.try_decode(message.to_bytes())
+
+    assert type(decoded) is Product
+    assert decoded == message
+
+
+def test_try_decode_still_raises_on_malformed_json() -> None:
+    with pytest.raises(ValueError):
+        Message.try_decode(b"not json")
