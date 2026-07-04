@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 from typing import Self
 
 from freeagent.sdk import Agent
-from freeagent.sdk.message import Command, Message
+from freeagent.sdk.message import Ack, Command, Message
 from nats.aio.msg import Msg
 
 
@@ -43,12 +43,18 @@ class FakeClient:
         self.subscriptions: list[FakeSubscription] = []
         self.closed = False
         self.close_calls = 0
+        self.requests: list[tuple[str, bytes]] = []
 
     async def subscribe(self, subject: str, cb: Handler | None = None) -> FakeSubscription:
         assert cb is not None
         sub = FakeSubscription(subject, cb)
         self.subscriptions.append(sub)
         return sub
+
+    async def request(self, subject: str, payload: bytes, **_: object) -> FakeMsg:
+        """Record the request and reply with a bare Ack, as a real agent would."""
+        self.requests.append((subject, payload))
+        return FakeMsg.for_message(Ack())
 
     async def close(self) -> None:
         self.closed = True
