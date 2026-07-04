@@ -192,7 +192,7 @@ class Environment(Entity):
         return await gather(
             *[
                 self.request(
-                    f"{self.episode_root}.{agent}{postfix}",
+                    f"{self.episode_root}.{AGENTS}.{agent}{postfix}",
                     message,
                 )
                 for agent in self.agents
