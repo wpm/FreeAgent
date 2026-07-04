@@ -30,3 +30,16 @@ application = SampleApplication()
 
 SAMPLE_ENTRY_POINT_VALUE = "sample_application:application"
 """The ``value`` an entry point uses to reach :data:`application`, as it would in a pyproject."""
+
+
+def not_an_application() -> None:
+    """A plain function, standing in for an entry point misregistered at a non-:class:`Application`.
+
+    Missing ``name``/``make_environment``/``make_agents``, so
+    :func:`~freeagent.sdk.application.load_application` rejects it with
+    :class:`~freeagent.sdk.application.InvalidApplication`; see :mod:`test_application`.
+    """
+
+
+NOT_AN_APPLICATION_ENTRY_POINT_VALUE = "sample_application:not_an_application"
+"""The ``value`` an entry point uses to reach :func:`not_an_application`."""

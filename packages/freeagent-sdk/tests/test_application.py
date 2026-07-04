@@ -17,13 +17,18 @@ import sample_application
 from freeagent.sdk import Environment
 from freeagent.sdk.application import (
     APPLICATION_ENTRY_POINT_GROUP,
+    AmbiguousApplication,
     Application,
     EpisodeSpec,
+    InvalidApplication,
     UnknownApplication,
     available_applications,
     load_application,
 )
-from sample_application import SAMPLE_ENTRY_POINT_VALUE
+from sample_application import (
+    NOT_AN_APPLICATION_ENTRY_POINT_VALUE,
+    SAMPLE_ENTRY_POINT_VALUE,
+)
 
 RegisterApplications = Callable[..., None]
 
@@ -32,18 +37,20 @@ RegisterApplications = Callable[..., None]
 def register_applications(monkeypatch: pytest.MonkeyPatch) -> Iterator[RegisterApplications]:
     """Patch :func:`~importlib.metadata.entry_points` to serve a test-only application registry.
 
-    The returned callable takes ``name=value`` pairs and installs them as ``freeagent.applications``
-    entry points, so tests register applications without a real distribution. Entry points from
-    other groups are omitted, so :func:`~freeagent.sdk.application.available_applications` sees only
-    what a test declared.
+    The returned callable installs its arguments as ``freeagent.applications`` entry points, so
+    tests register applications without a real distribution. It accepts both ``name=value`` keyword
+    pairs (the common case) and positional ``(name, value)`` tuples (for registering the *same*
+    name twice, which keyword pairs can't express, to exercise the ambiguous-name path). Entry
+    points from other groups are omitted, so
+    :func:`~freeagent.sdk.application.available_applications` sees only what a test declared.
 
-    :return: A callable that (re)registers the given ``name=value`` entry points.
+    :return: A callable that (re)registers the given entry points.
     """
 
-    def register(**named_values: str) -> None:
+    def register(*pairs: tuple[str, str], **named_values: str) -> None:
         entries = EntryPoints(
             EntryPoint(name=name, value=value, group=APPLICATION_ENTRY_POINT_GROUP)
-            for name, value in named_values.items()
+            for name, value in (*pairs, *named_values.items())
         )
 
         def fake_entry_points(*, group: str, name: str | None = None) -> EntryPoints:
@@ -96,6 +103,49 @@ def test_unknown_application_is_a_lookup_error(
     register_applications()
 
     with pytest.raises(LookupError):
+        load_application("sample")
+
+
+def test_load_application_picks_the_named_one_among_many(
+    register_applications: RegisterApplications,
+) -> None:
+    register_applications(
+        sample=SAMPLE_ENTRY_POINT_VALUE, other=NOT_AN_APPLICATION_ENTRY_POINT_VALUE
+    )
+
+    assert load_application("sample") is sample_application.application
+
+
+def test_load_application_ambiguous_name_raises_ambiguous_application(
+    register_applications: RegisterApplications,
+) -> None:
+    register_applications(
+        ("sample", SAMPLE_ENTRY_POINT_VALUE),
+        ("sample", "sample_application:application"),
+    )
+
+    with pytest.raises(AmbiguousApplication, match="sample"):
+        load_application("sample")
+
+
+def test_ambiguous_application_is_a_lookup_error(
+    register_applications: RegisterApplications,
+) -> None:
+    register_applications(
+        ("sample", SAMPLE_ENTRY_POINT_VALUE),
+        ("sample", "sample_application:application"),
+    )
+
+    with pytest.raises(LookupError):
+        load_application("sample")
+
+
+def test_load_application_invalid_object_raises_invalid_application(
+    register_applications: RegisterApplications,
+) -> None:
+    register_applications(sample=NOT_AN_APPLICATION_ENTRY_POINT_VALUE)
+
+    with pytest.raises(InvalidApplication, match="sample"):
         load_application("sample")
 
 

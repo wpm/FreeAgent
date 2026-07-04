@@ -42,6 +42,31 @@ class UnknownApplication(LookupError):
     """
 
 
+class AmbiguousApplication(LookupError):
+    """Raised when a name resolves to more than one installed application.
+
+    Entry points aren't deduplicated across distributions, so two installed distributions can each
+    register the ``freeagent.applications`` group under the same name — a collision ADR-0006
+    anticipates between third-party authors. Rather than let the single-match unpack in
+    :func:`load_application` fail with a bare, uncatchable :class:`ValueError`, that case raises
+    this. A :class:`LookupError` like :class:`UnknownApplication`, so a caller can catch both
+    resolution failures at once, while their distinct types let the API tell "no such application"
+    (a 404) apart from "ambiguous install" (an operator misconfiguration).
+    """
+
+
+class InvalidApplication(TypeError):
+    """Raised when a name resolves to an object that isn't a valid :class:`Application`.
+
+    An entry point can point at anything importable; :func:`load_application` checks that what it
+    loads actually satisfies the :class:`Application` protocol (has ``name`` and both factory
+    methods) and raises this if it doesn't, so a misregistered entry point fails loudly at load
+    time — naming the offending application — rather than deep inside the worker with an opaque
+    :class:`AttributeError` when a missing method is finally called. A :class:`TypeError`, not a
+    :class:`LookupError`: the application was *found*, it's just the wrong shape.
+    """
+
+
 class EpisodeSpec(BaseModel):
     """The platform-level description of one episode, handed to an :class:`Application` to build
     from.
@@ -108,17 +133,30 @@ def load_application(name: str) -> Application:
     Looks the name up among the ``freeagent.applications`` entry points and loads the object it
     points at — the same object the application named in its ``pyproject.toml``. "Registered" means
     "pip-installed in this environment": an application the current environment doesn't have
-    installed is unknown here.
+    installed is unknown here. The loaded object is checked against the :class:`Application`
+    protocol before it's returned, so a misregistered entry point fails here rather than downstream.
 
     :param name: The application's bare name, e.g. ``collatz``.
     :return: The registered :class:`Application` object.
     :raises UnknownApplication: If no installed application registered under ``name``.
+    :raises AmbiguousApplication: If more than one installed application registered under ``name``.
+    :raises InvalidApplication: If ``name`` resolves to an object that isn't a valid
+        :class:`Application`.
     """
     matches = entry_points(group=APPLICATION_ENTRY_POINT_GROUP, name=name)
     if not matches:
         raise UnknownApplication(f'No application named "{name}" is installed')
+    if len(matches) > 1:
+        sources = ", ".join(sorted(entry_point.value for entry_point in matches))
+        raise AmbiguousApplication(
+            f'Application name "{name}" is registered by more than one distribution: {sources}'
+        )
     (entry_point,) = matches
-    application: Application = entry_point.load()
+    application = entry_point.load()
+    if not isinstance(application, Application):
+        raise InvalidApplication(
+            f'Application "{name}" ({entry_point.value}) does not satisfy the Application protocol'
+        )
     return application
 
 

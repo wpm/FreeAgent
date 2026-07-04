@@ -10,8 +10,10 @@ entry point, so the platform can turn a name arriving over REST into loadable co
 """
 
 from freeagent.sdk.application import (
+    AmbiguousApplication,
     Application,
     EpisodeSpec,
+    InvalidApplication,
     UnknownApplication,
     available_applications,
     load_application,
@@ -20,9 +22,11 @@ from freeagent.sdk.entity import Agent, Environment
 
 __all__ = [
     "Agent",
+    "AmbiguousApplication",
     "Application",
     "Environment",
     "EpisodeSpec",
+    "InvalidApplication",
     "UnknownApplication",
     "available_applications",
     "load_application",
