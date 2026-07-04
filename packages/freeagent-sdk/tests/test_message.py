@@ -8,6 +8,8 @@ original subclass rather than a plain :class:`Message`.
 
 from __future__ import annotations
 
+import importlib
+
 import pytest
 from fixtures import Product
 from freeagent.sdk.message import Ack, Command, Message, StartEntity, StopEntity
@@ -72,18 +74,35 @@ def test_model_validate_json_rejects_an_unknown_type_tag() -> None:
         Message.model_validate_json(b'{"type": "Bogus"}')
 
 
-def test_duplicate_subclass_name_raises_at_class_definition_time() -> None:
-    class Duplicated(Message):
-        pass
+def test_duplicate_subclass_name_across_modules_raises_at_class_definition_time(
+    isolated_message_registry: None,
+) -> None:
+    # collision_a and collision_b each define a Message subclass named "Collider" from a different
+    # module; importing the second triggers the cross-module duplicate-name guard.
+    importlib.import_module("collision_a")
 
-    with pytest.raises(TypeError, match="Duplicated"):
+    with pytest.raises(TypeError, match="Collider"):
+        importlib.import_module("collision_b")
 
-        class Duplicated(Message):  # type: ignore[no-redef]  # noqa: F811
-            pass
+
+def test_reimporting_the_same_module_does_not_raise(
+    isolated_message_registry: None,
+) -> None:
+    # A reload re-defines a subclass with the same name from the same module: benign, not a
+    # cross-application collision, so it must re-register rather than raise.
+    module = importlib.import_module("collision_a")
+
+    importlib.reload(module)  # must not raise
 
 
 def test_try_decode_returns_none_for_an_unknown_type_tag() -> None:
     assert Message.try_decode(b'{"type": "Bogus"}') is None
+
+
+def test_subclass_try_decode_returns_none_for_an_unknown_type_tag() -> None:
+    # try_decode called on a subclass must still decode the tag against the whole registry, not
+    # validate strictly as that subclass, so an unknown tag yields None rather than raising.
+    assert Product.try_decode(b'{"type": "Bogus"}') is None
 
 
 def test_try_decode_returns_the_concrete_subclass_for_a_known_type_tag() -> None:
@@ -98,3 +117,10 @@ def test_try_decode_returns_the_concrete_subclass_for_a_known_type_tag() -> None
 def test_try_decode_still_raises_on_malformed_json() -> None:
     with pytest.raises(ValueError):
         Message.try_decode(b"not json")
+
+
+def test_try_decode_still_raises_when_a_known_type_fails_validation() -> None:
+    # A known type tag whose payload is missing required fields is a validation failure, not an
+    # unknown type: try_decode must let it raise rather than swallowing it into None.
+    with pytest.raises(ValueError):
+        Message.try_decode(b'{"type": "Product", "x": 1.0}')

@@ -15,7 +15,7 @@ from collections.abc import Callable
 
 import pytest
 from fixtures import FakeClient
-from freeagent.sdk.entity import AGENTS, ENVIRONMENT, Agent, Environment
+from freeagent.sdk.entity import _UNBOUNDED_TIMEOUT, AGENTS, ENVIRONMENT, Agent, Environment
 from freeagent.sdk.message import Ack, Message, StartEntity, StopEntity
 
 
@@ -109,6 +109,29 @@ async def test_stop_disconnects_even_when_the_broadcast_times_out(
 
     assert client.closed is True
     assert env.client is None
+
+
+async def test_broadcast_requests_carry_the_broadcast_timeout(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    env = Environment("episode-root", "alice", "bob", timeout=0.25)
+    await env.start()
+    client = fake_connect()
+
+    # Each broadcast request is bounded by the broadcast timeout, never nats-py's silent default.
+    assert client.request_timeouts == [0.25, 0.25]
+
+
+async def test_broadcast_requests_are_unbounded_when_timeout_is_none(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    env = Environment("episode-root", "alice")
+    await env.start()
+    client = fake_connect()
+
+    # Default broadcast timeout is None (wait indefinitely); the request is given the unbounded
+    # sentinel value rather than nats-py's default.
+    assert client.request_timeouts == [_UNBOUNDED_TIMEOUT]
 
 
 async def test_environment_subscribes_under_environment_subject(
