@@ -157,3 +157,48 @@ def test_try_decode_still_raises_when_a_known_type_fails_validation() -> None:
     # unknown type: try_decode must let it raise rather than swallowing it into None.
     with pytest.raises(ValueError):
         Message.try_decode(b'{"message_type": "Product", "x": 1.0}')
+
+
+@pytest.mark.parametrize(
+    "cls", [Ack, Command, StartEntity, StopEntity, StopAgent, EpisodeComplete, Product]
+)
+def test_subclass_schema_emits_message_type_as_const(cls: type[Message]) -> None:
+    # The generated JSON Schema must tag message_type as a `const` of the class name, so that
+    # `json-schema-to-typescript` produces a literal type TypeScript can narrow a discriminated
+    # union on (ADR-0007). A plain string field would generate `string`, which narrows nothing.
+    schema = cls.model_json_schema()
+
+    assert schema["properties"]["message_type"]["const"] == cls.__name__
+
+
+def test_base_message_schema_keeps_message_type_a_plain_string() -> None:
+    # Only concrete subclasses pin their tag; the base Message reads the tag leniently to dispatch
+    # against the whole registry, so its own field stays an open string rather than a const.
+    schema = Message.model_json_schema()
+
+    assert "const" not in schema["properties"]["message_type"]
+    assert schema["properties"]["message_type"]["type"] == "string"
+
+
+def test_subclass_schema_still_carries_its_own_fields() -> None:
+    # Narrowing the inherited message_type field must not drop the subclass's own fields from the
+    # schema (a regression the naive rebuild-in-__init_subclass__ approach introduced).
+    schema = Product.model_json_schema()
+
+    assert schema["properties"]["x"]["type"] == "number"
+    assert schema["properties"]["y"]["type"] == "number"
+
+
+def test_message_type_is_pinned_to_the_class_on_validation() -> None:
+    # Narrowing the tag to Literal[cls.__name__] also pins it on decode: a payload whose
+    # message_type names a different type is a validation error, not silently coerced.
+    with pytest.raises(ValueError):
+        Product.model_validate_json(b'{"message_type": "Chain", "x": 1.0, "y": 2.0}')
+
+
+def test_the_reserved_protocol_envelope_field_appears_in_the_schema() -> None:
+    # ADR-0007 reserves `protocol` as an envelope slot readable without app code; it must surface in
+    # the generated schema so platform tooling can partition stored episodes by it.
+    schema = Product.model_json_schema()
+
+    assert "protocol" in schema["properties"]

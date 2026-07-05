@@ -65,3 +65,50 @@ jobs:
 
       - name: Run tests (unit + integration)
         run: uv run pytest
+
+  # Enforces ADR-0007's engine->viewer contract: Python is the single source of truth for message
+  # shapes. Regenerate the checked-in JSON Schema (from the engine's pydantic models) and TypeScript
+  # (from that schema), compile the narrowing snippet, and fail if any generated artifact drifts from
+  # what's committed. A green run therefore *means* the checked-in schema/types are in sync with the
+  # engine.
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Sync dependencies
+        run: uv sync --all-packages
+
+      - name: Regenerate the Collatz JSON Schema from the engine
+        run: uv run freeagent schema collatz > apps/collatz/schema/collatz.schema.json
+
+      - name: Regenerate the Collatz TypeScript from the schema
+        working-directory: apps/collatz/schema
+        run: |
+          npm ci
+          npm run generate
+
+      - name: Type-check the discriminated-union narrowing snippet
+        working-directory: apps/collatz/schema
+        run: npm run check
+
+      - name: Fail if generated schema or types drifted from what's checked in
+        run: |
+          if ! git diff --exit-code -- apps/collatz/schema/collatz.schema.json \
+            apps/collatz/schema/collatz.d.ts; then
+            echo "::error::Generated schema/types are out of date. Regenerate them (see apps/collatz/schema/README.md) and commit the result."
+            exit 1
+          fi

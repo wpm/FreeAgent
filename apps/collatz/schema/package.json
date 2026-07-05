@@ -1,0 +1,14 @@
+{
+  "name": "collatz-schema",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Generated TypeScript for the Collatz application's message vocabulary (ADR-0007). The engine is the single source of truth; regenerate rather than editing collatz.d.ts by hand.",
+  "scripts": {
+    "generate": "json2ts --input collatz.schema.json --output collatz.d.ts --additionalProperties false",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "^15.0.4",
+    "typescript": "^5.7.0"
+  }
+}
