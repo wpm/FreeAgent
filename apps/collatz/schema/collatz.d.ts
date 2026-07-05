@@ -24,7 +24,7 @@ export type Protocol = string | null;
  *     the current value the next step extends.
  */
 export interface Chain {
-  message_type?: MessageType;
+  message_type: MessageType;
   numbers: Numbers;
   protocol?: Protocol;
 }

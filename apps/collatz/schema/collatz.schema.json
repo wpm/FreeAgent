@@ -30,6 +30,7 @@
         }
       },
       "required": [
+        "message_type",
         "numbers"
       ],
       "title": "Chain",

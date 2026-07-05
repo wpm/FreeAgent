@@ -50,6 +50,15 @@ def test_application_schema_carries_the_apps_own_fields() -> None:
     assert schema["$defs"]["Chain"]["properties"]["numbers"]["type"] == "array"
 
 
+def test_application_schema_marks_message_type_required() -> None:
+    # An optional discriminant makes the generated union unsound: a tag-omitted payload would be
+    # assignable to multiple members and could not be narrowed. The tag must be required even though
+    # pydantic leaves it optional (it has a default).
+    schema = application_schema("collatz")
+
+    assert "message_type" in schema["$defs"]["Chain"]["required"]
+
+
 def test_application_schema_includes_the_reserved_protocol_envelope_field() -> None:
     # ADR-0007 reserves `protocol` as an envelope slot; it must appear in the generated schema.
     schema = application_schema("collatz")
@@ -135,3 +144,20 @@ def test_main_requires_a_subcommand(capsys: pytest.CaptureFixture[str]) -> None:
     # argparse exits(2) with a usage message when the required subcommand is missing.
     with pytest.raises(SystemExit):
         main([])
+
+
+def test_main_lets_an_unexpected_internal_error_propagate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # main only turns *expected* resolution / no-messages failures into exit 2. A genuine internal
+    # error (here a bare TypeError, as pydantic or an import might raise) must propagate as a crash,
+    # not be masked as "application can't be resolved".
+    import freeagent.sdk.schema as schema_module
+
+    def boom(_name: str) -> dict[str, object]:
+        raise TypeError("internal bug, not a resolution failure")
+
+    monkeypatch.setattr(schema_module, "application_schema", boom)
+
+    with pytest.raises(TypeError, match="internal bug"):
+        main(["schema", "collatz"])

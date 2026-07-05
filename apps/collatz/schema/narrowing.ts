@@ -1,23 +1,24 @@
 /**
- * Compile-checked proof that the generated `message_type` tag narrows a discriminated union.
+ * Compile-checked proof that the generated `message_type` tag forms a sound discriminated union.
  *
  * This snippet is never run; it exists to be type-checked by `tsc --noEmit` (the `check` script and
- * the CI regenerate-and-diff job). Its job is to fail compilation if the `message_type` tag ever
- * stops being emitted as a `const` — i.e. if the engine's `Message.__init_subclass__` stops
- * narrowing the tag to `Literal[cls.__name__]`, or the schema pipeline drops the `const`. In that
- * case the generated `Chain["message_type"]` widens from the `"Chain"` literal to `string`, and the
- * assertions below stop compiling.
+ * the CI regenerate-and-diff job). Its job is to fail compilation if the discriminant regresses in
+ * either of two ways:
  *
- * Two things are checked, because a single-member union narrows trivially:
+ * 1. The tag stops being a literal `const` — if `Message.__init_subclass__` stops narrowing it to
+ *    `Literal[cls.__name__]`, or the schema pipeline drops the `const`, the generated
+ *    `Chain["message_type"]` widens to `string` and `AssertExactlyChain` below stops compiling.
+ * 2. The tag becomes optional — if `application_schema` stops marking `message_type` required, the
+ *    generated field becomes `message_type?`, a tag-omitted object becomes assignable to multiple
+ *    union members, and `AssertRequiredTag` below stops compiling.
  *
- * 1. `sumIfChain` demonstrates the acceptance criterion literally — `msg.message_type === "Chain"`
- *    selecting `Chain` out of a union — over a union made non-vacuous with a local decoy member.
- * 2. `AssertExactlyChain` pins the generated tag *type* to exactly the `"Chain"` literal, so a
- *    widening to `string` (which the narrowing in (1) alone would tolerate, since the tag is
- *    optional) is still caught.
+ * Collatz currently defines a single message type, so the *generated* `CollatzMessages` union has
+ * one member and narrowing it is trivial. `sumIfChain` therefore demonstrates the narrowing over a
+ * union made non-vacuous with a local decoy member, while the two `Assert*` checks pin the
+ * regression-prone properties directly to the generated type.
  *
- * Together they are the viewer-side half of ADR-0007's acceptance criterion: "Generated TS narrows
- * on msg.message_type === 'Chain' (checked by compiling a snippet in the viewer build)."
+ * This is the viewer-side half of ADR-0007's acceptance criterion: "Generated TS narrows on
+ * msg.message_type === 'Chain' (checked by compiling a snippet in the viewer build)."
  */
 import type { Chain, CollatzMessages } from "./collatz.d.ts";
 
@@ -60,12 +61,21 @@ type IsExactlyChain<T> = [T] extends ["Chain"]
   : false;
 
 /**
- * Compile-time assertion that the generated discriminant is exactly `"Chain"`.
+ * Assert the generated discriminant is exactly the `"Chain"` literal, not `string`.
  *
- * `NonNullable` drops the `undefined` the optional tag contributes; what remains must be the bare
- * `"Chain"` literal. If the tag widened to `string`, `IsExactlyChain` is `false`, and assigning it
- * to `true` is a type error that fails the build.
+ * If the tag widened to `string`, `IsExactlyChain` is `false` and assigning it to `true` fails.
  */
-type AssertExactlyChain = IsExactlyChain<NonNullable<CollatzMessages["message_type"]>>;
+type AssertExactlyChain = IsExactlyChain<CollatzMessages["message_type"]>;
 const generatedTagIsExactlyChain: AssertExactlyChain = true;
 void generatedTagIsExactlyChain;
+
+/**
+ * Assert the discriminant is *required*, not optional.
+ *
+ * `undefined extends T` is `true` exactly when the property is optional; requiring `false` fails the
+ * build if `application_schema` stops forcing `message_type` into the definition's `required` list
+ * and the field regenerates as `message_type?`.
+ */
+type TagIsOptional = undefined extends CollatzMessages["message_type"] ? true : false;
+const generatedTagIsRequired: TagIsOptional = false;
+void generatedTagIsRequired;

@@ -7,15 +7,15 @@ module is the first half of that pipeline: :func:`application_schema` builds the
 ``freeagent schema <application>`` CLI (:func:`main`) prints it.
 
 Loading the application registers its :class:`~freeagent.sdk.message.Message` subclasses in the open
-``Message._by_type`` registry (via ``__init_subclass__``). That registry is shared across everything
-imported into the process — SDK control-plane types plus every other loaded application — so the
-document must include only the *target* application's own message types. They are selected by
+``Message._by_type`` registry (via ``__pydantic_init_subclass__``). That registry is shared across
+everything imported into the process — SDK control-plane types plus every other loaded application —
+so the document must include only the *target* application's own message types. They are selected by
 defining module: a type belongs to application ``collatz`` if its module is inside the
-``freeagent.app.collatz`` package the application object itself lives in. That keeps one app's
-schema from bleeding in another's (or the SDK's) types, the registry-walk caveat ADR-0007 calls out.
+``freeagent.app.collatz`` package the application's class lives in. That keeps one app's schema from
+bleeding in another's (or the SDK's) types, the registry-walk caveat ADR-0007 calls out.
 
 Each message type's ``message_type`` tag is emitted as a ``const`` (see
-:meth:`~freeagent.sdk.message.Message.__init_subclass__`), so the generated TypeScript is a
+:meth:`~freeagent.sdk.message.Message.__pydantic_init_subclass__`), so the generated TypeScript is a
 discriminated union a viewer can narrow with ``msg.message_type === "Chain"``.
 """
 
@@ -27,7 +27,13 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
-from freeagent.sdk.application import Application, load_application
+from freeagent.sdk.application import (
+    AmbiguousApplication,
+    Application,
+    InvalidApplication,
+    UnknownApplication,
+    load_application,
+)
 from freeagent.sdk.message import Message
 from pydantic.json_schema import models_json_schema
 
@@ -45,8 +51,17 @@ def _application_package(application: Application) -> str:
     The application object is defined in a module inside its package (e.g. Collatz's ``application``
     object lives in ``freeagent.app.collatz.application``); its message types are siblings under the
     same package (``freeagent.app.collatz.message``). The package that contains both is the module
-    of the application object with its final component dropped — ``freeagent.app.collatz`` — which
-    is the prefix :func:`_owned_message_types` selects on.
+    of the application object's class with its final component dropped — ``freeagent.app.collatz`` —
+    which is the prefix :func:`_owned_message_types` selects on.
+
+    This assumes the conventional layout: the ``Application`` object's class and the application's
+    ``Message`` subclasses live in sibling modules of one package. That holds for apps generated
+    from the standard structure; an app that registers an ``Application`` instance whose *class* is
+    defined outside its own package (e.g. a generic base class in a shared module) would resolve to
+    the wrong package here, and :func:`application_schema` would then fail with
+    :class:`NoApplicationMessages` naming the package it searched. If that layout ever becomes real,
+    this is the single spot to revisit — e.g. deriving the package from the registered entry-point
+    value instead of the class module.
 
     :param application: The loaded application object.
     :return: The dotted package name the application's message types are defined under.
@@ -84,6 +99,13 @@ def application_schema(name: str) -> dict[str, Any]:
     ``message_type`` tag as a ``const``) and whose top level is a ``oneOf`` union over them, so
     ``json-schema-to-typescript`` produces a discriminated union a viewer narrows on the tag.
 
+    Each message type's ``message_type`` is forced into its ``required`` list. pydantic leaves it
+    optional because it has a default, but an *optional* discriminant makes the generated union
+    unsound: a payload that omits the tag would be assignable to more than one member and
+    ``msg.message_type === "..."`` could not narrow it. Making the tag required matches the wire
+    reality (:meth:`~freeagent.sdk.message.Message.to_bytes` always emits it) and yields a sound
+    discriminated union. See :func:`_require_message_type`.
+
     :param name: The application's bare name, e.g. ``collatz``.
     :return: The application's message schema as a JSON-serializable ``dict``.
     :raises UnknownApplication: If no installed application registered under ``name``.
@@ -93,10 +115,13 @@ def application_schema(name: str) -> dict[str, Any]:
     :raises NoApplicationMessages: If the application defines no message types of its own.
     """
     application = load_application(name)
-    types = _owned_message_types(_application_package(application))
+    package = _application_package(application)
+    types = _owned_message_types(package)
     if not types:
         raise NoApplicationMessages(
-            f'Application "{name}" defines no Message subclasses of its own; nothing to generate.'
+            f'Application "{name}" defines no Message subclasses under package "{package}"; '
+            f"nothing to generate. (The search package is derived from the application class's "
+            f"module; see freeagent.sdk.schema._application_package for the layout it assumes.)"
         )
     # models_json_schema returns (per-model map keyed by (model, mode), shared definitions); the
     # definitions dict is what carries the `$defs` block we reference from the top-level union.
@@ -104,6 +129,9 @@ def application_schema(name: str) -> dict[str, Any]:
         [(cls, "validation") for cls in types],
         ref_template="#/$defs/{model}",
     )
+    defs = definitions["$defs"]
+    for definition in defs.values():
+        _require_message_type(definition)
     return {
         "$schema": SCHEMA_DIALECT,
         "title": f"{name} messages",
@@ -113,8 +141,29 @@ def application_schema(name: str) -> dict[str, Any]:
             "editing by hand (ADR-0007)."
         ),
         "oneOf": [{"$ref": f"#/$defs/{cls.__name__}"} for cls in types],
-        "$defs": definitions["$defs"],
+        "$defs": defs,
     }
+
+
+def _require_message_type(definition: dict[str, Any]) -> None:
+    """Mark a message type's ``message_type`` discriminant as required, in place.
+
+    pydantic emits the tag as non-required because it has a default; an optional discriminant makes
+    the generated TypeScript union unsound (see :func:`application_schema`). This adds
+    ``message_type`` to the definition's ``required`` list if the definition declares the field and
+    doesn't already require it. Defensive about the shape — it only touches definitions that
+    actually have a ``message_type`` property — so it is a no-op on anything unexpected rather than
+    a crash.
+
+    :param definition: One entry from the schema's ``$defs``, mutated in place.
+    """
+    properties = definition.get("properties")
+    if not isinstance(properties, dict) or "message_type" not in properties:
+        return
+    required = definition.setdefault("required", [])
+    if "message_type" not in required:
+        required.append("message_type")
+        required.sort()
 
 
 class NoApplicationMessages(ValueError):
@@ -136,7 +185,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     fail-on-diff enforcement).
 
     :param argv: The argument vector, excluding the program name; defaults to ``sys.argv[1:]``.
-    :return: A process exit code: ``0`` on success, ``2`` if the application can't be resolved.
+    :return: A process exit code: ``0`` on success, or ``2`` for an expected user-input failure —
+        the application can't be resolved (:class:`~freeagent.sdk.application.UnknownApplication`,
+        :class:`~freeagent.sdk.application.AmbiguousApplication`,
+        :class:`~freeagent.sdk.application.InvalidApplication`) or resolves but defines no message
+        types of its own (:class:`NoApplicationMessages`). Any other exception is an internal error
+        and is left to propagate with its traceback rather than being reported as exit ``2``.
     """
     parser = argparse.ArgumentParser(
         prog="freeagent",
@@ -155,7 +209,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         document = application_schema(args.application)
-    except (LookupError, TypeError, NoApplicationMessages) as error:
+    except (
+        UnknownApplication,
+        AmbiguousApplication,
+        InvalidApplication,
+        NoApplicationMessages,
+    ) as error:
+        # Only the expected resolution / no-messages failures become a clean exit-2 message; a bare
+        # LookupError or TypeError from a genuine internal bug is deliberately *not* caught, so it
+        # surfaces as a traceback instead of masquerading as "application can't be resolved".
         print(f"freeagent schema: {error}", file=sys.stderr)
         return 2
     print(json.dumps(document, indent=2, sort_keys=True))

@@ -196,6 +196,25 @@ def test_message_type_is_pinned_to_the_class_on_validation() -> None:
         Product.model_validate_json(b'{"message_type": "Chain", "x": 1.0, "y": 2.0}')
 
 
+def test_narrowing_a_subclass_tag_does_not_corrupt_a_parents_field() -> None:
+    # The tag is narrowed to Literal[cls.__name__] in __pydantic_init_subclass__ (not the plain
+    # __init_subclass__), so each subclass edits its *own* model_fields dict. If it edited the
+    # still-shared base dict, the last-loaded subclass's Literal would overwrite Message's and
+    # Command's own message_type annotation. Assert each class kept its own.
+    from typing import Literal, get_args, get_origin
+
+    def tag_annotation(cls: type[Message]) -> object:
+        return cls.model_fields["message_type"].annotation
+
+    # The base Message reads its tag leniently to dispatch the whole registry, so it stays a str.
+    assert tag_annotation(Message) is str
+    # Every subclass, including the intermediate Command, pins its tag to its *own* name.
+    for cls in (Ack, Command, StartEntity, StopEntity, StopAgent, EpisodeComplete):
+        annotation = tag_annotation(cls)
+        assert get_origin(annotation) is Literal
+        assert get_args(annotation) == (cls.__name__,)
+
+
 def test_the_reserved_protocol_envelope_field_appears_in_the_schema() -> None:
     # ADR-0007 reserves `protocol` as an envelope slot readable without app code; it must surface in
     # the generated schema so platform tooling can partition stored episodes by it.
