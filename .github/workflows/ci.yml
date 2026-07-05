@@ -56,6 +56,9 @@ jobs:
           uv run mypy src/ packages/freeagent-api/src packages/freeagent-api/tests \
             packages/freeagent-worker/src packages/freeagent-worker/tests
           (cd packages/freeagent-sdk && uv run mypy src/ tests/)
+          # apps/collatz pins its own mypy_path (like freeagent-sdk), so it must run from its own
+          # directory or mypy resolves each file under two module names and aborts.
+          (cd apps/collatz && uv run mypy src/ tests/)
 
       - name: Run tests (unit + integration)
         run: uv run pytest

@@ -63,5 +63,12 @@ if ! (cd packages/freeagent-sdk && uv run mypy src/ tests/); then
     echo "pre-commit: mypy found type errors in freeagent-sdk." >&2
     exit 1
 fi
+# apps/collatz sets its own mypy_path (src, tests) in its own pyproject.toml, so like
+# freeagent-sdk it must run from its own directory.
+if ! (cd apps/collatz && uv run mypy src/ tests/); then
+    echo >&2
+    echo "pre-commit: mypy found type errors in apps/collatz." >&2
+    exit 1
+fi
 
 echo "pre-commit: clean"

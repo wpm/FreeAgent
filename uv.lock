@@ -10,6 +10,7 @@ resolution-markers = [
 members = [
     "freeagent",
     "freeagent-api",
+    "freeagent-app-collatz",
     "freeagent-sdk",
     "freeagent-worker",
 ]
@@ -213,6 +214,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "freeagent-api" },
+    { name = "freeagent-app-collatz" },
     { name = "freeagent-sdk" },
     { name = "freeagent-worker" },
 ]
@@ -230,6 +232,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "freeagent-api", editable = "packages/freeagent-api" },
+    { name = "freeagent-app-collatz", editable = "apps/collatz" },
     { name = "freeagent-sdk", editable = "packages/freeagent-sdk" },
     { name = "freeagent-worker", editable = "packages/freeagent-worker" },
 ]
@@ -257,6 +260,21 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+]
+
+[[package]]
+name = "freeagent-app-collatz"
+version = "0.1.0"
+source = { editable = "apps/collatz" }
+dependencies = [
+    { name = "freeagent-sdk" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "freeagent-sdk", editable = "packages/freeagent-sdk" },
+    { name = "pydantic", specifier = ">=2.13.4" },
 ]
 
 [[package]]

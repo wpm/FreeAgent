@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "freeagent-api",
+    "freeagent-app-collatz",
     "freeagent-sdk",
     "freeagent-worker",
 ]
@@ -23,10 +24,11 @@ build-backend = "hatchling.build"
 packages = ["src/freeagent"]
 
 [tool.uv.workspace]
-members = ["packages/*"]
+members = ["packages/*", "apps/*"]
 
 [tool.uv.sources]
 freeagent-api = { workspace = true }
+freeagent-app-collatz = { workspace = true }
 freeagent-sdk = { workspace = true }
 freeagent-worker = { workspace = true }
 
@@ -58,9 +60,13 @@ explicit_package_bases = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-# Unregistered markers are errors, so a typo'd marker fails loudly rather than silently
-# selecting nothing.
-addopts = "--strict-markers"
+# `importlib` import mode so that test modules sharing a basename across packages (e.g. every
+# workspace member's own `test_application.py`/`test_message.py`) don't collide: the default
+# `prepend` mode imports each by its bare basename via `sys.path`, and two files named the same
+# abort collection with "import file mismatch". Each `tests/` directory's `conftest.py` puts its own
+# directory on `sys.path` so bare sibling-helper imports (`fakes`, `fixtures`, `sample_application`)
+# still resolve, which `importlib` mode does not arrange on its own.
+addopts = "--strict-markers --import-mode=importlib"
 markers = [
     "integration: exercises a real nats-server subprocess; excluded by `-m \"not integration\"`.",
 ]
