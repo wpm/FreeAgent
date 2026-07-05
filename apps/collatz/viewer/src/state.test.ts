@@ -22,6 +22,10 @@ function chainRecord(subject: string, numbers: number[], seq = 0): DataPlaneReco
   };
 }
 
+function noiseRecord(messageType: string | null, payload: unknown): DataPlaneRecord {
+  return { seq: 0, subject: `${ROOT}.x`, message_type: messageType, received_at: 1.0, payload };
+}
+
 test("asCollatzMessage reads a Chain payload through the envelope tag", () => {
   const message = asCollatzMessage(chainRecord(`${ROOT}.agents.agent-0`, [8, 4]));
   assert.notEqual(message, null);
@@ -30,16 +34,8 @@ test("asCollatzMessage reads a Chain payload through the envelope tag", () => {
 });
 
 test("asCollatzMessage rejects unknown and missing envelope tags", () => {
-  const unknown: DataPlaneRecord = {
-    seq: 0,
-    subject: `${ROOT}.x`,
-    message_type: "NoSuchType",
-    received_at: 1.0,
-    payload: { message_type: "NoSuchType" },
-  };
-  const untagged: DataPlaneRecord = { ...unknown, message_type: null, payload: [1, 2, 3] };
-  assert.equal(asCollatzMessage(unknown), null);
-  assert.equal(asCollatzMessage(untagged), null);
+  assert.equal(asCollatzMessage(noiseRecord("NoSuchType", { message_type: "NoSuchType" })), null);
+  assert.equal(asCollatzMessage(noiseRecord(null, [1, 2, 3])), null);
 });
 
 test("agentOf reads the agent off both chain-bearing subject shapes", () => {
@@ -86,13 +82,15 @@ test("parseStarts rejects anything outside the Collatz domain", () => {
   assert.throws(() => parseStarts("seven"), /positive integers/);
 });
 
+test("parseStarts rejects Number()'s other spellings and unsafe magnitudes", () => {
+  // Number() would accept all of these, silently launching a different episode than typed.
+  assert.throws(() => parseStarts("0x10"), /positive integers/);
+  assert.throws(() => parseStarts("1e3"), /positive integers/);
+  assert.throws(() => parseStarts("Infinity"), /positive integers/);
+  assert.throws(() => parseStarts("9007199254740993"), /positive integers/);
+});
+
 test("deriveChains ignores records that are not Collatz messages", () => {
-  const noise: DataPlaneRecord = {
-    seq: 0,
-    subject: `${ROOT}.x`,
-    message_type: "NoSuchType",
-    received_at: 1.0,
-    payload: { message_type: "NoSuchType", numbers: [9, 9, 9] },
-  };
+  const noise = noiseRecord("NoSuchType", { message_type: "NoSuchType", numbers: [9, 9, 9] });
   assert.deepEqual(deriveChains([noise]), []);
 });

@@ -9,7 +9,7 @@
  * `../schema/narrowing.ts` pins.
  */
 
-import type { CollatzMessages } from "../../schema/collatz.js";
+import type { CollatzMessages, MessageType } from "../../schema/collatz.js";
 import type { DataPlaneRecord } from "./api.js";
 
 /** One agent's chain as currently known: the longest chain seen for that agent so far. */
@@ -21,9 +21,7 @@ export interface AgentChain {
 }
 
 /** Every generated Collatz message tag; `satisfies` pins it to the generated discriminant. */
-const MESSAGE_TYPES: ReadonlySet<string> = new Set(
-  ["Chain"] satisfies CollatzMessages["message_type"][],
-);
+const MESSAGE_TYPES: ReadonlySet<string> = new Set(["Chain"] satisfies MessageType[]);
 
 /**
  * Read a record's payload as a Collatz message, or `null` if it isn't one.
@@ -63,7 +61,9 @@ export function parseStarts(text: string): number[] {
     .filter((token) => token.length > 0)
     .map((token) => {
       const value = Number(token);
-      if (!Number.isInteger(value) || value < 1) {
+      // The decimal-digits check bars Number()'s other spellings (hex, exponent, Infinity);
+      // isSafeInteger bars values above 2^53 that Number() would silently round.
+      if (!/^\d+$/.test(token) || !Number.isSafeInteger(value) || value < 1) {
         throw new Error(`Starting numbers must be positive integers; got "${token}"`);
       }
       return value;

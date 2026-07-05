@@ -97,6 +97,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            apps/collatz/schema/package-lock.json
+            apps/collatz/viewer/package-lock.json
 
       - name: Sync dependencies
         run: uv sync --all-packages

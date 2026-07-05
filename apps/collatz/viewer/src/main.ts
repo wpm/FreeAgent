@@ -5,10 +5,15 @@
  * Everything shown about game state is derived client-side by `state.ts` from the raw
  * data-plane feed; lifecycle facts (episode state, live agents) come from the API's
  * control-plane-derived status (ADR-0007).
+ *
+ * Polling discipline: the next poll is scheduled only after the current one settles (no
+ * overlapping fetches, no out-of-order paints), the message feed is refetched only when the
+ * episode's `message_count` says it grew, and the DOM is rebuilt only when what it would show
+ * actually changed — so clicks, text selection, and hover states survive quiet ticks.
  */
 
-import { ApiClient, type EpisodeStatus } from "./api.js";
-import { deriveChains, parseStarts } from "./state.js";
+import { ApiClient, TERMINAL_STATES, type EpisodeStatus } from "./api.js";
+import { deriveChains, parseStarts, type AgentChain } from "./state.js";
 
 const APPLICATION = "collatz";
 const POLL_INTERVAL_MS = 500;
@@ -37,16 +42,48 @@ const chainsContainer = element<HTMLElement>("chains");
 
 let selectedEpisode: string | null = null;
 
+/** The last-rendered episode rows, as JSON, to skip DOM rebuilds on quiet polls. */
+let renderedEpisodes = "";
+
+/** The last-rendered detail pane, as JSON, for the same reason. */
+let renderedDetail = "";
+
+/** Cache of the selected episode's derived chains, valid while `message_count` holds still. */
+let chainsCache: { episodeId: string; messageCount: number; chains: AgentChain[] } | null = null;
+
+/**
+ * Whether the message on the error line came from the background poll.
+ *
+ * The poll and user actions (launch, stop) share the one error line, but only the poll may
+ * clear it: a poll success erases a stale connectivity complaint, never a launch or stop
+ * failure the user hasn't read yet.
+ */
+let errorFromPoll = false;
+
 function client(): ApiClient {
   return new ApiClient(apiUrlInput.value.replace(/\/$/, ""));
 }
 
-function showError(error: unknown): void {
+function showActionError(error: unknown): void {
   errorLine.textContent = error instanceof Error ? error.message : String(error);
+  errorFromPoll = false;
 }
 
-function clearError(): void {
+function showPollError(error: unknown): void {
+  errorLine.textContent = error instanceof Error ? error.message : String(error);
+  errorFromPoll = true;
+}
+
+function clearActionError(): void {
   errorLine.textContent = "";
+  errorFromPoll = false;
+}
+
+function clearPollError(): void {
+  if (errorFromPoll) {
+    errorLine.textContent = "";
+    errorFromPoll = false;
+  }
 }
 
 async function refreshApplications(): Promise<void> {
@@ -62,9 +99,15 @@ function stateBadge(state: EpisodeStatus["state"]): HTMLElement {
 }
 
 function renderEpisodes(episodes: EpisodeStatus[]): void {
+  const snapshot = JSON.stringify([episodes, selectedEpisode]);
+  if (snapshot === renderedEpisodes) {
+    return;
+  }
+  renderedEpisodes = snapshot;
   episodesBody.replaceChildren(
     ...episodes.map((episode) => {
       const row = document.createElement("tr");
+      row.dataset["episodeId"] = episode.episode_id;
       if (episode.episode_id === selectedEpisode) {
         row.className = "selected";
       }
@@ -77,20 +120,21 @@ function renderEpisodes(episodes: EpisodeStatus[]): void {
       const messages = document.createElement("td");
       messages.textContent = String(episode.message_count);
       row.append(id, state, agents, messages);
-      row.addEventListener("click", () => {
-        selectedEpisode = episode.episode_id;
-        void refresh();
-      });
       return row;
     }),
   );
 }
 
-function renderDetail(status: EpisodeStatus, chains: ReturnType<typeof deriveChains>): void {
+function renderDetail(status: EpisodeStatus, chains: AgentChain[]): void {
+  const snapshot = JSON.stringify([status, chains]);
+  if (!detailSection.hidden && snapshot === renderedDetail) {
+    return;
+  }
+  renderedDetail = snapshot;
   detailSection.hidden = false;
   detailTitle.textContent = `Episode ${status.episode_id}`;
   detailState.replaceChildren(stateBadge(status.state));
-  stopButton.disabled = ["complete", "stopped", "failed"].includes(status.state);
+  stopButton.disabled = TERMINAL_STATES.has(status.state);
   chainsContainer.replaceChildren(
     ...chains.map((chain) => {
       const card = document.createElement("div");
@@ -115,26 +159,40 @@ function renderDetail(status: EpisodeStatus, chains: ReturnType<typeof deriveCha
   );
 }
 
+/** The selected episode's chains, refetching the feed only when it has grown. */
+async function selectedChains(api: ApiClient, status: EpisodeStatus): Promise<AgentChain[]> {
+  if (
+    chainsCache !== null &&
+    chainsCache.episodeId === status.episode_id &&
+    chainsCache.messageCount === status.message_count
+  ) {
+    return chainsCache.chains;
+  }
+  const records = await api.messages(APPLICATION, status.episode_id);
+  const chains = deriveChains(records);
+  chainsCache = {
+    episodeId: status.episode_id,
+    messageCount: status.message_count,
+    chains,
+  };
+  return chains;
+}
+
 async function refresh(): Promise<void> {
   const api = client();
   const episodes = await api.episodes(APPLICATION);
   renderEpisodes(episodes);
-  if (selectedEpisode === null) {
-    detailSection.hidden = true;
-    return;
-  }
   const status = episodes.find((episode) => episode.episode_id === selectedEpisode);
   if (status === undefined) {
     detailSection.hidden = true;
     return;
   }
-  const records = await api.messages(APPLICATION, selectedEpisode);
-  renderDetail(status, deriveChains(records));
+  renderDetail(status, await selectedChains(api, status));
 }
 
 async function launch(event: SubmitEvent): Promise<void> {
   event.preventDefault();
-  clearError();
+  clearActionError();
   try {
     const starts = parseStarts(startsInput.value);
     if (starts.length === 0) {
@@ -146,7 +204,7 @@ async function launch(event: SubmitEvent): Promise<void> {
     episodeIdInput.value = "";
     await refresh();
   } catch (error) {
-    showError(error);
+    showActionError(error);
   }
 }
 
@@ -154,21 +212,37 @@ async function stopSelected(): Promise<void> {
   if (selectedEpisode === null) {
     return;
   }
-  clearError();
+  clearActionError();
   try {
     await client().stop(APPLICATION, selectedEpisode);
     await refresh();
   } catch (error) {
-    showError(error);
+    showActionError(error);
   }
 }
 
+/** Run one poll, then schedule the next — only after this one settles, so polls never overlap. */
 function poll(): void {
-  refresh().then(clearError, showError);
+  void refresh()
+    .then(clearPollError, showPollError)
+    .finally(() => setTimeout(poll, POLL_INTERVAL_MS));
 }
 
 launchForm.addEventListener("submit", (event) => void launch(event));
 stopButton.addEventListener("click", () => void stopSelected());
+// One delegated listener: rows are rebuilt when the table changes, so per-row listeners would
+// miss a click that straddles a rebuild.
+episodesBody.addEventListener("click", (event) => {
+  const row = (event.target as HTMLElement).closest("tr");
+  const episodeId = row?.dataset["episodeId"];
+  if (episodeId !== undefined) {
+    selectedEpisode = episodeId;
+    refresh().catch(showActionError);
+  }
+});
 apiUrlInput.value = DEFAULT_API_URL;
-refreshApplications().then(clearError, showError);
-setInterval(poll, POLL_INTERVAL_MS);
+apiUrlInput.addEventListener("change", () => {
+  refreshApplications().then(clearActionError, showActionError);
+});
+refreshApplications().then(clearPollError, showPollError);
+poll();

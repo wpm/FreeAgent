@@ -1,0 +1,98 @@
+/**
+ * Tests for the REST client in `api.ts`, run against a stubbed global `fetch` so every request
+ * path, unwrapping, and error format is pinned without a server. The real HTTP behavior is
+ * exercised end to end against a live API.
+ */
+
+import assert from "node:assert/strict";
+import { afterEach, test } from "node:test";
+
+import { ApiClient } from "./api.js";
+
+const realFetch = globalThis.fetch;
+
+interface Recorded {
+  url: string;
+  method: string;
+  body: string | null;
+}
+
+/** Route every fetch to a canned response, recording what was requested. */
+function stubFetch(status: number, body: string | null): Recorded[] {
+  const calls: Recorded[] = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({
+      url: String(input),
+      method: init?.method ?? "GET",
+      body: typeof init?.body === "string" ? init.body : null,
+    });
+    return new Response(body, { status });
+  };
+  return calls;
+}
+
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
+
+const BASE = "http://api.test";
+
+const STATUS_JSON = JSON.stringify({
+  application: "collatz",
+  episode_id: "ep1",
+  episode_root: "episode.collatz.ep1",
+  state: "created",
+  agents_alive: [],
+  message_count: 0,
+  worker_exit_code: null,
+});
+
+test("applications unwraps the applications list", async () => {
+  const calls = stubFetch(200, JSON.stringify({ applications: ["collatz"] }));
+  assert.deepEqual(await new ApiClient(BASE).applications(), ["collatz"]);
+  assert.deepEqual(calls, [{ url: `${BASE}/applications`, method: "GET", body: null }]);
+});
+
+test("episodes unwraps the episode statuses", async () => {
+  const calls = stubFetch(200, JSON.stringify({ episodes: [JSON.parse(STATUS_JSON)] }));
+  const episodes = await new ApiClient(BASE).episodes("collatz");
+  assert.equal(episodes[0]?.episode_id, "ep1");
+  assert.equal(calls[0]?.url, `${BASE}/applications/collatz/episodes`);
+});
+
+test("createEpisode posts the episode ID and opaque config", async () => {
+  const calls = stubFetch(201, STATUS_JSON);
+  const created = await new ApiClient(BASE).createEpisode("collatz", "ep1", { starts: [27] });
+  assert.equal(created.state, "created");
+  assert.equal(calls[0]?.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0]?.body ?? ""), {
+    episode_id: "ep1",
+    config: { starts: [27] },
+  });
+});
+
+test("status and messages hit the per-episode routes", async () => {
+  const statusCalls = stubFetch(200, STATUS_JSON);
+  await new ApiClient(BASE).status("collatz", "ep1");
+  assert.equal(statusCalls[0]?.url, `${BASE}/applications/collatz/episodes/ep1`);
+
+  const messageCalls = stubFetch(200, JSON.stringify({ messages: [] }));
+  assert.deepEqual(await new ApiClient(BASE).messages("collatz", "ep1"), []);
+  assert.equal(messageCalls[0]?.url, `${BASE}/applications/collatz/episodes/ep1/messages`);
+});
+
+test("stop tolerates the API's bodyless 204", async () => {
+  const calls = stubFetch(204, null);
+  await new ApiClient(BASE).stop("collatz", "ep1");
+  assert.deepEqual(calls, [
+    { url: `${BASE}/applications/collatz/episodes/ep1`, method: "DELETE", body: null },
+  ]);
+});
+
+test("a failed request reports the method, path, status, and server detail", async () => {
+  stubFetch(409, JSON.stringify({ detail: "already exists" }));
+  await assert.rejects(
+    () => new ApiClient(BASE).createEpisode("collatz", "ep1", {}),
+    /POST \/applications\/collatz\/episodes failed \(409\).*already exists/,
+  );
+});

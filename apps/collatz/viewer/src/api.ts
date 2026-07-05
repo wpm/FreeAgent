@@ -10,6 +10,13 @@
 /** The lifecycle states of `freeagent.api.episodes.EpisodeState`. */
 export type EpisodeState = "created" | "running" | "complete" | "stopped" | "failed";
 
+/** States an episode never leaves; mirror of `freeagent.api.episodes.TERMINAL_STATES`. */
+export const TERMINAL_STATES: ReadonlySet<EpisodeState> = new Set([
+  "complete",
+  "stopped",
+  "failed",
+] satisfies EpisodeState[]);
+
 /** Mirror of `freeagent.api.episodes.EpisodeStatus`. */
 export interface EpisodeStatus {
   application: string;
@@ -39,6 +46,10 @@ export class ApiClient {
     if (!response.ok) {
       const detail = await response.text();
       throw new Error(`${init?.method ?? "GET"} ${path} failed (${response.status}): ${detail}`);
+    }
+    // A bodyless success (the API's DELETE answers 204) has no JSON to parse.
+    if (response.status === 204) {
+      return undefined as T;
     }
     return (await response.json()) as T;
   }
@@ -85,12 +96,8 @@ export class ApiClient {
 
   /** `DELETE .../episodes/{id}`: stop the episode. */
   async stop(application: string, episodeId: string): Promise<void> {
-    const response = await fetch(
-      `${this.baseUrl}/applications/${application}/episodes/${episodeId}`,
-      { method: "DELETE" },
-    );
-    if (!response.ok) {
-      throw new Error(`DELETE episode failed (${response.status})`);
-    }
+    await this.request<void>(`/applications/${application}/episodes/${episodeId}`, {
+      method: "DELETE",
+    });
   }
 }
