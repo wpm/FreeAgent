@@ -120,8 +120,8 @@ class CollatzEnvironment(Environment):
         super().__init__(episode_root, *starts.keys(), servers=servers, timeout=timeout)
         # Subscribe to every agent's reply subject via one wildcard, in addition to the
         # environment's own command subject that the base class already claims.
-        self.subjects.append(f"{episode_root}.{ENVIRONMENT}.{REPLIES}.*")
-        self.starts = dict(starts)
+        self.replies_root = f"{episode_root}.{ENVIRONMENT}.{REPLIES}"
+        self.subjects.append(f"{self.replies_root}.*")
         self.chains: dict[str, Chain] = {name: Chain(numbers=[n]) for name, n in starts.items()}
         self.finished: set[str] = set()
 
@@ -183,24 +183,36 @@ class CollatzEnvironment(Environment):
     async def handle_incoming_message(self, msg: Msg) -> None:
         """Handle a message on one of the environment's subjects.
 
-        A :class:`Chain` arriving on an agent's reply subject is the environment's cue to judge that
-        agent: it is acked immediately (ack-then-counter-request), recorded, and then either the
-        agent is stopped (its chain reached 1) or sent the chain back to extend again. When the stop
-        that just landed was the episode's last, the environment publishes
-        :class:`~freeagent.sdk.message.EpisodeComplete` and stops itself. Anything that isn't a
-        :class:`Chain` on a reply subject is acked and otherwise ignored -- the environment is not a
-        general command target.
+        A :class:`Chain` arriving on an agent's reply subject (``{replies_root}.{agent}``) is the
+        environment's cue to judge that agent: it is acked immediately (ack-then-counter-request),
+        recorded, and then either the agent is stopped (its chain reached 1) or sent the chain back
+        to extend again. When the stop that just landed was the episode's last, the environment
+        publishes :class:`~freeagent.sdk.message.EpisodeComplete` and stops itself.
+
+        Every other message is left alone: the environment also subscribes (via the base class) to
+        its own ``{episode_root}.environment`` subject, on which it *self-receives* the
+        fire-and-forget :class:`~freeagent.sdk.message.EpisodeComplete` it publishes during
+        teardown. That message carries no reply subject, so replying to it would raise; the
+        environment only ever :meth:`~freeagent.sdk.entity.Agent.respond`-acks a message that is an
+        actual request (has a reply subject), and only chains on reply subjects drive the game.
 
         :param msg: The NATS message that arrived on a subscribed subject.
         """
+        if not msg.subject.startswith(f"{self.replies_root}."):
+            # Not a per-agent reply -- e.g. the environment's own EpisodeComplete on its
+            # {episode_root}.environment subject. Ack only if a request; never drive the game.
+            await self._ack_if_request(msg)
+            return
         message = Message.try_decode(msg.data)
         if not isinstance(message, Chain):
-            await msg.respond(b"")
+            # A reply that isn't a chain (unknown or malformed type). Ack it if it was a request,
+            # but do not advance the game -- an undecodable reply can't be judged.
+            await self._ack_if_request(msg)
             return
         agent = self.agent_of(msg.subject)
         # Ack first: the reply carries no work, only receipt (ADR-0008). The agent's request
         # unblocks here, and the environment does its judging afterwards.
-        await msg.respond(Ack().to_bytes())
+        await self._ack_if_request(msg, Ack())
         just_finished = self.record(agent, message)
         if just_finished:
             await self.stop_agent(agent)
@@ -208,3 +220,44 @@ class CollatzEnvironment(Environment):
                 await self.stop()
         else:
             await self.send_chain(agent)
+
+    @staticmethod
+    async def _ack_if_request(msg: Msg, reply: Message | None = None) -> None:
+        """Reply to ``msg`` only if it was a NATS request (carries a reply subject).
+
+        A fire-and-forget publish (such as the environment's self-received
+        :class:`~freeagent.sdk.message.EpisodeComplete`) has no reply subject, and replying to it
+        raises; this makes responding a no-op in that case, mirroring the guard in
+        :meth:`~freeagent.sdk.entity.Agent.respond`.
+
+        :param msg: The NATS message to (maybe) reply to.
+        :param reply: The message to reply with; a bare :class:`~freeagent.sdk.message.Ack` payload
+            of ``b""`` is sent when ``None``.
+        """
+        if not msg.reply:
+            return
+        await msg.respond(b"" if reply is None else reply.to_bytes())
+
+    async def stop(self) -> None:
+        """Tear the episode down, broadcasting :class:`~freeagent.sdk.message.StopEntity` only to
+        agents not already stopped.
+
+        Overrides :meth:`~freeagent.sdk.entity.Environment.stop`, which broadcasts the teardown to
+        *every* agent. On the completing path each agent has already been stopped individually by
+        :meth:`~freeagent.sdk.entity.Environment.stop_agent` as its chain reached 1, so those agents
+        have unsubscribed and disconnected; re-broadcasting to them would hit subjects with no
+        responder. This narrows :attr:`~freeagent.sdk.entity.Environment.agents` to the still-live
+        agents for the duration of the base teardown -- reusing all of its behavior (the
+        :class:`~freeagent.sdk.message.EpisodeComplete` end marker, ordering, and disconnect) and
+        only changing *who* the :class:`~freeagent.sdk.message.StopEntity` broadcast reaches -- then
+        restores the full agent list.
+
+        :return: ``None``.
+        """
+        live = tuple(agent for agent in self.agents if agent not in self.stopped_agents)
+        full_agents = self.agents
+        self.agents = live
+        try:
+            await super().stop()
+        finally:
+            self.agents = full_agents

@@ -17,27 +17,35 @@ from freeagent.sdk.message import Ack, Message
 class FakeMsg:
     """A stand-in for :class:`nats.aio.msg.Msg`: carries a payload and records responses.
 
+    Like a real :class:`nats.aio.msg.Msg`, a message carries a ``reply`` subject only when it was
+    sent as a NATS *request*; a fire-and-forget publish leaves it empty. The environment guards its
+    acks on this, so tests choose which case they exercise via ``reply``.
+
     :ivar data: The raw message bytes, as they would arrive over NATS.
     :ivar subject: The subject the message arrived on -- what the environment reads the agent name
         off of.
+    :ivar reply: The reply subject, non-empty for a request and empty (``""``) for a publish.
     :ivar responses: Every payload passed to :meth:`respond`, in order, for a test to assert the
         ack.
     """
 
-    def __init__(self, data: bytes, subject: str = "") -> None:
+    def __init__(self, data: bytes, subject: str = "", reply: str = "inbox") -> None:
         self.data = data
         self.subject = subject
+        self.reply = reply
         self.responses: list[bytes] = []
 
     @classmethod
-    def for_message(cls, message: Message, subject: str = "") -> FakeMsg:
+    def for_message(cls, message: Message, subject: str = "", reply: str = "inbox") -> FakeMsg:
         """Build a :class:`FakeMsg` carrying ``message`` on ``subject``.
 
         :param message: The message to serialize into the fake's payload.
         :param subject: The subject the fake message arrives on.
+        :param reply: The reply subject; pass ``""`` to model a fire-and-forget publish (no
+            request).
         :return: A fake message ready to hand to a handler.
         """
-        return cls(message.to_bytes(), subject=subject)
+        return cls(message.to_bytes(), subject=subject, reply=reply)
 
     async def respond(self, data: bytes) -> None:
         """Record a reply payload, as :class:`nats.aio.msg.Msg` would send one.

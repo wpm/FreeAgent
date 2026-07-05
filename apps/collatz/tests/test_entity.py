@@ -13,7 +13,7 @@ from fakes import FakeClient, FakeMsg
 from freeagent.app.collatz.entity import REPLIES, CollatzAgent, CollatzEnvironment
 from freeagent.app.collatz.message import Chain
 from freeagent.sdk.entity import AGENTS, ENVIRONMENT
-from freeagent.sdk.message import Ack, EpisodeComplete, Message, StopAgent
+from freeagent.sdk.message import Ack, EpisodeComplete, Message, StopAgent, StopEntity
 
 
 def reply_subject(episode_root: str, agent: str) -> str:
@@ -165,6 +165,40 @@ async def test_environment_completes_the_episode_when_the_last_agent_finishes() 
     assert env.client is None
 
 
+async def test_completion_teardown_does_not_re_stop_the_already_stopped_agent() -> None:
+    # The agent that just finished was stopped via StopAgent; teardown must not also broadcast
+    # StopEntity to it (its subject has no responder once it has torn down).
+    env = CollatzEnvironment("episode", {"agent-0": 2})
+    client = FakeClient()
+    env.client = client  # type: ignore[assignment]
+    msg = FakeMsg.for_message(Chain(numbers=[2, 1]), subject=reply_subject("episode", "agent-0"))
+
+    await env.handle_incoming_message(msg)  # type: ignore[arg-type]
+
+    stop_entity_targets = [
+        subject for subject, message in decode_requests(client) if isinstance(message, StopEntity)
+    ]
+    assert stop_entity_targets == []  # only the StopAgent went out, no StopEntity re-broadcast
+    assert env.agents == ("agent-0",)  # the narrowed agent list is restored after teardown
+
+
+async def test_completion_teardown_still_stops_agents_that_were_not_individually_stopped() -> None:
+    # If an agent somehow reached completion without a prior StopAgent, teardown must still stop it.
+    env = CollatzEnvironment("episode", {"agent-0": 2, "agent-1": 6})
+    client = FakeClient()
+    env.client = client  # type: ignore[assignment]
+    # Force the "all finished" condition while leaving agent-1 un-stopped, then trigger stop().
+    env.finished = {"agent-0", "agent-1"}
+    env.stopped_agents = {"agent-0"}
+
+    await env.stop()
+
+    stop_entity_targets = [
+        subject for subject, message in decode_requests(client) if isinstance(message, StopEntity)
+    ]
+    assert stop_entity_targets == [f"episode.{AGENTS}.agent-1"]
+
+
 async def test_environment_does_not_complete_the_episode_while_an_agent_still_runs() -> None:
     env = CollatzEnvironment("episode", {"agent-0": 2, "agent-1": 6})
     env.client = FakeClient()  # type: ignore[assignment]
@@ -177,10 +211,11 @@ async def test_environment_does_not_complete_the_episode_while_an_agent_still_ru
     assert not env.client.closed  # type: ignore[union-attr]
 
 
-async def test_environment_ignores_a_non_chain_message() -> None:
+async def test_environment_acks_a_non_chain_request_but_does_not_drive_the_game() -> None:
     env = CollatzEnvironment("episode", {"agent-0": 6})
     env.client = FakeClient()  # type: ignore[assignment]
-    msg = FakeMsg.for_message(Ack(), subject=f"episode.{ENVIRONMENT}")
+    # A non-chain request arriving on the environment's own subject (reply set = it is a request).
+    msg = FakeMsg.for_message(Ack(), subject=f"episode.{ENVIRONMENT}", reply="inbox")
 
     await env.handle_incoming_message(msg)  # type: ignore[arg-type]
 
@@ -188,6 +223,40 @@ async def test_environment_ignores_a_non_chain_message() -> None:
     assert msg.responses == [b""]
     assert env.client.requests == []  # type: ignore[union-attr]
     assert env.finished == set()
+
+
+async def test_environment_does_not_respond_to_its_self_received_episode_complete() -> None:
+    # Environment.stop() publishes EpisodeComplete on {episode_root}.environment, which the
+    # environment self-receives. That publish has no reply subject, so responding to it would raise
+    # over the wire; the handler must leave it alone.
+    env = CollatzEnvironment("episode", {"agent-0": 6})
+    env.client = FakeClient()  # type: ignore[assignment]
+    msg = FakeMsg.for_message(
+        EpisodeComplete(),
+        subject=f"episode.{ENVIRONMENT}",
+        reply="",  # publish: no reply subject
+    )
+
+    await env.handle_incoming_message(msg)  # type: ignore[arg-type]
+
+    assert msg.responses == []  # never responded -- a real Msg.respond here would raise
+    assert env.client.requests == []  # type: ignore[union-attr]
+    assert env.finished == set()
+
+
+async def test_environment_ignores_an_undecodable_reply_without_driving_the_game() -> None:
+    # A reply on a replies.* subject whose type tag names no known Message subclass decodes to None
+    # via try_decode; it must be acked (it was a request) but must not advance any chain.
+    env = CollatzEnvironment("episode", {"agent-0": 6})
+    env.client = FakeClient()  # type: ignore[assignment]
+    msg = FakeMsg(b'{"message_type": "Nonesuch"}', subject=reply_subject("episode", "agent-0"))
+
+    await env.handle_incoming_message(msg)  # type: ignore[arg-type]
+
+    assert msg.responses == [b""]  # acked (it was a request) ...
+    assert env.client.requests == []  # type: ignore[union-attr]  # ... but the game did not advance
+    assert env.finished == set()
+    assert env.chains["agent-0"] == Chain(numbers=[6])  # unchanged
 
 
 # --- Multiple agents, different starts, no interference -------------------------------------------
