@@ -26,6 +26,7 @@ from typing import Any
 import httpx2 as httpx
 import nats
 import pytest
+from api_fakes import FakeProcess
 from freeagent.api.app import create_app
 from freeagent.api.episodes import EpisodeManager, WorkerProcess
 from freeagent.sdk.message import EpisodeComplete, StartEntity, StopAgent
@@ -191,7 +192,7 @@ async def test_status_reflects_start_stop_and_complete_control_messages(
     """
 
     def spawn(command: list[str]) -> WorkerProcess:
-        return FakeWorker()
+        return FakeProcess()
 
     manager = EpisodeManager(nats_server, spawn=spawn)
     app = create_app(manager=manager)
@@ -291,24 +292,3 @@ async def test_delete_stops_a_running_episode_and_its_worker(nats_server: str) -
     process = manager.get("collatz", "doomed").process
     assert process is not None
     assert process.poll() is not None
-
-
-class FakeWorker:
-    """A worker process that never runs, for driving the wire by hand."""
-
-    def __init__(self) -> None:
-        self.returncode: int | None = None
-
-    def poll(self) -> int | None:
-        return self.returncode
-
-    def terminate(self) -> None:
-        self.returncode = -15
-
-    def kill(self) -> None:
-        self.returncode = -9
-
-    def wait(self, timeout: float | None = None) -> int:
-        if self.returncode is None:
-            self.returncode = 0
-        return self.returncode

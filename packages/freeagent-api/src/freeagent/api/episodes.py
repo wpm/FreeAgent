@@ -75,6 +75,13 @@ is process-global and open, so what decodes depends on what happens to be import
 split must not.
 """
 
+_CONTROL_PLANE_TYPE_NAMES = frozenset(cls.__name__ for cls in CONTROL_PLANE_TYPES)
+"""The control-plane types' envelope tags, for cheaply pre-filtering before decoding.
+
+Sound because the SDK pins every message's ``message_type`` tag to its concrete class name (a
+``Literal``), so a payload whose tag isn't in this set cannot decode to a control-plane type.
+"""
+
 WORKER_MODULE = "freeagent.worker.cli"
 """The worker's CLI module, launched as ``python -m`` to run an episode.
 
@@ -86,8 +93,15 @@ package) inside ``freeagent.api`` would break the ADR-0007 invariant that the AP
 WORKER_STOP_TIMEOUT = 5.0
 """Seconds to wait for a terminated worker process to exit before killing it outright."""
 
-_SUBJECT_TOKEN = re.compile(r"[A-Za-z0-9_-]+")
-"""Characters allowed in a single NATS subject token.
+SUBJECT_TOKEN_PATTERN = r"[A-Za-z0-9_-]+"
+"""Regex for a single NATS subject token — the one definition of "valid episode ID characters".
+
+Shared with the REST request model (see :mod:`freeagent.api.app`) so the HTTP-layer validation and
+:meth:`EpisodeManager.create`'s own guard cannot drift apart.
+"""
+
+_SUBJECT_TOKEN = re.compile(SUBJECT_TOKEN_PATTERN)
+"""Compiled :data:`SUBJECT_TOKEN_PATTERN`.
 
 Application names and episode IDs both become tokens of the episode's root subject, so anything
 with a ``.``, whitespace, or a wildcard character would corrupt the subject hierarchy (and let one
@@ -230,14 +244,19 @@ class EpisodeMonitor:
             return
         if self.state is EpisodeState.CREATED:
             self.state = EpisodeState.RUNNING
-        try:
-            decoded = Message.try_decode(data)
-        except ValueError:
-            decoded = None
-        if isinstance(decoded, CONTROL_PLANE_TYPES):
-            self._record_control(subject, decoded)
-            return
         tag = payload.get("message_type") if isinstance(payload, dict) else None
+        # Only a payload whose envelope tag names a control-plane type is worth decoding: the tag
+        # pins the concrete class (the SDK narrows it to a Literal), so anything else is data
+        # plane by definition and skipping try_decode avoids parsing every data-plane message a
+        # second time in this hot path.
+        if tag in _CONTROL_PLANE_TYPE_NAMES:
+            try:
+                decoded = Message.try_decode(data)
+            except ValueError:
+                decoded = None
+            if isinstance(decoded, CONTROL_PLANE_TYPES):
+                self._record_control(subject, decoded)
+                return
         self.messages.append(
             DataPlaneRecord(
                 seq=len(self.messages),
@@ -555,8 +574,9 @@ class EpisodeManager:
         Called from the API's lifespan shutdown so no worker process or subscription outlives the
         server. Idempotent, like the teardowns it delegates to.
         """
-        for episode in self._episodes.values():
-            await self._halt(episode)
+        # Halts touch disjoint processes and subscriptions, so run them concurrently: N stuck
+        # workers then cost one WORKER_STOP_TIMEOUT rather than N of them.
+        await asyncio.gather(*(self._halt(episode) for episode in self._episodes.values()))
         if self._client is not None:
             await self._client.close()
             self._client = None

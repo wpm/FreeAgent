@@ -28,6 +28,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Response
 from freeagent.api.episodes import (
+    SUBJECT_TOKEN_PATTERN,
     DataPlaneRecord,
     DuplicateEpisode,
     Episode,
@@ -42,9 +43,9 @@ from pydantic import BaseModel, Field
 NATS_URL_ENV = "FREEAGENT_NATS_URL"
 """Environment variable naming the NATS server URL the API listens on and hands to workers."""
 
-EPISODE_ID_PATTERN = r"^[A-Za-z0-9_-]+$"
-"""A client-supplied episode ID must be a single NATS subject token; see
-:mod:`freeagent.api.episodes`."""
+EPISODE_ID_PATTERN = rf"^{SUBJECT_TOKEN_PATTERN}$"
+"""A client-supplied episode ID must be a single NATS subject token — anchored form of the one
+definition in :data:`freeagent.api.episodes.SUBJECT_TOKEN_PATTERN`."""
 
 
 class CreateEpisodeRequest(BaseModel):
