@@ -25,11 +25,33 @@ environment. The observer subscribes before either, so the terminal
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from freeagent.sdk import Application, EpisodeSpec
 from freeagent.sdk.entity import ENVIRONMENT, Entity
 from freeagent.sdk.message import EpisodeComplete, Message
 from nats.aio.msg import Msg
+
+_logger = logging.getLogger(__name__)
+"""Logger for teardown failures the runner deliberately swallows on the force-stop path; see
+:func:`run_episode`."""
+
+
+async def _stop_quietly(entity: Entity) -> None:
+    """Stop ``entity``, logging and swallowing any error instead of letting it propagate.
+
+    Used on :func:`run_episode`'s force-stop path, where several entities are torn down after an
+    episode has already failed. A teardown that raises there -- e.g. an
+    :class:`~nats.errors.NoRespondersError` from broadcasting to an agent that has already
+    unsubscribed, or an ``unsubscribe``/``close`` erroring over a severed connection -- must not
+    abort the remaining teardowns or mask the original failure the caller is about to re-raise.
+
+    :param entity: The entity to stop.
+    """
+    try:
+        await entity.stop()
+    except Exception as error:
+        _logger.warning("Error stopping %s during force teardown: %r", type(entity).__name__, error)
 
 
 class _EpisodeObserver(Entity):
@@ -86,8 +108,11 @@ async def run_episode(
 
     If instead the wait fails -- the ``timeout`` elapses, or ``start`` raised before completion --
     the episode did *not* end cleanly and no application-driven teardown can be assumed, so the
-    runner force-stops the environment and every agent (each stop idempotent) before re-raising,
-    leaving no connection stranded.
+    runner force-stops every agent and the environment before re-raising, leaving no connection
+    stranded. Each stop there is best-effort (see :func:`_stop_quietly`): a teardown error must not
+    abort the others or mask the original failure being re-raised. Stopping an agent directly also
+    cancels its run loop (see :meth:`~freeagent.sdk.entity.Agent.stop`), so no run-loop task is left
+    orphaned.
 
     :param application: The application to run; its factories build the episode's entities.
     :param episode: The episode specification handed to the application's factories.
@@ -108,11 +133,15 @@ async def run_episode(
         await asyncio.wait_for(observer.completed.wait(), timeout)
     except BaseException:
         # The episode did not complete cleanly; the application's own teardown can't be relied on,
-        # so force everything down. Idempotent, so entities already stopped by the app are no-ops.
+        # so force everything down. Each stop is best-effort (see _stop_quietly): a teardown that
+        # raises -- a NoRespondersError from the environment broadcasting StopEntity at an agent
+        # this loop already unsubscribed, or an unsubscribe/close erroring over a severed
+        # connection -- must not abort the remaining stops or mask the original failure re-raised
+        # below. Each entity's own stop is idempotent, so already-stopped entities are no-ops.
         for agent in agents:
-            await agent.stop()
-        await environment.stop()
+            await _stop_quietly(agent)
+        await _stop_quietly(environment)
         raise
     finally:
         # The observer is the runner's own; stop it on every path (its stop is idempotent).
-        await observer.stop()
+        await _stop_quietly(observer)

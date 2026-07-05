@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from fakes import FakeClient, FakeMsg
 from freeagent.app.collatz.entity import REPLIES, CollatzAgent, CollatzEnvironment
 from freeagent.app.collatz.message import Chain
 from freeagent.sdk.entity import AGENTS, ENVIRONMENT
 from freeagent.sdk.message import Ack, EpisodeComplete, Message, StopAgent, StopEntity
+from nats.errors import NoRespondersError
 
 
 def reply_subject(episode_root: str, agent: str) -> str:
@@ -30,11 +32,12 @@ async def drain(agent: CollatzAgent) -> None:
     a background task and returns without awaiting it, so a test that wants to observe the request
     on the fake client must first let that task run. Awaits the tasks in
     :attr:`~freeagent.app.collatz.entity.CollatzAgent.pending` (copied, since each clears itself
-    from the set on completion).
+    from the set on completion). Exceptions are not re-raised here: the agent's own done-callback is
+    what handles a failed counter-request, and a test asserts on that, not on ``drain``.
 
     :param agent: The agent whose in-flight counter-requests to await.
     """
-    await asyncio.gather(*list(agent.pending))
+    await asyncio.gather(*list(agent.pending), return_exceptions=True)
 
 
 def decode_requests(client: FakeClient) -> list[tuple[str, Message]]:
@@ -75,6 +78,45 @@ async def test_agent_sends_the_counter_request_without_awaiting_it() -> None:
     await drain(agent)
     assert agent.pending == set()  # and it clears itself once complete
     assert len(agent.client.requests) == 1  # type: ignore[union-attr]
+
+
+async def test_agent_logs_an_unexpected_counter_request_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # An error other than the suppressed end-of-chain races must be surfaced, not silently dropped
+    # by the done-callback -- restoring the visibility the pre-background awaited request had.
+    agent = CollatzAgent("episode", "agent-0")
+    agent.client = FakeClient()  # type: ignore[assignment]
+
+    async def failing_request(*_: object, **__: object) -> FakeMsg:
+        raise RuntimeError("connection dropped")
+
+    agent.client.request = failing_request  # type: ignore[method-assign, union-attr]
+    with caplog.at_level("WARNING"):
+        await agent.process_message(Chain(numbers=[3]))
+        await drain(agent)
+
+    assert agent.pending == set()
+    assert "connection dropped" in caplog.text
+
+
+async def test_agent_does_not_log_a_suppressed_end_of_chain_race(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # NoRespondersError / request-timeout are the normal end-of-chain race, suppressed silently.
+    agent = CollatzAgent("episode", "agent-0")
+    agent.client = FakeClient()  # type: ignore[assignment]
+
+    async def no_responders(*_: object, **__: object) -> FakeMsg:
+        raise NoRespondersError
+
+    agent.client.request = no_responders  # type: ignore[method-assign, union-attr]
+    with caplog.at_level("WARNING"):
+        await agent.process_message(Chain(numbers=[3]))
+        await drain(agent)
+
+    assert agent.pending == set()
+    assert caplog.text == ""
 
 
 async def test_agent_stop_cancels_an_outstanding_counter_request() -> None:

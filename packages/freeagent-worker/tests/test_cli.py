@@ -71,9 +71,37 @@ def test_run_completes_and_builds_the_expected_spec(recorded_run: list[dict[str,
     [call] = recorded_run
     assert call["application"].name == "collatz"
     assert call["servers"] == "nats://example:4222"
+    # --nats-url is pinned into the config's `servers` key so entities and the observer share it.
     assert call["episode"] == EpisodeSpec(
-        episode_root="episode.57", episode_id="57", config={"starts": [6, 7, 9]}
+        episode_root="episode.57",
+        episode_id="57",
+        config={"starts": [6, 7, 9], "servers": "nats://example:4222"},
     )
+
+
+def test_nats_url_is_pinned_into_the_config_servers_key(
+    recorded_run: list[dict[str, Any]],
+) -> None:
+    # The observer's server and the entities' server must be one and the same; the CLI guarantees
+    # this by writing --nats-url into config["servers"], overriding any servers the config carried.
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "collatz",
+            "--episode-id",
+            "1",
+            "--nats-url",
+            "nats://pinned:4222",
+            "--config",
+            '{"starts": [2], "servers": "nats://ignored:4222"}',
+        ],
+    )
+
+    assert result.exit_code == 0
+    [call] = recorded_run
+    assert call["servers"] == "nats://pinned:4222"
+    assert call["episode"].config["servers"] == "nats://pinned:4222"
 
 
 def test_run_defaults_episode_root_to_the_episode_id(recorded_run: list[dict[str, Any]]) -> None:
@@ -113,11 +141,14 @@ def test_run_passes_the_timeout_through(recorded_run: list[dict[str, Any]]) -> N
     assert recorded_run[0]["timeout"] == 12.5
 
 
-def test_run_with_no_config_uses_an_empty_config(recorded_run: list[dict[str, Any]]) -> None:
+def test_run_with_no_config_uses_only_the_pinned_server(
+    recorded_run: list[dict[str, Any]],
+) -> None:
     result = runner.invoke(app, ["run", "collatz", "--episode-id", "1"])
 
     assert result.exit_code == 0
-    assert recorded_run[0]["episode"].config == {}
+    # No --config, so the only key is the server the CLI pins in (defaulting to the SDK default).
+    assert recorded_run[0]["episode"].config == {"servers": "nats://localhost:4222"}
 
 
 def test_config_can_be_read_from_a_file(recorded_run: list[dict[str, Any]], tmp_path: Path) -> None:
@@ -129,7 +160,10 @@ def test_config_can_be_read_from_a_file(recorded_run: list[dict[str, Any]], tmp_
     )
 
     assert result.exit_code == 0
-    assert recorded_run[0]["episode"].config == {"starts": [4, 8]}
+    assert recorded_run[0]["episode"].config == {
+        "starts": [4, 8],
+        "servers": "nats://localhost:4222",
+    }
 
 
 def test_unknown_application_exits_nonzero_and_lists_available(

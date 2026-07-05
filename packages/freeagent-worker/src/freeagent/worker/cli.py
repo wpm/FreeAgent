@@ -29,6 +29,15 @@ from freeagent.worker.runner import run_episode
 # `no_args_is_help` shows usage instead of an error when invoked bare; the explicit callback keeps
 # Typer in multi-command mode so the subcommand is spelled `freeagent-worker run ...` rather than
 # collapsing to a single top-level command (Typer drops the subcommand name when there is only one).
+SERVERS_CONFIG_KEY = "servers"
+"""The config key the worker pins ``--nats-url`` into so entities and the observer share a server.
+
+The SDK's :class:`~freeagent.sdk.entity.Entity` takes its NATS server(s) under this name, and an
+application's config carries the same key through to the entities it builds (e.g. Collatz's
+``CollatzConfig.servers``). The worker owns connectivity, so it makes ``--nats-url`` authoritative
+by writing it here; this is the one config key the otherwise-opaque config is allowed to touch.
+"""
+
 app = typer.Typer(help="Free Agent worker: run an application episode.", no_args_is_help=True)
 
 
@@ -63,7 +72,10 @@ def run(
     application: str = typer.Argument(..., help="Name of the application to run, e.g. `collatz`."),
     episode_id: str = typer.Option(..., "--episode-id", help="Identifier for this episode."),
     nats_url: str = typer.Option(
-        DEFAULT_NATS_SERVER, "--nats-url", help="NATS server URL to observe the episode on."
+        DEFAULT_NATS_SERVER,
+        "--nats-url",
+        help="NATS server URL for the whole episode; pinned into config so entities and the "
+        "observer share it.",
     ),
     config: str | None = typer.Option(
         None, "--config", help="Application config as a JSON string or a path to a JSON file."
@@ -86,7 +98,8 @@ def run(
 
     :param application: The bare application name to look up among installed applications.
     :param episode_id: The episode's identifier, unique within a deployment.
-    :param nats_url: The NATS server URL the worker's observer connects to.
+    :param nats_url: The NATS server URL for the whole episode; pinned into ``config`` under
+        :data:`SERVERS_CONFIG_KEY` so the application's entities and the observer share one server.
     :param config: The application config, as a JSON string or a path to a JSON file.
     :param episode_root: The root NATS subject; defaults to ``episode.{episode_id}``.
     :param timeout: Seconds to wait for completion, or ``None`` to wait indefinitely.
@@ -105,6 +118,13 @@ def run(
     except (OSError, ValueError) as error:
         typer.echo(f"Could not read config: {error}", err=True)
         raise typer.Exit(code=1) from None
+
+    # `--nats-url` is the one server the whole episode uses. Pin it into the config under the
+    # platform-wide ``servers`` key so the application builds its entities on the same server the
+    # worker's observer watches; otherwise an application defaulting ``servers`` elsewhere would run
+    # the episode on a different server and the observer would never see EpisodeComplete. The key is
+    # the SDK convention (see freeagent.sdk.entity); an application that ignores it is unaffected.
+    parsed_config[SERVERS_CONFIG_KEY] = nats_url
 
     spec = EpisodeSpec(
         episode_root=episode_root or f"episode.{episode_id}",

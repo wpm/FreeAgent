@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 
 from freeagent.app.collatz.message import Chain, extend, is_complete
 from freeagent.sdk import Agent, Environment
@@ -32,6 +33,10 @@ from freeagent.sdk.message import Ack, Message
 from nats.aio.msg import Msg
 from nats.errors import NoRespondersError
 from nats.errors import TimeoutError as NatsTimeoutError
+
+_logger = logging.getLogger(__name__)
+"""Logger for surfacing a counter-request that failed for an unexpected reason; see
+:meth:`CollatzAgent._counter_request_done`."""
 
 REPLIES = "replies"
 """Subject segment under the environment that agents send their extended chains back on.
@@ -107,8 +112,28 @@ class CollatzAgent(Agent):
         if isinstance(message, Chain):
             task = asyncio.create_task(self._send_extended(message))
             self.pending.add(task)
-            task.add_done_callback(self.pending.discard)
+            task.add_done_callback(self._counter_request_done)
         return None
+
+    def _counter_request_done(self, task: asyncio.Task[None]) -> None:
+        """Drop a finished counter-request from :attr:`pending`, logging any unexpected failure.
+
+        The done-callback for the background tasks in :meth:`process_message`. Removing the task
+        from :attr:`pending` is the routine case; but a bare ``pending.discard`` would also silently
+        swallow an exception the task failed with. :meth:`_send_extended` already suppresses the
+        expected end-of-chain races, so anything reaching here is genuinely unexpected (e.g. a
+        connection dropped mid-episode) and is logged rather than lost -- restoring the visibility
+        the pre-background awaited request had, without letting one failed extension crash the run
+        loop. A cancelled task (from :meth:`stop`) is expected and not logged.
+
+        :param task: The completed counter-request task.
+        """
+        self.pending.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            _logger.warning("Collatz agent %s counter-request failed: %r", self.name, error)
 
     async def _send_extended(self, chain: Chain) -> None:
         """Counter-request the environment with ``chain`` extended by one Collatz step.
