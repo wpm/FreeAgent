@@ -489,11 +489,7 @@ class EpisodeManager:
         :raises ValueError: If a supplied ``episode_id`` isn't a valid NATS subject token.
         :raises DuplicateEpisode: If the (application, episode ID) pair is already in use.
         """
-        if (
-            _SUBJECT_TOKEN.fullmatch(application) is None
-            or application not in available_applications()
-        ):
-            raise UnknownApplication(f'No application named "{application}" is installed')
+        self._require_installed(application)
         if episode_id is None:
             episode_id = uuid.uuid4().hex
         elif _SUBJECT_TOKEN.fullmatch(episode_id) is None:
@@ -530,10 +526,7 @@ class EpisodeManager:
     def get(self, application: str, episode_id: str) -> Episode:
         """Look up an episode, refreshing its state from the worker process on the way.
 
-        The refresh is how worker death is noticed: a worker that exited nonzero before the
-        episode ended moves the episode to ``FAILED`` (a clean exit says nothing — completion is
-        judged from the wire's :class:`~freeagent.sdk.message.EpisodeComplete`, not from the
-        process).
+        The refresh (see :meth:`_refresh`) is how worker death is noticed on the lookup path.
 
         :param application: The application the episode belongs to.
         :param episode_id: The episode's identifier.
@@ -546,6 +539,55 @@ class EpisodeManager:
             raise UnknownEpisode(
                 f'No episode "{episode_id}" of application "{application}"'
             ) from None
+        return self._refresh(episode)
+
+    def list_episodes(self, application: str) -> list[Episode]:
+        """List an application's episodes in creation order, refreshing each on the way.
+
+        The same worker-death refresh as :meth:`get`, applied to every episode listed, so a
+        viewer enumerating episodes sees the same states it would polling them one at a time.
+
+        :param application: The application whose episodes to list.
+        :return: The application's episodes, oldest first (creation order).
+        :raises UnknownApplication: If ``application`` isn't installed.
+        """
+        self._require_installed(application)
+        return [
+            self._refresh(episode)
+            for (app, _), episode in self._episodes.items()
+            if app == application
+        ]
+
+    @staticmethod
+    def _require_installed(application: str) -> None:
+        """Reject an application name that doesn't belong to an installed application.
+
+        The one definition of the guard :meth:`create` and :meth:`list_episodes` share. The
+        subject-token pre-check isn't only an optimization: a name that can't be a subject token
+        can't be an installed application's name, and rejecting it without consulting the entry
+        points keeps the error uniform however malformed the input.
+
+        :param application: The application name to check.
+        :raises UnknownApplication: If ``application`` isn't installed (or couldn't be a subject
+            token, in which case no installable application could bear the name).
+        """
+        if (
+            _SUBJECT_TOKEN.fullmatch(application) is None
+            or application not in available_applications()
+        ):
+            raise UnknownApplication(f'No application named "{application}" is installed')
+
+    @staticmethod
+    def _refresh(episode: Episode) -> Episode:
+        """Fold the worker process's fate into an episode's state.
+
+        This is how worker death is noticed: a worker that exited nonzero before the episode
+        ended moves the episode to ``FAILED`` (a clean exit says nothing — completion is judged
+        from the wire's :class:`~freeagent.sdk.message.EpisodeComplete`, not from the process).
+
+        :param episode: The episode to refresh.
+        :return: The same episode, for chaining.
+        """
         process = episode.process
         if process is not None:
             returncode = process.poll()

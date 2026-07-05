@@ -97,6 +97,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            apps/collatz/schema/package-lock.json
+            apps/collatz/viewer/package-lock.json
 
       - name: Sync dependencies
         run: uv sync --all-packages
@@ -113,6 +117,15 @@ jobs:
       - name: Type-check the discriminated-union narrowing snippet
         working-directory: apps/collatz/schema
         run: npm run check
+
+      # The viewer imports the regenerated collatz.d.ts, so this build failing means the engine's
+      # models and the viewer no longer agree — the end-to-end teeth of the generated-types
+      # workflow.
+      - name: Build and test the viewer against the regenerated types
+        working-directory: apps/collatz/viewer
+        run: |
+          npm ci
+          npm test
 
       - name: Fail if generated schema or types drifted from what's checked in
         run: |

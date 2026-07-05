@@ -1,0 +1,19 @@
+{
+  "name": "collatz-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "description": "The Collatz web viewer: a static browser page that speaks only REST to freeagent-api and renders each agent's chain as it grows (ADR-0007). Deliberately minimal; it exists to prove the engine -> NATS -> API -> viewer pipeline.",
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test \"dist/**/*.test.js\"",
+    "serve": "python3 -m http.server 8080"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "typescript": "^5.7.0"
+  }
+}

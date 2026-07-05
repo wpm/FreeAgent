@@ -124,6 +124,31 @@ def test_status_404s_for_an_unknown_episode() -> None:
     assert AppHarness().http.get("/applications/collatz/episodes/nope").status_code == 404
 
 
+def test_list_episodes_serves_each_episodes_status() -> None:
+    harness = AppHarness()
+    harness.http.post("/applications/collatz/episodes", json={"episode_id": "ep1"})
+    harness.http.post("/applications/collatz/episodes", json={"episode_id": "ep2"})
+    body = harness.http.get("/applications/collatz/episodes").json()
+    assert [episode["episode_id"] for episode in body["episodes"]] == ["ep1", "ep2"]
+    assert all(episode["state"] == "created" for episode in body["episodes"])
+
+
+def test_list_episodes_is_empty_before_any_are_created() -> None:
+    assert AppHarness().http.get("/applications/collatz/episodes").json() == {"episodes": []}
+
+
+def test_list_episodes_404s_for_an_unknown_application() -> None:
+    assert AppHarness().http.get("/applications/no-such-app/episodes").status_code == 404
+
+
+def test_cross_origin_viewer_requests_are_allowed() -> None:
+    # Viewers are static pages served from their own origin (ADR-0001); the browser only lets
+    # them call the API if it answers with permissive CORS headers.
+    response = AppHarness().http.get("/applications", headers={"Origin": "http://localhost:5173"})
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "*"
+
+
 def test_messages_serves_the_data_plane_feed_verbatim() -> None:
     harness = AppHarness()
     harness.http.post("/applications/collatz/episodes", json={"episode_id": "ep1"})
