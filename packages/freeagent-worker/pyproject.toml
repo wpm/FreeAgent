@@ -5,6 +5,7 @@ description = "Free Agent worker command line app"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "freeagent-sdk",
     "typer>=0.15",
 ]
 
@@ -17,3 +18,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/freeagent"]
+
+[tool.uv.sources]
+freeagent-sdk = { workspace = true }

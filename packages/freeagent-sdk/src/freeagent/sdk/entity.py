@@ -401,13 +401,37 @@ class Agent(Entity):
 
         :param msg: The original NATS message, used to reply to the requester via :meth:`respond`.
         """
+        await self._cancel_run_loop()
+        await self.respond(msg, Ack())
+        await self.stop()
+
+    async def _cancel_run_loop(self) -> None:
+        """Cancel and await the run-loop :attr:`task`, if one is running.
+
+        Idempotent: with no task running it does nothing. Factored out of :meth:`_teardown` so the
+        wire-driven stop (:class:`~freeagent.sdk.message.StopEntity`/
+        :class:`~freeagent.sdk.message.StopAgent`) and a direct :meth:`stop` call both cancel the
+        run loop, rather than only the wire path doing so.
+        """
         if self.task is not None:
             self.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.task
             self.task = None
-        await self.respond(msg, Ack())
-        await self.stop()
+
+    async def stop(self) -> None:
+        """Cancel the run loop, then disconnect via :meth:`Entity.stop`.
+
+        Overrides :meth:`Entity.stop` so that stopping an agent *directly* -- not only in response
+        to a :class:`~freeagent.sdk.message.StopEntity`/:class:`~freeagent.sdk.message.StopAgent`
+        over the wire -- also cancels its :meth:`run` loop. Without this, a caller that stops an
+        agent by calling ``stop()`` (e.g. a host tearing an episode down on failure) would
+        unsubscribe and disconnect the agent but leave its run-loop task orphaned, awaiting a queue
+        that will never be fed. Idempotent, like the base: with no run loop and no client it does
+        nothing.
+        """
+        await self._cancel_run_loop()
+        await super().stop()
 
     @final
     async def run(self) -> None:

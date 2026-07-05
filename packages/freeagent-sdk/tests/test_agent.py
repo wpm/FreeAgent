@@ -342,6 +342,24 @@ async def test_stop_is_idempotent(created_clients: list[FakeClient]) -> None:
     assert agent.subscriptions == []
 
 
+async def test_stop_called_directly_cancels_the_run_loop(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    # A direct stop() -- not a StopEntity/StopAgent over the wire -- must also cancel the run loop,
+    # so a host tearing an agent down by calling stop() leaves no orphaned run-loop task.
+    agent = RecordingAgent("worker", "jobs")
+    await agent.start()
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    task = agent.task
+    assert task is not None
+
+    await agent.stop()
+
+    assert agent.task is None
+    assert task.cancelled()
+    assert agent.client is None
+
+
 async def test_respond_sends_the_reply_to_the_original_message() -> None:
     msg = FakeMsg(b"", reply="reply-inbox")
 
