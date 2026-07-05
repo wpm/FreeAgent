@@ -57,7 +57,11 @@ def reformat() -> None:
     the moment it meets one, rather than just skipping it. Exits with the first nonzero return code,
     if any, after all three tools have run.
     """
-    source_dirs = [str(REPO_ROOT / "src"), str(REPO_ROOT / "packages")]
+    source_dirs = [
+        str(REPO_ROOT / "src"),
+        str(REPO_ROOT / "packages"),
+        str(REPO_ROOT / "apps"),
+    ]
     docformatter_code = subprocess.run(
         [
             "docformatter",

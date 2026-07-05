@@ -56,6 +56,12 @@ jobs:
           uv run mypy src/ packages/freeagent-api/src packages/freeagent-api/tests \
             packages/freeagent-worker/src packages/freeagent-worker/tests
           (cd packages/freeagent-sdk && uv run mypy src/ tests/)
+          # Each app under apps/ pins its own mypy_path (like freeagent-sdk), so it must run from its
+          # own directory or mypy resolves each file under two module names and aborts. Iterate so a
+          # new app is type-checked without editing this workflow.
+          for app in apps/*/; do
+            (cd "$app" && uv run mypy src/ tests/)
+          done
 
       - name: Run tests (unit + integration)
         run: uv run pytest
