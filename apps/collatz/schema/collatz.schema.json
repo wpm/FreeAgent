@@ -1,0 +1,48 @@
+{
+  "$defs": {
+    "Chain": {
+      "description": "A Collatz chain in progress: the sequence of numbers produced so far.\n\nStarts as a single starting number and grows by one :func:`collatz_step` each time an agent\nextends it. The chain is *complete* once it reaches 1 (see :func:`is_complete`), the fixed point\nof the Collatz map -- the environment watches for that to know when an agent is finished.\n\n:ivar numbers: The chain so far, oldest first; never empty in normal use. Its last element is\n    the current value the next step extends.",
+      "properties": {
+        "message_type": {
+          "const": "Chain",
+          "default": "Chain",
+          "title": "Message Type",
+          "type": "string"
+        },
+        "numbers": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Numbers",
+          "type": "array"
+        },
+        "protocol": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Protocol"
+        }
+      },
+      "required": [
+        "message_type",
+        "numbers"
+      ],
+      "title": "Chain",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Generated message schema for the \"collatz\" Free Agent application. Source of truth is the application's pydantic models; regenerate with `freeagent schema` rather than editing by hand (ADR-0007).",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/Chain"
+    }
+  ],
+  "title": "collatz messages"
+}

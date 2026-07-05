@@ -30,6 +30,7 @@ from __future__ import annotations
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict
+from pydantic.fields import FieldInfo
 
 
 class UnknownMessageType(ValueError):
@@ -51,7 +52,12 @@ class Message(BaseModel):
     subclass.
 
     :ivar message_type: The concrete class's name, set automatically and used to pick the right
-        subclass on decode. Subclasses should not set or override this field themselves.
+        subclass on decode. On the base :class:`Message` it is a plain ``str``; on every subclass
+        :meth:`__pydantic_init_subclass__` narrows it to ``Literal[cls.__name__]`` so the generated
+        JSON
+        Schema emits it as a ``const`` (letting TypeScript narrow a discriminated union on it; see
+        :doc:`ADR-0007 </decision-history/0007-control-plane-data-plane-split>` and the
+        ``freeagent schema`` CLI). Subclasses should not set or override this field themselves.
     """
 
     model_config = ConfigDict(polymorphic_serialization=True)
@@ -61,7 +67,8 @@ class Message(BaseModel):
     message_type: str = ""
     protocol: str | None = None
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
         """Register the subclass under its bare class name, rejecting cross-module collisions.
 
         Every :class:`Message` subclass is indexed in :attr:`_by_type` by its bare class name, which
@@ -71,10 +78,29 @@ class Message(BaseModel):
         registered from the *same* module is treated as a benign re-definition (e.g.
         ``importlib.reload``) and simply re-registers.
 
+        The inherited ``message_type`` field is also narrowed from ``str`` to
+        ``Literal[cls.__name__]`` here, defaulting to the class name. That is what makes
+        ``model_json_schema()`` emit the tag as a ``const`` — the discriminator TypeScript narrows a
+        union on (:doc:`ADR-0007 </decision-history/0007-control-plane-data-plane-split>`) — and it
+        pins the tag to the class on validation, so a payload whose ``message_type`` names a
+        *different* type is rejected rather than silently accepted. This runs in
+        ``__pydantic_init_subclass__`` rather than the plain ``__init_subclass__`` precisely so
+        ``cls.model_fields`` is the subclass's *own* dict (pydantic has finished collecting it),
+        not the base class's still-shared one: assigning into the shared dict would overwrite
+        :class:`Message`'s (and each parent's) own ``message_type`` annotation with the last
+        subclass's ``Literal``. :meth:`model_rebuild` then rebuilds the subclass's core schema
+        against the narrowed annotation.
+
         :raises TypeError: If a different module already registered a subclass with this name.
         """
-        super().__init_subclass__(**kwargs)
-        cls.model_fields["message_type"].default = cls.__name__
+        super().__pydantic_init_subclass__(**kwargs)
+        cls.model_fields["message_type"] = FieldInfo(
+            # Literal[cls.__name__] is a runtime-computed Literal: mypy can't treat a non-literal
+            # expression as a valid type argument, though pydantic reads it fine at runtime.
+            annotation=Literal[cls.__name__],  # type: ignore[arg-type]
+            default=cls.__name__,
+        )
+        cls.model_rebuild(force=True)
         existing = Message._by_type.get(cls.__name__)
         if existing is not None and existing.__module__ != cls.__module__:
             raise TypeError(
