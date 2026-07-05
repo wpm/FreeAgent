@@ -52,7 +52,7 @@ echo "pre-commit: mypy"
 # resolve its files under two module names ("sdk.entity" and
 # "freeagent.sdk.entity") and mypy aborts with "Source file found twice under
 # different module names".
-if ! uv run mypy src/ packages/freeagent-api/src packages/freeagent-api/tests \
+if ! uv run mypy src/ packages/freeagent-api/src \
     packages/freeagent-worker/src packages/freeagent-worker/tests; then
     echo >&2
     echo "pre-commit: mypy found type errors." >&2
@@ -61,6 +61,13 @@ fi
 if ! (cd packages/freeagent-sdk && uv run mypy src/ tests/); then
     echo >&2
     echo "pre-commit: mypy found type errors in freeagent-sdk." >&2
+    exit 1
+fi
+# freeagent-api pins its own mypy_path (like freeagent-sdk) so its tests' sibling-helper
+# imports resolve; from the repo root its tests/conftest.py would collide with the worker's.
+if ! (cd packages/freeagent-api && uv run mypy src/ tests/); then
+    echo >&2
+    echo "pre-commit: mypy found type errors in freeagent-api." >&2
     exit 1
 fi
 # Each app under apps/ sets its own mypy_path (src, tests) in its own pyproject.toml, so like
@@ -72,5 +79,14 @@ for app in apps/*/; do
         exit 1
     fi
 done
+
+# ADR-0007's import invariant, kept mechanical (contracts in [tool.importlinter]).
+echo
+echo "pre-commit: import-linter"
+if ! uv run lint-imports; then
+    echo >&2
+    echo "pre-commit: import contracts broken." >&2
+    exit 1
+fi
 
 echo "pre-commit: clean"

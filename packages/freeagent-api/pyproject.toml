@@ -4,8 +4,15 @@ version = "0.1.0"
 description = "Free Agent FastAPI server"
 readme = "README.md"
 requires-python = ">=3.12"
+# freeagent-worker is a *process* dependency: the API spawns `python -m freeagent.worker.cli` to
+# run episodes but never imports it (ADR-0007's SDK-names-only invariant, enforced by
+# import-linter). It is listed here so the worker is installed wherever the API runs.
 dependencies = [
     "fastapi>=0.115",
+    "freeagent-sdk",
+    "freeagent-worker",
+    "nats-py>=2.9",
+    "pydantic>=2.13.4",
     "uvicorn[standard]>=0.32",
 ]
 
@@ -18,3 +25,18 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/freeagent"]
+
+[tool.uv.sources]
+freeagent-sdk = { workspace = true }
+freeagent-worker = { workspace = true }
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# Treat src/ (and tests/) as roots so this package is seen only as `freeagent.api.*`, and so the
+# tests' bare sibling-helper imports (`fakes`) resolve -- the same reason freeagent-sdk and the
+# apps pin their own mypy_path. Run from this directory: `(cd packages/freeagent-api && mypy src/
+# tests/)`; a repo-root run would also see freeagent-worker's tests/conftest.py and abort on the
+# duplicate top-level `conftest` module.
+mypy_path = ["src", "tests"]
+explicit_package_bases = true
