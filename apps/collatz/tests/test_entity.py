@@ -9,6 +9,8 @@ The full over-the-wire episode is a separate integration test.
 
 from __future__ import annotations
 
+import asyncio
+
 from fakes import FakeClient, FakeMsg
 from freeagent.app.collatz.entity import REPLIES, CollatzAgent, CollatzEnvironment
 from freeagent.app.collatz.message import Chain
@@ -19,6 +21,20 @@ from freeagent.sdk.message import Ack, EpisodeComplete, Message, StopAgent, Stop
 def reply_subject(episode_root: str, agent: str) -> str:
     """The subject an agent sends its extended chains back to the environment on."""
     return f"{episode_root}.{ENVIRONMENT}.{REPLIES}.{agent}"
+
+
+async def drain(agent: CollatzAgent) -> None:
+    """Await every background counter-request the agent has launched.
+
+    :meth:`~freeagent.app.collatz.entity.CollatzAgent.process_message` fires its counter-request as
+    a background task and returns without awaiting it, so a test that wants to observe the request
+    on the fake client must first let that task run. Awaits the tasks in
+    :attr:`~freeagent.app.collatz.entity.CollatzAgent.pending` (copied, since each clears itself
+    from the set on completion).
+
+    :param agent: The agent whose in-flight counter-requests to await.
+    """
+    await asyncio.gather(*list(agent.pending))
 
 
 def decode_requests(client: FakeClient) -> list[tuple[str, Message]]:
@@ -34,6 +50,7 @@ async def test_agent_extends_a_chain_and_sends_it_to_its_reply_subject() -> None
     agent.client = FakeClient()  # type: ignore[assignment]
 
     reply = await agent.process_message(Chain(numbers=[3]))
+    await drain(agent)  # let the background counter-request run to completion
 
     # The reply to the environment's request is a bare Ack (None -> the run loop acks); the extended
     # chain went out as the agent's own counter-request on its reply subject.
@@ -44,13 +61,51 @@ async def test_agent_extends_a_chain_and_sends_it_to_its_reply_subject() -> None
     assert message.numbers == [3, 10]
 
 
+async def test_agent_sends_the_counter_request_without_awaiting_it() -> None:
+    # process_message must return before the counter-request round-trips, so the run loop's ack to
+    # the environment isn't gated behind it -- the property that keeps a multi-agent episode from
+    # deadlocking. Until the background task is drained, no request has been recorded yet.
+    agent = CollatzAgent("episode", "agent-0")
+    agent.client = FakeClient()  # type: ignore[assignment]
+
+    await agent.process_message(Chain(numbers=[3]))
+
+    assert len(agent.pending) == 1  # the counter-request is in flight, not yet sent
+    assert agent.client.requests == []  # type: ignore[union-attr]
+    await drain(agent)
+    assert agent.pending == set()  # and it clears itself once complete
+    assert len(agent.client.requests) == 1  # type: ignore[union-attr]
+
+
+async def test_agent_stop_cancels_an_outstanding_counter_request() -> None:
+    # When the environment stops the agent its reply subject goes away; a counter-request still in
+    # flight is cancelled by stop() rather than left to hang.
+    agent = CollatzAgent("episode", "agent-0")
+    agent.client = FakeClient()  # type: ignore[assignment]
+
+    async def slow_request(*_: object, **__: object) -> FakeMsg:
+        await asyncio.sleep(3600)
+        return FakeMsg.for_message(Ack())
+
+    agent.client.request = slow_request  # type: ignore[method-assign, union-attr]
+    await agent.process_message(Chain(numbers=[3]))
+    assert len(agent.pending) == 1
+
+    await agent.stop()
+
+    assert agent.pending == set()  # the outstanding counter-request was cancelled
+    assert agent.client is None  # and the base teardown ran
+
+
 async def test_agent_ignores_a_non_chain_message() -> None:
     agent = CollatzAgent("episode", "agent-0")
     agent.client = FakeClient()  # type: ignore[assignment]
 
     reply = await agent.process_message(Ack())
+    await drain(agent)
 
     assert reply is None
+    assert agent.pending == set()  # a non-chain message launches no counter-request
     assert agent.client.requests == []  # type: ignore[union-attr]
 
 

@@ -297,11 +297,15 @@ name = "freeagent-worker"
 version = "0.1.0"
 source = { editable = "packages/freeagent-worker" }
 dependencies = [
+    { name = "freeagent-sdk" },
     { name = "typer" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "typer", specifier = ">=0.15" }]
+requires-dist = [
+    { name = "freeagent-sdk", editable = "packages/freeagent-sdk" },
+    { name = "typer", specifier = ">=0.15" },
+]
 
 [[package]]
 name = "h11"

@@ -22,11 +22,16 @@ test.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+
 from freeagent.app.collatz.message import Chain, extend, is_complete
 from freeagent.sdk import Agent, Environment
 from freeagent.sdk.entity import AGENTS, DEFAULT_NATS_SERVER, ENVIRONMENT
 from freeagent.sdk.message import Ack, Message
 from nats.aio.msg import Msg
+from nats.errors import NoRespondersError
+from nats.errors import TimeoutError as NatsTimeoutError
 
 REPLIES = "replies"
 """Subject segment under the environment that agents send their extended chains back on.
@@ -44,14 +49,32 @@ class CollatzAgent(Agent):
     Handed a chain by the environment (as a queued in-domain message), the agent computes the next
     Collatz value, appends it, and sends the longer chain back to the environment as its *own*
     request -- the ack-then-counter-request shape: the reply to the environment's request is a bare
-    :class:`~freeagent.sdk.message.Ack`, and the real result travels as a fresh request in the other
-    direction. The agent makes no completion judgment of its own; it extends and returns, and the
-    environment decides when the agent is finished (and stops it).
+    :class:`~freeagent.sdk.message.Ack`, and the real result travels as a fresh request in the
+    other direction. The agent makes no completion judgment of its own; it extends and returns, and
+    the environment decides when the agent is finished (and stops it).
+
+    The counter-request is sent *without waiting for its reply* -- it is launched as a background
+    task, tracked in :attr:`pending`, so :meth:`process_message` returns at once and the run loop
+    acks the environment's request immediately. This is the whole point of the ack-then-counter
+    shape (ADR-0008), and getting it wrong deadlocks a multi-agent episode: NATS delivers a
+    subscription's messages one at a time, so the environment's single reply subscription processes
+    one agent's returned chain at a time, and *its* handler sends the next chain back with a
+    :meth:`~freeagent.sdk.entity.Environment.request` that blocks until this agent's run loop acks.
+    If this agent's run loop only acked *after* its own counter-request round-tripped, that ack
+    would wait on the environment -- itself busy waiting on this ack -- and every other agent would
+    stall behind the environment's blocked subscription. Not awaiting the counter-request's reply
+    here breaks that cycle: the ack goes out promptly and the environment's subscription is free to
+    service the next agent.
 
     :param episode_root: The root NATS subject for this agent's episode.
     :param name: This agent's identifier; also the last token of the environment reply subject it
         sends extended chains to.
     :param servers: NATS server URL(s) to connect to.
+
+    :ivar pending: The in-flight counter-request tasks, each launched by :meth:`process_message`
+        and removed on completion. Held so they aren't garbage-collected mid-flight (asyncio keeps
+        only a weak reference to a bare task) and so :meth:`stop` can cancel any still outstanding
+        at teardown.
     """
 
     def __init__(
@@ -64,25 +87,57 @@ class CollatzAgent(Agent):
         super().__init__(episode_root, name, servers=servers)
         self.name = name
         self.reply_subject = f"{episode_root}.{ENVIRONMENT}.{REPLIES}.{name}"
+        self.pending: set[asyncio.Task[None]] = set()
 
     async def process_message(self, message: Message) -> Message | None:
         """Extend an incoming :class:`Chain` and send the result back to the environment.
 
         Non-:class:`Chain` messages are ignored (acknowledged with the run loop's default
         :class:`~freeagent.sdk.message.Ack`). For a :class:`Chain`, the extended chain is sent to
-        the environment's per-agent reply subject as a new request; the reply to *this* message
-        stays a
-        bare :class:`~freeagent.sdk.message.Ack` (returned as ``None``), keeping the work off the
-        reply per ADR-0008.
+        the environment's per-agent reply subject as a *background* counter-request (see the class
+        docstring for why it must not be awaited here); this method returns ``None`` at once, so the
+        run loop's reply to the environment stays a bare :class:`~freeagent.sdk.message.Ack`,
+        keeping the work off the reply per ADR-0008.
 
         :param message: The message pulled from the agent's queue.
         :return: Always ``None``: the run loop then replies with a bare
-            :class:`~freeagent.sdk.message.Ack`, and the extended chain has already gone out as a
-            separate counter-request.
+            :class:`~freeagent.sdk.message.Ack`, and the extended chain has gone out as a separate,
+            not-awaited counter-request.
         """
         if isinstance(message, Chain):
-            await self.request(self.reply_subject, extend(message))
+            task = asyncio.create_task(self._send_extended(message))
+            self.pending.add(task)
+            task.add_done_callback(self.pending.discard)
         return None
+
+    async def _send_extended(self, chain: Chain) -> None:
+        """Counter-request the environment with ``chain`` extended by one Collatz step.
+
+        Run as a background task by :meth:`process_message`. Once the episode is ending the
+        environment stops this agent, unsubscribing its reply subject; a counter-request already in
+        flight then has no responder, the normal end-of-chain race rather than an error, so
+        :class:`~nats.errors.NoRespondersError` and a request :class:`TimeoutError` are swallowed.
+
+        :param chain: The chain this agent was handed; the extended chain is what gets sent.
+        """
+        with contextlib.suppress(NoRespondersError, NatsTimeoutError):
+            await self.request(self.reply_subject, extend(chain))
+
+    async def stop(self) -> None:
+        """Cancel any outstanding counter-requests, then tear the agent down.
+
+        Overrides :meth:`~freeagent.sdk.entity.Entity.stop` to first cancel the background
+        counter-request tasks in :attr:`pending` -- when the environment stops this agent its reply
+        subject goes away, so an in-flight counter-request would otherwise hang until it timed
+        out -- and then run the base teardown (unsubscribe + disconnect). Idempotent, matching the
+        base: with nothing pending and no client it does nothing.
+        """
+        for task in list(self.pending):
+            task.cancel()
+        for task in list(self.pending):
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        await super().stop()
 
 
 class CollatzEnvironment(Environment):
