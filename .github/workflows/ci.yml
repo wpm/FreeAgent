@@ -51,11 +51,20 @@ jobs:
           uv run ruff check .
           uv run ruff format --check .
 
+      # ADR-0007's invariant, mechanically enforced: freeagent-api may only depend on names
+      # defined in freeagent-sdk. Contracts live in [tool.importlinter] in pyproject.toml.
+      - name: Enforce import boundaries (import-linter)
+        run: uv run lint-imports
+
       - name: Type-check (mypy)
         run: |
-          uv run mypy src/ packages/freeagent-api/src packages/freeagent-api/tests \
+          uv run mypy src/ packages/freeagent-api/src \
             packages/freeagent-worker/src packages/freeagent-worker/tests
           (cd packages/freeagent-sdk && uv run mypy src/ tests/)
+          # freeagent-api pins its own mypy_path (like freeagent-sdk) so its tests' sibling-helper
+          # imports resolve; from the repo root its tests/conftest.py would collide with the
+          # worker's.
+          (cd packages/freeagent-api && uv run mypy src/ tests/)
           # Each app under apps/ pins its own mypy_path (like freeagent-sdk), so it must run from its
           # own directory or mypy resolves each file under two module names and aborts. Iterate so a
           # new app is type-checked without editing this workflow.
