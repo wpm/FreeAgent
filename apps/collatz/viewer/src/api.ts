@@ -1,0 +1,96 @@
+/**
+ * The viewer's REST client for `freeagent-api`, plus hand-written mirrors of the API's
+ * control-plane response models.
+ *
+ * Only the *data-plane payloads* have generated types (`../schema/collatz.d.ts`, regenerated from
+ * the engine's pydantic models); the API's own response shapes are SDK-level, stable, and small,
+ * so they are mirrored here by hand from `freeagent.api.app` / `freeagent.api.episodes`.
+ */
+
+/** The lifecycle states of `freeagent.api.episodes.EpisodeState`. */
+export type EpisodeState = "created" | "running" | "complete" | "stopped" | "failed";
+
+/** Mirror of `freeagent.api.episodes.EpisodeStatus`. */
+export interface EpisodeStatus {
+  application: string;
+  episode_id: string;
+  episode_root: string;
+  state: EpisodeState;
+  agents_alive: string[];
+  message_count: number;
+  worker_exit_code: number | null;
+}
+
+/** Mirror of `freeagent.api.episodes.DataPlaneRecord`: one opaque data-plane message. */
+export interface DataPlaneRecord {
+  seq: number;
+  subject: string;
+  message_type: string | null;
+  received_at: number;
+  payload: unknown;
+}
+
+/** A thin fetch wrapper over the API's REST surface, rooted at `baseUrl`. */
+export class ApiClient {
+  constructor(readonly baseUrl: string) {}
+
+  private async request<T>(path: string, init?: RequestInit): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, init);
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`${init?.method ?? "GET"} ${path} failed (${response.status}): ${detail}`);
+    }
+    return (await response.json()) as T;
+  }
+
+  /** `GET /applications`: the bare names of every installed application. */
+  async applications(): Promise<string[]> {
+    const body = await this.request<{ applications: string[] }>("/applications");
+    return body.applications;
+  }
+
+  /** `GET .../episodes`: an application's episodes' statuses, in creation order. */
+  async episodes(application: string): Promise<EpisodeStatus[]> {
+    const body = await this.request<{ episodes: EpisodeStatus[] }>(
+      `/applications/${application}/episodes`,
+    );
+    return body.episodes;
+  }
+
+  /** `POST .../episodes`: provision an episode; the config is the application's, opaque here. */
+  async createEpisode(
+    application: string,
+    episodeId: string | null,
+    config: object,
+  ): Promise<EpisodeStatus> {
+    return await this.request<EpisodeStatus>(`/applications/${application}/episodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ episode_id: episodeId, config }),
+    });
+  }
+
+  /** `GET .../episodes/{id}`: one episode's lifecycle status. */
+  async status(application: string, episodeId: string): Promise<EpisodeStatus> {
+    return await this.request<EpisodeStatus>(`/applications/${application}/episodes/${episodeId}`);
+  }
+
+  /** `GET .../messages`: the episode's data-plane feed so far, in arrival order. */
+  async messages(application: string, episodeId: string): Promise<DataPlaneRecord[]> {
+    const body = await this.request<{ messages: DataPlaneRecord[] }>(
+      `/applications/${application}/episodes/${episodeId}/messages`,
+    );
+    return body.messages;
+  }
+
+  /** `DELETE .../episodes/{id}`: stop the episode. */
+  async stop(application: string, episodeId: string): Promise<void> {
+    const response = await fetch(
+      `${this.baseUrl}/applications/${application}/episodes/${episodeId}`,
+      { method: "DELETE" },
+    );
+    if (!response.ok) {
+      throw new Error(`DELETE episode failed (${response.status})`);
+    }
+  }
+}

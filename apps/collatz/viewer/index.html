@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Collatz Viewer</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Collatz Viewer</h1>
+      <p class="subtitle">
+        Installed applications: <span id="applications">…</span>
+      </p>
+      <label>
+        API
+        <input id="api-url" type="text" size="28" />
+      </label>
+    </header>
+
+    <main>
+      <section>
+        <h2>Launch an episode</h2>
+        <form id="launch-form">
+          <label>
+            Episode ID (optional)
+            <input id="episode-id" type="text" placeholder="generated if empty" />
+          </label>
+          <label>
+            Starting numbers (one agent each)
+            <input id="starts" type="text" value="27, 9, 6" />
+          </label>
+          <button type="submit">Launch</button>
+        </form>
+        <p id="error" class="error" role="alert"></p>
+      </section>
+
+      <section>
+        <h2>Episodes</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Episode</th>
+              <th>State</th>
+              <th>Agents alive</th>
+              <th>Messages</th>
+            </tr>
+          </thead>
+          <tbody id="episodes"></tbody>
+        </table>
+      </section>
+
+      <section id="detail" hidden>
+        <h2>
+          <span id="detail-title"></span>
+          <span id="detail-state"></span>
+          <button id="stop" type="button">Stop</button>
+        </h2>
+        <div id="chains"></div>
+      </section>
+    </main>
+
+    <script type="module" src="dist/main.js"></script>
+  </body>
+</html>

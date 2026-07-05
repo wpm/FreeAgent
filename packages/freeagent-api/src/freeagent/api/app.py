@@ -7,6 +7,8 @@ The REST surface over :mod:`freeagent.api.episodes`, per :doc:`ADR-0007
   :func:`~freeagent.sdk.available_applications`.
 - ``POST /applications/{application}/episodes`` — provision an episode: an optional episode ID
   plus an opaque config; spawns a worker process to run it. Unknown application: 404.
+- ``GET  /applications/{application}/episodes`` — the application's episodes' lifecycle statuses,
+  in creation order. Unknown application: 404.
 - ``GET  /applications/{application}/episodes/{episode_id}`` — lifecycle status derived from
   control-plane traffic.
 - ``GET  /applications/{application}/episodes/{episode_id}/messages`` — the ordered pass-through
@@ -27,6 +29,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 from freeagent.api.episodes import (
     SUBJECT_TOKEN_PATTERN,
     DataPlaneRecord,
@@ -69,6 +72,15 @@ class ApplicationsResponse(BaseModel):
     applications: list[str]
 
 
+class EpisodesResponse(BaseModel):
+    """The body of a ``GET .../episodes`` response.
+
+    :ivar episodes: The application's episodes' statuses, in creation order.
+    """
+
+    episodes: list[EpisodeStatus]
+
+
 class MessagesResponse(BaseModel):
     """The body of a ``GET .../messages`` response.
 
@@ -102,6 +114,12 @@ def create_app(nats_url: str | None = None, manager: EpisodeManager | None = Non
             await episode_manager.shutdown()
 
     app = FastAPI(title="Free Agent API", version="0.1.0", lifespan=lifespan)
+    # Viewers are static pages served from their own origin (ADR-0001), so the browser gates
+    # their API calls on CORS. Wide open, deliberately: this is a trusted research testbed
+    # (ADR-0001 treats security as a non-concern), and the API carries no credentials.
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    )
     app.state.manager = episode_manager
 
     def _lookup(application: str, episode_id: str) -> Episode:
@@ -124,6 +142,14 @@ def create_app(nats_url: str | None = None, manager: EpisodeManager | None = Non
     @app.get("/applications")
     async def applications() -> ApplicationsResponse:
         return ApplicationsResponse(applications=sorted(available_applications()))
+
+    @app.get("/applications/{application}/episodes")
+    async def list_episodes(application: str) -> EpisodesResponse:
+        try:
+            episodes = episode_manager.list_episodes(application)
+        except UnknownApplication as error:
+            raise HTTPException(status_code=404, detail=str(error)) from None
+        return EpisodesResponse(episodes=[episode.status() for episode in episodes])
 
     @app.post("/applications/{application}/episodes", status_code=201)
     async def create_episode(application: str, request: CreateEpisodeRequest) -> EpisodeStatus:

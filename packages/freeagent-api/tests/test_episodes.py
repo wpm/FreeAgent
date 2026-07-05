@@ -295,6 +295,46 @@ async def test_get_raises_for_unknown_episodes() -> None:
         harness.manager.get("collatz", "nope")
 
 
+async def test_list_episodes_returns_an_applications_episodes_in_creation_order() -> None:
+    harness = ManagerHarness()
+    await harness.manager.create("collatz", "ep2", {})
+    await harness.manager.create("collatz", "ep1", {})
+    episodes = harness.manager.list_episodes("collatz")
+    assert [episode.monitor.episode_id for episode in episodes] == ["ep2", "ep1"]
+
+
+async def test_list_episodes_is_empty_for_an_application_with_no_episodes() -> None:
+    harness = ManagerHarness()
+    assert harness.manager.list_episodes("collatz") == []
+
+
+async def test_list_episodes_raises_for_unknown_applications() -> None:
+    harness = ManagerHarness()
+    with pytest.raises(UnknownApplication):
+        harness.manager.list_episodes("no-such-app")
+
+
+async def test_list_episodes_returns_only_the_named_applications_episodes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = ManagerHarness()
+    monkeypatch.setattr(
+        "freeagent.api.episodes.available_applications", lambda: ["collatz", "other"]
+    )
+    await harness.manager.create("collatz", "ep1", {})
+    await harness.manager.create("other", "ep1", {})
+    episodes = harness.manager.list_episodes("collatz")
+    assert [(e.monitor.application, e.monitor.episode_id) for e in episodes] == [("collatz", "ep1")]
+
+
+async def test_list_episodes_notices_dead_workers() -> None:
+    harness = ManagerHarness()
+    await harness.manager.create("collatz", "ep1", {})
+    harness.process.returncode = 3
+    (episode,) = harness.manager.list_episodes("collatz")
+    assert episode.monitor.state is EpisodeState.FAILED
+
+
 async def test_stop_terminates_the_worker_and_unsubscribes() -> None:
     harness = ManagerHarness()
     await harness.manager.create("collatz", "ep1", {})
