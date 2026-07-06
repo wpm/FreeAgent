@@ -9,30 +9,26 @@
 # It runs ruff's formatter and linter with auto-fix. If either changes a file,
 # the commit is aborted with the fixes left in the working tree -- review them
 # and `git add` before committing again. If nothing was fixed but lint errors
-# remain (not auto-fixable), the commit is likewise aborted.
+# remain (not auto-fixable), the commit is likewise aborted. It then runs mypy;
+# any type error also aborts the commit.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-# Prefer `uv run` so the pinned ruff is used; fall back to a bare `ruff`.
-if command -v uv >/dev/null 2>&1; then
-    ruff() { uv run ruff "$@"; }
-elif command -v ruff >/dev/null 2>&1; then
-    ruff() { command ruff "$@"; }
-else
-    echo "pre-commit: ruff not found (install it, or install uv)" >&2
+# `reformat` runs docformatter, ruff format, and ruff check --fix in one go.
+if ! command -v uv >/dev/null 2>&1; then
+    echo "pre-commit: uv not found (install it to run reformat)" >&2
     exit 1
 fi
+reformat() { uv run reformat; }
 
 before="$(git diff --name-only)"
 
-echo "pre-commit: ruff format"
-ruff format .
-
-echo "pre-commit: ruff check --fix"
-# Don't let a fixable-but-unfixed finding abort before we report; capture status.
+echo "pre-commit: reformat (docformatter, ruff format, ruff check --fix)"
+# Don't let a fixable-but-unfixed lint finding abort before we report; the
+# before/after diff below is what actually gates the commit.
 lint_status=0
-ruff check --fix . || lint_status=$?
+reformat || lint_status=$?
 
 after="$(git diff --name-only)"
 
@@ -47,6 +43,50 @@ if [ "$lint_status" -ne 0 ]; then
     echo >&2
     echo "pre-commit: lint errors remain that ruff can't fix automatically." >&2
     exit "$lint_status"
+fi
+
+echo
+echo "pre-commit: mypy"
+# `freeagent-sdk` sets its own mypy_path (src, tests) in its own pyproject.toml,
+# so it must run from its own directory: running it from the repo root would
+# resolve its files under two module names ("sdk.entity" and
+# "freeagent.sdk.entity") and mypy aborts with "Source file found twice under
+# different module names".
+if ! uv run mypy src/ packages/freeagent-api/src \
+    packages/freeagent-worker/src packages/freeagent-worker/tests; then
+    echo >&2
+    echo "pre-commit: mypy found type errors." >&2
+    exit 1
+fi
+if ! (cd packages/freeagent-sdk && uv run mypy src/ tests/); then
+    echo >&2
+    echo "pre-commit: mypy found type errors in freeagent-sdk." >&2
+    exit 1
+fi
+# freeagent-api pins its own mypy_path (like freeagent-sdk) so its tests' sibling-helper
+# imports resolve; from the repo root its tests/conftest.py would collide with the worker's.
+if ! (cd packages/freeagent-api && uv run mypy src/ tests/); then
+    echo >&2
+    echo "pre-commit: mypy found type errors in freeagent-api." >&2
+    exit 1
+fi
+# Each app under apps/ sets its own mypy_path (src, tests) in its own pyproject.toml, so like
+# freeagent-sdk it must run from its own directory. Iterate so a new app is checked automatically.
+for app in apps/*/; do
+    if ! (cd "$app" && uv run mypy src/ tests/); then
+        echo >&2
+        echo "pre-commit: mypy found type errors in $app." >&2
+        exit 1
+    fi
+done
+
+# The import invariant, kept mechanical (contracts in [tool.importlinter]).
+echo
+echo "pre-commit: import-linter"
+if ! uv run lint-imports; then
+    echo >&2
+    echo "pre-commit: import contracts broken." >&2
+    exit 1
 fi
 
 echo "pre-commit: clean"

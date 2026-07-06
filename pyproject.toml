@@ -1,91 +1,97 @@
 [project]
-name = "freeagent-workspace"
-version = "1.0.0"
-description = "FreeAgent workspace root: the freeagent library plus its companion applications."
+name = "freeagent"
+version = "0.1.0"
+description = "Real time multi-agent framework"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # The workspace root is the full dev/test environment. Its test suite imports
-    # the episode service, so pull the web stack the `service` extra now gates --
-    # it was a base dep until ADR-0005 moved it behind the extra so the fat worker
-    # image can omit FastAPI/uvicorn.
-    "freeagent[service]",
-    "twentyquestions",
+    "freeagent-api",
+    "freeagent-app-collatz",
+    "freeagent-sdk",
+    "freeagent-worker",
 ]
+
+[project.scripts]
+start = "freeagent.start:start"
+stop = "freeagent.start:stop"
+reformat = "freeagent.start:reformat"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/freeagent"]
+
+[tool.uv.workspace]
+members = ["packages/*", "apps/*"]
+
+[tool.uv.sources]
+freeagent-api = { workspace = true }
+freeagent-app-collatz = { workspace = true }
+freeagent-sdk = { workspace = true }
+freeagent-worker = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28",
-    "pytest>=9.1.0",
-    "pytest-asyncio>=1.4.0",
-    "ruff>=0.15.17",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "httpx2>=0.1",
+    "mypy>=1.13",
+    "ruff>=0.8",
+    "docformatter>=1.7",
+    "import-linter>=2.1",
 ]
-
-# Each app is split into single-language siblings (see ADR-0001): the Python
-# half lives in apps/<app>/engine, so the uv workspace globs that, not apps/*.
-# A TypeScript apps/<app>/viewer sibling is governed by the root JS workspace
-# (pnpm-workspace.yaml) instead, keeping the two toolchains from colliding.
-#
-# An app may also ship an engine-free `manifest` sibling (ADR-0005): a tiny,
-# string-only distribution the slim episode service installs to register the
-# app's `freeagent.manifests` entry point without pulling in the engine.
-[tool.uv.workspace]
-members = ["packages/*", "apps/*/engine", "apps/*/manifest"]
-
-[tool.uv.sources]
-freeagent = { workspace = true }
-twentyquestions = { workspace = true }
-twentyquestions-manifest = { workspace = true }
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = [
-    "packages/freeagent/src",
-    "apps/twentyquestions/engine/src",
-]
-# Viewers are TypeScript siblings of each engine; keep their subtrees out of
-# ruff entirely so the Python linter never globs a JS/TS tree.
-extend-exclude = ["apps/*/viewer"]
 
 [tool.ruff.lint]
-select = [
-    "E",      # pycodestyle errors
-    "W",      # pycodestyle warnings
-    "F",      # pyflakes
-    "I",      # isort
-    "N",      # pep8-naming
-    "UP",     # pyupgrade
-    "ANN",    # flake8-annotations
-    "ASYNC",  # flake8-async
-    "B",      # flake8-bugbear
-    "A",      # flake8-builtins
-    "C4",     # flake8-comprehensions
-    "DTZ",    # flake8-datetimez
-    "ISC",    # implicit string concatenation
-    "PIE",    # flake8-pie
-    "PT",     # flake8-pytest-style
-    "RET",    # flake8-return
-    "SIM",    # flake8-simplify
-    "ARG",    # unused arguments
-    "PTH",    # use pathlib
-    "RUF",    # ruff-specific
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = [
+    "packages/freeagent-api/src",
+    "packages/freeagent-worker/src",
 ]
-ignore = [
-    "ANN401",  # payloads are app-defined and opaque; Any is deliberate there
-    "ISC001",  # conflicts with the formatter
+explicit_package_bases = true
+
+# A one-sentence invariant, made mechanical: `freeagent-api` may only depend on names
+# defined in `freeagent-sdk`. `freeagent` is a namespace package, so each workspace portion is
+# listed as its own root; a new application under apps/ must be added to both lists to stay
+# covered.
+[tool.importlinter]
+root_packages = [
+    "freeagent.api",
+    "freeagent.app.collatz",
+    "freeagent.sdk",
+    "freeagent.worker",
 ]
 
-[tool.ruff.lint.per-file-ignores]
-"**/tests/**" = [
-    "ARG001",  # pytest fixtures are injected by name; params can go unused
-    "ARG002",
-]
+[[tool.importlinter.contracts]]
+name = "freeagent-api depends on SDK names only"
+type = "forbidden"
+source_modules = ["freeagent.api"]
+forbidden_modules = ["freeagent.worker", "freeagent.app.collatz"]
+
+[[tool.importlinter.contracts]]
+name = "the worker loads applications via entry points, never imports"
+type = "forbidden"
+source_modules = ["freeagent.worker"]
+forbidden_modules = ["freeagent.app.collatz"]
 
 [tool.pytest.ini_options]
-testpaths = [
-    "packages/freeagent/tests",
-    "apps/twentyquestions/engine/tests",
-    "tests",
-]
 asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
+# `importlib` import mode so that test modules sharing a basename across packages (e.g. every
+# workspace member's own `test_application.py`/`test_message.py`) don't collide: the default
+# `prepend` mode imports each by its bare basename via `sys.path`, and two files named the same
+# abort collection with "import file mismatch". Each `tests/` directory's `conftest.py` puts its own
+# directory on `sys.path` so bare sibling-helper imports (`fakes`, `fixtures`, `sample_application`)
+# still resolve, which `importlib` mode does not arrange on its own.
+addopts = "--strict-markers --import-mode=importlib"
+markers = [
+    "integration: exercises a real nats-server subprocess; excluded by `-m \"not integration\"`.",
+]

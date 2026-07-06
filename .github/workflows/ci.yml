@@ -1,97 +1,26 @@
 name: CI
 
+# Runs the test suite on every push and pull request targeting the rewrite line of development.
+# The unit tier needs no NATS binary; the integration tier runs against a pinned `nats-server`
+# release installed in its own step, so nothing but the binary is required — no Docker,
+# no testcontainers.
 on:
   push:
-    branches: [main]
+    branches: [rewrite, main]
   pull_request:
+    branches: [rewrite, main]
 
-# Cancel superseded runs on the same ref to save CI minutes.
+# A newer push to the same branch/PR cancels an in-flight run for it.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Least-privilege default: every job here only checks out the repo and runs
-# lint/tests, so read-only access to the contents is all that is needed. An
-# explicit block also satisfies the CodeQL "missing workflow permissions"
-# (CWE-275) alert by dropping the default read/write token.
-permissions:
-  contents: read
-
 jobs:
-  lint:
-    name: Lint and format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Sync dependencies
-        run: uv sync --all-extras --dev
-
-      # Mirror .githooks/pre-commit, but check-only: fail on any change rather
-      # than fixing in place, since CI has nothing to re-stage.
-      - name: ruff format --check
-        run: uv run ruff format --check .
-
-      - name: ruff check
-        run: uv run ruff check .
-
-  viewers:
-    name: Viewer schema, types, and typecheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Sync dependencies
-        run: uv sync --all-extras --dev
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install JS workspace
-        run: pnpm install --frozen-lockfile
-
-      # Single source of truth: regenerate JSON Schema from the Pydantic models
-      # and TypeScript from the JSON Schema, then fail if anything changed --
-      # the committed artifacts must already match. See docs/decision-history/0001.
-      - name: Regenerate schemas and types
-        run: pnpm run schemas
-
-      - name: Fail if committed schemas or types are stale
-        run: git diff --exit-code
-
-      - name: Type-check viewers
-        run: pnpm run typecheck
-
-      # The browser no longer speaks NATS (ADR-0003): it talks only to the
-      # episode service, and the viewer is its own host process (ADR-0004). The
-      # old NATS+Playwright browser test is gone; a static build proves the
-      # viewer bundle still builds.
-      - name: Build viewer bundle
-        run: pnpm --filter twentyquestions-viewer run build
-
   test:
-    name: Tests
     runs-on: ubuntu-latest
-
     env:
-      # Run the slow tests (real child processes, connection-timeout probes) too.
-      # Only the live-LLM test is excluded, by leaving FREEAGENT_LLM_TEST unset.
-      FREEAGENT_SLOW_TEST: "1"
-
+      # Pinned so CI is reproducible; bump deliberately. `nats-server` is a single static Go binary.
+      NATS_SERVER_VERSION: v2.14.2
     steps:
       - uses: actions/checkout@v4
 
@@ -100,31 +29,108 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Sync dependencies
-        run: uv sync --all-extras --dev
+      - name: Set up Python
+        run: uv python install
 
-      # The suite reaches NATS at nats://localhost:4222. Use the same compose
-      # file the README documents so JetStream is enabled exactly as locally;
-      # a bare service container can't pass the --jetstream command flag.
-      - name: Start NATS (JetStream)
-        run: docker compose -f docker/nats/docker-compose.yml up -d
-
-      - name: Wait for NATS to be healthy
+      - name: Install nats-server (pinned)
         run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:8222/healthz >/dev/null; then
-              echo "NATS is up"
-              exit 0
-            fi
-            sleep 1
+          set -euo pipefail
+          version="${NATS_SERVER_VERSION}"
+          archive="nats-server-${version}-linux-amd64"
+          url="https://github.com/nats-io/nats-server/releases/download/${version}/${archive}.tar.gz"
+          curl -sSfL "${url}" -o /tmp/nats-server.tar.gz
+          tar -xzf /tmp/nats-server.tar.gz -C /tmp
+          sudo install "/tmp/${archive}/nats-server" /usr/local/bin/nats-server
+          nats-server --version
+
+      - name: Sync dependencies
+        run: uv sync --all-packages
+
+      - name: Lint (ruff)
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      # The import invariant, mechanically enforced: freeagent-api may only depend on names
+      # defined in freeagent-sdk. Contracts live in [tool.importlinter] in pyproject.toml.
+      - name: Enforce import boundaries (import-linter)
+        run: uv run lint-imports
+
+      - name: Type-check (mypy)
+        run: |
+          uv run mypy src/ packages/freeagent-api/src \
+            packages/freeagent-worker/src packages/freeagent-worker/tests
+          (cd packages/freeagent-sdk && uv run mypy src/ tests/)
+          # freeagent-api pins its own mypy_path (like freeagent-sdk) so its tests' sibling-helper
+          # imports resolve; from the repo root its tests/conftest.py would collide with the
+          # worker's.
+          (cd packages/freeagent-api && uv run mypy src/ tests/)
+          # Each app under apps/ pins its own mypy_path (like freeagent-sdk), so it must run from its
+          # own directory or mypy resolves each file under two module names and aborts. Iterate so a
+          # new app is type-checked without editing this workflow.
+          for app in apps/*/; do
+            (cd "$app" && uv run mypy src/ tests/)
           done
-          echo "NATS did not become healthy in time" >&2
-          docker compose -f docker/nats/docker-compose.yml logs
-          exit 1
 
-      - name: Run tests
-        run: uv run pytest -v
+      - name: Run tests (unit + integration)
+        run: uv run pytest
 
-      - name: Stop NATS
-        if: always()
-        run: docker compose -f docker/nats/docker-compose.yml down -v
+  # Enforces the engine->viewer contract: Python is the single source of truth for message
+  # shapes. Regenerate the checked-in JSON Schema (from the engine's pydantic models) and TypeScript
+  # (from that schema), compile the narrowing snippet, and fail if any generated artifact drifts from
+  # what's committed. A green run therefore *means* the checked-in schema/types are in sync with the
+  # engine.
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            apps/collatz/schema/package-lock.json
+            apps/collatz/viewer/package-lock.json
+
+      - name: Sync dependencies
+        run: uv sync --all-packages
+
+      - name: Regenerate the Collatz JSON Schema from the engine
+        run: uv run freeagent schema collatz > apps/collatz/schema/collatz.schema.json
+
+      - name: Regenerate the Collatz TypeScript from the schema
+        working-directory: apps/collatz/schema
+        run: |
+          npm ci
+          npm run generate
+
+      - name: Type-check the discriminated-union narrowing snippet
+        working-directory: apps/collatz/schema
+        run: npm run check
+
+      # The viewer imports the regenerated collatz.d.ts, so this build failing means the engine's
+      # models and the viewer no longer agree — the end-to-end teeth of the generated-types
+      # workflow.
+      - name: Build and test the viewer against the regenerated types
+        working-directory: apps/collatz/viewer
+        run: |
+          npm ci
+          npm test
+
+      - name: Fail if generated schema or types drifted from what's checked in
+        run: |
+          if ! git diff --exit-code -- apps/collatz/schema/collatz.schema.json \
+            apps/collatz/schema/collatz.d.ts; then
+            echo "::error::Generated schema/types are out of date. Regenerate them (see apps/collatz/schema/README.md) and commit the result."
+            exit 1
+          fi

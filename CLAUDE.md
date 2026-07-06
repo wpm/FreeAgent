@@ -13,6 +13,7 @@ repository.
 - The `freeagent` package and applications under `apps` may all be released independently.
 - **PR titles MUST follow [Conventional Commits](https://www.conventionalcommits.org/):** 
 - **PR titles MUST follow [Conventional Commits](https://www.conventionalcommits.org/):**
+- If a GitHub issue contains checkboxes, check them off as they are completed.
 - Types and their release effect on `freeagent`: `fix` → patch bump, `feat` →
   minor bump, `!` suffix or `BREAKING CHANGE` footer → breaking bump
   (compressed semver below 1.0). Also available: `docs`, `refactor`, `perf`,
@@ -24,3 +25,4 @@ repository.
 - After a PR clears all checks, run `/review` and address all the comments.
 - When creating a PR for an issue, ensure that it when it closes, the issue
   closes as well.
+- Keep the history linear: no merges.

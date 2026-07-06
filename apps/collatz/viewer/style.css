@@ -1,0 +1,141 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 60rem;
+  padding: 1rem 1.5rem 3rem;
+  line-height: 1.5;
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 1.5rem;
+}
+
+header h1 {
+  margin: 0;
+}
+
+.subtitle {
+  margin: 0;
+  flex: 1;
+  opacity: 0.75;
+}
+
+section {
+  margin-top: 1.5rem;
+}
+
+form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 1rem;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+input {
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+}
+
+button {
+  padding: 0.4rem 1rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.error {
+  color: #c0392b;
+  min-height: 1.5em;
+  margin: 0.5rem 0 0;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+
+tbody tr {
+  cursor: pointer;
+}
+
+tbody tr:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+tbody tr.selected {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.55rem;
+  border-radius: 1rem;
+  font-size: 0.8rem;
+  background: color-mix(in srgb, currentColor 15%, transparent);
+}
+
+.badge.state-running,
+.badge.running {
+  background: #2d7dd2;
+  color: white;
+}
+
+.badge.state-complete,
+.badge.done {
+  background: #27ae60;
+  color: white;
+}
+
+.badge.state-failed {
+  background: #c0392b;
+  color: white;
+}
+
+.chain {
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  margin-top: 0.75rem;
+}
+
+.chain h3 {
+  margin: 0 0 0.5rem;
+}
+
+.chain p {
+  margin: 0;
+  word-break: break-word;
+  font-family: ui-monospace, monospace;
+}
+
+.chain .steps {
+  margin-top: 0.35rem;
+  font-family: inherit;
+  font-size: 0.85rem;
+  opacity: 0.7;
+}

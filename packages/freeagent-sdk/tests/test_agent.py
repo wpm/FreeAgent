@@ -1,0 +1,473 @@
+"""Tests for :class:`freeagent.sdk.entity.Agent`.
+
+These exercise message dispatch (:class:`~freeagent.sdk.message.StartEntity`,
+:class:`~freeagent.sdk.message.StopEntity`, other :class:`~freeagent.sdk.message.Command`
+subclasses, and plain messages) and the run loop, against a fake NATS client and fake incoming
+messages, so no live server is required.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+
+import pytest
+from fixtures import FakeClient, FakeMsg, Ping, RecordingAgent, Shout
+from freeagent.sdk.entity import AGENTS, Agent
+from freeagent.sdk.message import Ack, Message, StartEntity, StopAgent, StopEntity
+
+
+async def test_init_subscribes_under_agents_and_the_agent_name() -> None:
+    agent = RecordingAgent("worker", "jobs", "events")
+
+    assert agent.subjects == [
+        f"episode-root.{AGENTS}.worker",
+        f"episode-root.{AGENTS}.worker.jobs",
+        f"episode-root.{AGENTS}.worker.events",
+    ]
+
+
+async def test_init_with_no_extra_subjects_still_subscribes_under_the_agent_name() -> None:
+    agent = RecordingAgent("worker")
+
+    assert agent.subjects == [f"episode-root.{AGENTS}.worker"]
+
+
+async def test_start_subscribes_to_every_subject(fake_connect: Callable[[], FakeClient]) -> None:
+    agent = RecordingAgent("worker", "jobs", "events")
+
+    await agent.start()
+
+    client = fake_connect()
+    assert [s.subject for s in client.subscriptions] == [
+        f"episode-root.{AGENTS}.worker",
+        f"episode-root.{AGENTS}.worker.jobs",
+        f"episode-root.{AGENTS}.worker.events",
+    ]
+    for sub in client.subscriptions:
+        assert sub.cb == agent.handle_incoming_message
+
+
+async def test_handle_incoming_message_decodes_and_queues_a_plain_message() -> None:
+    agent = RecordingAgent("worker", "jobs")
+
+    await agent.handle_incoming_message(FakeMsg.for_message(Ping(label="a")))  # type: ignore[arg-type]
+
+    assert agent.queue.qsize() == 1
+    msg, message = agent.queue.get_nowait()
+    assert message == Ping(label="a")
+
+
+async def test_start_entity_launches_the_run_loop_as_a_background_task() -> None:
+    agent = RecordingAgent("worker", "jobs")
+
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+
+    assert agent.task is not None
+    assert not agent.task.done()
+
+    agent.task.cancel()
+
+
+async def test_start_entity_replies_with_ack_when_sent_as_a_request() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    msg = FakeMsg.for_message(StartEntity(), reply="reply-inbox")
+
+    await agent.handle_incoming_message(msg)  # type: ignore[arg-type]
+
+    assert msg.responses == [Ack().to_bytes()]
+
+    assert agent.task is not None
+    agent.task.cancel()
+
+
+async def test_run_loop_processes_queued_messages_in_order() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    sent = [Ping(label=label) for label in ("a", "b")]
+    for message in sent:
+        agent.queue.put_nowait((None, message))
+
+    # StartEntity is expected to have launched the run loop, which should drain the queue; if it
+    # didn't, this would otherwise hang forever, so bound the wait instead.
+    await asyncio.wait_for(agent.queue.join(), timeout=1)
+
+    assert agent.processed == sent
+    assert agent.task is not None
+    agent.task.cancel()
+
+
+async def test_run_loop_replies_with_process_message_return_value() -> None:
+    class Echoing(Agent):
+        async def process_message(self, message: Message) -> Message | None:
+            return Ack()
+
+    agent = Echoing("episode-root", "worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    msg = FakeMsg.for_message(Ping(), reply="reply-inbox")
+    agent.queue.put_nowait((msg, Ping()))  # type: ignore[arg-type]
+
+    await asyncio.wait_for(agent.queue.join(), timeout=1)
+
+    assert msg.responses == [Ack().to_bytes()]
+    assert agent.task is not None
+    agent.task.cancel()
+
+
+async def test_run_loop_replies_with_ack_when_process_message_returns_none() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    msg = FakeMsg.for_message(Ping(), reply="reply-inbox")
+    agent.queue.put_nowait((msg, Ping()))  # type: ignore[arg-type]
+
+    await asyncio.wait_for(agent.queue.join(), timeout=1)
+
+    assert msg.responses == [Ack().to_bytes()]
+    assert agent.task is not None
+    agent.task.cancel()
+
+
+async def test_run_loop_marks_task_done_even_when_process_message_raises() -> None:
+    class Boom(Agent):
+        async def process_message(self, message: Message) -> None:
+            raise ValueError("boom")
+
+    agent = Boom("episode-root", "worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    assert agent.task is not None
+    agent.queue.put_nowait((None, Ping()))
+
+    with pytest.raises(ValueError, match="boom"):
+        await agent.task
+    await asyncio.wait_for(agent.queue.join(), timeout=1)
+
+
+async def test_stop_entity_cancels_the_run_loop_unsubscribes_and_disconnects(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    agent = RecordingAgent("worker", "jobs")
+    await agent.start()
+    client = fake_connect()
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    task = agent.task
+    assert task is not None
+
+    await agent.handle_incoming_message(FakeMsg.for_message(StopEntity()))  # type: ignore[arg-type]
+
+    assert agent.task is None
+    assert task.cancelled()
+    assert all(sub.unsubscribe_calls == 1 for sub in client.subscriptions)
+    assert client.closed is True
+    assert agent.client is None
+
+
+async def test_stop_entity_replies_with_ack_when_sent_as_a_request() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    msg = FakeMsg.for_message(StopEntity(), reply="reply-inbox")
+
+    await agent.handle_incoming_message(msg)  # type: ignore[arg-type]
+
+    assert msg.responses == [Ack().to_bytes()]
+
+
+async def test_stop_entity_without_a_running_task_is_safe() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    # Never started: no task, no client, no subscriptions. StopEntity must not raise.
+    await agent.handle_incoming_message(FakeMsg.for_message(StopEntity()))  # type: ignore[arg-type]
+
+    assert agent.task is None
+
+
+async def test_stop_entity_is_not_handed_to_process_message() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+
+    await agent.handle_incoming_message(FakeMsg.for_message(StopEntity()))  # type: ignore[arg-type]
+
+    assert agent.processed == []
+
+
+async def test_stop_agent_cancels_the_run_loop_unsubscribes_and_disconnects(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    # StopAgent tears the targeted agent down exactly as StopEntity does; only targeting differs.
+    agent = RecordingAgent("worker", "jobs")
+    await agent.start()
+    client = fake_connect()
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    task = agent.task
+    assert task is not None
+
+    await agent.handle_incoming_message(FakeMsg.for_message(StopAgent()))  # type: ignore[arg-type]
+
+    assert agent.task is None
+    assert task.cancelled()
+    assert all(sub.unsubscribe_calls == 1 for sub in client.subscriptions)
+    assert client.closed is True
+    assert agent.client is None
+
+
+async def test_stop_agent_replies_with_ack_when_sent_as_a_request() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    msg = FakeMsg.for_message(StopAgent(), reply="reply-inbox")
+
+    await agent.handle_incoming_message(msg)  # type: ignore[arg-type]
+
+    assert msg.responses == [Ack().to_bytes()]
+
+
+async def test_stop_agent_without_a_running_task_is_safe() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    # Never started: no task, no client, no subscriptions. StopAgent must not raise.
+    await agent.handle_incoming_message(FakeMsg.for_message(StopAgent()))  # type: ignore[arg-type]
+
+    assert agent.task is None
+
+
+async def test_stop_agent_is_idempotent(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    # Stopping an already-stopped agent matches StopEntity: the second stop cancels nothing, closes
+    # nothing again, and still re-acks.
+    agent = RecordingAgent("worker", "jobs")
+    await agent.start()
+    client = fake_connect()
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+
+    await agent.handle_incoming_message(FakeMsg.for_message(StopAgent()))  # type: ignore[arg-type]
+    msg = FakeMsg.for_message(StopAgent(), reply="reply-inbox")
+    await agent.handle_incoming_message(msg)  # type: ignore[arg-type]
+
+    assert agent.task is None
+    assert client.close_calls == 1
+    assert msg.responses == [Ack().to_bytes()]
+
+
+async def test_stop_agent_stops_only_the_targeted_agent_leaving_others_running(
+    created_clients: list[FakeClient],
+) -> None:
+    # Two agents in the same episode: stopping one via StopAgent must not touch the other. Drive
+    # each agent's handler directly (as its own NATS subscription would), so the two are wired to
+    # separate fake clients and can be inspected independently.
+    alice = RecordingAgent("alice", "jobs")
+    bob = RecordingAgent("bob", "jobs")
+    await alice.start()
+    await bob.start()
+    alice_client, bob_client = created_clients
+    await alice.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    await bob.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    bob_task = bob.task
+    assert bob_task is not None
+
+    await alice.handle_incoming_message(FakeMsg.for_message(StopAgent()))  # type: ignore[arg-type]
+
+    # Alice is fully torn down.
+    assert alice.task is None
+    assert alice.client is None
+    assert alice_client.closed is True
+    # Bob keeps running: run loop alive, still connected, subscriptions intact.
+    assert bob.task is bob_task
+    assert not bob_task.done()
+    assert bob.client is not None
+    assert bob_client.closed is False
+
+    bob_task.cancel()
+
+
+async def test_stop_agent_is_not_handed_to_process_message_or_process_command() -> None:
+    agent = RecordingAgent("worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+
+    await agent.handle_incoming_message(FakeMsg.for_message(StopAgent()))  # type: ignore[arg-type]
+
+    assert agent.processed == []
+    assert agent.commands == []
+
+
+async def test_command_is_dispatched_to_process_command() -> None:
+    agent = RecordingAgent("worker", "jobs")
+
+    await agent.handle_incoming_message(FakeMsg.for_message(Shout(label="hi")))  # type: ignore[arg-type]
+
+    assert agent.commands == [Shout(label="hi")]
+    # Commands are handled directly, never queued for process_message().
+    assert agent.queue.qsize() == 0
+
+
+async def test_process_command_default_implementation_is_a_no_op() -> None:
+    agent = Agent("episode-root", "worker", "jobs")
+
+    await agent.handle_incoming_message(FakeMsg.for_message(Shout()))  # type: ignore[arg-type]
+
+    assert agent.queue.qsize() == 0
+
+
+async def test_process_message_default_implementation_is_a_no_op() -> None:
+    agent = Agent("episode-root", "worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+
+    agent.queue.put_nowait((None, Ping()))
+    await asyncio.wait_for(agent.queue.join(), timeout=1)
+
+    assert agent.task is not None
+    agent.task.cancel()
+
+
+async def test_start_is_idempotent(created_clients: list[FakeClient]) -> None:
+    agent = RecordingAgent("worker", "jobs")
+
+    await agent.start()
+    await agent.start()
+
+    assert len(created_clients) == 1
+    assert len(agent.subscriptions) == 2
+
+    await agent.stop()
+
+
+async def test_stop_is_idempotent(created_clients: list[FakeClient]) -> None:
+    agent = RecordingAgent("worker", "jobs")
+    await agent.start()
+    client = created_clients[-1]
+    subscriptions = list(client.subscriptions)
+
+    await agent.stop()
+    await agent.stop()
+
+    assert client.close_calls == 1
+    assert all(sub.unsubscribe_calls == 1 for sub in subscriptions)
+    assert agent.client is None
+    assert agent.subscriptions == []
+
+
+async def test_stop_called_directly_cancels_the_run_loop(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    # A direct stop() -- not a StopEntity/StopAgent over the wire -- must also cancel the run loop,
+    # so a host tearing an agent down by calling stop() leaves no orphaned run-loop task.
+    agent = RecordingAgent("worker", "jobs")
+    await agent.start()
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    task = agent.task
+    assert task is not None
+
+    await agent.stop()
+
+    assert agent.task is None
+    assert task.cancelled()
+    assert agent.client is None
+
+
+async def test_respond_sends_the_reply_to_the_original_message() -> None:
+    msg = FakeMsg(b"", reply="reply-inbox")
+
+    await Agent.respond(msg, Ack())  # type: ignore[arg-type]
+
+    assert msg.responses == [Ack().to_bytes()]
+
+
+async def test_respond_does_nothing_when_there_is_no_original_message() -> None:
+    # Should not raise.
+    await Agent.respond(None, Ack())
+
+
+async def test_respond_does_nothing_for_a_publish_delivered_message() -> None:
+    # A message that arrived via plain publish carries no reply subject; the real Msg.respond
+    # raises on it, so respond must treat it like "nothing to reply to" rather than crash.
+    msg = FakeMsg(b"")  # reply="" — publish-delivered, not a request
+
+    await Agent.respond(msg, Ack())  # type: ignore[arg-type]
+
+    assert msg.responses == []
+
+
+async def test_run_loop_survives_publish_delivered_messages() -> None:
+    # Replying to a publish-delivered message would raise out of the run loop and kill it
+    # permanently; the message must still be processed, just not replied to.
+    agent = RecordingAgent("worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    published = FakeMsg.for_message(Ping(label="published"))  # reply="" — plain publish
+    agent.queue.put_nowait((published, Ping(label="published")))  # type: ignore[arg-type]
+
+    await asyncio.wait_for(agent.queue.join(), timeout=1)
+
+    assert agent.processed == [Ping(label="published")]
+    assert published.responses == []
+    assert agent.task is not None
+    assert not agent.task.done()  # the run loop is still alive for the next message
+    agent.task.cancel()
+
+
+async def test_repeated_start_entity_does_not_spawn_a_second_run_loop() -> None:
+    # StartEntity is documented idempotent: a retry (e.g. after a lost Ack) must re-ack without
+    # launching a second concurrent run loop that would interleave queue processing with the first.
+    agent = RecordingAgent("worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    task = agent.task
+    assert task is not None
+    msg = FakeMsg.for_message(StartEntity(), reply="reply-inbox")
+
+    await agent.handle_incoming_message(msg)  # type: ignore[arg-type]
+
+    assert agent.task is task  # the original run loop, not a replacement
+    assert msg.responses == [Ack().to_bytes()]  # the retry is still acked
+    task.cancel()
+
+
+async def test_start_entity_relaunches_a_run_loop_that_already_crashed() -> None:
+    # Idempotence means "don't spawn a second live loop", not "never recover": after the run loop
+    # died with an exception, a fresh StartEntity brings the agent back to a running state.
+    class Boom(Agent):
+        async def process_message(self, message: Message) -> None:
+            raise ValueError("boom")
+
+    agent = Boom("episode-root", "worker", "jobs")
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    crashed = agent.task
+    assert crashed is not None
+    agent.queue.put_nowait((None, Ping()))
+    with pytest.raises(ValueError, match="boom"):
+        await crashed
+
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+
+    assert agent.task is not None
+    assert agent.task is not crashed
+    assert not agent.task.done()
+    agent.task.cancel()
+
+
+async def test_teardown_completes_after_the_run_loop_crashed(
+    fake_connect: Callable[[], FakeClient],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # If process_message raised, the run-loop task holds a stored exception. Teardown must not
+    # re-raise it: the Ack still has to go out and the agent still has to disconnect, or the
+    # environment's stop broadcast waits on this agent forever and the worker hangs.
+    class Boom(Agent):
+        async def process_message(self, message: Message) -> None:
+            raise ValueError("boom")
+
+    agent = Boom("episode-root", "worker", "jobs")
+    await agent.start()
+    client = fake_connect()
+    await agent.handle_incoming_message(FakeMsg.for_message(StartEntity()))  # type: ignore[arg-type]
+    task = agent.task
+    assert task is not None
+    agent.queue.put_nowait((None, Ping()))
+    await asyncio.wait_for(agent.queue.join(), timeout=1)
+    await asyncio.sleep(0)  # let the crashed run loop actually finish
+    assert task.done()
+
+    msg = FakeMsg.for_message(StopEntity(), reply="reply-inbox")
+    with caplog.at_level("ERROR", logger="freeagent.sdk.entity"):
+        await agent.handle_incoming_message(msg)  # type: ignore[arg-type]
+
+    assert msg.responses == [Ack().to_bytes()]
+    assert agent.task is None
+    assert client.closed is True
+    assert agent.client is None
+    # The crash is reported rather than silently swallowed.
+    assert any("boom" in str(record.exc_info) for record in caplog.records)

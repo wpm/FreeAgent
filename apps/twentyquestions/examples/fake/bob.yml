@@ -1,7 +1,0 @@
-# bob seconds alice's proposal and spends question one, then says goodbye.
-default: {speak: false, message: ""}
-responses:
-  - match: "should we ask whether it is alive"
-    response: {speak: true, message: "Agreed, alice. Host, question one: is it alive?"}
-  - match: "GAME OVER"
-    response: {speak: true, message: "Great teamwork. Goodbye, all!"}
