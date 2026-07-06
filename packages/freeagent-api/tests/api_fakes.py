@@ -26,16 +26,21 @@ class FakeSubscription:
 
 
 class FakeNatsClient:
-    """A stand-in for the manager's NATS client that records subscriptions and closes."""
+    """A stand-in for the manager's NATS client that records subscriptions, flushes, and
+    closes."""
 
     def __init__(self) -> None:
         self.subscriptions: list[FakeSubscription] = []
+        self.flush_calls = 0
         self.close_calls = 0
 
     async def subscribe(self, subject: str, *, cb: MessageHandler) -> FakeSubscription:
         subscription = FakeSubscription(subject, cb)
         self.subscriptions.append(subscription)
         return subscription
+
+    async def flush(self) -> None:
+        self.flush_calls += 1
 
     async def close(self) -> None:
         self.close_calls += 1

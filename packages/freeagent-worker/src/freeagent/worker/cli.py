@@ -8,7 +8,8 @@ episode is driven entirely from these arguments.
 
 The CLI treats ``--config`` as opaque: it parses the JSON (from a literal string or a file) into a
 dict and hands it to the application inside the :class:`~freeagent.sdk.EpisodeSpec`, never
-inspecting its contents. Every failure -- an unknown application, malformed config, or an episode
+inspecting its contents. Every failure -- an unknown application, a subject-unsafe episode ID or
+root, malformed config, or an episode
 that errors or times out -- exits nonzero with a message on stderr, so a caller (a shell, later the
 API) can tell a completed episode from a failed one by exit code alone.
 """
@@ -23,6 +24,7 @@ from typing import Any
 import typer
 from freeagent.sdk import EpisodeSpec, UnknownApplication, available_applications, load_application
 from freeagent.sdk.entity import DEFAULT_NATS_SERVER
+from freeagent.sdk.subjects import valid_subject, valid_subject_token
 from freeagent.worker.runner import run_episode
 
 # `no_args_is_help` shows usage instead of an error when invoked bare; the explicit callback keeps
@@ -69,7 +71,12 @@ def _load_config(config: str | None) -> dict[str, Any]:
 @app.command()
 def run(
     application: str = typer.Argument(..., help="Name of the application to run, e.g. `collatz`."),
-    episode_id: str = typer.Option(..., "--episode-id", help="Identifier for this episode."),
+    episode_id: str = typer.Option(
+        ...,
+        "--episode-id",
+        help="Identifier for this episode; a single NATS subject token "
+        "(letters, digits, hyphen, underscore).",
+    ),
     nats_url: str = typer.Option(
         DEFAULT_NATS_SERVER,
         "--nats-url",
@@ -103,6 +110,26 @@ def run(
     :param episode_root: The root NATS subject; defaults to ``episode.{episode_id}``.
     :param timeout: Seconds to wait for completion, or ``None`` to wait indefinitely.
     """
+    # Both values are interpolated into NATS subjects, so reject anything subject-unsafe up
+    # front with a clear message: an ID like "x.*" would subscribe the observer to a wildcard
+    # overlapping every other episode's subjects, and one with ">" or whitespace surfaces only
+    # as a cryptic server error after entities have already partially started. The same
+    # definition guards the API's REST boundary (see freeagent.sdk.subjects).
+    if not valid_subject_token(episode_id):
+        typer.echo(
+            f'Episode ID "{episode_id}" is not a single NATS subject token '
+            f"(letters, digits, hyphen, underscore)",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if episode_root is not None and not valid_subject(episode_root):
+        typer.echo(
+            f'Episode root "{episode_root}" is not a dot-separated sequence of NATS subject '
+            f"tokens (letters, digits, hyphen, underscore)",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
     try:
         loaded = load_application(application)
     except UnknownApplication:

@@ -317,27 +317,3 @@ class CollatzEnvironment(Environment):
         if not msg.reply:
             return
         await msg.respond(b"" if reply is None else reply.to_bytes())
-
-    async def stop(self) -> None:
-        """Tear the episode down, broadcasting :class:`~freeagent.sdk.message.StopEntity` only to
-        agents not already stopped.
-
-        Overrides :meth:`~freeagent.sdk.entity.Environment.stop`, which broadcasts the teardown to
-        *every* agent. On the completing path each agent has already been stopped individually by
-        :meth:`~freeagent.sdk.entity.Environment.stop_agent` as its chain reached 1, so those agents
-        have unsubscribed and disconnected; re-broadcasting to them would hit subjects with no
-        responder. This narrows :attr:`~freeagent.sdk.entity.Environment.agents` to the still-live
-        agents for the duration of the base teardown -- reusing all of its behavior (the
-        :class:`~freeagent.sdk.message.EpisodeComplete` end marker, ordering, and disconnect) and
-        only changing *who* the :class:`~freeagent.sdk.message.StopEntity` broadcast reaches -- then
-        restores the full agent list.
-
-        :return: ``None``.
-        """
-        live = tuple(agent for agent in self.agents if agent not in self.stopped_agents)
-        full_agents = self.agents
-        self.agents = live
-        try:
-            await super().stop()
-        finally:
-            self.agents = full_agents

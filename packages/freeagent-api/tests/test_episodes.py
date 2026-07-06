@@ -8,6 +8,7 @@ over-the-wire behavior is covered by ``test_integration.py``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from typing import cast
@@ -207,6 +208,17 @@ async def test_create_subscribes_to_the_episode_root_and_spawns_a_worker() -> No
     assert status.worker_exit_code is None
 
 
+async def test_create_flushes_after_subscribing_so_no_early_message_is_missed() -> None:
+    # subscribe() alone only queues the SUB on the manager's connection; without a flush the
+    # worker (its own connection) can publish before the server has registered the subscription,
+    # and the episode's earliest messages silently vanish from the feed.
+    harness = ManagerHarness()
+
+    await harness.manager.create("collatz", "ep1", {})
+
+    assert harness.client.flush_calls == 1
+
+
 async def test_create_generates_a_subject_safe_episode_id_when_none_is_given() -> None:
     harness = ManagerHarness()
     first = await harness.manager.create("collatz", None, {})
@@ -259,6 +271,63 @@ async def test_a_failed_spawn_leaves_no_subscription_behind() -> None:
     assert subscription.unsubscribe_calls == 1
     with pytest.raises(UnknownEpisode):
         manager.get("collatz", "ep1")
+
+
+async def test_concurrent_creates_of_the_same_episode_spawn_only_one_worker() -> None:
+    # The duplicate check and the reservation must happen with no await between them: otherwise
+    # two concurrent creates of the same (application, episode_id) both pass the check, both
+    # subscribe, and both spawn workers into one subject tree — and the loser's worker leaks
+    # with no dict entry left to stop it through.
+    client = FakeNatsClient()
+    spawned: list[list[str]] = []
+
+    async def connect(url: str) -> NatsClient:
+        await asyncio.sleep(0)  # yield to the event loop, as a real connect would
+        return client
+
+    def spawn(command: list[str]) -> WorkerProcess:
+        spawned.append(command)
+        return FakeProcess()
+
+    manager = EpisodeManager("nats://fake:4222", connect=connect, spawn=spawn)
+
+    results = await asyncio.gather(
+        manager.create("collatz", "ep1", {}),
+        manager.create("collatz", "ep1", {}),
+        return_exceptions=True,
+    )
+
+    errors = [result for result in results if isinstance(result, BaseException)]
+    assert len(errors) == 1
+    assert isinstance(errors[0], DuplicateEpisode)
+    assert len(spawned) == 1
+    assert len(client.subscriptions) == 1
+
+
+async def test_a_failed_create_can_be_retried() -> None:
+    # The reservation taken before create()'s first await must be rolled back on failure, or a
+    # retry would be rejected as a duplicate of an episode that never existed.
+    client = FakeNatsClient()
+    attempts = 0
+
+    async def connect(url: str) -> NatsClient:
+        return client
+
+    def spawn(command: list[str]) -> WorkerProcess:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise FileNotFoundError("no worker installed")
+        return FakeProcess()
+
+    manager = EpisodeManager("nats://fake:4222", connect=connect, spawn=spawn)
+    with pytest.raises(FileNotFoundError):
+        await manager.create("collatz", "ep1", {})
+
+    episode = await manager.create("collatz", "ep1", {})
+
+    assert episode.status().state is EpisodeState.CREATED
+    assert attempts == 2
 
 
 async def test_the_subscription_callback_feeds_the_monitor() -> None:

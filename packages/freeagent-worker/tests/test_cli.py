@@ -51,6 +51,41 @@ def recorded_run(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return calls
 
 
+def test_run_rejects_an_episode_id_that_is_not_a_subject_token(
+    recorded_run: list[dict[str, Any]],
+) -> None:
+    # An unvalidated ID is interpolated into NATS subjects: "x.*" would subscribe the observer to
+    # a wildcard overlapping every other episode's environment subject, so another episode's
+    # EpisodeComplete would end this one early.
+    result = runner.invoke(app, ["run", "collatz", "--episode-id", "x.*"])
+
+    assert result.exit_code == 1
+    assert "not a single NATS subject token" in result.output
+    assert recorded_run == []
+
+
+def test_run_rejects_an_episode_root_that_is_not_a_subject(
+    recorded_run: list[dict[str, Any]],
+) -> None:
+    result = runner.invoke(
+        app, ["run", "collatz", "--episode-id", "ok", "--episode-root", "episode..bad"]
+    )
+
+    assert result.exit_code == 1
+    assert "Episode root" in result.output
+    assert recorded_run == []
+
+
+def test_run_accepts_a_valid_episode_root(recorded_run: list[dict[str, Any]]) -> None:
+    result = runner.invoke(
+        app, ["run", "collatz", "--episode-id", "ep1", "--episode-root", "episode.custom.ep1"]
+    )
+
+    assert result.exit_code == 0
+    [call] = recorded_run
+    assert call["episode"].episode_root == "episode.custom.ep1"
+
+
 def test_run_completes_and_builds_the_expected_spec(recorded_run: list[dict[str, Any]]) -> None:
     result = runner.invoke(
         app,

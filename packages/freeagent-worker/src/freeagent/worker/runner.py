@@ -28,7 +28,7 @@ import asyncio
 import logging
 
 from freeagent.sdk import Application, EpisodeSpec
-from freeagent.sdk.entity import ENVIRONMENT, Entity
+from freeagent.sdk.entity import ENVIRONMENT, Entity, Environment
 from freeagent.sdk.message import EpisodeComplete, Message
 from nats.aio.msg import Msg
 
@@ -52,6 +52,27 @@ async def _stop_quietly(entity: Entity) -> None:
         await entity.stop()
     except Exception as error:
         _logger.warning("Error stopping %s during force teardown: %r", type(entity).__name__, error)
+
+
+async def _abort_quietly(environment: Environment) -> None:
+    """Abort ``environment`` — teardown without the end marker — swallowing any error.
+
+    The environment-specific counterpart of :func:`_stop_quietly` on the force-stop path.
+    :meth:`~freeagent.sdk.entity.Environment.stop` would publish the
+    :class:`~freeagent.sdk.message.EpisodeComplete` end marker, and a force-stopped episode did
+    *not* complete — an observer (the API) seeing the marker would record the failed episode as
+    complete, a terminal state that then masks the worker's own nonzero exit.
+    :meth:`~freeagent.sdk.entity.Environment.abort` broadcasts the same
+    :class:`~freeagent.sdk.message.StopEntity` teardown without the marker.
+
+    :param environment: The environment to abort.
+    """
+    try:
+        await environment.abort()
+    except Exception as error:
+        _logger.warning(
+            "Error aborting %s during force teardown: %r", type(environment).__name__, error
+        )
 
 
 class _EpisodeObserver(Entity):
@@ -108,8 +129,12 @@ async def run_episode(
 
     If instead the wait fails -- the ``timeout`` elapses, or ``start`` raised before completion --
     the episode did *not* end cleanly and no application-driven teardown can be assumed, so the
-    runner force-stops every agent and the environment before re-raising, leaving no connection
-    stranded. Each stop there is best-effort (see :func:`_stop_quietly`): a teardown error must not
+    runner force-stops every agent and *aborts* the environment before re-raising, leaving no
+    connection stranded. Aborting (see :meth:`~freeagent.sdk.entity.Environment.abort`) tears the
+    environment down without publishing :class:`~freeagent.sdk.message.EpisodeComplete`: the end
+    marker must mean a real completion, or an observer would record the failed episode as
+    complete. Each stop there is best-effort (see :func:`_stop_quietly` and
+    :func:`_abort_quietly`): a teardown error must not
     abort the others or mask the original failure being re-raised. Stopping an agent directly also
     cancels its run loop (see :meth:`~freeagent.sdk.entity.Agent.stop`), so no run-loop task is left
     orphaned.
@@ -138,9 +163,11 @@ async def run_episode(
         # this loop already unsubscribed, or an unsubscribe/close erroring over a severed
         # connection -- must not abort the remaining stops or mask the original failure re-raised
         # below. Each entity's own stop is idempotent, so already-stopped entities are no-ops.
+        # The environment is aborted, not stopped: stop() would publish the EpisodeComplete end
+        # marker for an episode that did not complete.
         for agent in agents:
             await _stop_quietly(agent)
-        await _stop_quietly(environment)
+        await _abort_quietly(environment)
         raise
     finally:
         # The observer is the runner's own; stop it on every path (its stop is idempotent).

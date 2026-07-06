@@ -1,10 +1,14 @@
 name: freeagent
 
 services:
-  # No published ports: NATS is reachable only inside the network, as nats://nats:4222.
+  # The client and monitoring ports are published to the host (loopback only): the API, workers,
+  # and viewers all run on the host and reach NATS at nats://localhost:4222.
   nats:
     image: nats:2.12-alpine
     command: [ "-c", "/etc/nats/nats-server.conf" ]
+    ports:
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8222:8222"
     volumes:
       - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
       - nats-data:/data

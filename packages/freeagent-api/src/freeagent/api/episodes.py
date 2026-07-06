@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import subprocess
 import sys
 import time
@@ -44,6 +43,7 @@ from typing import Any, Protocol
 
 import nats
 from freeagent.sdk import UnknownApplication, available_applications
+from freeagent.sdk import subjects as _sdk_subjects
 from freeagent.sdk.entity import AGENTS
 from freeagent.sdk.message import (
     Ack,
@@ -53,6 +53,7 @@ from freeagent.sdk.message import (
     StopAgent,
     StopEntity,
 )
+from freeagent.sdk.subjects import valid_subject_token
 from nats.aio.msg import Msg
 from pydantic import BaseModel
 
@@ -91,15 +92,12 @@ package) inside ``freeagent.api`` would break the invariant that the API depends
 WORKER_STOP_TIMEOUT = 5.0
 """Seconds to wait for a terminated worker process to exit before killing it outright."""
 
-SUBJECT_TOKEN_PATTERN = r"[A-Za-z0-9_-]+"
+SUBJECT_TOKEN_PATTERN = _sdk_subjects.SUBJECT_TOKEN_PATTERN
 """Regex for a single NATS subject token — the one definition of "valid episode ID characters".
 
-Shared with the REST request model (see :mod:`freeagent.api.app`) so the HTTP-layer validation and
-:meth:`EpisodeManager.create`'s own guard cannot drift apart.
-"""
-
-_SUBJECT_TOKEN = re.compile(SUBJECT_TOKEN_PATTERN)
-"""Compiled :data:`SUBJECT_TOKEN_PATTERN`.
+Re-exported from :mod:`freeagent.sdk.subjects` (the platform-wide definition, shared with the
+worker's command line) for the REST request model (see :mod:`freeagent.api.app`), so the HTTP-layer
+validation and :meth:`EpisodeManager.create`'s own guard cannot drift apart.
 
 Application names and episode IDs both become tokens of the episode's root subject, so anything
 with a ``.``, whitespace, or a wildcard character would corrupt the subject hierarchy (and let one
@@ -348,6 +346,14 @@ class NatsClient(Protocol):
         """
         ...
 
+    async def flush(self) -> None:
+        """Round-trip to the server, guaranteeing everything sent so far has been processed.
+
+        After ``subscribe`` + ``flush``, the subscription is registered server-side: a message
+        published by *any* connection afterwards is delivered to it.
+        """
+        ...
+
     async def close(self) -> None:
         """Disconnect from the server."""
         ...
@@ -490,7 +496,7 @@ class EpisodeManager:
         self._require_installed(application)
         if episode_id is None:
             episode_id = uuid.uuid4().hex
-        elif _SUBJECT_TOKEN.fullmatch(episode_id) is None:
+        elif not valid_subject_token(episode_id):
             raise ValueError(
                 f'Episode ID "{episode_id}" is not a single NATS subject token '
                 f"(letters, digits, hyphen, underscore)"
@@ -502,23 +508,41 @@ class EpisodeManager:
             )
         episode_root = f"episode.{application}.{episode_id}"
         monitor = EpisodeMonitor(application, episode_id, episode_root)
-
-        async def _record(msg: Msg) -> None:
-            monitor.record(msg.subject, msg.data, time.time())
-
-        client = await self._ensure_client()
-        subscription = await client.subscribe(f"{episode_root}.>", cb=_record)
-        try:
-            process = self._spawn(
-                self._worker_command(application, episode_id, episode_root, config)
-            )
-        except BaseException:
-            # The worker never started, so the episode doesn't exist; don't leave its
-            # subscription behind to record traffic for a record nobody can look up.
-            await subscription.unsubscribe()
-            raise
-        episode = Episode(monitor=monitor, subscription=subscription, process=process)
+        episode = Episode(monitor=monitor, subscription=None, process=None)
+        # Reserve the key before the first await: with a suspension point between the duplicate
+        # check and the insert, two concurrent creates of the same episode would both pass the
+        # check, both subscribe, and both spawn workers into one subject tree — and the loser's
+        # worker and subscription would leak, with no dict entry left to stop them through.
         self._episodes[key] = episode
+        try:
+
+            async def _record(msg: Msg) -> None:
+                monitor.record(msg.subject, msg.data, time.time())
+
+            client = await self._ensure_client()
+            subscription = await client.subscribe(f"{episode_root}.>", cb=_record)
+            # Flush so the subscription is registered server-side before the worker spawns:
+            # subscribe() alone only queues the SUB on this connection, and a worker (its own
+            # connection) publishing before the server processes it would go unrecorded —
+            # the very missed-message window subscribing-before-spawning exists to close.
+            await client.flush()
+            episode.subscription = subscription
+            try:
+                process = self._spawn(
+                    self._worker_command(application, episode_id, episode_root, config)
+                )
+            except BaseException:
+                # The worker never started, so the episode doesn't exist; don't leave its
+                # subscription behind to record traffic for a record nobody can look up.
+                await subscription.unsubscribe()
+                episode.subscription = None
+                raise
+            episode.process = process
+        except BaseException:
+            # Roll the reservation back so a failed create can simply be retried.
+            if self._episodes.get(key) is episode:
+                del self._episodes[key]
+            raise
         return episode
 
     def get(self, application: str, episode_id: str) -> Episode:
@@ -569,10 +593,7 @@ class EpisodeManager:
         :raises UnknownApplication: If ``application`` isn't installed (or couldn't be a subject
             token, in which case no installable application could bear the name).
         """
-        if (
-            _SUBJECT_TOKEN.fullmatch(application) is None
-            or application not in available_applications()
-        ):
+        if not valid_subject_token(application) or application not in available_applications():
             raise UnknownApplication(f'No application named "{application}" is installed')
 
     @staticmethod

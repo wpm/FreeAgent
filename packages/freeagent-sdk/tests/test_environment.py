@@ -327,6 +327,79 @@ async def test_stop_publishes_episode_complete_exactly_once(
     assert len(episode_completes) == 1
 
 
+async def test_stop_skips_agents_already_stopped_individually(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    # An agent stopped via stop_agent has unsubscribed and disconnected; broadcasting StopEntity
+    # at its subject again hits no responders on a real server and raises out of stop(), failing
+    # a cleanly-completed episode.
+    env = Environment("episode-root", "alice", "bob")
+    await env.start()
+    client = fake_connect()
+    await env.stop_agent("alice")
+    client.requests.clear()
+
+    await env.stop()
+
+    assert [subject for subject, _ in client.requests] == [agent_subject("episode-root", "bob")]
+    for _, payload in client.requests:
+        assert Message.model_validate_json(payload) == StopEntity()
+
+
+async def test_abort_broadcasts_stop_entity_without_the_end_marker(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    # abort() is the teardown for an episode that did NOT end cleanly: the same StopEntity
+    # broadcast and disconnect as stop(), but no EpisodeComplete — the end marker must mean a
+    # real completion, or an observer would record a failed episode as complete.
+    env = Environment("episode-root", "alice", "bob")
+    await env.start()
+    client = fake_connect()
+    client.requests.clear()
+
+    await env.abort()
+
+    assert client.published == []
+    assert [subject for subject, _ in client.requests] == [
+        agent_subject("episode-root", "alice"),
+        agent_subject("episode-root", "bob"),
+    ]
+    for _, payload in client.requests:
+        assert Message.model_validate_json(payload) == StopEntity()
+    assert client.closed is True
+    assert env.client is None
+
+
+async def test_abort_on_an_unstarted_environment_is_a_no_op(
+    created_clients: list[FakeClient],
+) -> None:
+    env = Environment("episode-root", "alice")
+
+    await env.abort()
+
+    assert created_clients == []
+    assert env.client is None
+
+
+async def test_abort_disconnects_even_when_the_broadcast_times_out(
+    fake_connect: Callable[[], FakeClient],
+) -> None:
+    env = Environment("episode-root", "alice", timeout=0.01)
+    await env.start()
+    client = fake_connect()
+
+    async def hangs(_: str, __: bytes, **___: object) -> None:
+        await asyncio.sleep(10)
+
+    client.request = hangs  # type: ignore[assignment]
+
+    with pytest.raises(TimeoutError):
+        await env.abort()
+
+    assert client.closed is True
+    assert env.client is None
+
+
 async def test_stop_emits_episode_complete_before_broadcasting_stop_entity(
     fake_connect: Callable[[], FakeClient],
 ) -> None:

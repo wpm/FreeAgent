@@ -49,7 +49,25 @@ class FakeEntity:
 
 
 class FakeEnvironment(FakeEntity):
-    """A fake environment: a :class:`FakeEntity` distinguished by type for readability."""
+    """A fake environment that also records ``abort`` calls.
+
+    The runner's force path must *abort* the environment — teardown without the
+    :class:`~freeagent.sdk.message.EpisodeComplete` end marker — never ``stop()`` it, which would
+    publish the marker for an episode that failed.
+
+    :ivar aborted: How many times :meth:`abort` has been called.
+    :ivar abort_error: If set, raised by :meth:`abort` to model a teardown that fails.
+    """
+
+    def __init__(self, abort_error: Exception | None = None) -> None:
+        super().__init__()
+        self.aborted = 0
+        self.abort_error = abort_error
+
+    async def abort(self) -> None:
+        self.aborted += 1
+        if self.abort_error is not None:
+            raise self.abort_error
 
 
 class FakeAgent(FakeEntity):
@@ -103,7 +121,8 @@ async def test_timeout_force_stops_every_entity(never_completing_observer: None)
     assert all(agent.started for agent in agents)
     assert environment.started
     assert all(agent.stopped == 1 for agent in agents)  # every agent force-stopped exactly once
-    assert environment.stopped == 1  # and so was the environment
+    assert environment.aborted == 1  # the environment is aborted...
+    assert environment.stopped == 0  # ...never stop()ped: no end marker for a failed episode
 
 
 async def test_a_teardown_error_does_not_mask_the_original_failure(
@@ -121,19 +140,19 @@ async def test_a_teardown_error_does_not_mask_the_original_failure(
 
     assert failing_agent.stopped == 1
     assert later_agent.stopped == 1  # teardown continued past the failing agent
-    assert environment.stopped == 1  # and reached the environment
+    assert environment.aborted == 1  # and reached the environment
 
 
 async def test_an_environment_teardown_error_is_swallowed(
     never_completing_observer: None,
 ) -> None:
-    environment = FakeEnvironment(stop_error=RuntimeError("no responders"))
+    environment = FakeEnvironment(abort_error=RuntimeError("no responders"))
     application = FakeApplication(environment, [FakeAgent()])
 
-    with pytest.raises(TimeoutError):  # the environment stop error must not replace the timeout
+    with pytest.raises(TimeoutError):  # the environment abort error must not replace the timeout
         await run_episode(application, EPISODE, "nats://x:4222", timeout=0.05)
 
-    assert environment.stopped == 1
+    assert environment.aborted == 1
 
 
 def _decode(message: Message) -> bytes:

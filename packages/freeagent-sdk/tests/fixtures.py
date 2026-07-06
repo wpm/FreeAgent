@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Self
 
+import nats.errors
 from freeagent.sdk import Agent
 from freeagent.sdk.message import Ack, Command, Message
 from nats.aio.msg import Msg
@@ -84,6 +85,10 @@ class FakeMsg:
         return cls(message.to_bytes(), reply=reply)
 
     async def respond(self, data: bytes) -> None:
+        if not self.reply:
+            # Match the real nats-py Msg.respond, which raises when the message carries no reply
+            # subject (i.e. it arrived via plain publish rather than request/reply).
+            raise nats.errors.Error("no reply subject available")
         self.responses.append(data)
 
 
