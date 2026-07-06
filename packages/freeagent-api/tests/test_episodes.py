@@ -1,6 +1,6 @@
 """Unit tests for :mod:`freeagent.api.episodes`: the monitor's state machine and the manager.
 
-The monitor is pure bookkeeping, so the whole control/data plane split (ADR-0007) is exercised
+The monitor is pure bookkeeping, so the whole control/data plane split is exercised
 here message by message without a server; the manager runs against the fakes in
 ``api_fakes.py``. The
 over-the-wire behavior is covered by ``test_integration.py``.
@@ -106,7 +106,7 @@ def test_app_defined_message_lands_in_the_data_plane_feed() -> None:
 
 def test_registered_non_control_sdk_types_still_land_in_the_feed() -> None:
     # Chain is *registered* in this process (the test imports it), so it decodes -- but the plane
-    # split is by explicit control-plane membership, not by "does it decode" (ADR-0007). This
+    # split is by explicit control-plane membership, not by "does it decode". This
     # pins the regression where in-process app imports would silently drain the feed.
     monitor = make_monitor()
     monitor.record(f"{ROOT}.environment.replies.agent-0", Chain(numbers=[8]).to_bytes(), 1.0)

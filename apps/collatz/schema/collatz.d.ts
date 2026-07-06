@@ -6,7 +6,7 @@
  */
 
 /**
- * Generated message schema for the "collatz" Free Agent application. Source of truth is the application's pydantic models; regenerate with `freeagent schema` rather than editing by hand (ADR-0007).
+ * Generated message schema for the "collatz" Free Agent application. Source of truth is the application's pydantic models; regenerate with `freeagent schema` rather than editing by hand.
  */
 export type CollatzMessages = Chain;
 export type MessageType = "Chain";

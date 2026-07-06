@@ -4,8 +4,7 @@ The worker runs one application episode from the command line. ``freeagent-worke
 <application>`` resolves the application name to code (:func:`~freeagent.sdk.load_application`),
 builds an :class:`~freeagent.sdk.EpisodeSpec` from the remaining options, and runs the episode to
 completion via :func:`~freeagent.worker.runner.run_episode`. There is no API involvement yet -- the
-episode is driven entirely from these arguments (:doc:`ADR-0006
-</decision-history/0006-entry-point-application-loading>`).
+episode is driven entirely from these arguments.
 
 The CLI treats ``--config`` as opaque: it parses the JSON (from a literal string or a file) into a
 dict and hands it to the application inside the :class:`~freeagent.sdk.EpisodeSpec`, never

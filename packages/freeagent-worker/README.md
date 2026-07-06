@@ -2,7 +2,7 @@
 
 The Free Agent worker command line app.
 
-The worker is a **dumb host** ([ADR-0006](../../docs/decision-history/0006-entry-point-application-loading.md)):
+The worker is a **dumb host**:
 it resolves an application by name, builds that application's environment and agents from an
 `EpisodeSpec`, runs them to episode completion over NATS, and exits. All application intelligence
 lives behind the SDK's `Application` protocol — the worker knows nothing about any app's messages or

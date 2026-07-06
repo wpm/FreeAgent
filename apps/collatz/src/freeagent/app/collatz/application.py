@@ -1,8 +1,7 @@
 """The Collatz :class:`~freeagent.sdk.Application`: its config model and the two factories.
 
 An :class:`~freeagent.sdk.EpisodeSpec`'s ``config`` dict is opaque to the platform; Collatz
-validates it here with :class:`CollatzConfig` -- the Python-as-source-of-truth discipline of
-ADR-0006 -- and
+validates it here with :class:`CollatzConfig` -- the Python-as-source-of-truth discipline -- and
 turns it into the episode's :class:`~freeagent.app.collatz.entity.CollatzEnvironment` and
 :class:`~freeagent.app.collatz.entity.CollatzAgent` instances. The module-level :data:`application`
 object is what the ``collatz`` entry point resolves to; see :func:`~freeagent.sdk.load_application`.

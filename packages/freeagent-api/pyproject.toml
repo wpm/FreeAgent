@@ -5,7 +5,7 @@ description = "Free Agent FastAPI server"
 readme = "README.md"
 requires-python = ">=3.12"
 # freeagent-worker is a *process* dependency: the API spawns `python -m freeagent.worker.cli` to
-# run episodes but never imports it (ADR-0007's SDK-names-only invariant, enforced by
+# run episodes but never imports it (the SDK-names-only invariant, enforced by
 # import-linter). It is listed here so the worker is installed wherever the API runs.
 dependencies = [
     "fastapi>=0.115",

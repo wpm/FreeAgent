@@ -1,6 +1,6 @@
 """The Collatz :class:`~freeagent.sdk.Agent` and :class:`~freeagent.sdk.Environment`.
 
-Collatz rehearses the platform's ack-then-counter-request shape (ADR-0008) on deterministic,
+Collatz rehearses the platform's ack-then-counter-request shape on deterministic,
 LLM-free logic. The :class:`CollatzEnvironment` seeds each agent with a starting :class:`Chain` and
 owns *all* game-state judgment: agents are purely reactive. A :class:`CollatzAgent`, handed a chain,
 extends it by exactly one Collatz step and sends the longer chain back to the environment as its own
@@ -61,7 +61,7 @@ class CollatzAgent(Agent):
     The counter-request is sent *without waiting for its reply* -- it is launched as a background
     task, tracked in :attr:`pending`, so :meth:`process_message` returns at once and the run loop
     acks the environment's request immediately. This is the whole point of the ack-then-counter
-    shape (ADR-0008), and getting it wrong deadlocks a multi-agent episode: NATS delivers a
+    shape, and getting it wrong deadlocks a multi-agent episode: NATS delivers a
     subscription's messages one at a time, so the environment's single reply subscription processes
     one agent's returned chain at a time, and *its* handler sends the next chain back with a
     :meth:`~freeagent.sdk.entity.Environment.request` that blocks until this agent's run loop acks.
@@ -102,7 +102,7 @@ class CollatzAgent(Agent):
         the environment's per-agent reply subject as a *background* counter-request (see the class
         docstring for why it must not be awaited here); this method returns ``None`` at once, so the
         run loop's reply to the environment stays a bare :class:`~freeagent.sdk.message.Ack`,
-        keeping the work off the reply per ADR-0008.
+        keeping the work off the reply.
 
         :param message: The message pulled from the agent's queue.
         :return: Always ``None``: the run loop then replies with a bare
@@ -290,7 +290,7 @@ class CollatzEnvironment(Environment):
             await self._ack_if_request(msg)
             return
         agent = self.agent_of(msg.subject)
-        # Ack first: the reply carries no work, only receipt (ADR-0008). The agent's request
+        # Ack first: the reply carries no work, only receipt. The agent's request
         # unblocks here, and the environment does its judging afterwards.
         await self._ack_if_request(msg, Ack())
         just_finished = self.record(agent, message)

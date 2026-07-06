@@ -1,6 +1,6 @@
 """Tests for :mod:`freeagent.sdk.schema` and the ``freeagent schema`` CLI.
 
-These exercise the schema-generation half of ADR-0007's engine→viewer pipeline against the real,
+These exercise the schema-generation half of the engine→viewer pipeline against the real,
 workspace-installed ``collatz`` application: ``application_schema`` builds the JSON Schema document,
 and ``main`` is the console-script entry point that prints it. The ``collatz`` app contributes a
 single message type, :class:`~freeagent.app.collatz.message.Chain`, whose ``message_type`` tag must
@@ -37,8 +37,7 @@ def test_application_schema_top_level_is_a_oneof_union_over_the_apps_types() -> 
 
 def test_application_schema_includes_only_the_apps_own_message_types() -> None:
     # The shared registry holds SDK control-plane types (StartEntity, Ack, ...) too; the document
-    # must contain the collatz app's own types only, never the SDK's, per ADR-0007's registry-walk
-    # caveat.
+    # must contain the collatz app's own types only, never the SDK's.
     schema = application_schema("collatz")
 
     assert set(schema["$defs"]) == {"Chain"}
@@ -60,7 +59,7 @@ def test_application_schema_marks_message_type_required() -> None:
 
 
 def test_application_schema_includes_the_reserved_protocol_envelope_field() -> None:
-    # ADR-0007 reserves `protocol` as an envelope slot; it must appear in the generated schema.
+    # `protocol` is a reserved envelope slot; it must appear in the generated schema.
     schema = application_schema("collatz")
 
     assert "protocol" in schema["$defs"]["Chain"]["properties"]

@@ -38,7 +38,7 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Generated message schema for the \"collatz\" Free Agent application. Source of truth is the application's pydantic models; regenerate with `freeagent schema` rather than editing by hand (ADR-0007).",
+  "description": "Generated message schema for the \"collatz\" Free Agent application. Source of truth is the application's pydantic models; regenerate with `freeagent schema` rather than editing by hand.",
   "oneOf": [
     {
       "$ref": "#/$defs/Chain"

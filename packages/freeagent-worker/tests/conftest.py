@@ -6,7 +6,7 @@ puts *this* directory back on the path so a test's bare sibling-helper imports r
 
 It also provides the ``nats_server`` fixture the integration test needs: a real ``nats-server``
 subprocess, session-scoped so its (already fast) startup is paid once. The mechanics mirror the
-SDK's own ``nats_server`` fixture (ADR-0008: integration tests run against a real server, not a
+SDK's own ``nats_server`` fixture (integration tests run against a real server, not a
 mock), deliberately re-implemented here as a small, self-contained helper rather than reaching into
 another package's test directory, keeping this package's test suite independent.
 """

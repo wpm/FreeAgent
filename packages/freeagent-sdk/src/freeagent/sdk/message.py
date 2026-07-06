@@ -56,8 +56,7 @@ class Message(BaseModel):
         :meth:`__pydantic_init_subclass__` narrows it to ``Literal[cls.__name__]`` so the generated
         JSON
         Schema emits it as a ``const`` (letting TypeScript narrow a discriminated union on it; see
-        :doc:`ADR-0007 </decision-history/0007-control-plane-data-plane-split>` and the
-        ``freeagent schema`` CLI). Subclasses should not set or override this field themselves.
+        the ``freeagent schema`` CLI). Subclasses should not set or override this field themselves.
     """
 
     model_config = ConfigDict(polymorphic_serialization=True)
@@ -81,7 +80,7 @@ class Message(BaseModel):
         The inherited ``message_type`` field is also narrowed from ``str`` to
         ``Literal[cls.__name__]`` here, defaulting to the class name. That is what makes
         ``model_json_schema()`` emit the tag as a ``const`` — the discriminator TypeScript narrows a
-        union on (:doc:`ADR-0007 </decision-history/0007-control-plane-data-plane-split>`) — and it
+        union on — and it
         pins the tag to the class on validation, so a payload whose ``message_type`` names a
         *different* type is rejected rather than silently accepted. This runs in
         ``__pydantic_init_subclass__`` rather than the plain ``__init_subclass__`` precisely so
@@ -264,5 +263,5 @@ class EpisodeComplete(Message):
 
     A plain :class:`Message` rather than a :class:`Command`: it is not directed at an agent's run
     loop but observed off the wire by the control-plane API (and, later, archives), for which an
-    episode record without a definite end marker cannot be trusted as training data (ADR-0008).
+    episode record without a definite end marker cannot be trusted as training data.
     """

@@ -1,7 +1,7 @@
 # Collatz message schema
 
 Generated artifacts that give a viewer the Collatz engine's message shapes without
-hand-maintaining them. Python is the single source of truth (ADR-0007): the engine's pydantic
+hand-maintaining them. Python is the single source of truth: the engine's pydantic
 models generate a JSON Schema document, which generates TypeScript.
 
 ## Files

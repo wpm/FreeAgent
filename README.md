@@ -19,7 +19,7 @@ Run the whole suite with:
 uv run pytest
 ```
 
-Tests come in two tiers ([ADR-0008](docs/decision-history/0008-core-nats-before-jetstream.md)):
+Tests come in two tiers:
 unit tests, which need no external services, and integration tests, which run against a real
 `nats-server` subprocess started by the test fixtures on a random free port. Install the binary once
 for local integration runs:

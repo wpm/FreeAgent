@@ -1,6 +1,6 @@
 """Run one episode of an application to completion, as a dumb host.
 
-The worker's job (:doc:`ADR-0006 </decision-history/0006-entry-point-application-loading>`) is
+The worker's job is
 deliberately small: given an :class:`~freeagent.sdk.Application` and an
 :class:`~freeagent.sdk.EpisodeSpec`, build the episode's one
 :class:`~freeagent.sdk.Environment` and its :class:`~freeagent.sdk.Agent` instances, run them until

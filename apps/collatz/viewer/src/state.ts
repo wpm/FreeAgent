@@ -1,7 +1,7 @@
 /**
  * Client-side view-state derivation from the raw data-plane feed.
  *
- * The API serves application messages opaquely and never computes on them (ADR-0007); everything
+ * The API serves application messages opaquely and never computes on them; everything
  * the viewer shows about game state is derived here, in the browser, from the ordered
  * `DataPlaneRecord` feed. Payload shapes come from the generated types in
  * `../schema/collatz.d.ts` — the engine's pydantic models are the single source of truth — and

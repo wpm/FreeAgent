@@ -2,7 +2,7 @@
 
 The environment hands each agent a :class:`Chain` -- a list of integers, initially a single starting
 number -- and the agent returns it extended by exactly one Collatz step. Environment and agent share
-this single message type; direction is carried by the NATS subject, not the type (ADR-0008's
+this single message type; direction is carried by the NATS subject, not the type (the
 ack-then-counter-request shape). Keeping the step function here, beside the message it extends, lets
 the unit tests exercise the whole of Collatz's domain logic against constructed :class:`Chain`
 objects without a NATS server; see :mod:`freeagent.app.collatz.entity` for the entities that move

@@ -1,6 +1,6 @@
 """Generate a JSON Schema document for an application's message vocabulary.
 
-ADR-0007 makes Python the single source of truth for the shapes a viewer needs: rather than
+Python is the single source of truth for the shapes a viewer needs: rather than
 hand-maintaining TypeScript, an application *generates* it — pydantic ``model_json_schema()`` → one
 JSON Schema document per application → ``json-schema-to-typescript`` in the viewer build. This
 module is the first half of that pipeline: :func:`application_schema` builds the document, and the
@@ -12,7 +12,7 @@ everything imported into the process — SDK control-plane types plus every othe
 so the document must include only the *target* application's own message types. They are selected by
 defining module: a type belongs to application ``collatz`` if its module is inside the
 ``freeagent.app.collatz`` package the application's class lives in. That keeps one app's schema from
-bleeding in another's (or the SDK's) types, the registry-walk caveat ADR-0007 calls out.
+bleeding in another's (or the SDK's) types.
 
 Each message type's ``message_type`` tag is emitted as a ``const`` (see
 :meth:`~freeagent.sdk.message.Message.__pydantic_init_subclass__`), so the generated TypeScript is a
@@ -75,7 +75,7 @@ def _owned_message_types(package: str) -> list[type[Message]]:
 
     Walks the shared ``Message._by_type`` registry — which holds SDK types plus every message class
     imported into the process — and keeps only those whose defining module is ``package`` itself or
-    nested under it. This is the registry-walk filter ADR-0007 requires so an application's schema
+    nested under it. This registry-walk filter ensures an application's schema
     contains only its own message vocabulary, never the SDK's control-plane types or another loaded
     application's. The result is sorted by class name for a stable, deterministic document.
 
@@ -138,7 +138,7 @@ def application_schema(name: str) -> dict[str, Any]:
         "description": (
             f'Generated message schema for the "{name}" Free Agent application. Source of truth is '
             "the application's pydantic models; regenerate with `freeagent schema` rather than "
-            "editing by hand (ADR-0007)."
+            "editing by hand."
         ),
         "oneOf": [{"$ref": f"#/$defs/{cls.__name__}"} for cls in types],
         "$defs": defs,
@@ -181,8 +181,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     Parses arguments and dispatches the ``schema`` subcommand, printing the generated document to
     standard output as indented JSON with a trailing newline. Kept deterministic (sorted types,
-    stable key order) so the output is safe to check in and diff in CI (ADR-0007's regenerate-and-
-    fail-on-diff enforcement).
+    stable key order) so the output is safe to check in and diff in CI, which regenerates the
+    schema and fails on any difference.
 
     :param argv: The argument vector, excluding the program name; defaults to ``sys.argv[1:]``.
     :return: A process exit code: ``0`` on success, or ``2`` for an expected user-input failure —

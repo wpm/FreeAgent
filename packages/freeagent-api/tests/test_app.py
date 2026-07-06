@@ -142,7 +142,7 @@ def test_list_episodes_404s_for_an_unknown_application() -> None:
 
 
 def test_cross_origin_viewer_requests_are_allowed() -> None:
-    # Viewers are static pages served from their own origin (ADR-0001); the browser only lets
+    # Viewers are static pages served from their own origin; the browser only lets
     # them call the API if it answers with permissive CORS headers.
     response = AppHarness().http.get("/applications", headers={"Origin": "http://localhost:5173"})
     assert response.status_code == 200

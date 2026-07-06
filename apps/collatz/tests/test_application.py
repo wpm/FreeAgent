@@ -2,7 +2,7 @@
 
 Cover the config validation, the two entity factories, and that the ``collatz`` entry point actually
 resolves to a working :class:`~freeagent.sdk.Application` in this installed environment -- the
-ADR-0006 loading story Collatz exists to validate.
+entry-point loading story Collatz exists to validate.
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ def test_application_name_is_collatz() -> None:
     assert application.name == "collatz"
 
 
-# --- Entry-point loading (ADR-0006) ---------------------------------------------------------------
+# --- Entry-point loading ---------------------------------------------------------------------
 
 
 def test_load_application_resolves_the_installed_collatz_entry_point() -> None:

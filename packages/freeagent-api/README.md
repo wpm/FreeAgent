@@ -1,7 +1,7 @@
 # freeagent-api
 
 The Free Agent FastAPI server: launches and manages application episodes and serves their traffic
-to viewers over REST, updating itself by listening to NATS (ADR-0007, ADR-0008).
+to viewers over REST, updating itself by listening to NATS.
 
 ## REST surface
 
@@ -20,4 +20,4 @@ subprocesses — a process dependency, never an import.
 
 The NATS server URL comes from the `FREEAGENT_NATS_URL` environment variable (default
 `nats://localhost:4222`). Everything the API holds is an in-memory cache, best-effort under core
-NATS, and never feeds an archive (ADR-0008).
+NATS, and never feeds an archive.

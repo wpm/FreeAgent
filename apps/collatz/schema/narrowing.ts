@@ -17,8 +17,8 @@
  * union made non-vacuous with a local decoy member, while the two `Assert*` checks pin the
  * regression-prone properties directly to the generated type.
  *
- * This is the viewer-side half of ADR-0007's acceptance criterion: "Generated TS narrows on
- * msg.message_type === 'Chain' (checked by compiling a snippet in the viewer build)."
+ * This is the viewer-side half of the schema pipeline's guarantee: generated TS narrows on
+ * `msg.message_type === 'Chain'`, checked by compiling this snippet in the viewer build.
  */
 import type { Chain, CollatzMessages } from "./collatz.d.ts";
 

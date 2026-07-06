@@ -5,7 +5,7 @@ A Free Agent *application* (Twenty Questions, Werewolf, the Collatz test app) su
 :class:`~freeagent.sdk.entity.Agent` and :class:`~freeagent.sdk.entity.Environment` subclasses that
 make up an episode. The platform — the API and the worker — knows an application only by a bare
 name arriving over REST (``collatz``, ``twenty_questions``); it must turn that name into loadable
-code. Per :doc:`ADR-0006 </decision-history/0006-entry-point-application-loading>`, applications
+code. Applications
 register themselves as Python *entry points* in the group ``freeagent.applications``:
 
 .. code-block:: toml
@@ -46,8 +46,8 @@ class AmbiguousApplication(LookupError):
     """Raised when a name resolves to more than one installed application.
 
     Entry points aren't deduplicated across distributions, so two installed distributions can each
-    register the ``freeagent.applications`` group under the same name — a collision ADR-0006
-    anticipates between third-party authors. Rather than let the single-match unpack in
+    register the ``freeagent.applications`` group under the same name — a collision possible
+    between third-party authors. Rather than let the single-match unpack in
     :func:`load_application` fail with a bare, uncatchable :class:`ValueError`, that case raises
     this. A :class:`LookupError` like :class:`UnknownApplication`, so a caller can catch both
     resolution failures at once, while their distinct types let the API tell "no such application"

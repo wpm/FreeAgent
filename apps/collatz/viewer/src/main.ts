@@ -4,7 +4,7 @@
  *
  * Everything shown about game state is derived client-side by `state.ts` from the raw
  * data-plane feed; lifecycle facts (episode state, live agents) come from the API's
- * control-plane-derived status (ADR-0007).
+ * control-plane-derived status.
  *
  * Polling discipline: the next poll is scheduled only after the current one settles (no
  * overlapping fetches, no out-of-order paints), the message feed is refetched only when the

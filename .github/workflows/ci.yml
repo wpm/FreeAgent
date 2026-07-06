@@ -2,7 +2,7 @@ name: CI
 
 # Runs the test suite on every push and pull request targeting the rewrite line of development.
 # The unit tier needs no NATS binary; the integration tier runs against a pinned `nats-server`
-# release installed in its own step (ADR-0008), so nothing but the binary is required — no Docker,
+# release installed in its own step, so nothing but the binary is required — no Docker,
 # no testcontainers.
 on:
   push:
@@ -51,7 +51,7 @@ jobs:
           uv run ruff check .
           uv run ruff format --check .
 
-      # ADR-0007's invariant, mechanically enforced: freeagent-api may only depend on names
+      # The import invariant, mechanically enforced: freeagent-api may only depend on names
       # defined in freeagent-sdk. Contracts live in [tool.importlinter] in pyproject.toml.
       - name: Enforce import boundaries (import-linter)
         run: uv run lint-imports
@@ -75,7 +75,7 @@ jobs:
       - name: Run tests (unit + integration)
         run: uv run pytest
 
-  # Enforces ADR-0007's engine->viewer contract: Python is the single source of truth for message
+  # Enforces the engine->viewer contract: Python is the single source of truth for message
   # shapes. Regenerate the checked-in JSON Schema (from the engine's pydantic models) and TypeScript
   # (from that schema), compile the narrowing snippet, and fail if any generated artifact drifts from
   # what's committed. A green run therefore *means* the checked-in schema/types are in sync with the

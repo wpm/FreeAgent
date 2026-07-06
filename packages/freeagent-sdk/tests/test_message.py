@@ -165,7 +165,7 @@ def test_try_decode_still_raises_when_a_known_type_fails_validation() -> None:
 def test_subclass_schema_emits_message_type_as_const(cls: type[Message]) -> None:
     # The generated JSON Schema must tag message_type as a `const` of the class name, so that
     # `json-schema-to-typescript` produces a literal type TypeScript can narrow a discriminated
-    # union on (ADR-0007). A plain string field would generate `string`, which narrows nothing.
+    # union on. A plain string field would generate `string`, which narrows nothing.
     schema = cls.model_json_schema()
 
     assert schema["properties"]["message_type"]["const"] == cls.__name__
@@ -216,7 +216,7 @@ def test_narrowing_a_subclass_tag_does_not_corrupt_a_parents_field() -> None:
 
 
 def test_the_reserved_protocol_envelope_field_appears_in_the_schema() -> None:
-    # ADR-0007 reserves `protocol` as an envelope slot readable without app code; it must surface in
+    # `protocol` is a reserved envelope slot readable without app code; it must surface in
     # the generated schema so platform tooling can partition stored episodes by it.
     schema = Product.model_json_schema()
 

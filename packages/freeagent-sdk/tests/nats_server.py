@@ -1,6 +1,6 @@
 """Start and stop a real ``nats-server`` subprocess for integration tests.
 
-The test strategy (ADR-0008) runs integration tests against a *real* NATS server rather than a mock:
+The test strategy runs integration tests against a *real* NATS server rather than a mock:
 a mock ends up reimplementing subject matching and async delivery badly, and ``nats-server`` is a
 single static Go binary that starts in milliseconds, so the real thing is cheap enough to be the
 only integration dependency.

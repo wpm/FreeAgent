@@ -1,9 +1,8 @@
 """Launch, watch, and stop application episodes on behalf of the REST API.
 
-This module is the API's half of the control/data plane split (:doc:`ADR-0007
-</decision-history/0007-control-plane-data-plane-split>`). For every episode the API provisions, it
-subscribes one NATS subscription to the episode's whole subject subtree and sorts each arriving
-message into one of two planes:
+This module is the API's half of the control/data plane split. For every episode the API
+provisions, it subscribes one NATS subscription to the episode's whole subject subtree and sorts
+each arriving message into one of two planes:
 
 - **Control plane:** the SDK vocabulary — :class:`~freeagent.sdk.message.StartEntity`,
   :class:`~freeagent.sdk.message.StopEntity`, :class:`~freeagent.sdk.message.StopAgent`,
@@ -22,11 +21,10 @@ have those messages silently vanish from the data-plane feed just because they d
 
 Provisioning an episode spawns a ``freeagent-worker`` subprocess to run it. The worker is a
 *process* dependency, never an import: the command line is built from strings and the module is
-launched with ``python -m``, so the ADR-0007 invariant — ``freeagent-api`` may only depend on names
-defined in ``freeagent-sdk`` — holds (and is enforced by import-linter).
+launched with ``python -m``, so the invariant that ``freeagent-api`` may only depend on names
+defined in ``freeagent-sdk`` holds (and is enforced by import-linter).
 
-Everything held here is a cache, not a record (:doc:`ADR-0008
-</decision-history/0008-core-nats-before-jetstream>`): under core NATS the monitor's state is
+Everything held here is a cache, not a record: under core NATS the monitor's state is
 best-effort by construction, good for serving viewers and never fed to an archive.
 """
 
@@ -65,7 +63,7 @@ CONTROL_PLANE_TYPES: tuple[type[Message], ...] = (
     StopAgent,
     StopEntity,
 )
-"""The SDK message types that make up the control plane (ADR-0007).
+"""The SDK message types that make up the control plane.
 
 A message of one of these concrete types updates episode lifecycle state; every other message —
 including SDK :class:`~freeagent.sdk.message.Message` subclasses this process happens to have
@@ -86,7 +84,7 @@ WORKER_MODULE = "freeagent.worker.cli"
 """The worker's CLI module, launched as ``python -m`` to run an episode.
 
 A string, never an import: the worker is a process boundary. Importing it (or any application
-package) inside ``freeagent.api`` would break the ADR-0007 invariant that the API depends only on
+package) inside ``freeagent.api`` would break the invariant that the API depends only on
 ``freeagent-sdk`` names, which import-linter enforces.
 """
 
@@ -150,7 +148,7 @@ TERMINAL_STATES = frozenset({EpisodeState.COMPLETE, EpisodeState.STOPPED, Episod
 class DataPlaneRecord(BaseModel):
     """One data-plane message, as recorded off the wire and served verbatim.
 
-    The whole index the API keeps over application traffic (ADR-0007): where the message appeared
+    The whole index the API keeps over application traffic: where the message appeared
     (``subject``), what its envelope claims it is (``message_type``), when it arrived (``seq``,
     ``received_at``), and the payload itself, parsed as JSON but otherwise untouched.
 
@@ -478,7 +476,7 @@ class EpisodeManager:
         The episode root is ``episode.{application}.{episode_id}``; a caller-supplied episode ID
         must be a single NATS subject token, and an omitted one is generated. ``config`` is opaque
         here — it is serialized back to JSON and handed to the worker untouched, which hands it to
-        the application (ADR-0007).
+        the application.
 
         :param application: The application to run an episode of.
         :param episode_id: The episode's identifier, or ``None`` to generate one.

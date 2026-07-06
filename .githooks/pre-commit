@@ -80,7 +80,7 @@ for app in apps/*/; do
     fi
 done
 
-# ADR-0007's import invariant, kept mechanical (contracts in [tool.importlinter]).
+# The import invariant, kept mechanical (contracts in [tool.importlinter]).
 echo
 echo "pre-commit: import-linter"
 if ! uv run lint-imports; then

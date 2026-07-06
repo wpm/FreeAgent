@@ -2,7 +2,7 @@
 
 A static browser page that completes the Collatz application: launch an episode, watch each
 agent's chain grow step by step, and see agents and the episode finish. It speaks only REST to
-`freeagent-api` — viewers never touch NATS (ADR-0007) — and derives all game state client-side
+`freeagent-api` — viewers never touch NATS — and derives all game state client-side
 from the raw data-plane feed, narrowing messages on their `message_type` tag with the generated
 types in [`../schema`](../schema/README.md). Deliberately minimal: it exists to prove the
 engine → NATS → API → viewer pipeline, not to be a product.

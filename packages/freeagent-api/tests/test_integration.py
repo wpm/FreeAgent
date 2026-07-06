@@ -2,7 +2,7 @@
 
 This is rewrite step 3's over-the-wire proof (issue #82). The API app is driven through HTTP (via
 httpx's ASGI transport), real ``freeagent-worker`` subprocesses run real Collatz episodes against
-a real ``nats-server`` (ADR-0008), and the acceptance criteria are asserted end to end:
+a real ``nats-server``, and the acceptance criteria are asserted end to end:
 
 - a Collatz episode created over REST runs to completion, and the message feed serves every
   ``Chain`` payload verbatim — byte-for-byte what the engine put on the wire, as recorded by an

@@ -59,7 +59,7 @@ mypy_path = [
 ]
 explicit_package_bases = true
 
-# ADR-0007's one-sentence invariant, made mechanical: `freeagent-api` may only depend on names
+# A one-sentence invariant, made mechanical: `freeagent-api` may only depend on names
 # defined in `freeagent-sdk`. `freeagent` is a namespace package, so each workspace portion is
 # listed as its own root; a new application under apps/ must be added to both lists to stay
 # covered.
@@ -72,13 +72,13 @@ root_packages = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "freeagent-api depends on SDK names only (ADR-0007)"
+name = "freeagent-api depends on SDK names only"
 type = "forbidden"
 source_modules = ["freeagent.api"]
 forbidden_modules = ["freeagent.worker", "freeagent.app.collatz"]
 
 [[tool.importlinter.contracts]]
-name = "the worker loads applications via entry points, never imports (ADR-0006)"
+name = "the worker loads applications via entry points, never imports"
 type = "forbidden"
 source_modules = ["freeagent.worker"]
 forbidden_modules = ["freeagent.app.collatz"]

@@ -1,7 +1,6 @@
 """The Free Agent REST API: launch and manage episodes, serve their traffic to viewers.
 
-The REST surface over :mod:`freeagent.api.episodes`, per :doc:`ADR-0007
-</decision-history/0007-control-plane-data-plane-split>`:
+The REST surface over :mod:`freeagent.api.episodes`:
 
 - ``GET  /applications`` — the installed applications, from
   :func:`~freeagent.sdk.available_applications`.
@@ -56,7 +55,7 @@ class CreateEpisodeRequest(BaseModel):
 
     :ivar episode_id: The episode's identifier, or ``None`` to have one generated. Must be a
         single NATS subject token, since it becomes part of the episode's root subject.
-    :ivar config: The application-defined episode config, opaque to the API (ADR-0007).
+    :ivar config: The application-defined episode config, opaque to the API.
     """
 
     episode_id: str | None = Field(default=None, pattern=EPISODE_ID_PATTERN)
@@ -114,9 +113,9 @@ def create_app(nats_url: str | None = None, manager: EpisodeManager | None = Non
             await episode_manager.shutdown()
 
     app = FastAPI(title="Free Agent API", version="0.1.0", lifespan=lifespan)
-    # Viewers are static pages served from their own origin (ADR-0001), so the browser gates
+    # Viewers are static pages served from their own origin, so the browser gates
     # their API calls on CORS. Wide open, deliberately: this is a trusted research testbed
-    # (ADR-0001 treats security as a non-concern), and the API carries no credentials.
+    # where security is a non-concern, and the API carries no credentials.
     app.add_middleware(
         CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
     )
