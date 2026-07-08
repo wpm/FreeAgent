@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Launch design — process map</title>
+<style>
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #fafafa; color: #1a1a1a; }
+  header { padding: 16px 24px; border-bottom: 1px solid #e2e2e2; background: #fff; position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header p { font-size: 13px; margin: 4px 0 0; color: #666; }
+  .wrap { padding: 24px; }
+  section { margin-bottom: 32px; }
+  h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; color: #333; }
+  .note { font-size: 13px; color: #555; margin: 0 0 12px; max-width: 72ch; }
+  .mermaid { background: #fff; border: 1px solid #e2e2e2; border-radius: 8px; padding: 24px; overflow: auto; }
+  .mermaid svg { max-width: none !important; height: auto !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Launch design — process map</h1>
+  <p>Who starts what, who owns what, and how the processes talk. Dashed arrows = starts/owns; solid arrows = runtime communication. Browser zoom (⌘+ / ⌘−) or pinch.</p>
+</header>
+<div class="wrap">
+
+<section>
+  <h2>Processes by lifetime</h2>
+  <p class="note">
+    Reading by lifetime: NATS and the API live as long as the <code>start</code>/<code>stop</code>
+    switch is on; the viewer server lives as long as the <code>uv run collatz</code> terminal
+    session (Ctrl-C ends it); a worker lives for one episode; entities live inside the worker.
+    Everything inside an episode talks only NATS; everything outside talks only REST; the API is
+    the sole process that speaks both.
+  </p>
+  <pre class="mermaid">
+flowchart TB
+    subgraph you["you"]
+        SW["terminal:<br/>uv run start / stop"]
+        SESH["terminal:<br/>uv run collatz (foreground)"]
+        BR["browser"]
+    end
+
+    subgraph platform["platform layer — owned by the start/stop switch"]
+        NATS["NATS<br/>(docker container)"]
+        API["freeagent-api<br/>(host process, pid file)"]
+    end
+
+    subgraph app["app layer — owned by the session, dies on Ctrl-C"]
+        VIEW["viewer static server<br/>:8080"]
+    end
+
+    subgraph ep["per episode — owned by the API"]
+        WK["worker subprocess"]
+        ENT["environment + agents<br/>(in-process, async tasks)"]
+    end
+
+    SW -. "docker compose up / down" .-> NATS
+    SW -. "spawn / kill via pid file" .-> API
+    SESH -. "ensure platform<br/>(same code path as start)" .-> platform
+    SESH -. "npm build, then spawn" .-> VIEW
+
+    BR -- "HTTP: static assets" --> VIEW
+    BR -- "REST: launch episode, poll feed" --> API
+    API -. "spawn per episode" .-> WK
+    WK --- ENT
+    API -- "subscribe: observe episodes" --> NATS
+    ENT -- "pub/sub: episode messages" --> NATS
+  </pre>
+</section>
+
+<section>
+  <h2>Not shown</h2>
+  <p class="note">
+    The headless path: <code>uv run freeagent-worker run collatz --episode-id …</code> runs a
+    worker directly from a terminal — same worker process, different parent; no API or viewer
+    involved. And the future state: when the worker pool (ADR-0005, see
+    <code>process-map.html</code>) lands, the API→worker spawn arrow is replaced by a solid arrow
+    through a NATS work queue, worker daemons join the platform layer, the API stops needing apps
+    installed, and it can move into docker — which kills the pid file.
+  </p>
+</section>
+
+</div>
+<script type="module">
+  import mermaid from "https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "default", flowchart: { useMaxWidth: false }, sequence: { useMaxWidth: false } });
+</script>
+</body>
+</html>
