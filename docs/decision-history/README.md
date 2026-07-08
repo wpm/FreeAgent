@@ -34,3 +34,4 @@ and the community hub at [adr.github.io](https://adr.github.io/).
 | [0006](0006-entry-point-application-loading.md) | Entry-point application loading | Proposed |
 | [0007](0007-control-plane-data-plane-split.md) | Control plane / data plane split | Proposed |
 | [0008](0008-core-nats-before-jetstream.md) | Core NATS now, JetStream before training data | Proposed |
+| [0009](0009-one-command-app-launch.md) | One-command app launch | Proposed |
