@@ -1,13 +1,21 @@
-"""On/off switch for the Free Agent docker network.
+"""On/off switch for the Free Agent platform: the NATS docker network and the ``freeagent-api``.
 
-Launches and tears down every backing service that Free Agent needs to run. Resolves the compose
-file relative to the repository root so the commands work regardless of the current working
-directory.
+The platform is app-agnostic — one NATS network and one API serve every installed application — so
+this switch owns both (see ADR-0009). It keeps no orchestration logic of its own: bringing services
+up is delegated to :mod:`freeagent.sdk.launch`, the shared platform code that every app-launch
+session also calls, so a session and the switch share exactly one code path (and one API).
+
+``start`` ensures NATS and the API are up, reporting what it started versus what was already
+running. ``stop`` stops the API this switch owns and takes the NATS network down. The in-repo
+``docker/compose.yaml`` is the source of truth for this repo; the SDK's packaged copy is the out-of-
+repo fallback only.
 """
 
 import subprocess
 import sys
 from pathlib import Path
+
+from freeagent.sdk import launch
 
 # This file lives at <repo>/src/freeagent/start.py, so the repo root is three
 # levels up.
@@ -15,37 +23,43 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = REPO_ROOT / "docker" / "compose.yaml"
 
 
-def _compose(*args: str) -> int:
-    """Run a `docker compose` subcommand against the Free Agent compose file.
-
-    Returns docker's exit code. Exits early if the compose file is missing.
-    """
-    if not COMPOSE_FILE.is_file():
-        sys.exit(f"compose file not found at {COMPOSE_FILE}")
-    return subprocess.run(["docker", "compose", "--file", str(COMPOSE_FILE), *args]).returncode
-
-
 def start() -> None:
-    """Bring up the Free Agent docker network and wait for it to be healthy.
+    """Bring up the Free Agent platform: the NATS docker network and the ``freeagent-api`` process.
 
-    Runs `docker compose up` detached, waiting until every service with a healthcheck reports
-    healthy. Exits with docker's return code so failures propagate to the caller.
+    Delegates to :mod:`freeagent.sdk.launch`: :func:`~freeagent.sdk.launch.ensure_nats` (against
+    this repo's compose file) then :func:`~freeagent.sdk.launch.ensure_api`. Both are idempotent, so
+    a second ``start`` while everything is up is a no-op that reports each as already running.
+
+    Exits nonzero if docker is unavailable, using the launch module's guidance message.
     """
-    returncode = _compose("up", "--detach", "--wait")
-    if returncode == 0:
-        print("Free Agent network is up.")
-    sys.exit(returncode)
+    try:
+        nats_outcome = launch.ensure_nats(COMPOSE_FILE)
+    except launch.DockerUnavailableError as error:
+        sys.exit(str(error))
+    print(f"NATS network {nats_outcome.value}.")
+
+    api_outcome = launch.ensure_api()
+    print(f"freeagent-api {api_outcome.value}.")
 
 
 def stop() -> None:
-    """Tear down the Free Agent docker network.
+    """Tear down the Free Agent platform: stop the ``freeagent-api`` process and the NATS network.
 
-    Runs `docker compose down`, stopping and removing the containers and network (named volumes are
-    preserved). Exits with docker's return code.
+    Delegates the API teardown to :func:`freeagent.sdk.launch.stop_api` (which SIGTERMs the pid this
+    switch recorded and clears the pid file), then runs ``docker compose down`` on this repo's
+    compose file. Both halves are safe from any state — fully up, half up, or already down — so
+    ``stop`` always leaves the platform down. Exits with docker's return code.
     """
-    returncode = _compose("down")
+    if launch.stop_api():
+        print("freeagent-api stopped.")
+    else:
+        print("freeagent-api was not running.")
+
+    returncode = subprocess.run(
+        ["docker", "compose", "--file", str(COMPOSE_FILE), "down"]
+    ).returncode
     if returncode == 0:
-        print("Free Agent network is down.")
+        print("NATS network is down.")
     sys.exit(returncode)
 
 
