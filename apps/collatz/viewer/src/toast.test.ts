@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { ApiError } from "./api.js";
-import { formatToast, ToastStore } from "./toast.js";
+import { formatToast, MAX_BODY_LENGTH, ToastStore } from "./toast.js";
 
 test("an ApiError formats as a method/path/status title with the detail as body", () => {
   const error = new ApiError("GET", "/applications/collatz/episodes", 404, "not installed");
@@ -33,6 +33,19 @@ test("a plain Error formats as its message with no title", () => {
 
 test("a non-Error throw is stringified", () => {
   assert.deepEqual(formatToast("boom"), { title: null, body: "boom" });
+});
+
+test("an oversized body is truncated with an ellipsis", () => {
+  const page = "<html>".repeat(200);
+  const formatted = formatToast(new ApiError("GET", "/x", 502, page));
+  assert.equal(formatted.body.length, MAX_BODY_LENGTH + 1);
+  assert.ok(formatted.body.endsWith("…"));
+  assert.ok(formatted.body.startsWith("<html>"));
+});
+
+test("a body at the limit is untouched", () => {
+  const exact = "x".repeat(MAX_BODY_LENGTH);
+  assert.equal(formatToast(new Error(exact)).body, exact);
 });
 
 test("an identical error coalesces into the live toast with a bumped count", () => {

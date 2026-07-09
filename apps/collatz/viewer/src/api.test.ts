@@ -123,6 +123,16 @@ test("a non-JSON error body becomes the detail verbatim", async () => {
   }
 });
 
+test("an unreachable server's bare fetch rejection gains the request's context", async () => {
+  globalThis.fetch = async () => {
+    throw new TypeError("Failed to fetch");
+  };
+  await assert.rejects(
+    () => new ApiClient(BASE).episodes("collatz"),
+    /GET \/applications\/collatz\/episodes: http:\/\/api\.test is unreachable \(Failed to fetch\)/,
+  );
+});
+
 test("a JSON error body without a string detail falls back to the raw text", async () => {
   const body = JSON.stringify({ detail: [{ loc: ["body", "episode_id"], msg: "bad" }] });
   stubFetch(422, body);

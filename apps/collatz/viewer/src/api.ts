@@ -91,10 +91,21 @@ export class ApiClient {
   constructor(readonly baseUrl: string) {}
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, init);
+    const method = init?.method ?? "GET";
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, init);
+    } catch (error) {
+      // fetch rejects before any Response exists when the server is unreachable — the most
+      // common real failure — with a bare TypeError ("Failed to fetch") carrying no request
+      // context. Rethrow with the method, path, and host so the surfaced error names what was
+      // being attempted against where.
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`${method} ${path}: ${this.baseUrl} is unreachable (${reason})`);
+    }
     if (!response.ok) {
       const body = await response.text();
-      throw new ApiError(init?.method ?? "GET", path, response.status, extractDetail(body));
+      throw new ApiError(method, path, response.status, extractDetail(body));
     }
     // A bodyless success (the API's DELETE answers 204) has no JSON to parse.
     if (response.status === 204) {

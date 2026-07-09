@@ -18,24 +18,39 @@ export interface ToastContent {
 }
 
 /**
+ * The longest body a toast will display before truncation.
+ *
+ * An `ApiError`'s detail falls back to the raw response text, and a misbehaving proxy can answer
+ * with a whole HTML error page — kilobytes that would swallow the screen. Long enough for any
+ * real API detail; anything longer is noise past the point of readability.
+ */
+export const MAX_BODY_LENGTH = 300;
+
+/** Cap a toast body at `MAX_BODY_LENGTH` characters, marking the cut with an ellipsis. */
+function truncate(body: string): string {
+  return body.length > MAX_BODY_LENGTH ? `${body.slice(0, MAX_BODY_LENGTH)}…` : body;
+}
+
+/**
  * Compose a thrown error's toast, structured rather than a dumped `Error.message`.
  *
  * An `ApiError`'s fields become a `METHOD /path → status` title with the server's extracted
  * detail as the body (or a placeholder when the response carried none, so a bodyless 502 still
  * reads as something). Any other `Error` — e.g. the launch form's validation errors — is its
- * message alone, and a non-`Error` throw is stringified.
+ * message alone, and a non-`Error` throw is stringified. Bodies are truncated to
+ * `MAX_BODY_LENGTH` so an HTML error page from a proxy cannot swallow the screen.
  */
 export function formatToast(error: unknown): ToastContent {
   if (error instanceof ApiError) {
     return {
       title: `${error.method} ${error.path} → ${error.status}`,
-      body: error.detail !== "" ? error.detail : "(the response carried no detail)",
+      body: truncate(error.detail !== "" ? error.detail : "(the response carried no detail)"),
     };
   }
   if (error instanceof Error) {
-    return { title: null, body: error.message };
+    return { title: null, body: truncate(error.message) };
   }
-  return { title: null, body: String(error) };
+  return { title: null, body: truncate(String(error)) };
 }
 
 /** `add`'s outcome: a fresh toast to render, or another occurrence of one already showing. */
