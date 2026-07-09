@@ -19,6 +19,7 @@ from freeagent.sdk.application import (
     load_application,
 )
 from freeagent.sdk.entity import Agent, Environment
+from freeagent.sdk.launch import Launcher, Service, run
 
 __all__ = [
     "Agent",
@@ -27,7 +28,10 @@ __all__ = [
     "Environment",
     "EpisodeSpec",
     "InvalidApplication",
+    "Launcher",
+    "Service",
     "UnknownApplication",
     "available_applications",
     "load_application",
+    "run",
 ]

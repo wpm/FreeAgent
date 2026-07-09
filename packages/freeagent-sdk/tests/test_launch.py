@@ -423,3 +423,280 @@ def test_stop_api_waits_for_process_to_exit(
     assert launch.stop_api() is True
     assert slept == [launch._STOP_POLL_INTERVAL_SECONDS]
     assert not pid_file.exists()
+
+
+# --------------------------------------------------------------------------------------------------
+# Session half: Service, Launcher, run()
+# --------------------------------------------------------------------------------------------------
+
+
+class RecordingLauncher:
+    """A :class:`launch.Launcher` returning a fixed service list, for driving :func:`launch.run`."""
+
+    def __init__(self, name: str, services: list[launch.Service]) -> None:
+        self.name = name
+        self._services = services
+
+    def services(self) -> list[launch.Service]:
+        return self._services
+
+
+class FakeServeProcess:
+    """A stand-in for a long-running :class:`subprocess.Popen` returned by ``_spawn_serves``.
+
+    Records termination and reports a configurable exit code. ``poll`` returns ``None`` until the
+    process is terminated (mirroring a live child), then the exit code.
+    """
+
+    def __init__(self, name: str, returncode: int = 0, already_exited: bool = False) -> None:
+        self.name = name
+        self._returncode = returncode
+        self.terminated = False
+        # A serve that crashed on its own is already reaped: poll() reports its code straight away.
+        self._exited = already_exited
+
+    def poll(self) -> int | None:
+        return self._returncode if self._exited else None
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self._exited = True
+
+    def wait(self) -> int:
+        self._exited = True
+        return self._returncode
+
+
+def _no_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub out the platform ensure calls so ``run`` tests never touch docker or a live API.
+
+    Records nothing beyond making the calls no-ops; the "platform survives" assertion is that no
+    teardown of platform processes (``stop_api``, docker down) is ever invoked, checked per test.
+    """
+    monkeypatch.setattr(launch, "ensure_nats", lambda: launch.Outcome.ALREADY_RUNNING)
+    monkeypatch.setattr(launch, "ensure_api", lambda: launch.Outcome.ALREADY_RUNNING)
+
+
+def test_service_defaults() -> None:
+    service = launch.Service(name="viewer", serve=["npm", "run", "serve"])
+    assert service.prepare == ()
+    assert service.cwd is None
+    assert service.url is None
+
+
+def test_launcher_protocol_is_runtime_checkable() -> None:
+    launcher = RecordingLauncher("collatz", [])
+    assert isinstance(launcher, launch.Launcher)
+    assert not isinstance(object(), launch.Launcher)
+
+
+def test_run_prepare_failure_aborts_before_any_serve(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_platform(monkeypatch)
+
+    prepared: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_: Any) -> Any:
+        prepared.append(cmd)
+        # The second prepare command fails.
+        code = 0 if cmd == ["build", "one"] else 3
+        return type("R", (), {"returncode": code})()
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.run", fake_run)
+
+    def fail_spawn(*_: Any, **__: Any) -> None:
+        raise AssertionError("no serve may be spawned once a prepare step has failed")
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", fail_spawn)
+
+    launcher = RecordingLauncher(
+        "collatz",
+        [
+            launch.Service(name="viewer", serve=["serve", "viewer"], prepare=[["build", "one"]]),
+            launch.Service(name="worker", serve=["serve", "worker"], prepare=[["build", "two"]]),
+        ],
+    )
+
+    assert launch.run(launcher) == 3
+    # Aborted on the first failing step: the third prepare command never ran.
+    assert prepared == [["build", "one"], ["build", "two"]]
+
+
+def test_run_prepare_steps_run_in_order_with_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_platform(monkeypatch)
+
+    calls: list[tuple[list[str], object]] = []
+
+    def fake_run(cmd: list[str], cwd: object = None, **_: Any) -> Any:
+        calls.append((cmd, cwd))
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.run", fake_run)
+    # Spawn nothing real and interrupt immediately so the test doesn't block.
+    monkeypatch.setattr(launch, "_spawn_serves", lambda services: [])
+    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+
+    launcher = RecordingLauncher(
+        "collatz",
+        [
+            launch.Service(
+                name="viewer",
+                serve=["serve"],
+                prepare=[["npm", "ci"], ["npm", "run", "build"]],
+                cwd="/apps/collatz/viewer",
+            )
+        ],
+    )
+
+    assert launch.run(launcher) == 0
+    assert calls == [
+        (["npm", "ci"], "/apps/collatz/viewer"),
+        (["npm", "run", "build"], "/apps/collatz/viewer"),
+    ]
+
+
+def _raise_keyboard_interrupt() -> None:
+    raise KeyboardInterrupt
+
+
+def test_run_sigint_terminates_serves_in_reverse_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_platform(monkeypatch)
+    monkeypatch.setattr(launch, "_run_prepare_steps", lambda services: 0)
+
+    processes = [FakeServeProcess("first"), FakeServeProcess("second"), FakeServeProcess("third")]
+    spawned = [(launch.Service(name=proc.name, serve=[proc.name]), proc) for proc in processes]
+    monkeypatch.setattr(launch, "_spawn_serves", lambda services: spawned)
+
+    terminated_order: list[str] = []
+    original_terminate = FakeServeProcess.terminate
+
+    def record_terminate(self: FakeServeProcess) -> None:
+        terminated_order.append(self.name)
+        original_terminate(self)
+
+    monkeypatch.setattr(FakeServeProcess, "terminate", record_terminate)
+    # Ctrl-C the moment the session blocks.
+    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+
+    assert launch.run(RecordingLauncher("collatz", [])) == 0
+    assert terminated_order == ["third", "second", "first"]
+    assert all(proc.terminated for proc in processes)
+
+
+def test_run_exit_code_propagates_from_crashed_serve(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_platform(monkeypatch)
+    monkeypatch.setattr(launch, "_run_prepare_steps", lambda services: 0)
+
+    # The second serve had already crashed (exit 7) by teardown; the others exited cleanly.
+    healthy = FakeServeProcess("viewer", returncode=0)
+    crashed = FakeServeProcess("worker", returncode=7, already_exited=True)
+    spawned = [
+        (launch.Service(name="viewer", serve=["viewer"]), healthy),
+        (launch.Service(name="worker", serve=["worker"]), crashed),
+    ]
+    monkeypatch.setattr(launch, "_spawn_serves", lambda services: spawned)
+    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+
+    assert launch.run(RecordingLauncher("collatz", [])) == 7
+    # The already-exited crash is reaped, not re-terminated; the healthy one is terminated.
+    assert crashed.terminated is False
+    assert healthy.terminated is True
+
+
+def test_run_ensures_platform_but_never_tears_it_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    ensured: list[str] = []
+
+    def ensure_nats() -> launch.Outcome:
+        ensured.append("nats")
+        return launch.Outcome.STARTED
+
+    def ensure_api() -> launch.Outcome:
+        ensured.append("api")
+        return launch.Outcome.STARTED
+
+    monkeypatch.setattr(launch, "ensure_nats", ensure_nats)
+    monkeypatch.setattr(launch, "ensure_api", ensure_api)
+
+    # Any teardown of the platform would be a bug: a session owns only what it spawned.
+    def fail_stop() -> bool:
+        raise AssertionError("run() must never stop the API — the platform survives a session")
+
+    monkeypatch.setattr(launch, "stop_api", fail_stop)
+
+    def fail_docker(*_: Any, **__: Any) -> None:
+        raise AssertionError("run() must never run docker (compose down) — the platform survives")
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.run", fail_docker)
+
+    monkeypatch.setattr(launch, "_run_prepare_steps", lambda services: 0)
+    monkeypatch.setattr(launch, "_spawn_serves", lambda services: [])
+    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+
+    assert launch.run(RecordingLauncher("collatz", [])) == 0
+    # NATS then the API were ensured, in that order.
+    assert ensured == ["nats", "api"]
+
+
+def test_run_prints_urls_once_the_stack_is_up(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _no_platform(monkeypatch)
+    monkeypatch.setattr(launch, "_run_prepare_steps", lambda services: 0)
+
+    spawned = [
+        (
+            launch.Service(name="viewer", serve=["viewer"], url="http://localhost:5173"),
+            FakeServeProcess("viewer"),
+        ),
+        # A service with no URL prints nothing.
+        (launch.Service(name="worker", serve=["worker"]), FakeServeProcess("worker")),
+    ]
+    monkeypatch.setattr(launch, "_spawn_serves", lambda services: spawned)
+    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+
+    launch.run(RecordingLauncher("collatz", []))
+    out = capsys.readouterr().out
+    assert "collatz is up" in out
+    assert "http://localhost:5173" in out
+
+
+def test_spawn_serves_uses_popen_with_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple[list[str], object]] = []
+
+    def fake_popen(cmd: list[str], cwd: object = None, **_: Any) -> FakeServeProcess:
+        captured.append((cmd, cwd))
+        return FakeServeProcess("x")
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", fake_popen)
+
+    services = [
+        launch.Service(name="viewer", serve=["npm", "run", "serve"], cwd="/apps/collatz/viewer"),
+    ]
+    spawned = launch._spawn_serves(services)
+
+    assert captured == [(["npm", "run", "serve"], "/apps/collatz/viewer")]
+    assert len(spawned) == 1
+
+
+def test_terminate_in_reverse_returns_zero_when_all_clean() -> None:
+    spawned: list[tuple[launch.Service, Any]] = [
+        (launch.Service(name="a", serve=["a"]), FakeServeProcess("a")),
+        (launch.Service(name="b", serve=["b"]), FakeServeProcess("b")),
+    ]
+    assert launch._terminate_in_reverse(spawned) == 0
+
+
+def test_block_until_interrupt_sleeps_then_can_be_interrupted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # First sleep returns, second raises KeyboardInterrupt — proves it loops and is interruptible.
+    calls = iter([None])
+
+    def fake_sleep(_seconds: float) -> None:
+        try:
+            next(calls)
+        except StopIteration:
+            raise KeyboardInterrupt from None
+
+    monkeypatch.setattr("freeagent.sdk.launch.time.sleep", fake_sleep)
+    with pytest.raises(KeyboardInterrupt):
+        launch._block_until_interrupt()
