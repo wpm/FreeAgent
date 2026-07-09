@@ -62,23 +62,63 @@ export class ApiError extends Error {
   }
 }
 
+/** One entry of FastAPI's 422 validation `detail` array, as much of it as display needs. */
+interface ValidationItem {
+  loc: unknown[];
+  msg: string;
+}
+
+/** Whether a validation-array entry has the `{loc, msg}` shape `formatValidation` renders. */
+function isValidationItem(value: unknown): value is ValidationItem {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    Array.isArray((value as { loc?: unknown }).loc) &&
+    typeof (value as { msg?: unknown }).msg === "string"
+  );
+}
+
+/**
+ * Render a FastAPI validation array as one `field: message` line per violation.
+ *
+ * The `loc` path names where the offending value sat in the request; its leading `body` token is
+ * REST plumbing the viewer's user never wrote, so it is dropped. Returns `null` unless *every*
+ * entry has the expected shape — a half-recognized array is better shown raw than half-rendered.
+ */
+function formatValidation(detail: unknown[]): string | null {
+  if (detail.length === 0 || !detail.every(isValidationItem)) {
+    return null;
+  }
+  return detail
+    .map((item) => {
+      const path = item.loc.filter((token) => token !== "body").join(".");
+      return path === "" ? item.msg : `${path}: ${item.msg}`;
+    })
+    .join("\n");
+}
+
 /**
  * Pull the human-readable detail out of an error response body.
  *
- * The API's errors are FastAPI-shaped — `{"detail": "..."}` — so a JSON object with a string
- * `detail` yields that string. Anything else (non-JSON, validation-error arrays, other shapes)
- * falls back to the raw text rather than guessing at structure.
+ * The API's errors are FastAPI-shaped. A JSON object with a string `detail` yields that string; a
+ * `detail` holding FastAPI's 422 validation array is rendered as `field: message` lines (see
+ * `formatValidation`) — raw JSON must never reach the user. Anything else (non-JSON, other
+ * shapes) falls back to the raw text rather than guessing at structure.
  */
 function extractDetail(body: string): string {
   try {
     const parsed: unknown = JSON.parse(body);
-    if (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      "detail" in parsed &&
-      typeof (parsed as { detail: unknown }).detail === "string"
-    ) {
-      return (parsed as { detail: string }).detail;
+    if (parsed !== null && typeof parsed === "object" && "detail" in parsed) {
+      const detail = (parsed as { detail: unknown }).detail;
+      if (typeof detail === "string") {
+        return detail;
+      }
+      if (Array.isArray(detail)) {
+        const formatted = formatValidation(detail);
+        if (formatted !== null) {
+          return formatted;
+        }
+      }
     }
   } catch {
     // Not JSON; the raw text is the best available description.

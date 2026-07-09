@@ -83,13 +83,32 @@ button:disabled {
   box-shadow: 0 2px 10px rgb(0 0 0 / 0.35);
 }
 
-.toast .text {
-  flex: 1;
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes toast-slide-in {
+    from {
+      /* Its own width plus the container's viewport-edge gap, so the card starts fully
+         offscreen whatever its size. */
+      transform: translateX(calc(100% + 1rem));
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+
+  .toast {
+    animation: toast-slide-in 0.25s ease-out;
+  }
 }
 
 .toast p {
   margin: 0;
   word-break: break-word;
+  /* Validation errors arrive as one line per violation. */
+  white-space: pre-line;
+}
+
+.toast .text {
+  flex: 1;
 }
 
 .toast .title {
