@@ -444,27 +444,44 @@ class RecordingLauncher:
 class FakeServeProcess:
     """A stand-in for a long-running :class:`subprocess.Popen` returned by ``_spawn_serves``.
 
-    Records termination and reports a configurable exit code. ``poll`` returns ``None`` until the
-    process is terminated (mirroring a live child), then the exit code.
+    Mimics real POSIX Popen semantics, which the earlier version got wrong: a process killed by a
+    signal reports a *negative* returncode of ``-signum``. So a still-running serve that we
+    ``terminate()`` reports ``-SIGTERM`` from ``wait()`` (not ``0``) unless it installed a handler —
+    exactly the case that made clean teardown look like a failure. Configure ``exit_code`` to model
+    a serve that had already exited on its own before teardown (a crash with a positive code, or the
+    terminal's group SIGINT with ``-SIGINT``); leave it ``None`` for a live serve that teardown
+    terminates.
+
+    :param name: A label, for assertions on teardown order.
+    :param exit_code: If given, the serve is already exited with this code (``poll`` reports it and
+        ``terminate`` is never expected). If ``None``, the serve is live; ``terminate`` kills it and
+        ``wait`` then reports ``-SIGTERM``.
+    :param term_code: The code a *live* serve reports after ``terminate``; defaults to ``-SIGTERM``,
+        the real default for a process with no SIGTERM handler. Override to model a serve that traps
+        SIGTERM and exits 0, or ignores it and dies some other way.
     """
 
-    def __init__(self, name: str, returncode: int = 0, already_exited: bool = False) -> None:
+    def __init__(
+        self, name: str, exit_code: int | None = None, term_code: int = -signal.SIGTERM
+    ) -> None:
         self.name = name
-        self._returncode = returncode
+        self._term_code = term_code
         self.terminated = False
-        # A serve that crashed on its own is already reaped: poll() reports its code straight away.
-        self._exited = already_exited
+        # A serve already exited on its own (crashed, or group-SIGINT'd) is reaped in place.
+        self._exit_code = exit_code
 
     def poll(self) -> int | None:
-        return self._returncode if self._exited else None
+        return self._exit_code
 
     def terminate(self) -> None:
         self.terminated = True
-        self._exited = True
+        self._exit_code = self._term_code
 
     def wait(self) -> int:
-        self._exited = True
-        return self._returncode
+        # A real wait() blocks until exit; a live serve here is considered terminated by teardown.
+        if self._exit_code is None:
+            self._exit_code = self._term_code
+        return self._exit_code
 
 
 def _no_platform(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -479,7 +496,7 @@ def _no_platform(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_service_defaults() -> None:
     service = launch.Service(name="viewer", serve=["npm", "run", "serve"])
-    assert service.prepare == ()
+    assert service.prepare == []
     assert service.cwd is None
     assert service.url is None
 
@@ -517,7 +534,7 @@ def test_run_prepare_failure_aborts_before_any_serve(monkeypatch: pytest.MonkeyP
     )
 
     assert launch.run(launcher) == 3
-    # Aborted on the first failing step: the third prepare command never ran.
+    # Both prepare commands ran, the second failed, and no serve was spawned (fail_spawn is armed).
     assert prepared == [["build", "one"], ["build", "two"]]
 
 
@@ -586,9 +603,10 @@ def test_run_exit_code_propagates_from_crashed_serve(monkeypatch: pytest.MonkeyP
     _no_platform(monkeypatch)
     monkeypatch.setattr(launch, "_run_prepare_steps", lambda services: 0)
 
-    # The second serve had already crashed (exit 7) by teardown; the others exited cleanly.
-    healthy = FakeServeProcess("viewer", returncode=0)
-    crashed = FakeServeProcess("worker", returncode=7, already_exited=True)
+    # The second serve had already crashed (positive exit 7) by teardown; the first is still live
+    # and gets a clean -SIGTERM. The positive crash code must propagate through the clean teardown.
+    healthy = FakeServeProcess("viewer")
+    crashed = FakeServeProcess("worker", exit_code=7)
     spawned = [
         (launch.Service(name="viewer", serve=["viewer"]), healthy),
         (launch.Service(name="worker", serve=["worker"]), crashed),
@@ -597,7 +615,7 @@ def test_run_exit_code_propagates_from_crashed_serve(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
 
     assert launch.run(RecordingLauncher("collatz", [])) == 7
-    # The already-exited crash is reaped, not re-terminated; the healthy one is terminated.
+    # The already-exited crash is reaped, not re-terminated; the live one is terminated.
     assert crashed.terminated is False
     assert healthy.terminated is True
 
@@ -683,6 +701,112 @@ def test_terminate_in_reverse_returns_zero_when_all_clean() -> None:
         (launch.Service(name="b", serve=["b"]), FakeServeProcess("b")),
     ]
     assert launch._terminate_in_reverse(spawned) == 0
+
+
+def test_run_returns_zero_when_serves_die_by_sigterm(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The realistic default: a serve with no SIGTERM handler (e.g. `python -m http.server`) is
+    # killed by terminate() and reports -SIGTERM. A normal session must still exit 0.
+    _no_platform(monkeypatch)
+    monkeypatch.setattr(launch, "_run_prepare_steps", lambda services: 0)
+
+    serves = [FakeServeProcess("viewer"), FakeServeProcess("worker")]
+    spawned = [(launch.Service(name=p.name, serve=[p.name]), p) for p in serves]
+    monkeypatch.setattr(launch, "_spawn_serves", lambda services: spawned)
+    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+
+    assert launch.run(RecordingLauncher("collatz", [])) == 0
+    assert all(p.wait() == -signal.SIGTERM for p in serves)
+
+
+def test_run_returns_zero_when_serves_already_died_by_group_sigint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Terminal Ctrl-C sends SIGINT to the whole foreground group, so children may already be dead
+    # with -SIGINT before teardown runs. That is a clean session exit, not a failure.
+    _no_platform(monkeypatch)
+    monkeypatch.setattr(launch, "_run_prepare_steps", lambda services: 0)
+
+    serves = [
+        FakeServeProcess("viewer", exit_code=-signal.SIGINT),
+        FakeServeProcess("worker", exit_code=-signal.SIGINT),
+    ]
+    spawned = [(launch.Service(name=p.name, serve=[p.name]), p) for p in serves]
+    monkeypatch.setattr(launch, "_spawn_serves", lambda services: spawned)
+    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+
+    assert launch.run(RecordingLauncher("collatz", [])) == 0
+    # Already dead: teardown reaps them without terminating.
+    assert not any(p.terminated for p in serves)
+
+
+def test_terminate_in_reverse_treats_other_signal_death_as_failure() -> None:
+    # Death by a signal other than SIGTERM/SIGINT (here SIGKILL) is a genuine failure.
+    killed = FakeServeProcess("worker", exit_code=-signal.SIGKILL)
+    spawned: list[tuple[launch.Service, Any]] = [
+        (launch.Service(name="worker", serve=["worker"]), killed),
+    ]
+    assert launch._terminate_in_reverse(spawned) == -signal.SIGKILL
+
+
+def test_is_clean_exit_classifies_teardown_codes() -> None:
+    assert launch._is_clean_exit(0) is True
+    assert launch._is_clean_exit(-signal.SIGTERM) is True
+    assert launch._is_clean_exit(-signal.SIGINT) is True
+    # A crash and death by another signal are both failures.
+    assert launch._is_clean_exit(7) is False
+    assert launch._is_clean_exit(-signal.SIGKILL) is False
+
+
+def test_spawn_serves_terminates_earlier_serves_when_a_later_spawn_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A realistic mid-spawn failure: the second serve's executable is missing. The first, already
+    # spawned, must be terminated before the error propagates — no leaked child.
+    first = FakeServeProcess("viewer")
+
+    spawns: list[list[str]] = []
+
+    def fake_popen(cmd: list[str], cwd: object = None, **_: Any) -> FakeServeProcess:
+        spawns.append(cmd)
+        if cmd == ["missing-exe"]:
+            raise OSError("No such file or directory: 'missing-exe'")
+        return first
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", fake_popen)
+
+    services = [
+        launch.Service(name="viewer", serve=["viewer"]),
+        launch.Service(name="worker", serve=["missing-exe"]),
+    ]
+
+    with pytest.raises(OSError, match="missing-exe"):
+        launch._spawn_serves(services)
+    # The earlier serve was terminated during the aborted spawn — nothing leaks.
+    assert first.terminated is True
+
+
+def test_run_terminates_serves_when_interrupt_lands_before_the_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A KeyboardInterrupt arriving between spawning serves and entering the block-until-interrupt
+    # loop (e.g. while printing URLs) must still tear the serves down — the try/finally ensures it.
+    _no_platform(monkeypatch)
+    monkeypatch.setattr(launch, "_run_prepare_steps", lambda services: 0)
+
+    serve = FakeServeProcess("viewer")
+    spawned = [(launch.Service(name="viewer", serve=["viewer"]), serve)]
+    monkeypatch.setattr(launch, "_spawn_serves", lambda services: spawned)
+
+    def interrupt_immediately() -> None:
+        raise KeyboardInterrupt
+
+    # Raise during the URL-printing phase, before _block_until_interrupt is even reached.
+    monkeypatch.setattr("builtins.print", lambda *a, **k: interrupt_immediately())
+
+    with pytest.raises(KeyboardInterrupt):
+        launch.run(RecordingLauncher("collatz", []))
+    # The finally block ran: the spawned serve was terminated though the block was never entered.
+    assert serve.terminated is True
 
 
 def test_block_until_interrupt_sleeps_then_can_be_interrupted(
