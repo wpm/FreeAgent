@@ -19,23 +19,34 @@ engine → NATS → API → viewer pipeline, not to be a product.
 
 ## Running
 
-Build the viewer, then serve this directory over HTTP (any static server works) with a
-`nats-server` and the API running:
+The normal way to run the viewer is the Collatz application session from the repo root, which
+brings up the platform (NATS and the API), builds this viewer, and serves it in one command:
+
+```sh
+uv run collatz    # http://localhost:8080; Ctrl-C ends the session
+```
+
+See the [repo README quickstart](../../../README.md#quickstart) and
+[ADR-0009](../../../docs/decision-history/0009-one-command-app-launch.md) (with its
+[process map](../../../docs/launch-process-map.html)) for the whole picture.
+
+### Viewer-only dev loop
+
+When you are iterating on the viewer itself and already have a platform up (`uv run start`
+in another terminal, or a running `uv run collatz` session), build and serve just this
+directory:
 
 ```sh
 cd apps/collatz/viewer
 npm install        # first time only
 npm run build      # tsc: src/ -> dist/, compiled against ../schema/collatz.d.ts
 npm run serve      # http://localhost:8080, via python3 -m http.server
-
-# elsewhere: nats-server, then the API
-uv run freeagent-api
 ```
 
-Open <http://localhost:8080>, launch an episode (one starting number per agent), and watch each
-agent's chain extend until it reaches 1 — the agent is stopped by the environment (`StopAgent`)
-and shows **done**; when every chain finishes, the episode's status turns **complete**
-(`EpisodeComplete`).
+Either way, open <http://localhost:8080>, launch an episode (one starting number per agent), and
+watch each agent's chain extend until it reaches 1 — the agent is stopped by the environment
+(`StopAgent`) and shows **done**; when every chain finishes, the episode's status turns
+**complete** (`EpisodeComplete`).
 
 ## Tests
 
