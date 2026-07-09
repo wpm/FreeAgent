@@ -40,8 +40,17 @@ from typing import Protocol, runtime_checkable
 NATS_HEALTH_URL = "http://localhost:8222/healthz"
 """NATS's HTTP monitoring health endpoint; a 200 means the network is up."""
 
-API_HEALTH_URL = "http://localhost:8000/health"
-"""The ``freeagent-api`` health endpoint on its default bind (``127.0.0.1:8000``)."""
+API_HOST_ENV = "FREEAGENT_API_HOST"
+"""Environment variable naming the address ``freeagent-api`` binds; default ``127.0.0.1``."""
+
+API_PORT_ENV = "FREEAGENT_API_PORT"
+"""Environment variable naming the port ``freeagent-api`` binds; default ``8000``."""
+
+_API_DEFAULT_HOST = "127.0.0.1"
+"""The API's default bind address, mirroring ``freeagent-api``'s own default."""
+
+_API_DEFAULT_PORT = "8000"
+"""The API's default port, mirroring ``freeagent-api``'s own default."""
 
 API_EXECUTABLE = "freeagent-api"
 """The console script the API is spawned from; resolved on ``PATH`` within the active venv."""
@@ -51,6 +60,9 @@ STATE_DIR_NAME = ".freeagent"
 
 API_PID_FILE_NAME = "api.pid"
 """The pid file recording the detached API process, under :data:`STATE_DIR_NAME`."""
+
+API_LOG_FILE_NAME = "api.log"
+"""The log file the detached API's stdout/stderr append to, under :data:`STATE_DIR_NAME`."""
 
 _PACKAGE_DATA = "freeagent.sdk._platform"
 """The package holding the shipped compose file and NATS config."""
@@ -84,6 +96,21 @@ class Outcome(enum.Enum):
 
 class DockerUnavailableError(RuntimeError):
     """Raised by :func:`ensure_nats` when docker cannot be used to bring NATS up."""
+
+
+def api_health_url() -> str:
+    """Return the API health endpoint, honoring the same bind variables ``freeagent-api`` reads.
+
+    The API binds :data:`API_HOST_ENV`/:data:`API_PORT_ENV` (defaults ``127.0.0.1:8000``), so the
+    health probe must be derived from those same variables — a hardcoded URL would spawn an API on
+    the configured port and then poll the wrong one. Computed at call time, not import time, so a
+    test's (or caller's) environment change is honored.
+
+    :return: The ``GET /health`` URL for the API's configured bind.
+    """
+    host = os.environ.get(API_HOST_ENV, _API_DEFAULT_HOST)
+    port = os.environ.get(API_PORT_ENV, _API_DEFAULT_PORT)
+    return f"http://{host}:{port}/health"
 
 
 def _is_healthy(url: str) -> bool:
@@ -240,9 +267,11 @@ def ensure_nats(compose_file: str | os.PathLike[str] | None = None) -> Outcome:
 def ensure_api() -> Outcome:
     """Ensure the ``freeagent-api`` host process is up, spawning it detached if necessary.
 
-    Polls :data:`API_HEALTH_URL`; if the API already answers, this is a no-op. Otherwise spawns the
+    Polls :func:`api_health_url`; if the API already answers, this is a no-op. Otherwise spawns the
     ``freeagent-api`` console script in its own session (detached from this process group so it
-    outlives the caller), records its pid in the pid file, and polls health until ready.
+    outlives the caller), records its pid in the pid file, and polls health until ready. The
+    detached process's stdout/stderr append to :data:`API_LOG_FILE_NAME` beside the pid file —
+    a persistent daemon must not inherit a mortal terminal's stdio.
 
     Health is the source of truth: a pid file left over from a dead process is stale and gets
     overwritten. The API is app-agnostic and belongs to no session, so callers ensure but never own
@@ -254,7 +283,8 @@ def ensure_api() -> Outcome:
         message telling the author to add ``freeagent-api`` to their dev dependencies; or if the API
         was spawned but never became healthy within the timeout.
     """
-    if _is_healthy(API_HEALTH_URL):
+    health_url = api_health_url()
+    if _is_healthy(health_url):
         return Outcome.ALREADY_RUNNING
 
     if shutil.which(API_EXECUTABLE) is None:
@@ -263,18 +293,29 @@ def ensure_api() -> Outcome:
             f"'freeagent-api' to your dev dependencies so the platform can start the API."
         )
 
-    # start_new_session detaches the child into its own session and process group, so it survives
-    # this process exiting (a foreground launch session's Ctrl-C must not take the shared API down).
-    process = subprocess.Popen([API_EXECUTABLE], start_new_session=True)
-
     pid_file = _api_pid_file()
     pid_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file = pid_file.parent / API_LOG_FILE_NAME
+
+    # start_new_session detaches the child into its own session and process group, so it survives
+    # this process exiting (a foreground launch session's Ctrl-C must not take the shared API down).
+    # Its stdio must not stay tied to this terminal: when the terminal closes, writes to its pty
+    # start failing and the "persistent" API can begin erroring — so log to a file instead.
+    with log_file.open("ab") as log:
+        process = subprocess.Popen(
+            [API_EXECUTABLE],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+        )
+
     pid_file.write_text(str(process.pid))
 
-    if not _wait_until_healthy(API_HEALTH_URL):
+    if not _wait_until_healthy(health_url):
         sys.exit(
             f"the API was started (pid {process.pid}) but did not become healthy at "
-            f"{API_HEALTH_URL} within {_HEALTH_TIMEOUT_SECONDS:.0f}s."
+            f"{health_url} within {_HEALTH_TIMEOUT_SECONDS:.0f}s. See {log_file} for its output."
         )
     return Outcome.STARTED
 
@@ -473,19 +514,30 @@ def _terminate_in_reverse(
     return failure
 
 
-def _block_until_interrupt() -> None:
-    """Block the session until it receives SIGINT (Ctrl-C).
+def _block_until_interrupt_or_exit(
+    spawned: Sequence[tuple[Service, subprocess.Popen[bytes]]],
+) -> None:
+    """Block the session until SIGINT (Ctrl-C) or until any spawned serve exits on its own.
 
-    Sleeps indefinitely; :class:`KeyboardInterrupt` (raised by the default SIGINT handler) unwinds
-    to :func:`run`, which then tears the session down. Factored out so tests can drive the
-    interrupt without a real signal.
+    Polls the spawned processes between sleeps: a serve that dies — a crash, a port collision at
+    startup, an external kill — ends the wait so :func:`run` can tear the rest down and surface the
+    failure immediately, instead of claiming the stack is up while nothing is serving.
+    :class:`KeyboardInterrupt` (raised by the default SIGINT handler) unwinds to :func:`run`, which
+    tears the session down the same way. Factored out so tests can drive the interrupt without a
+    real signal.
+
+    :param spawned: The service/process pairs whose continued liveness keeps the session blocked.
     """
-    while True:
+    while all(process.poll() is None for _, process in spawned):
         time.sleep(_SESSION_POLL_INTERVAL_SECONDS)
 
 
 _SESSION_POLL_INTERVAL_SECONDS = 1.0
 """How long each idle sleep in the session's block-until-interrupt loop lasts, in seconds."""
+
+_INTERRUPT_EXIT_CODE = 130
+"""The exit code for a session interrupted outside its blocking loop: 128 + SIGINT, by shell
+convention."""
 
 
 def run(launcher: Launcher) -> int:
@@ -498,41 +550,55 @@ def run(launcher: Launcher) -> int:
     2. Run every service's ``prepare`` steps to completion, in order, failing fast: the first
        nonzero exit aborts the session with that code, before any ``serve`` is spawned.
     3. Spawn every service's ``serve`` process, then print the stack's URLs.
-    4. Block until SIGINT (Ctrl-C).
+    4. Block until SIGINT (Ctrl-C) — or until any ``serve`` exits on its own, so a crashed server
+       (e.g. its port was already taken) ends the session immediately instead of leaving it
+       claiming the stack is up.
     5. SIGTERM the spawned ``serve`` processes in reverse order and wait for them. The exit code is
-       nonzero if any child exited nonzero.
+       nonzero if any child failed.
 
     Only what this session spawned is torn down. The platform (NATS, the API) is untouched by the
     teardown — the ``stop`` switch owns it — so a second concurrent session keeps working.
 
+    A Ctrl-C landing *outside* the blocking loop — during the platform ensure, a long ``prepare``
+    build, or the spawn window — is also a clean end of the session, never a traceback: anything
+    already spawned is torn down and the conventional interrupt code ``130`` is returned.
+
     :param launcher: The application's :class:`Launcher`, supplying its :class:`Service` list.
     :return: A process exit code: the failing prepare step's code if one failed, otherwise the
-        first nonzero ``serve`` exit code seen during teardown, otherwise ``0``.
+        first failing ``serve`` exit code seen during teardown, otherwise ``130`` for a Ctrl-C
+        outside the blocking loop, otherwise ``0``.
     """
-    ensure_nats()
-    ensure_api()
-
-    services = launcher.services()
-
-    prepare_failure = _run_prepare_steps(services)
-    if prepare_failure != 0:
-        return prepare_failure
-
-    spawned = _spawn_serves(services)
     try:
-        print(f"{launcher.name} is up. Press Ctrl-C to stop.")
-        for service, _ in spawned:
-            if service.url is not None:
-                print(f"  {service.name}: {service.url}")
+        ensure_nats()
+        ensure_api()
 
+        services = launcher.services()
+
+        prepare_failure = _run_prepare_steps(services)
+        if prepare_failure != 0:
+            return prepare_failure
+
+        spawned = _spawn_serves(services)
         try:
-            _block_until_interrupt()
-        except KeyboardInterrupt:
-            pass
-    finally:
-        # Teardown in a finally so anything spawned is terminated even if we never reach the block
-        # (e.g. a KeyboardInterrupt lands between spawn and the loop). The mid-spawn leak — a Popen
-        # raising partway through _spawn_serves — is handled inside _spawn_serves itself.
-        exit_code = _terminate_in_reverse(spawned)
+            print(f"{launcher.name} is up. Press Ctrl-C to stop.")
+            for service, _ in spawned:
+                if service.url is not None:
+                    print(f"  {service.name}: {service.url}")
 
-    return exit_code
+            try:
+                _block_until_interrupt_or_exit(spawned)
+            except KeyboardInterrupt:
+                pass
+        finally:
+            # Teardown in a finally so anything spawned is terminated even if we never reach the
+            # block (e.g. a KeyboardInterrupt lands between spawn and the loop). The mid-spawn
+            # leak — a Popen raising partway through _spawn_serves — is handled inside
+            # _spawn_serves itself.
+            exit_code = _terminate_in_reverse(spawned)
+
+        return exit_code
+    except KeyboardInterrupt:
+        # Ctrl-C before the blocking loop (ensure, prepare, spawn, URL print): the session ends
+        # cleanly — teardown of anything spawned already ran via the finally above — with the
+        # conventional interrupt exit code instead of a traceback.
+        return _INTERRUPT_EXIT_CODE

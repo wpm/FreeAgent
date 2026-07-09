@@ -9,6 +9,7 @@ stale-pid handling.
 from __future__ import annotations
 
 import signal
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -72,12 +73,12 @@ def test_is_healthy_false_on_non_2xx(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "freeagent.sdk.launch.urllib.request.urlopen", lambda url, timeout=0: FakeResponse(503)
     )
-    assert launch._is_healthy(launch.API_HEALTH_URL) is False
+    assert launch._is_healthy(launch.api_health_url()) is False
 
 
 def test_is_healthy_false_on_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_health(monkeypatch, set())
-    assert launch._is_healthy(launch.API_HEALTH_URL) is False
+    assert launch._is_healthy(launch.api_health_url()) is False
 
 
 # --------------------------------------------------------------------------------------------------
@@ -200,7 +201,7 @@ def reset_fake_popen() -> Iterator[None]:
 
 
 def test_ensure_api_already_running_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_health(monkeypatch, {launch.API_HEALTH_URL})
+    _patch_health(monkeypatch, {launch.api_health_url()})
 
     def fail(*_: Any, **__: Any) -> None:
         raise AssertionError("the API must not be spawned when already healthy")
@@ -227,6 +228,40 @@ def test_ensure_api_spawns_detached_and_writes_pid(
 
     pid_file = state_dir_in_tmp / launch.STATE_DIR_NAME / launch.API_PID_FILE_NAME
     assert pid_file.read_text() == "424242"
+
+
+def test_api_health_url_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(launch.API_HOST_ENV, raising=False)
+    monkeypatch.delenv(launch.API_PORT_ENV, raising=False)
+    assert launch.api_health_url() == "http://127.0.0.1:8000/health"
+
+
+def test_api_health_url_honors_the_api_bind_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The API binds FREEAGENT_API_HOST/FREEAGENT_API_PORT; the health probe must follow it there,
+    # not poll the default port while the API comes up elsewhere.
+    monkeypatch.setenv(launch.API_HOST_ENV, "0.0.0.0")
+    monkeypatch.setenv(launch.API_PORT_ENV, "9000")
+    assert launch.api_health_url() == "http://0.0.0.0:9000/health"
+
+
+def test_ensure_api_redirects_stdio_away_from_the_terminal(
+    monkeypatch: pytest.MonkeyPatch, state_dir_in_tmp: Path
+) -> None:
+    # The detached API must not inherit the spawning terminal's stdio: its output would interleave
+    # into that shell, and the terminal closing would make the daemon's writes start failing.
+    probes = iter([False, True, True])
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: next(probes))
+    monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/venv/bin/freeagent-api")
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", FakePopen)
+
+    launch.ensure_api()
+
+    spawned = FakePopen.instances[0]
+    assert spawned.kwargs["stdin"] is subprocess.DEVNULL
+    log_file = state_dir_in_tmp / launch.STATE_DIR_NAME / launch.API_LOG_FILE_NAME
+    # stdout and stderr both append to the log file beside the pid file.
+    assert spawned.kwargs["stdout"].name == str(log_file)
+    assert spawned.kwargs["stderr"] is spawned.kwargs["stdout"]
 
 
 def test_ensure_api_missing_executable_exits_with_guidance(
@@ -386,14 +421,14 @@ def test_read_pid_none_for_missing_file(tmp_path: Path) -> None:
 
 def test_wait_until_healthy_true_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
-    assert launch._wait_until_healthy(launch.API_HEALTH_URL, timeout=1) is True
+    assert launch._wait_until_healthy(launch.api_health_url(), timeout=1) is True
 
 
 def test_wait_until_healthy_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(launch, "_is_healthy", lambda _: False)
     monkeypatch.setattr("freeagent.sdk.launch.time.sleep", lambda _: None)
     # A zero timeout means one failed probe, then the deadline check fails.
-    assert launch._wait_until_healthy(launch.API_HEALTH_URL, timeout=0) is False
+    assert launch._wait_until_healthy(launch.api_health_url(), timeout=0) is False
 
 
 def test_wait_until_healthy_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -402,7 +437,7 @@ def test_wait_until_healthy_retries_then_succeeds(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(launch, "_is_healthy", lambda _: next(probes))
     slept: list[float] = []
     monkeypatch.setattr("freeagent.sdk.launch.time.sleep", lambda seconds: slept.append(seconds))
-    assert launch._wait_until_healthy(launch.API_HEALTH_URL, timeout=5) is True
+    assert launch._wait_until_healthy(launch.api_health_url(), timeout=5) is True
     assert slept == [launch._HEALTH_POLL_INTERVAL_SECONDS]
 
 
@@ -550,7 +585,7 @@ def test_run_prepare_steps_run_in_order_with_cwd(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr("freeagent.sdk.launch.subprocess.run", fake_run)
     # Spawn nothing real and interrupt immediately so the test doesn't block.
     monkeypatch.setattr(launch, "_spawn_serves", lambda services: [])
-    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+    monkeypatch.setattr(launch, "_block_until_interrupt_or_exit", _raise_keyboard_interrupt)
 
     launcher = RecordingLauncher(
         "collatz",
@@ -571,7 +606,7 @@ def test_run_prepare_steps_run_in_order_with_cwd(monkeypatch: pytest.MonkeyPatch
     ]
 
 
-def _raise_keyboard_interrupt() -> None:
+def _raise_keyboard_interrupt(*_: Any) -> None:
     raise KeyboardInterrupt
 
 
@@ -592,7 +627,7 @@ def test_run_sigint_terminates_serves_in_reverse_order(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(FakeServeProcess, "terminate", record_terminate)
     # Ctrl-C the moment the session blocks.
-    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+    monkeypatch.setattr(launch, "_block_until_interrupt_or_exit", _raise_keyboard_interrupt)
 
     assert launch.run(RecordingLauncher("collatz", [])) == 0
     assert terminated_order == ["third", "second", "first"]
@@ -612,7 +647,7 @@ def test_run_exit_code_propagates_from_crashed_serve(monkeypatch: pytest.MonkeyP
         (launch.Service(name="worker", serve=["worker"]), crashed),
     ]
     monkeypatch.setattr(launch, "_spawn_serves", lambda services: spawned)
-    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+    monkeypatch.setattr(launch, "_block_until_interrupt_or_exit", _raise_keyboard_interrupt)
 
     assert launch.run(RecordingLauncher("collatz", [])) == 7
     # The already-exited crash is reaped, not re-terminated; the live one is terminated.
@@ -647,7 +682,7 @@ def test_run_ensures_platform_but_never_tears_it_down(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(launch, "_run_prepare_steps", lambda services: 0)
     monkeypatch.setattr(launch, "_spawn_serves", lambda services: [])
-    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+    monkeypatch.setattr(launch, "_block_until_interrupt_or_exit", _raise_keyboard_interrupt)
 
     assert launch.run(RecordingLauncher("collatz", [])) == 0
     # NATS then the API were ensured, in that order.
@@ -669,7 +704,7 @@ def test_run_prints_urls_once_the_stack_is_up(
         (launch.Service(name="worker", serve=["worker"]), FakeServeProcess("worker")),
     ]
     monkeypatch.setattr(launch, "_spawn_serves", lambda services: spawned)
-    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+    monkeypatch.setattr(launch, "_block_until_interrupt_or_exit", _raise_keyboard_interrupt)
 
     launch.run(RecordingLauncher("collatz", []))
     out = capsys.readouterr().out
@@ -712,7 +747,7 @@ def test_run_returns_zero_when_serves_die_by_sigterm(monkeypatch: pytest.MonkeyP
     serves = [FakeServeProcess("viewer"), FakeServeProcess("worker")]
     spawned = [(launch.Service(name=p.name, serve=[p.name]), p) for p in serves]
     monkeypatch.setattr(launch, "_spawn_serves", lambda services: spawned)
-    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+    monkeypatch.setattr(launch, "_block_until_interrupt_or_exit", _raise_keyboard_interrupt)
 
     assert launch.run(RecordingLauncher("collatz", [])) == 0
     assert all(p.wait() == -signal.SIGTERM for p in serves)
@@ -732,7 +767,7 @@ def test_run_returns_zero_when_serves_already_died_by_group_sigint(
     ]
     spawned = [(launch.Service(name=p.name, serve=[p.name]), p) for p in serves]
     monkeypatch.setattr(launch, "_spawn_serves", lambda services: spawned)
-    monkeypatch.setattr(launch, "_block_until_interrupt", _raise_keyboard_interrupt)
+    monkeypatch.setattr(launch, "_block_until_interrupt_or_exit", _raise_keyboard_interrupt)
 
     assert launch.run(RecordingLauncher("collatz", [])) == 0
     # Already dead: teardown reaps them without terminating.
@@ -789,7 +824,8 @@ def test_run_terminates_serves_when_interrupt_lands_before_the_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A KeyboardInterrupt arriving between spawning serves and entering the block-until-interrupt
-    # loop (e.g. while printing URLs) must still tear the serves down — the try/finally ensures it.
+    # loop (e.g. while printing URLs) must still tear the serves down — the try/finally ensures it —
+    # and end the session with the conventional interrupt exit code, never a traceback.
     _no_platform(monkeypatch)
     monkeypatch.setattr(launch, "_run_prepare_steps", lambda services: 0)
 
@@ -800,19 +836,98 @@ def test_run_terminates_serves_when_interrupt_lands_before_the_block(
     def interrupt_immediately() -> None:
         raise KeyboardInterrupt
 
-    # Raise during the URL-printing phase, before _block_until_interrupt is even reached.
+    # Raise during the URL-printing phase, before _block_until_interrupt_or_exit is even reached.
     monkeypatch.setattr("builtins.print", lambda *a, **k: interrupt_immediately())
 
-    with pytest.raises(KeyboardInterrupt):
-        launch.run(RecordingLauncher("collatz", []))
+    assert launch.run(RecordingLauncher("collatz", [])) == 130
     # The finally block ran: the spawned serve was terminated though the block was never entered.
     assert serve.terminated is True
 
 
-def test_block_until_interrupt_sleeps_then_can_be_interrupted(
+def test_run_returns_interrupt_code_on_ctrl_c_during_prepare(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # First sleep returns, second raises KeyboardInterrupt — proves it loops and is interruptible.
+    # Ctrl-C during a long prepare step (npm install on a cold checkout is the realistic case) must
+    # end the session cleanly with code 130 — not escape run() as a traceback.
+    _no_platform(monkeypatch)
+
+    def interrupted(_services: Any) -> int:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(launch, "_run_prepare_steps", interrupted)
+
+    def fail_spawn(*_: Any, **__: Any) -> None:
+        raise AssertionError("no serve may be spawned after an interrupt during prepare")
+
+    monkeypatch.setattr(launch, "_spawn_serves", fail_spawn)
+
+    assert launch.run(RecordingLauncher("collatz", [])) == 130
+
+
+def test_run_returns_interrupt_code_on_ctrl_c_during_ensure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Ctrl-C while the platform is being ensured is likewise a clean end of the session.
+    def interrupted() -> launch.Outcome:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(launch, "ensure_nats", interrupted)
+
+    assert launch.run(RecordingLauncher("collatz", [])) == 130
+
+
+def test_run_ends_when_a_serve_exits_on_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A serve that dies (e.g. its port was already bound) must end the session and surface the
+    # failure — not leave run() blocking forever while claiming the stack is up. The real
+    # _block_until_interrupt_or_exit is exercised: the dead child ends the wait with no Ctrl-C.
+    _no_platform(monkeypatch)
+    monkeypatch.setattr(launch, "_run_prepare_steps", lambda services: 0)
+
+    live = FakeServeProcess("viewer")
+    crashed = FakeServeProcess("worker", exit_code=1)
+    spawned = [
+        (launch.Service(name="viewer", serve=["viewer"]), live),
+        (launch.Service(name="worker", serve=["worker"]), crashed),
+    ]
+    monkeypatch.setattr(launch, "_spawn_serves", lambda services: spawned)
+
+    def fail_sleep(_seconds: float) -> None:
+        raise AssertionError("the wait must end on the already-dead child without sleeping")
+
+    monkeypatch.setattr("freeagent.sdk.launch.time.sleep", fail_sleep)
+
+    assert launch.run(RecordingLauncher("collatz", [])) == 1
+    # The survivor was torn down once the crashed serve ended the session.
+    assert live.terminated is True
+    assert crashed.terminated is False
+
+
+def test_block_until_interrupt_or_exit_returns_when_a_child_dies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The wait polls between sleeps: a child dying mid-session ends the loop.
+    proc = FakeServeProcess("viewer")
+    spawned: list[tuple[launch.Service, Any]] = [
+        (launch.Service(name="viewer", serve=["viewer"]), proc)
+    ]
+
+    def die_during_sleep(_seconds: float) -> None:
+        proc._exit_code = 3
+
+    monkeypatch.setattr("freeagent.sdk.launch.time.sleep", die_during_sleep)
+    launch._block_until_interrupt_or_exit(spawned)  # returns instead of blocking
+    assert proc.poll() == 3
+
+
+def test_block_until_interrupt_or_exit_sleeps_then_can_be_interrupted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With every child live, the loop sleeps; KeyboardInterrupt (Ctrl-C) still ends it — proving it
+    # loops while healthy and stays interruptible.
+    proc = FakeServeProcess("viewer")
+    spawned: list[tuple[launch.Service, Any]] = [
+        (launch.Service(name="viewer", serve=["viewer"]), proc)
+    ]
     calls = iter([None])
 
     def fake_sleep(_seconds: float) -> None:
@@ -823,4 +938,4 @@ def test_block_until_interrupt_sleeps_then_can_be_interrupted(
 
     monkeypatch.setattr("freeagent.sdk.launch.time.sleep", fake_sleep)
     with pytest.raises(KeyboardInterrupt):
-        launch._block_until_interrupt()
+        launch._block_until_interrupt_or_exit(spawned)
