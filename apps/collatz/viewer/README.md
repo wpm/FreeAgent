@@ -32,9 +32,9 @@ See the [repo README quickstart](../../../README.md#quickstart) and
 
 ### Viewer-only dev loop
 
-When you are iterating on the viewer itself and already have a platform up (`uv run start`
-in another terminal, or a running `uv run collatz` session), build and serve just this
-directory:
+When you are iterating on the viewer itself and already have a platform up (`uv run start`;
+if a `uv run collatz` session is running, end it first — it holds port 8080), build and serve
+just this directory:
 
 ```sh
 cd apps/collatz/viewer
