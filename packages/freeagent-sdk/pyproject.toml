@@ -17,6 +17,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
+# The NATS compose file and server config under src/freeagent/sdk/_platform/ ship as package data
+# (hatchling includes non-Python files under the packaged directory), so `freeagent.sdk.launch` can
+# bring up the platform from any repo that only depends on the SDK, resolving them via
+# importlib.resources.
 packages = ["src/freeagent"]
 
 [tool.mypy]

@@ -1,14 +1,15 @@
 name: CI
 
-# Runs the test suite on every push and pull request targeting the rewrite line of development.
+# Runs the test suite on every push and pull request targeting the rewrite line of development
+# or an epic integration branch (epic/**).
 # The unit tier needs no NATS binary; the integration tier runs against a pinned `nats-server`
 # release installed in its own step, so nothing but the binary is required — no Docker,
 # no testcontainers.
 on:
   push:
-    branches: [rewrite, main]
+    branches: [rewrite, main, "epic/**"]
   pull_request:
-    branches: [rewrite, main]
+    branches: [rewrite, main, "epic/**"]
 
 # A newer push to the same branch/PR cancels an in-flight run for it.
 concurrency:
