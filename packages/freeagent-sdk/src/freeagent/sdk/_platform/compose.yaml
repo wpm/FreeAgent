@@ -1,0 +1,25 @@
+name: freeagent
+
+services:
+  # The client and monitoring ports are published to the host (loopback only): the API, workers,
+  # and viewers all run on the host and reach NATS at nats://localhost:4222.
+  nats:
+    image: nats:2.12-alpine
+    command: [ "-c", "/etc/nats/nats-server.conf" ]
+    ports:
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8222:8222"
+    volumes:
+      # The config sits beside this compose file (shipped together as SDK package data); the
+      # relative path resolves against the compose file's own directory.
+      - ./nats-server.conf:/etc/nats/nats-server.conf:ro
+      - nats-data:/data
+    healthcheck:
+      # NATS exposes /healthz on its HTTP monitoring port.
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  nats-data:
