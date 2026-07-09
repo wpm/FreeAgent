@@ -133,8 +133,46 @@ test("an unreachable server's bare fetch rejection gains the request's context",
   );
 });
 
-test("a JSON error body without a string detail falls back to the raw text", async () => {
-  const body = JSON.stringify({ detail: [{ loc: ["body", "episode_id"], msg: "bad" }] });
+test("a 422 validation array renders as field: message lines, never raw JSON", async () => {
+  stubFetch(
+    422,
+    JSON.stringify({
+      detail: [
+        {
+          type: "string_pattern_mismatch",
+          loc: ["body", "episode_id"],
+          msg: "String should match pattern '^[A-Za-z0-9_-]+$'",
+          input: "one two",
+        },
+        { type: "missing", loc: ["body", "config"], msg: "Field required" },
+      ],
+    }),
+  );
+  try {
+    await new ApiClient(BASE).createEpisode("collatz", "one two", {});
+    assert.fail("expected a rejection");
+  } catch (error) {
+    assert.ok(error instanceof ApiError);
+    assert.equal(
+      error.detail,
+      "episode_id: String should match pattern '^[A-Za-z0-9_-]+$'\nconfig: Field required",
+    );
+  }
+});
+
+test("a validation item whose loc is only plumbing keeps its bare message", async () => {
+  stubFetch(422, JSON.stringify({ detail: [{ loc: ["body"], msg: "Field required" }] }));
+  try {
+    await new ApiClient(BASE).createEpisode("collatz", "ep1", {});
+    assert.fail("expected a rejection");
+  } catch (error) {
+    assert.ok(error instanceof ApiError);
+    assert.equal(error.detail, "Field required");
+  }
+});
+
+test("a detail array outside the validation shape falls back to the raw text", async () => {
+  const body = JSON.stringify({ detail: [{ code: 7 }, "mystery"] });
   stubFetch(422, body);
   try {
     await new ApiClient(BASE).createEpisode("collatz", "ep1", {});
