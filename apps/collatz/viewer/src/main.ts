@@ -10,10 +10,15 @@
  * overlapping fetches, no out-of-order paints), the message feed is refetched only when the
  * episode's `message_count` says it grew, and the DOM is rebuilt only when what it would show
  * actually changed — so clicks, text selection, and hover states survive quiet ticks.
+ *
+ * Errors — from user actions and the background poll alike — surface as toasts (issue #118):
+ * each stays until the user dismisses it (a later success never clears it), nothing is persisted,
+ * and repeats of an identical error coalesce into the one toast per `toast.ts`'s store.
  */
 
 import { ApiClient, TERMINAL_STATES, type EpisodeStatus } from "./api.js";
 import { deriveChains, parseStarts, type AgentChain } from "./state.js";
+import { formatToast, ToastStore } from "./toast.js";
 
 const APPLICATION = "collatz";
 const POLL_INTERVAL_MS = 500;
@@ -32,7 +37,7 @@ const applicationsList = element<HTMLElement>("applications");
 const launchForm = element<HTMLFormElement>("launch-form");
 const episodeIdInput = element<HTMLInputElement>("episode-id");
 const startsInput = element<HTMLInputElement>("starts");
-const errorLine = element<HTMLElement>("error");
+const toastsContainer = element<HTMLElement>("toasts");
 const episodesBody = element<HTMLTableSectionElement>("episodes");
 const detailSection = element<HTMLElement>("detail");
 const detailTitle = element<HTMLElement>("detail-title");
@@ -51,39 +56,64 @@ let renderedDetail = "";
 /** Cache of the selected episode's derived chains, valid while `message_count` holds still. */
 let chainsCache: { episodeId: string; messageCount: number; chains: AgentChain[] } | null = null;
 
-/**
- * Whether the message on the error line came from the background poll.
- *
- * The poll and user actions (launch, stop) share the one error line, but only the poll may
- * clear it: a poll success erases a stale connectivity complaint, never a launch or stop
- * failure the user hasn't read yet.
- */
-let errorFromPoll = false;
+const toastStore = new ToastStore();
+
+/** Each live toast's occurrence counter, for updating in place when the store coalesces. */
+const toastCounters = new Map<number, HTMLElement>();
 
 function client(): ApiClient {
   return new ApiClient(apiUrlInput.value.replace(/\/$/, ""));
 }
 
-function showActionError(error: unknown): void {
-  errorLine.textContent = error instanceof Error ? error.message : String(error);
-  errorFromPoll = false;
-}
-
-function showPollError(error: unknown): void {
-  errorLine.textContent = error instanceof Error ? error.message : String(error);
-  errorFromPoll = true;
-}
-
-function clearActionError(): void {
-  errorLine.textContent = "";
-  errorFromPoll = false;
-}
-
-function clearPollError(): void {
-  if (errorFromPoll) {
-    errorLine.textContent = "";
-    errorFromPoll = false;
+/**
+ * Surface an error as a toast that stays until the user dismisses it.
+ *
+ * The one error sink for actions and the poll alike — with a toast per error there is no shared
+ * line to fight over, so the old poll/action ownership bookkeeping is gone. An error identical
+ * to a toast still showing bumps that toast's counter instead of stacking a duplicate (the
+ * counter is `aria-hidden`: announcing every poll-tick repeat would spam screen readers, so a
+ * repeat is visual only). Nothing else removes a toast — not a later success, not a timer.
+ */
+function showError(error: unknown): void {
+  const event = toastStore.add(formatToast(error));
+  if (event.kind === "repeated") {
+    const counter = toastCounters.get(event.id);
+    if (counter !== undefined) {
+      counter.textContent = `× ${event.count}`;
+    }
+    return;
   }
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.setAttribute("role", "alert");
+  const text = document.createElement("div");
+  text.className = "text";
+  if (event.content.title !== null) {
+    const title = document.createElement("p");
+    title.className = "title";
+    title.textContent = event.content.title;
+    text.append(title);
+  }
+  const body = document.createElement("p");
+  body.className = "body";
+  body.textContent = event.content.body;
+  text.append(body);
+  const counter = document.createElement("span");
+  counter.className = "count";
+  counter.setAttribute("aria-hidden", "true");
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "dismiss";
+  dismiss.setAttribute("aria-label", "Dismiss");
+  dismiss.textContent = "×";
+  dismiss.addEventListener("click", () => {
+    toastStore.dismiss(event.id);
+    toastCounters.delete(event.id);
+    toast.remove();
+  });
+  toast.append(text, counter, dismiss);
+  toastCounters.set(event.id, counter);
+  toastsContainer.append(toast);
 }
 
 async function refreshApplications(): Promise<void> {
@@ -192,7 +222,6 @@ async function refresh(): Promise<void> {
 
 async function launch(event: SubmitEvent): Promise<void> {
   event.preventDefault();
-  clearActionError();
   try {
     const starts = parseStarts(startsInput.value);
     if (starts.length === 0) {
@@ -204,7 +233,7 @@ async function launch(event: SubmitEvent): Promise<void> {
     episodeIdInput.value = "";
     await refresh();
   } catch (error) {
-    showActionError(error);
+    showError(error);
   }
 }
 
@@ -212,19 +241,18 @@ async function stopSelected(): Promise<void> {
   if (selectedEpisode === null) {
     return;
   }
-  clearActionError();
   try {
     await client().stop(APPLICATION, selectedEpisode);
     await refresh();
   } catch (error) {
-    showActionError(error);
+    showError(error);
   }
 }
 
 /** Run one poll, then schedule the next — only after this one settles, so polls never overlap. */
 function poll(): void {
   void refresh()
-    .then(clearPollError, showPollError)
+    .catch(showError)
     .finally(() => setTimeout(poll, POLL_INTERVAL_MS));
 }
 
@@ -237,12 +265,12 @@ episodesBody.addEventListener("click", (event) => {
   const episodeId = row?.dataset["episodeId"];
   if (episodeId !== undefined) {
     selectedEpisode = episodeId;
-    refresh().catch(showActionError);
+    refresh().catch(showError);
   }
 });
 apiUrlInput.value = DEFAULT_API_URL;
 apiUrlInput.addEventListener("change", () => {
-  refreshApplications().then(clearActionError, showActionError);
+  refreshApplications().catch(showError);
 });
-refreshApplications().then(clearPollError, showPollError);
+refreshApplications().catch(showError);
 poll();

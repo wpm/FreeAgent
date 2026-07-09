@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
-import { ApiClient } from "./api.js";
+import { ApiClient, ApiError } from "./api.js";
 
 const realFetch = globalThis.fetch;
 
@@ -95,4 +95,42 @@ test("a failed request reports the method, path, status, and server detail", asy
     () => new ApiClient(BASE).createEpisode("collatz", "ep1", {}),
     /POST \/applications\/collatz\/episodes failed \(409\).*already exists/,
   );
+});
+
+test("a failed request throws an ApiError carrying the structured fields", async () => {
+  stubFetch(404, JSON.stringify({ detail: 'No application named "collatz" is installed' }));
+  try {
+    await new ApiClient(BASE).episodes("collatz");
+    assert.fail("expected a rejection");
+  } catch (error) {
+    assert.ok(error instanceof ApiError);
+    assert.equal(error.method, "GET");
+    assert.equal(error.path, "/applications/collatz/episodes");
+    assert.equal(error.status, 404);
+    // The FastAPI-shaped JSON body's detail is extracted, never pasted raw into prose.
+    assert.equal(error.detail, 'No application named "collatz" is installed');
+  }
+});
+
+test("a non-JSON error body becomes the detail verbatim", async () => {
+  stubFetch(502, "Bad Gateway");
+  try {
+    await new ApiClient(BASE).applications();
+    assert.fail("expected a rejection");
+  } catch (error) {
+    assert.ok(error instanceof ApiError);
+    assert.equal(error.detail, "Bad Gateway");
+  }
+});
+
+test("a JSON error body without a string detail falls back to the raw text", async () => {
+  const body = JSON.stringify({ detail: [{ loc: ["body", "episode_id"], msg: "bad" }] });
+  stubFetch(422, body);
+  try {
+    await new ApiClient(BASE).createEpisode("collatz", "ep1", {});
+    assert.fail("expected a rejection");
+  } catch (error) {
+    assert.ok(error instanceof ApiError);
+    assert.equal(error.detail, body);
+  }
 });
