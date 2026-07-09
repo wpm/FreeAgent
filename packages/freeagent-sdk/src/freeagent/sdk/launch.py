@@ -324,7 +324,10 @@ class Service:
     Ctrl-C terminates it.
 
     :ivar name: A short label for the service, used in the session's console output.
-    :ivar serve: The long-running process's argv, e.g. ``["npm", "run", "serve"]``.
+    :ivar serve: The long-running process's argv, e.g. ``["npm", "run", "serve"]``. A ``list``, not
+        a bare ``Sequence``: a plain ``str`` satisfies ``Sequence[str]`` but would be split into
+        one-character "arguments" by :class:`subprocess.Popen`, so the narrower type rejects that
+        mistake at type-check time.
     :ivar prepare: Argvs run to completion, in order, before any ``serve`` starts; empty by default.
     :ivar cwd: The working directory for this service's ``prepare`` and ``serve`` commands, or
         ``None`` to inherit the session's. A viewer's commands, for instance, run in its package
@@ -334,8 +337,8 @@ class Service:
     """
 
     name: str
-    serve: Sequence[str]
-    prepare: Sequence[Sequence[str]] = ()
+    serve: list[str]
+    prepare: list[list[str]] = dataclasses.field(default_factory=list)
     cwd: str | os.PathLike[str] | None = None
     url: str | None = None
 
@@ -384,10 +387,10 @@ def _run_prepare_steps(services: Sequence[Service]) -> int:
     """
     for service in services:
         for command in service.prepare:
-            result = subprocess.run(list(command), cwd=service.cwd)
+            result = subprocess.run(command, cwd=service.cwd)
             if result.returncode != 0:
                 print(
-                    f"prepare step {list(command)} for {service.name!r} failed "
+                    f"prepare step {command} for {service.name!r} failed "
                     f"(exit code {result.returncode})",
                     file=sys.stderr,
                 )
@@ -399,17 +402,45 @@ def _spawn_serves(services: Sequence[Service]) -> list[tuple[Service, subprocess
     """Spawn every service's ``serve`` process, in order, returning them paired with their service.
 
     Each ``serve`` is a long-running foreground child of this session (unlike the detached platform
-    processes): a plain :class:`subprocess.Popen` in the session's own process group, so the
-    session's SIGINT/SIGTERM reaches it and :func:`run` can tear it down.
+    processes): a plain :class:`subprocess.Popen` in the session's own process group, so :func:`run`
+    can SIGTERM it during teardown (and a terminal's Ctrl-C, sent to the whole foreground group,
+    reaches it too).
+
+    Spawning is all-or-nothing: if a later ``serve`` fails to start (e.g. its executable is
+    missing), the already-spawned earlier ones are terminated before the error propagates, so a
+    partial launch never leaks running children.
 
     :param services: The services to spawn ``serve`` processes for.
     :return: Each service paired with its spawned process, in spawn order.
+    :raises OSError: If a ``serve`` process cannot be spawned; earlier ones are torn down first.
     """
     spawned: list[tuple[Service, subprocess.Popen[bytes]]] = []
     for service in services:
-        process = subprocess.Popen(list(service.serve), cwd=service.cwd)
+        try:
+            process = subprocess.Popen(service.serve, cwd=service.cwd)
+        except OSError:
+            _terminate_in_reverse(spawned)
+            raise
         spawned.append((service, process))
     return spawned
+
+
+def _is_clean_exit(returncode: int) -> bool:
+    """Report whether a serve process's exit code counts as a clean teardown, not a failure.
+
+    Clean means either a normal zero exit, or death by the signals a session's teardown expects:
+    SIGTERM (what :func:`_terminate_in_reverse` sends) or SIGINT (what a terminal delivers to the
+    whole foreground process group on Ctrl-C). On POSIX a process killed by signal ``N`` reports a
+    *negative* returncode of ``-N``, so ``-SIGTERM`` and ``-SIGINT`` are the expected teardown codes
+    and must not make an otherwise-normal session exit nonzero.
+
+    A positive nonzero code (the serve crashed or exited with an error) or death by any *other*
+    signal is a genuine failure.
+
+    :param returncode: A :meth:`subprocess.Popen.wait` return value.
+    :return: True if the code is a clean teardown exit (``0``, ``-SIGTERM``, or ``-SIGINT``).
+    """
+    return returncode in (0, -signal.SIGTERM, -signal.SIGINT)
 
 
 def _terminate_in_reverse(
@@ -418,20 +449,22 @@ def _terminate_in_reverse(
     """SIGTERM the spawned serve processes in reverse spawn order and collect their exit codes.
 
     Reverse order tears the stack down in the opposite order it came up — the last thing started is
-    the first stopped. Each child is terminated and waited on; a child that had already exited on
-    its own (e.g. crashed) is reaped in place. The returned code is nonzero if *any* child exited
-    nonzero, so a crashed serve makes the whole session exit nonzero.
+    the first stopped. Each still-running child is SIGTERMed; a child that had already exited on its
+    own (crashed, or killed by the terminal's group SIGINT on Ctrl-C) is reaped in place. Death by
+    the teardown signals SIGTERM/SIGINT is a clean exit, not a failure (see :func:`_is_clean_exit`);
+    the returned code is the first genuine failure — a positive nonzero exit or death by another
+    signal — so a crashed serve, but not a cleanly-terminated one, makes the session exit nonzero.
 
     :param spawned: The service/process pairs to terminate, in spawn order.
-    :return: ``0`` if every child exited cleanly (code 0), else the first nonzero exit code seen,
-        in reverse spawn order.
+    :return: ``0`` if every child exited cleanly, else the first failing exit code seen, in reverse
+        spawn order.
     """
     failure = 0
     for service, process in reversed(spawned):
         if process.poll() is None:
             process.terminate()
         returncode = process.wait()
-        if returncode != 0 and failure == 0:
+        if not _is_clean_exit(returncode) and failure == 0:
             failure = returncode
             print(
                 f"service {service.name!r} exited with code {returncode}",
@@ -486,15 +519,20 @@ def run(launcher: Launcher) -> int:
         return prepare_failure
 
     spawned = _spawn_serves(services)
-
-    print(f"{launcher.name} is up. Press Ctrl-C to stop.")
-    for service, _ in spawned:
-        if service.url is not None:
-            print(f"  {service.name}: {service.url}")
-
     try:
-        _block_until_interrupt()
-    except KeyboardInterrupt:
-        pass
+        print(f"{launcher.name} is up. Press Ctrl-C to stop.")
+        for service, _ in spawned:
+            if service.url is not None:
+                print(f"  {service.name}: {service.url}")
 
-    return _terminate_in_reverse(spawned)
+        try:
+            _block_until_interrupt()
+        except KeyboardInterrupt:
+            pass
+    finally:
+        # Teardown in a finally so anything spawned is terminated even if we never reach the block
+        # (e.g. a KeyboardInterrupt lands between spawn and the loop). The mid-spawn leak — a Popen
+        # raising partway through _spawn_serves — is handled inside _spawn_serves itself.
+        exit_code = _terminate_in_reverse(spawned)
+
+    return exit_code
