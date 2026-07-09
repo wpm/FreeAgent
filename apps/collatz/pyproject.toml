@@ -12,6 +12,9 @@ dependencies = [
 [project.entry-points."freeagent.applications"]
 collatz = "freeagent.app.collatz:application"
 
+[project.scripts]
+collatz = "freeagent.app.collatz.launch:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
