@@ -37,15 +37,75 @@ export interface DataPlaneRecord {
   payload: unknown;
 }
 
+/**
+ * A failed API request, carrying the request and response facts as fields.
+ *
+ * The structured fields exist for display (the toast layer composes its own title and body from
+ * them); `message` keeps the flat everything-in-one-string form for logs and non-toast consumers.
+ */
+export class ApiError extends Error {
+  constructor(
+    /** The request's HTTP method. */
+    readonly method: string,
+    /** The request's path below the client's base URL. */
+    readonly path: string,
+    /** The response's HTTP status code. */
+    readonly status: number,
+    /**
+     * The human-readable failure description: the `detail` field of the API's JSON error body
+     * when it has one (FastAPI's error shape), otherwise the raw response text — possibly empty.
+     */
+    readonly detail: string,
+  ) {
+    super(`${method} ${path} failed (${status}): ${detail}`);
+    this.name = "ApiError";
+  }
+}
+
+/**
+ * Pull the human-readable detail out of an error response body.
+ *
+ * The API's errors are FastAPI-shaped — `{"detail": "..."}` — so a JSON object with a string
+ * `detail` yields that string. Anything else (non-JSON, validation-error arrays, other shapes)
+ * falls back to the raw text rather than guessing at structure.
+ */
+function extractDetail(body: string): string {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      "detail" in parsed &&
+      typeof (parsed as { detail: unknown }).detail === "string"
+    ) {
+      return (parsed as { detail: string }).detail;
+    }
+  } catch {
+    // Not JSON; the raw text is the best available description.
+  }
+  return body;
+}
+
 /** A thin fetch wrapper over the API's REST surface, rooted at `baseUrl`. */
 export class ApiClient {
   constructor(readonly baseUrl: string) {}
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, init);
+    const method = init?.method ?? "GET";
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, init);
+    } catch (error) {
+      // fetch rejects before any Response exists when the server is unreachable — the most
+      // common real failure — with a bare TypeError ("Failed to fetch") carrying no request
+      // context. Rethrow with the method, path, and host so the surfaced error names what was
+      // being attempted against where.
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`${method} ${path}: ${this.baseUrl} is unreachable (${reason})`);
+    }
     if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`${init?.method ?? "GET"} ${path} failed (${response.status}): ${detail}`);
+      const body = await response.text();
+      throw new ApiError(method, path, response.status, extractDetail(body));
     }
     // A bodyless success (the API's DELETE answers 204) has no JSON to parse.
     if (response.status === 204) {

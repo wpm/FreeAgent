@@ -32,7 +32,6 @@
           </label>
           <button type="submit">Launch</button>
         </form>
-        <p id="error" class="error" role="alert"></p>
       </section>
 
       <section>
@@ -59,6 +58,9 @@
         <div id="chains"></div>
       </section>
     </main>
+
+    <!-- Error toasts stack here; each is a role="alert", so no live-region attributes needed. -->
+    <div id="toasts" class="toasts"></div>
 
     <script type="module" src="dist/main.js"></script>
   </body>
