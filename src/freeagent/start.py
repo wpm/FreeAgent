@@ -11,6 +11,7 @@ running. ``stop`` stops the API this switch owns and takes the NATS network down
 repo fallback only.
 """
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -48,12 +49,19 @@ def stop() -> None:
     Delegates the API teardown to :func:`freeagent.sdk.launch.stop_api` (which SIGTERMs the pid this
     switch recorded and clears the pid file), then runs ``docker compose down`` on this repo's
     compose file. Both halves are safe from any state — fully up, half up, or already down — so
-    ``stop`` always leaves the platform down. Exits with docker's return code.
+    ``stop`` always leaves the platform down. Exits with docker's return code, or with a clean
+    guidance message (never a raw traceback) if docker is not installed.
     """
     if launch.stop_api():
         print("freeagent-api stopped.")
     else:
         print("freeagent-api was not running.")
+
+    if shutil.which("docker") is None:
+        sys.exit(
+            "docker is required to take the NATS network down but was not found on PATH. The API "
+            "has been stopped; install Docker to bring the network down too."
+        )
 
     returncode = subprocess.run(
         ["docker", "compose", "--file", str(COMPOSE_FILE), "down"]
