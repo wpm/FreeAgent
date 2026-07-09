@@ -1,9 +1,15 @@
-"""Ensure and own the Free Agent platform: NATS (docker) and the ``freeagent-api`` host process.
+"""Ensure and own the Free Agent platform, and run a per-app foreground launch session.
 
 The platform is app-agnostic — one NATS network and one API serve every installed application — so
 bringing it up belongs here in the SDK, not in any app. Both the ``start``/``stop`` switch and per-
 app launch sessions call this one code path, and because the compose file and NATS config ship as
 SDK package data, it also works from a third-party repo that only depends on ``freeagent-sdk``.
+
+The *platform* half — :func:`ensure_nats`, :func:`ensure_api`, :func:`stop_api` — ensures and owns
+NATS and the API. The *session* half — :class:`Service`, the :class:`Launcher` protocol, and
+:func:`run` — is what ``uv run <app>`` invokes: it ensures the platform is up, runs an app's serving
+processes in the foreground, and on Ctrl-C tears down only what it spawned. The platform always
+survives a session; the ``stop`` switch owns turning it off (see ADR-0009).
 
 Everything here is stdlib-only (``subprocess``, ``urllib.request``, ``signal``, ``os``) so the SDK
 gains no new dependency.
@@ -16,6 +22,7 @@ the source of truth: a pid file pointing at a dead process is stale and simply o
 
 from __future__ import annotations
 
+import dataclasses
 import enum
 import os
 import shutil
@@ -25,8 +32,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Sequence
 from importlib import resources
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 NATS_HEALTH_URL = "http://localhost:8222/healthz"
 """NATS's HTTP monitoring health endpoint; a 200 means the network is up."""
@@ -294,3 +303,198 @@ def stop_api() -> bool:
 
     pid_file.unlink(missing_ok=True)
     return True
+
+
+# --------------------------------------------------------------------------------------------------
+# Session half: a launcher describes an app's serving processes; run() runs them in the foreground.
+# --------------------------------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class Service:
+    """One serving process of an application, plus any build steps it needs first.
+
+    A service is described declaratively so the harness owns every spawn and teardown: a launcher
+    (see :class:`Launcher`) never starts a process itself, it hands :func:`run` a list of these.
+
+    ``prepare`` steps run to completion, in order, before *any* service's ``serve`` is spawned;
+    a failing prepare step aborts the whole session before it starts a single long-running process
+    (an app whose viewer won't build has nothing worth serving). ``serve`` is the long-running
+    process the session foregrounds — a dev server, a worker loop — that runs until the session's
+    Ctrl-C terminates it.
+
+    :ivar name: A short label for the service, used in the session's console output.
+    :ivar serve: The long-running process's argv, e.g. ``["npm", "run", "serve"]``.
+    :ivar prepare: Argvs run to completion, in order, before any ``serve`` starts; empty by default.
+    :ivar cwd: The working directory for this service's ``prepare`` and ``serve`` commands, or
+        ``None`` to inherit the session's. A viewer's commands, for instance, run in its package
+        directory.
+    :ivar url: A URL to print once the whole stack is up, e.g. the viewer's address; ``None`` to
+        print nothing for this service.
+    """
+
+    name: str
+    serve: Sequence[str]
+    prepare: Sequence[Sequence[str]] = ()
+    cwd: str | os.PathLike[str] | None = None
+    url: str | None = None
+
+
+@runtime_checkable
+class Launcher(Protocol):
+    """What an application supplies to describe its serving stack: a name and its services.
+
+    The launching sibling of :class:`~freeagent.sdk.application.Application` (ADR-0006). Where an
+    ``Application`` tells the worker how to *build an episode's entities*, a ``Launcher`` tells the
+    session harness how to *serve the application* — its dev server, its build steps. A launcher
+    describes serving processes only; it never creates episodes. Episode creation stays with clients
+    (viewer → API → worker), preserving the layering in which the API never imports application or
+    worker code.
+
+    There is deliberately no ``freeagent.launchers`` entry-point group yet: each app declares its
+    own console script whose ``main()`` hands a launcher to :func:`run`, and a generic
+    ``launch <name>`` consumer that would need an enumerable group does not exist yet (ADR-0009).
+
+    Because it is a :class:`~typing.Protocol`, a launcher need not inherit from anything — any
+    object with a matching ``name`` and ``services()`` qualifies — and it is
+    :func:`~typing.runtime_checkable`, so ``isinstance(obj, Launcher)`` checks the shape at runtime.
+
+    :ivar name: The application's name, used in the session's console output.
+    """
+
+    name: str
+
+    def services(self) -> list[Service]:
+        """Return the services making up this application's serving stack.
+
+        :return: The :class:`Service` values :func:`run` prepares, spawns, and later tears down.
+        """
+        ...
+
+
+def _run_prepare_steps(services: Sequence[Service]) -> int:
+    """Run every service's ``prepare`` commands to completion, in order, failing fast.
+
+    Runs each service's prepare steps in the order the services were given, and within a service in
+    the order listed. The first command to exit nonzero stops the whole sequence and its exit code
+    is returned — no ``serve`` should start once a build step has failed.
+
+    :param services: The services whose prepare steps to run.
+    :return: ``0`` if every prepare command succeeded, else the exit code of the first that failed.
+    """
+    for service in services:
+        for command in service.prepare:
+            result = subprocess.run(list(command), cwd=service.cwd)
+            if result.returncode != 0:
+                print(
+                    f"prepare step {list(command)} for {service.name!r} failed "
+                    f"(exit code {result.returncode})",
+                    file=sys.stderr,
+                )
+                return result.returncode
+    return 0
+
+
+def _spawn_serves(services: Sequence[Service]) -> list[tuple[Service, subprocess.Popen[bytes]]]:
+    """Spawn every service's ``serve`` process, in order, returning them paired with their service.
+
+    Each ``serve`` is a long-running foreground child of this session (unlike the detached platform
+    processes): a plain :class:`subprocess.Popen` in the session's own process group, so the
+    session's SIGINT/SIGTERM reaches it and :func:`run` can tear it down.
+
+    :param services: The services to spawn ``serve`` processes for.
+    :return: Each service paired with its spawned process, in spawn order.
+    """
+    spawned: list[tuple[Service, subprocess.Popen[bytes]]] = []
+    for service in services:
+        process = subprocess.Popen(list(service.serve), cwd=service.cwd)
+        spawned.append((service, process))
+    return spawned
+
+
+def _terminate_in_reverse(
+    spawned: Sequence[tuple[Service, subprocess.Popen[bytes]]],
+) -> int:
+    """SIGTERM the spawned serve processes in reverse spawn order and collect their exit codes.
+
+    Reverse order tears the stack down in the opposite order it came up — the last thing started is
+    the first stopped. Each child is terminated and waited on; a child that had already exited on
+    its own (e.g. crashed) is reaped in place. The returned code is nonzero if *any* child exited
+    nonzero, so a crashed serve makes the whole session exit nonzero.
+
+    :param spawned: The service/process pairs to terminate, in spawn order.
+    :return: ``0`` if every child exited cleanly (code 0), else the first nonzero exit code seen,
+        in reverse spawn order.
+    """
+    failure = 0
+    for service, process in reversed(spawned):
+        if process.poll() is None:
+            process.terminate()
+        returncode = process.wait()
+        if returncode != 0 and failure == 0:
+            failure = returncode
+            print(
+                f"service {service.name!r} exited with code {returncode}",
+                file=sys.stderr,
+            )
+    return failure
+
+
+def _block_until_interrupt() -> None:
+    """Block the session until it receives SIGINT (Ctrl-C).
+
+    Sleeps indefinitely; :class:`KeyboardInterrupt` (raised by the default SIGINT handler) unwinds
+    to :func:`run`, which then tears the session down. Factored out so tests can drive the
+    interrupt without a real signal.
+    """
+    while True:
+        time.sleep(_SESSION_POLL_INTERVAL_SECONDS)
+
+
+_SESSION_POLL_INTERVAL_SECONDS = 1.0
+"""How long each idle sleep in the session's block-until-interrupt loop lasts, in seconds."""
+
+
+def run(launcher: Launcher) -> int:
+    """Run an application's serving stack as a foreground session, until Ctrl-C.
+
+    The whole session lifecycle for ``uv run <app>``:
+
+    1. Ensure the platform is up — NATS then the API (:func:`ensure_nats`, :func:`ensure_api`).
+       This *ensures* but never owns the platform; a session's teardown leaves it running.
+    2. Run every service's ``prepare`` steps to completion, in order, failing fast: the first
+       nonzero exit aborts the session with that code, before any ``serve`` is spawned.
+    3. Spawn every service's ``serve`` process, then print the stack's URLs.
+    4. Block until SIGINT (Ctrl-C).
+    5. SIGTERM the spawned ``serve`` processes in reverse order and wait for them. The exit code is
+       nonzero if any child exited nonzero.
+
+    Only what this session spawned is torn down. The platform (NATS, the API) is untouched by the
+    teardown — the ``stop`` switch owns it — so a second concurrent session keeps working.
+
+    :param launcher: The application's :class:`Launcher`, supplying its :class:`Service` list.
+    :return: A process exit code: the failing prepare step's code if one failed, otherwise the
+        first nonzero ``serve`` exit code seen during teardown, otherwise ``0``.
+    """
+    ensure_nats()
+    ensure_api()
+
+    services = launcher.services()
+
+    prepare_failure = _run_prepare_steps(services)
+    if prepare_failure != 0:
+        return prepare_failure
+
+    spawned = _spawn_serves(services)
+
+    print(f"{launcher.name} is up. Press Ctrl-C to stop.")
+    for service, _ in spawned:
+        if service.url is not None:
+            print(f"  {service.name}: {service.url}")
+
+    try:
+        _block_until_interrupt()
+    except KeyboardInterrupt:
+        pass
+
+    return _terminate_in_reverse(spawned)
