@@ -28,13 +28,19 @@ def start() -> None:
     """Bring up the Free Agent platform: the NATS docker network and the ``freeagent-api`` process.
 
     Delegates to :mod:`freeagent.sdk.launch`: :func:`~freeagent.sdk.launch.ensure_nats` (against
-    this repo's compose file) then :func:`~freeagent.sdk.launch.ensure_api`. Both are idempotent, so
-    a second ``start`` while everything is up is a no-op that reports each as already running.
+    this repo's compose file) then :func:`~freeagent.sdk.launch.ensure_api`. ``ensure_api`` is
+    idempotent, so a second ``start`` while the API is up reports it already running.
+
+    As the platform owner, ``start`` *reconciles* NATS: it passes ``reconcile=True`` so
+    ``ensure_nats`` runs ``docker compose up --wait`` even when NATS already answers healthz,
+    bringing a container left on a stale config back in line with the compose file (launch sessions,
+    which must not disrupt a shared NATS, keep the non-disruptive short-circuit). After changing the
+    platform config, run ``stop`` then ``start`` to apply it.
 
     Exits nonzero if docker is unavailable, using the launch module's guidance message.
     """
     try:
-        nats_outcome = launch.ensure_nats(COMPOSE_FILE)
+        nats_outcome = launch.ensure_nats(COMPOSE_FILE, reconcile=True)
     except launch.DockerUnavailableError as error:
         sys.exit(str(error))
     print(f"NATS network {nats_outcome.value}.")
@@ -47,12 +53,18 @@ def stop() -> None:
     """Tear down the Free Agent platform: stop the ``freeagent-api`` process and the NATS network.
 
     Delegates the API teardown to :func:`freeagent.sdk.launch.stop_api` (which SIGTERMs the pid this
-    switch recorded and clears the pid file), then runs ``docker compose down`` on this repo's
-    compose file. Both halves are safe from any state — fully up, half up, or already down — so
-    ``stop`` always leaves the platform down. Exits with docker's return code, or with a clean
-    guidance message (never a raw traceback) if docker is not installed.
+    switch recorded, escalates to SIGKILL if needed, and clears the pid file), then runs ``docker
+    compose down`` on this repo's compose file. Both halves are safe from any state — fully up, half
+    up, or already down — so ``stop`` always leaves the platform down. If the API could not be
+    reaped even with SIGKILL, exits nonzero with the failure rather than falsely reporting it
+    stopped and taking NATS down under a still-running API. Exits with docker's return code, or with
+    a clean guidance message (never a raw traceback) if docker is not installed.
     """
-    if launch.stop_api():
+    try:
+        stopped = launch.stop_api()
+    except launch.StopFailedError as error:
+        sys.exit(str(error))
+    if stopped:
         print("freeagent-api stopped.")
     else:
         print("freeagent-api was not running.")

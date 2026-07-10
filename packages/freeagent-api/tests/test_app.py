@@ -9,6 +9,7 @@ over-the-wire behavior lives in ``test_integration.py``.
 from __future__ import annotations
 
 import os
+import sys
 from unittest.mock import patch
 
 from api_fakes import FakeNatsClient, FakeProcess
@@ -40,10 +41,15 @@ class AppHarness:
         self.http = TestClient(self.app)
 
 
-def test_health() -> None:
+def test_health_reports_serving_environment_identity() -> None:
+    # Health carries the serving environment's identity so a launcher can tell its own API from a
+    # wrong-venv one squatting the port, rather than adopting any healthy listener (issue #117).
     response = AppHarness().http.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["executable"] == sys.executable
+    assert body["pid"] == os.getpid()
 
 
 def test_applications_lists_installed_applications() -> None:

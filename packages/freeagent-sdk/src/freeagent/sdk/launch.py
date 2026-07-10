@@ -18,12 +18,27 @@ The API cannot join the compose network yet: it spawns ``python -m freeagent.wor
 environment, so it must run on the host in the venv where the applications live (see ADR-0009). We
 therefore own it as a detached host process tracked by a pid file. Health — not the pid file — is
 the source of truth: a pid file pointing at a dead process is stale and simply overwritten.
+
+**State-directory policy.** The pid file must resolve to the same path for the ``ensure`` that
+starts the API and the ``stop`` that later kills it, regardless of the directory each is invoked
+from — otherwise a third-party ``stop`` run from a different directory computes a different path,
+reports "nothing to stop", and orphans the API still holding the port. So:
+
+- **Inside a git repository**, state lives at the repo root: ``<repo-root>/.freeagent/``. Every
+  session in the repo — from any subdirectory — shares one pid file (the #98 behaviour).
+- **Outside any git repository**, state lives in a user-level directory that does not depend on the
+  caller's cwd: ``$XDG_STATE_HOME/freeagent/`` when ``XDG_STATE_HOME`` is set, otherwise
+  ``~/.freeagent/``. This closes the out-of-repo hole from PR #112's review (issue #116): ensure and
+  stop agree wherever they run.
+
+The earlier fallback to :func:`Path.cwd` is gone; nothing here resolves against the caller's cwd.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import enum
+import json
 import os
 import shutil
 import signal
@@ -31,6 +46,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Sequence
 from importlib import resources
@@ -56,13 +72,40 @@ API_EXECUTABLE = "freeagent-api"
 """The console script the API is spawned from; resolved on ``PATH`` within the active venv."""
 
 STATE_DIR_NAME = ".freeagent"
-"""The per-repo state directory holding the API pid file."""
+"""The state directory's name.
+
+In a git repository it is created at the repo root (``<repo-root>/.freeagent/``); out of a
+repository the user-level directory it names is used directly (see :func:`_state_dir`).
+"""
+
+XDG_STATE_HOME_ENV = "XDG_STATE_HOME"
+"""Environment variable naming the base for user-level state.
+
+Out of a git repository the state directory is ``$XDG_STATE_HOME/freeagent/`` when this is set, else
+``~/.freeagent/`` (see :func:`_state_dir`).
+"""
+
+_USER_STATE_SUBDIR = "freeagent"
+"""The application's subdirectory name under an ``$XDG_STATE_HOME`` base (which is shared across
+applications, so state must be namespaced), as opposed to the dotted :data:`STATE_DIR_NAME` used
+directly under ``$HOME``."""
 
 API_PID_FILE_NAME = "api.pid"
 """The pid file recording the detached API process, under :data:`STATE_DIR_NAME`."""
 
 API_LOG_FILE_NAME = "api.log"
 """The log file the detached API's stdout/stderr append to, under :data:`STATE_DIR_NAME`."""
+
+_HEALTH_EXECUTABLE_FIELD = "executable"
+"""The ``/health`` field naming the serving interpreter (its venv); the API's identity for adoption.
+
+The API reports its :data:`sys.executable` here (see :class:`freeagent.api.app.HealthResponse`), and
+:func:`ensure_api` adopts a healthy listener only when this equals its own interpreter — so a wrong-
+venv API squatting the port is refused, not silently used.
+"""
+
+_HEALTH_PID_FIELD = "pid"
+"""The ``/health`` field naming the serving process's pid, used to name an impostor in the error."""
 
 _PACKAGE_DATA = "freeagent.sdk._platform"
 """The package holding the shipped compose file and NATS config."""
@@ -77,10 +120,19 @@ _HEALTH_POLL_INTERVAL_SECONDS = 0.25
 """Delay between health-endpoint polls while waiting for a service to come up."""
 
 _STOP_TIMEOUT_SECONDS = 10.0
-"""How long to wait for the API to exit after SIGTERM before giving up."""
+"""How long to wait for the API to exit after SIGTERM before escalating to SIGKILL."""
 
 _STOP_POLL_INTERVAL_SECONDS = 0.1
 """Delay between liveness checks while waiting for the API to exit."""
+
+_STOP_KILL_TIMEOUT_SECONDS = 5.0
+"""How long to wait for the API to exit after SIGKILL before giving up on it."""
+
+_TEARDOWN_TIMEOUT_SECONDS = 10.0
+"""How long to wait for a spawned serve to exit after SIGTERM before escalating to SIGKILL."""
+
+_TEARDOWN_KILL_TIMEOUT_SECONDS = 5.0
+"""How long to wait for a spawned serve to exit after SIGKILL before giving up on it."""
 
 
 class Outcome(enum.Enum):
@@ -92,10 +144,23 @@ class Outcome(enum.Enum):
 
     STARTED = "started"
     ALREADY_RUNNING = "already running"
+    RECONCILED = "reconciled"
+    """The service was already up and a reconciling ensure re-applied its configuration — an honest
+    report for :func:`ensure_nats` with ``reconcile=True``, which runs ``compose up`` even over a
+    healthy NATS (saying ``started`` there would misreport a container that never went down)."""
 
 
 class DockerUnavailableError(RuntimeError):
     """Raised by :func:`ensure_nats` when docker cannot be used to bring NATS up."""
+
+
+class StopFailedError(RuntimeError):
+    """Raised by :func:`stop_api` when a live API could not be reaped even with SIGKILL.
+
+    Distinguishes a genuine teardown failure — the API is still running, with its port still bound —
+    from the ordinary "nothing to stop" case (which :func:`stop_api` returns ``False`` for). Callers
+    (the ``stop`` switch) surface this rather than misreporting the still-running API as stopped.
+    """
 
 
 def api_health_url() -> str:
@@ -145,6 +210,86 @@ def _wait_until_healthy(url: str, timeout: float = _HEALTH_TIMEOUT_SECONDS) -> b
         time.sleep(_HEALTH_POLL_INTERVAL_SECONDS)
 
 
+@dataclasses.dataclass(frozen=True)
+class _ListenerIdentity:
+    """The serving environment a listener reported at ``/health`` — the venv and pid answering.
+
+    Only carried by a :attr:`_ListenerState.IDENTIFIED` probe: the fields a launcher compares
+    against its own environment and, on a mismatch, names in the impostor error.
+
+    :ivar executable: The serving interpreter path (its venv) the listener reported.
+    :ivar pid: The serving process's pid the listener reported.
+    """
+
+    executable: str
+    pid: int
+
+
+class _ListenerState(enum.Enum):
+    """How a probe of the API's port came back — the three cases :func:`ensure_api` must tell apart.
+
+    Bare liveness cannot distinguish these, which is why any healthy listener used to be adopted
+    (issue #117). The probe is classified instead, and only :attr:`IDENTIFIED` can mean "our API".
+    """
+
+    ABSENT = "absent"
+    """Nothing answered — connection refused, a timeout, or a non-2xx status.
+
+    The port is free to spawn our own API on.
+    """
+
+    IDENTIFIED = "identified"
+    """A Free Agent API answered with its identity (interpreter path and pid).
+
+    Whether it is *ours* is a further check on the reported interpreter; the identity travels
+    alongside this state.
+    """
+
+    UNIDENTIFIED = "unidentified"
+    """A process answered 2xx but not as a Free Agent API — a non-JSON body, or JSON missing the
+    identity fields.
+
+    Something is squatting the port; it is not ours to adopt, and spawning over it would only
+    collide, so it is an impostor to report.
+    """
+
+
+def _probe_listener(url: str) -> tuple[_ListenerState, _ListenerIdentity | None]:
+    """Probe a health endpoint and classify what, if anything, is answering the API's port.
+
+    Fetches ``url`` and reads its body as :class:`freeagent.api.app.HealthResponse` JSON:
+
+    - a connection error, timeout, or non-2xx status is :attr:`_ListenerState.ABSENT` — the port is
+      free;
+    - a 2xx JSON body carrying both the interpreter path and pid is
+      :attr:`_ListenerState.IDENTIFIED` and its :class:`_ListenerIdentity` is returned alongside;
+    - a 2xx body that is not that shape (non-JSON, or JSON missing either field) is
+      :attr:`_ListenerState.UNIDENTIFIED` — a non-API process holds the port.
+
+    :param url: The health endpoint to probe.
+    :return: The classified state, paired with the reported identity when (and only when) the state
+        is :attr:`_ListenerState.IDENTIFIED`.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:
+            if not 200 <= response.status < 300:
+                return _ListenerState.ABSENT, None
+            payload = json.loads(response.read())
+    except (urllib.error.URLError, OSError):
+        return _ListenerState.ABSENT, None
+    except ValueError:
+        # Covers both json.JSONDecodeError (2xx but not JSON) and UnicodeDecodeError (2xx but not
+        # even decodable text — a squatter serving binary content). Either way: not our API.
+        return _ListenerState.UNIDENTIFIED, None
+
+    if isinstance(payload, dict):
+        executable = payload.get(_HEALTH_EXECUTABLE_FIELD)
+        pid = payload.get(_HEALTH_PID_FIELD)
+        if isinstance(executable, str) and isinstance(pid, int):
+            return _ListenerState.IDENTIFIED, _ListenerIdentity(executable=executable, pid=pid)
+    return _ListenerState.UNIDENTIFIED, None
+
+
 def _repo_root() -> Path | None:
     """Find the enclosing git repository root, if the current directory is inside one.
 
@@ -159,21 +304,47 @@ def _repo_root() -> Path | None:
     return None
 
 
+def _user_state_dir() -> Path:
+    """Return the user-level state directory used when not inside a git repository.
+
+    Follows the XDG Base Directory convention: ``$XDG_STATE_HOME/freeagent`` when ``XDG_STATE_HOME``
+    is set (its base is shared across applications, so the ``freeagent`` subdirectory namespaces
+    our state), otherwise ``~/.freeagent``. Deliberately independent of the caller's cwd so a
+    third-party ``ensure`` and a later ``stop``, from different directories, resolve one pid file.
+
+    A relative ``XDG_STATE_HOME`` is ignored — the spec says to treat a non-absolute value as unset,
+    and honoring it would resolve against the caller's cwd and reopen the very hole this closes.
+
+    :return: The absolute user-level state directory (not created here).
+    """
+    xdg_state_home = os.environ.get(XDG_STATE_HOME_ENV)
+    if xdg_state_home and (base := Path(xdg_state_home)).is_absolute():
+        return base / _USER_STATE_SUBDIR
+    return Path.home() / STATE_DIR_NAME
+
+
 def _state_dir() -> Path:
     """Return the directory holding platform state (the API pid file).
 
-    The repo root when inside a repository, otherwise the current working directory — so an in-repo
-    invocation from any subdirectory shares one pid file, and a third-party invocation still gets a
-    stable location.
+    ``<repo-root>/.freeagent`` when inside a git repository — so every session in the repo, from any
+    subdirectory, shares one pid file (the #98 behaviour) — otherwise the cwd-independent user-level
+    directory from :func:`_user_state_dir`. Never resolves against the caller's cwd, so ``ensure``
+    and ``stop`` agree wherever each is invoked (issue #116).
 
-    :return: The state directory (``.freeagent`` is created beneath it on write, not here).
+    :return: The state directory (the ``.freeagent`` directory itself, created on write, not here).
     """
-    return _repo_root() or Path.cwd()
+    repo_root = _repo_root()
+    if repo_root is not None:
+        return repo_root / STATE_DIR_NAME
+    return _user_state_dir()
 
 
 def _api_pid_file() -> Path:
-    """Return the path to the API pid file under the state directory."""
-    return _state_dir() / STATE_DIR_NAME / API_PID_FILE_NAME
+    """Return the path to the API pid file under the state directory.
+
+    :return: The ``api.pid`` path inside :func:`_state_dir`.
+    """
+    return _state_dir() / API_PID_FILE_NAME
 
 
 def _read_pid(pid_file: Path) -> int | None:
@@ -227,20 +398,39 @@ def resolve_compose_file(compose_file: str | os.PathLike[str] | None) -> Path:
         return Path(packaged)
 
 
-def ensure_nats(compose_file: str | os.PathLike[str] | None = None) -> Outcome:
+def ensure_nats(
+    compose_file: str | os.PathLike[str] | None = None, reconcile: bool = False
+) -> Outcome:
     """Ensure the NATS docker network is up, starting it if necessary.
 
-    Polls :data:`NATS_HEALTH_URL`; if NATS already answers, this is a no-op. Otherwise runs ``docker
-    compose --file <resolved> up --detach --wait`` and confirms health.
+    Two modes, for the two kinds of caller (see ADR-0009):
+
+    - **Session (the default,** ``reconcile=False`` **).** Polls :data:`NATS_HEALTH_URL`; if NATS
+      already answers, this is a no-op. A launch session must never disrupt a NATS other sessions
+      share, and running ``compose up`` on every ``uv run <app>`` would restart NATS on any config
+      change — so answering healthz is enough and docker is not touched.
+    - **Platform owner (**``reconcile=True``**, passed by the** ``start`` **switch).** Runs ``docker
+      compose --file <resolved> up --detach --wait`` unconditionally — even when NATS already
+      answers healthz — so a container left on a stale config (e.g. after pulling a branch that
+      changed the NATS config) is reconciled against the compose file. This restores the
+      reconciliation the old ``start`` always did, at the one place that owns the platform.
+
+    When docker does run it is ``docker compose --file <resolved> up --detach --wait`` against the
+    resolved compose file; health is confirmed by ``--wait``.
 
     :param compose_file: An explicit compose file, or ``None`` to use the packaged copy; see
         :func:`resolve_compose_file`.
-    :return: :attr:`Outcome.ALREADY_RUNNING` if NATS was already healthy, else
-        :attr:`Outcome.STARTED`.
+    :param reconcile: When True, run ``compose up`` even if NATS already answers healthz, so a
+        stale container is brought in line with the compose file. The ``start`` switch passes True;
+        sessions leave it False to keep the non-disruptive short-circuit.
+    :return: :attr:`Outcome.ALREADY_RUNNING` if NATS was already healthy and no reconciliation
+        was requested; :attr:`Outcome.RECONCILED` if it was already healthy and ``compose up``
+        re-applied the configuration over it; else :attr:`Outcome.STARTED`.
     :raises DockerUnavailableError: If the ``docker`` executable is missing, or ``docker compose
         up`` fails (e.g. the daemon is not running).
     """
-    if _is_healthy(NATS_HEALTH_URL):
+    was_healthy = _is_healthy(NATS_HEALTH_URL)
+    if not reconcile and was_healthy:
         return Outcome.ALREADY_RUNNING
 
     if shutil.which("docker") is None:
@@ -261,31 +451,115 @@ def ensure_nats(compose_file: str | os.PathLike[str] | None = None) -> Outcome:
             f"(exit code {result.returncode}). Is the Docker daemon running?\n"
             f"{result.stderr.strip()}"
         )
-    return Outcome.STARTED
+    return Outcome.RECONCILED if was_healthy else Outcome.STARTED
+
+
+def _same_interpreter(executable: str) -> bool:
+    """Report whether a reported interpreter path is this process's own interpreter.
+
+    A venv exposes one binary under several aliases (``python``, ``python3``, ``python3.12`` —
+    symlinks to one file), and the API's console-script shebang may name a different alias than the
+    one this process was launched through. Aliases of one interpreter are the same environment, so
+    the comparison resolves symlinks rather than matching strings — an exact-string check would
+    reject a legitimately-ours API over spelling.
+
+    :param executable: The interpreter path a listener reported at ``/health``.
+    :return: True if it names the same interpreter as :data:`sys.executable`.
+    """
+    if executable == sys.executable:
+        return True
+    try:
+        return Path(executable).resolve() == Path(sys.executable).resolve()
+    except OSError:
+        # An unresolvable path (e.g. a symlink loop) cannot be shown to be ours.
+        return False
+
+
+def _reject_wrong_environment_api(identity: _ListenerIdentity, health_url: str) -> None:
+    """Abort because a *different environment's* Free Agent API holds the API's port.
+
+    Called when ``/health`` answered with an identity whose interpreter is not this process's own: a
+    wrong-venv API — the classic case being one left running from a since-deleted worktree — or an
+    unrelated Free Agent API from another checkout. Adopting it is the silent-adoption failure the
+    incident hit: its venv has no entry point for the caller's applications, so every request 404s
+    while ``start`` cheerfully reports "already running". So we refuse, naming the impostor's venv
+    and pid and how to clear it, rather than returning :attr:`Outcome.ALREADY_RUNNING`.
+
+    :param identity: The mismatched identity the listener reported at ``/health``.
+    :param health_url: The health URL probed, named in the message so the operator knows the port.
+    :raises SystemExit: Always, with the impostor's venv and pid and the remedy.
+    """
+    sys.exit(
+        f"a different environment's API is already listening at {health_url}: it is running from "
+        f"{identity.executable!r} (pid {identity.pid}), not this environment's "
+        f"{sys.executable!r}. That API's venv has no entry points for this environment's "
+        f"applications, so adopting it would 404 every request. Stop it first — e.g. "
+        f"`kill {identity.pid}` — then try again."
+    )
+
+
+def _reject_unidentified_listener(health_url: str) -> None:
+    """Abort because a process that is not a Free Agent API holds the API's port.
+
+    Called when the port answered 2xx but without a verifiable Free Agent identity — a non-JSON
+    body, or JSON missing the identity fields. It is not our API to adopt, and spawning our own over
+    it would only collide on the port, so we refuse with the port to clear and how.
+
+    :param health_url: The health URL probed, named in the message so the operator knows the port.
+    :raises SystemExit: Always, telling the operator to free the port.
+    """
+    split = urllib.parse.urlsplit(health_url)
+    port = split.port or (443 if split.scheme == "https" else 80)
+    sys.exit(
+        f"something that is not the Free Agent API is already listening at {health_url}: it "
+        f"answers health checks but does not report a Free Agent identity. Free that port — e.g. "
+        f"find the process with `lsof -nP -iTCP:{port} -sTCP:LISTEN` and stop it — then try again."
+    )
 
 
 def ensure_api() -> Outcome:
-    """Ensure the ``freeagent-api`` host process is up, spawning it detached if necessary.
+    """Ensure *this environment's* ``freeagent-api`` host process is up, spawning it if necessary.
 
-    Polls :func:`api_health_url`; if the API already answers, this is a no-op. Otherwise spawns the
-    ``freeagent-api`` console script in its own session (detached from this process group so it
-    outlives the caller), records its pid in the pid file, and polls health until ready. The
-    detached process's stdout/stderr append to :data:`API_LOG_FILE_NAME` beside the pid file —
-    a persistent daemon must not inherit a mortal terminal's stdio.
+    Probes :func:`api_health_url`, then decides by the identity the listener reports at ``/health``
+    (see :class:`freeagent.api.app.HealthResponse`) — never by bare liveness. Any healthy listener
+    would satisfy a liveness-only check, so an API from a deleted worktree's venv, another checkout,
+    or an unrelated process squatting the port would be silently adopted and never replaced by one
+    from the caller's own environment. Instead:
 
-    Health is the source of truth: a pid file left over from a dead process is stale and gets
+    - The listener's interpreter is this process's own (compared with symlink aliases resolved, see
+      :func:`_same_interpreter`): it is our API, so this is a no-op returning
+      :attr:`Outcome.ALREADY_RUNNING`.
+    - A listener reports a *different* interpreter (a wrong-venv API), or answers without a
+      verifiable identity (a non-API process on the port): it is not ours. We do not adopt it — we
+      abort with an actionable error naming the impostor (see
+      :func:`_reject_wrong_environment_api` and :func:`_reject_unidentified_listener`).
+    - Nothing answers: spawn the ``freeagent-api`` console script in its own session (detached from
+      this process group so it outlives the caller), record its pid in the pid file, and poll health
+      until ready. The detached process's stdout/stderr append to :data:`API_LOG_FILE_NAME` beside
+      the pid file — a persistent daemon must not inherit a mortal terminal's stdio.
+
+    Health remains the source of truth: a pid file left over from a dead process is stale and gets
     overwritten. The API is app-agnostic and belongs to no session, so callers ensure but never own
     it — only the ``start``/``stop`` switch tears it down (see :func:`stop_api`).
 
-    :return: :attr:`Outcome.ALREADY_RUNNING` if the API was already healthy, else
+    :return: :attr:`Outcome.ALREADY_RUNNING` if this environment's API was already healthy, else
         :attr:`Outcome.STARTED`.
-    :raises SystemExit: If the ``freeagent-api`` executable is missing from the environment, with a
-        message telling the author to add ``freeagent-api`` to their dev dependencies; or if the API
-        was spawned but never became healthy within the timeout.
+    :raises SystemExit: If a wrong-environment API or a non-API process is already answering the
+        port (with the impostor's venv, pid, and remedy); if the ``freeagent-api`` executable is
+        missing from the environment (with a message telling the author to add ``freeagent-api`` to
+        their dev dependencies); or if the API was spawned but never became healthy within the
+        timeout.
     """
     health_url = api_health_url()
-    if _is_healthy(health_url):
-        return Outcome.ALREADY_RUNNING
+    state, identity = _probe_listener(health_url)
+    # IDENTIFIED carries an identity and is the only state that does, so gating on the identity
+    # itself both narrows the type and holds under `python -O` (an assert would not).
+    if identity is not None:
+        if _same_interpreter(identity.executable):
+            return Outcome.ALREADY_RUNNING
+        _reject_wrong_environment_api(identity, health_url)
+    elif state is _ListenerState.UNIDENTIFIED:
+        _reject_unidentified_listener(health_url)
 
     if shutil.which(API_EXECUTABLE) is None:
         sys.exit(
@@ -320,27 +594,85 @@ def ensure_api() -> Outcome:
     return Outcome.STARTED
 
 
+def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
+    """Poll a pid's liveness until it exits or the timeout elapses.
+
+    :param pid: The process id to wait on.
+    :param timeout: How long to keep polling, in seconds.
+    :return: True if the process was gone within the timeout, False if it was still alive on expiry.
+    """
+    deadline = time.monotonic() + timeout
+    while _process_alive(pid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_STOP_POLL_INTERVAL_SECONDS)
+    return True
+
+
 def stop_api() -> bool:
     """Stop the API this platform started, if any, and remove its pid file.
 
-    SIGTERMs the pid recorded in the pid file, waits for the process to exit, then removes the file.
-    A silent no-op when nothing is recorded or the recorded process is already gone (a stale pid
-    file is simply cleared) — so ``stop`` is safe to call unconditionally.
+    Health — not the pid file — is the source of truth (see the module docstring), so the pid file
+    is trusted only when the API actually answers :func:`api_health_url`. When it does, the recorded
+    pid is SIGTERMed and waited on; otherwise the file is stale — the API is gone even if the OS has
+    recycled its pid onto some innocent process — so it is simply cleared and "nothing to do"
+    reported, never signalled.
 
-    :return: True if a live API was signalled and stopped, False if there was nothing to do.
+    Signalling is itself guarded: a pid recycled between the health check and the kill can no longer
+    be ours, so a :class:`ProcessLookupError` (the pid is gone) or :class:`PermissionError` (the pid
+    now belongs to another user) is caught, the stale file cleared, and "nothing to do" reported —
+    no raw traceback, and the file does not persist to fail every later ``stop`` the same way.
+
+    If the API has not exited within :data:`_STOP_TIMEOUT_SECONDS`, teardown escalates to SIGKILL
+    and waits again — a SIGTERM-ignoring API (or one wedged mid-request) must not be left orphaned
+    with port 8000 still bound, where a later ``start`` would see the zombie answering ``/health``
+    and refuse to restart. The pid file is only unlinked once the process is confirmed gone; if even
+    SIGKILL does not reap it within :data:`_STOP_KILL_TIMEOUT_SECONDS`, the pid file is kept and
+    :class:`StopFailedError` is raised so the still-running API is reported as a failure, distinct
+    from the "nothing to do" case and never silently erased.
+
+    A silent no-op when nothing is recorded, so ``stop`` is safe to call unconditionally.
+
+    :return: True if a live API was signalled and confirmed stopped, False if there was nothing to
+        do (no pid recorded, the API was not answering health, or its pid was recycled).
+    :raises StopFailedError: If a live API could not be reaped even with SIGKILL; the pid file is
+        kept so the still-running process is not forgotten.
     """
     pid_file = _api_pid_file()
     pid = _read_pid(pid_file)
 
-    if pid is None or not _process_alive(pid):
+    if pid is None or not _is_healthy(api_health_url()):
         pid_file.unlink(missing_ok=True)
         return False
 
-    os.kill(pid, signal.SIGTERM)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        # The pid the health-confirmed API was recorded under is no longer a process we can signal:
+        # recycled onto a dead pid or another user's process. Treat the file as stale, not fatal.
+        pid_file.unlink(missing_ok=True)
+        return False
 
-    deadline = time.monotonic() + _STOP_TIMEOUT_SECONDS
-    while _process_alive(pid) and time.monotonic() < deadline:
-        time.sleep(_STOP_POLL_INTERVAL_SECONDS)
+    if _wait_for_pid_exit(pid, _STOP_TIMEOUT_SECONDS):
+        pid_file.unlink(missing_ok=True)
+        return True
+
+    # SIGTERM was ignored (or the process is wedged): escalate rather than orphan a live API. The
+    # same recycled-pid guard applies — the process may have exited (and its pid been reused)
+    # between the SIGTERM wait expiring and this kill.
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pid_file.unlink(missing_ok=True)
+        return True
+    if not _wait_for_pid_exit(pid, _STOP_KILL_TIMEOUT_SECONDS):
+        # Even SIGKILL did not reap it in time (e.g. stuck in uninterruptible I/O). Keep the pid
+        # file so the still-running API is not silently forgotten, and report the failure loudly
+        # rather than returning a False that a caller would misread as "nothing was running".
+        raise StopFailedError(
+            f"the API (pid {pid}) did not exit even after SIGKILL; its pid file has been left in "
+            f"place. The process may be stuck in uninterruptible I/O — check {pid_file}."
+        )
 
     pid_file.unlink(missing_ok=True)
     return True
@@ -484,33 +816,100 @@ def _is_clean_exit(returncode: int) -> bool:
     return returncode in (0, -signal.SIGTERM, -signal.SIGINT)
 
 
+def _terminate_one(service: Service, process: subprocess.Popen[bytes]) -> int:
+    """Terminate a single spawned serve with a bounded wait, escalating to SIGKILL on expiry.
+
+    A still-running child is SIGTERMed and given :data:`_TEARDOWN_TIMEOUT_SECONDS` to exit; a child
+    that had already exited on its own (crashed, or killed by the terminal's group SIGINT on Ctrl-C)
+    is reaped in place with no signal. A serve that ignores SIGTERM — a common failing of shell or
+    ``npm`` wrappers that do not forward signals — would otherwise block teardown forever on an
+    unbounded ``wait()``; instead it is escalated to SIGKILL and reaped, so teardown always
+    completes and no child leaks with its port still bound.
+
+    A :class:`KeyboardInterrupt` (a Ctrl-C landing in one of the waits) SIGKILLs the child before it
+    is allowed to unwind, so the very process being reaped when the interrupt arrives is never left
+    running — the interrupt then propagates for the caller to keep tearing the rest down.
+
+    :param service: The service owning the process, for the diagnostic message on a real failure.
+    :param process: The spawned serve to terminate and reap.
+    :return: The process's exit code (a POSIX signal death reports ``-signum``); ``-SIGKILL`` if it
+        had to be force-killed after ignoring SIGTERM, even when the force-kill could not be reaped
+        in time (teardown never blocks on an unreapable child).
+    :raises KeyboardInterrupt: If a Ctrl-C lands during a wait; re-raised only after the child has
+        been SIGKILLed so it cannot leak.
+    """
+    if process.poll() is None:
+        process.terminate()
+    try:
+        return process.wait(timeout=_TEARDOWN_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # The serve ignored SIGTERM. Force it down so teardown cannot hang and no child can leak.
+        print(
+            f"service {service.name!r} did not exit after SIGTERM; escalating to SIGKILL.",
+            file=sys.stderr,
+        )
+    except KeyboardInterrupt:
+        # A second Ctrl-C landed while waiting on this child's SIGTERM. Force-kill it before letting
+        # the interrupt unwind, so the child being reaped is not left running with its port bound.
+        process.kill()
+        raise
+    process.kill()
+    try:
+        return process.wait(timeout=_TEARDOWN_KILL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # Even SIGKILL has not been reaped yet (e.g. the child is stuck in uninterruptible I/O). Do
+        # not let the wait hang teardown or escape as a traceback: report it and treat the child as
+        # force-killed. The kernel will reap it once the syscall returns.
+        print(
+            f"service {service.name!r} did not exit even after SIGKILL; abandoning the wait.",
+            file=sys.stderr,
+        )
+        return -signal.SIGKILL
+
+
 def _terminate_in_reverse(
     spawned: Sequence[tuple[Service, subprocess.Popen[bytes]]],
 ) -> int:
     """SIGTERM the spawned serve processes in reverse spawn order and collect their exit codes.
 
     Reverse order tears the stack down in the opposite order it came up — the last thing started is
-    the first stopped. Each still-running child is SIGTERMed; a child that had already exited on its
-    own (crashed, or killed by the terminal's group SIGINT on Ctrl-C) is reaped in place. Death by
+    the first stopped. Each child is terminated with a bounded wait and SIGKILL escalation (see
+    :func:`_terminate_one`), so a serve that ignores SIGTERM cannot hang teardown or leak. Death by
     the teardown signals SIGTERM/SIGINT is a clean exit, not a failure (see :func:`_is_clean_exit`);
     the returned code is the first genuine failure — a positive nonzero exit or death by another
-    signal — so a crashed serve, but not a cleanly-terminated one, makes the session exit nonzero.
+    signal, including the ``-SIGKILL`` of a force-killed child — so a crashed or wedged serve, but
+    not a cleanly-terminated one, makes the session exit nonzero.
+
+    A :class:`KeyboardInterrupt` mid-teardown — a user's second Ctrl-C while children are still
+    being reaped — must not abandon the remaining children: it is caught so the loop keeps
+    terminating them, then re-raised for :func:`run` to turn into the conventional interrupt exit
+    code. Without this, the interrupt would unwind out through the earlier, not-yet-terminated
+    services, leaking them with their ports still bound.
 
     :param spawned: The service/process pairs to terminate, in spawn order.
     :return: Zero if every child exited cleanly, else the first failing exit code seen, in reverse
         spawn order.
+    :raises KeyboardInterrupt: If a Ctrl-C lands mid-teardown; re-raised only after every remaining
+        child has been terminated.
     """
     failure = 0
+    interrupt: KeyboardInterrupt | None = None
     for service, process in reversed(spawned):
-        if process.poll() is None:
-            process.terminate()
-        returncode = process.wait()
+        try:
+            returncode = _terminate_one(service, process)
+        except KeyboardInterrupt as caught:
+            # A second Ctrl-C during teardown: remember it, but keep terminating the rest before
+            # letting it unwind, so no earlier-spawned child is left running.
+            interrupt = caught
+            continue
         if not _is_clean_exit(returncode) and failure == 0:
             failure = returncode
             print(
                 f"service {service.name!r} exited with code {returncode}",
                 file=sys.stderr,
             )
+    if interrupt is not None:
+        raise interrupt
     return failure
 
 
@@ -553,15 +952,17 @@ def run(launcher: Launcher) -> int:
     4. Block until SIGINT (Ctrl-C) — or until any ``serve`` exits on its own, so a crashed server
        (e.g. its port was already taken) ends the session immediately instead of leaving it
        claiming the stack is up.
-    5. SIGTERM the spawned ``serve`` processes in reverse order and wait for them. The exit code is
-       nonzero if any child failed.
+    5. SIGTERM the spawned ``serve`` processes in reverse order and wait for them, escalating to
+       SIGKILL any that ignore SIGTERM so teardown always completes and no child leaks. The exit
+       code is nonzero if any child failed.
 
     Only what this session spawned is torn down. The platform (NATS, the API) is untouched by the
     teardown — the ``stop`` switch owns it — so a second concurrent session keeps working.
 
     A Ctrl-C landing *outside* the blocking loop — during the platform ensure, a long ``prepare``
-    build, or the spawn window — is also a clean end of the session, never a traceback: anything
-    already spawned is torn down and the conventional interrupt code ``130`` is returned.
+    build, the spawn window, or a second Ctrl-C during teardown itself — is also a clean end of the
+    session, never a traceback: anything already spawned is torn down and the conventional interrupt
+    code ``130`` is returned.
 
     :param launcher: The application's :class:`Launcher`, supplying its :class:`Service` list.
     :return: A process exit code: the failing prepare step's code if one failed, otherwise the
@@ -598,7 +999,9 @@ def run(launcher: Launcher) -> int:
 
         return exit_code
     except KeyboardInterrupt:
-        # Ctrl-C before the blocking loop (ensure, prepare, spawn, URL print): the session ends
-        # cleanly — teardown of anything spawned already ran via the finally above — with the
+        # Ctrl-C before the blocking loop (ensure, prepare, spawn, URL print), or a *second* Ctrl-C
+        # during teardown: either way the session ends cleanly — teardown of anything spawned
+        # already ran via the finally above (a mid-teardown interrupt is caught inside
+        # _terminate_in_reverse, which finishes reaping the children before re-raising) — with the
         # conventional interrupt exit code instead of a traceback.
         return _INTERRUPT_EXIT_CODE

@@ -41,6 +41,13 @@ running `start` when everything is already up simply reports it. Starting NATS
 needs Docker running; if it is not, `start` says so and exits without a
 traceback.
 
+**After changing the platform config** (`docker/compose.yaml` or
+`docker/nats/nats-server.conf`), run `uv run stop` then `uv run start` to apply
+it. `start` owns the platform and reconciles NATS against the compose file, but a
+running app *session* (`uv run collatz`) deliberately leaves an already-running
+NATS alone so it never disrupts another session — so a config change reaches a
+live platform only through the `stop`/`start` switch, not through a session.
+
 > **How the pieces fit together:** see
 > [ADR-0009: One-command app launch](docs/decision-history/0009-one-command-app-launch.md)
 > and its companion process map,

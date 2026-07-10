@@ -8,8 +8,10 @@ stale-pid handling.
 
 from __future__ import annotations
 
+import json
 import signal
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -22,18 +24,32 @@ from freeagent.sdk import launch
 def state_dir_in_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Pin the pid-file location under a temp directory so tests never touch a real repo.
 
-    Patches :func:`freeagent.sdk.launch._state_dir`. Not autouse: the dedicated ``_state_dir`` tests
-    exercise the real resolution, so they must not request this fixture.
+    Patches :func:`freeagent.sdk.launch._state_dir` to return a ``.freeagent`` directory under a
+    temp path, mirroring the real layout (the pid and log files live directly inside the state
+    directory). Not autouse: the dedicated ``_state_dir`` tests exercise the real resolution, so
+    they must not request this fixture.
+
+    :return: The temp base directory; the state directory is ``<base>/.freeagent``.
     """
-    monkeypatch.setattr(launch, "_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(launch, "_state_dir", lambda: tmp_path / launch.STATE_DIR_NAME)
     yield tmp_path
 
 
 class FakeResponse:
-    """A minimal stand-in for the object ``urllib.request.urlopen`` yields as a context manager."""
+    """A minimal stand-in for the object ``urllib.request.urlopen`` yields as a context manager.
 
-    def __init__(self, status: int) -> None:
+    Carries a ``status`` for the liveness check and an optional ``body`` for the identity probe:
+    :func:`launch._probe_listener` calls ``read()`` and parses the bytes as JSON. The default body
+    is a bare ``{"status": "ok"}`` (no identity), so an unspecified probe reads as an unidentified
+    listener rather than a Free Agent API.
+    """
+
+    def __init__(self, status: int, body: bytes = b'{"status": "ok"}') -> None:
         self.status = status
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
 
     def __enter__(self) -> FakeResponse:
         return self
@@ -42,9 +58,25 @@ class FakeResponse:
         return None
 
 
-def _patch_health(monkeypatch: pytest.MonkeyPatch, healthy_urls: set[str]) -> list[str]:
+def _identity_body(executable: str, pid: int = 4242) -> bytes:
+    """Serialize a ``/health`` identity payload the way the API does, for driving the probe.
+
+    :param executable: The serving interpreter path to report.
+    :param pid: The serving pid to report.
+    :return: The JSON body bytes a healthy identity-revealing ``/health`` returns.
+    """
+    return json.dumps({"status": "ok", "executable": executable, "pid": pid}).encode()
+
+
+def _patch_health(
+    monkeypatch: pytest.MonkeyPatch, healthy_urls: set[str], body: bytes | None = None
+) -> list[str]:
     """Patch ``urlopen`` so URLs in ``healthy_urls`` return 200 and all others raise.
 
+    :param healthy_urls: The URLs that answer 200; every other URL raises a connection error.
+    :param body: The response body healthy URLs return; defaults to a bare ``{"status": "ok"}``
+        liveness payload (no identity), so ``ensure_api`` probes read as an unidentified listener
+        unless a caller passes an identity payload via :func:`_identity_body`.
     :return: A list that records every URL probed, in order.
     """
     probed: list[str] = []
@@ -52,7 +84,7 @@ def _patch_health(monkeypatch: pytest.MonkeyPatch, healthy_urls: set[str]) -> li
     def fake_urlopen(url: str, timeout: float = 0) -> FakeResponse:
         probed.append(url)
         if url in healthy_urls:
-            return FakeResponse(200)
+            return FakeResponse(200) if body is None else FakeResponse(200, body)
         raise OSError("connection refused")
 
     monkeypatch.setattr("freeagent.sdk.launch.urllib.request.urlopen", fake_urlopen)
@@ -157,6 +189,77 @@ def test_ensure_nats_passes_explicit_compose_file(monkeypatch: pytest.MonkeyPatc
     assert str(explicit) in captured[0]
 
 
+def test_ensure_nats_reconcile_runs_compose_up_even_when_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The platform owner (`start`) reconciles: NATS answering healthz is not enough — a stale
+    # container from an old config must be brought in line with the compose file, so `compose up
+    # --detach --wait` runs unconditionally. The outcome reports the reconciliation honestly: NATS
+    # was already up, so it was RECONCILED, not "started".
+    _patch_health(monkeypatch, {launch.NATS_HEALTH_URL})
+    monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/usr/bin/docker")
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_: Any) -> Any:
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.run", fake_run)
+
+    assert launch.ensure_nats(reconcile=True) is launch.Outcome.RECONCILED
+    assert calls == [
+        [
+            "docker",
+            "compose",
+            "--file",
+            str(launch.resolve_compose_file(None)),
+            "up",
+            "--detach",
+            "--wait",
+        ]
+    ]
+
+
+def test_ensure_nats_reconcile_reports_started_when_nats_was_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Reconciling a platform that was not up at all is a plain start, and reports as one.
+    _patch_health(monkeypatch, set())
+    monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/usr/bin/docker")
+
+    def fake_run(cmd: list[str], **_: Any) -> Any:
+        return type("R", (), {"returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.run", fake_run)
+
+    assert launch.ensure_nats(reconcile=True) is launch.Outcome.STARTED
+
+
+def test_ensure_nats_reconcile_still_needs_docker(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Reconciliation runs docker unconditionally, so a missing docker must still raise clearly even
+    # when NATS happens to be answering healthz.
+    _patch_health(monkeypatch, {launch.NATS_HEALTH_URL})
+    monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: None)
+
+    with pytest.raises(launch.DockerUnavailableError, match="docker is required"):
+        launch.ensure_nats(reconcile=True)
+
+
+def test_ensure_nats_without_reconcile_short_circuits_when_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A session (the default) must never disrupt a NATS other sessions share: answering healthz is
+    # enough, and docker is never touched.
+    _patch_health(monkeypatch, {launch.NATS_HEALTH_URL})
+
+    def fail(*_: Any, **__: Any) -> None:
+        raise AssertionError("a session must not run docker compose when NATS is already healthy")
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.run", fail)
+    assert launch.ensure_nats(reconcile=False) is launch.Outcome.ALREADY_RUNNING
+
+
 def test_ensure_nats_raises_when_docker_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_health(monkeypatch, set())
     monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: None)
@@ -200,22 +303,111 @@ def reset_fake_popen() -> Iterator[None]:
     yield
 
 
-def test_ensure_api_already_running_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_health(monkeypatch, {launch.api_health_url()})
+def test_ensure_api_already_running_adopts_our_own_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The listener at the port reports *our* interpreter: it is this environment's API, so ensure is
+    # a no-op and nothing is spawned.
+    _patch_health(
+        monkeypatch, {launch.api_health_url()}, body=_identity_body(sys.executable, pid=4242)
+    )
 
     def fail(*_: Any, **__: Any) -> None:
-        raise AssertionError("the API must not be spawned when already healthy")
+        raise AssertionError("the API must not be spawned when our own API is already healthy")
 
     monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", fail)
     assert launch.ensure_api() is launch.Outcome.ALREADY_RUNNING
 
 
+def test_ensure_api_adopts_our_own_api_reported_under_a_different_alias(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The listener reports the same interpreter through a different alias (venvs symlink `python`
+    # and `python3` to one binary; the API's console-script shebang may name either). Aliases of one
+    # interpreter are the same environment, so ensure must adopt, not reject a legitimate API.
+    binary = tmp_path / "python3.12"
+    binary.write_bytes(b"")
+    ours = tmp_path / "python"
+    ours.symlink_to(binary)
+    theirs = tmp_path / "python3"
+    theirs.symlink_to(binary)
+    monkeypatch.setattr("freeagent.sdk.launch.sys.executable", str(ours))
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=_identity_body(str(theirs)))
+
+    def fail(*_: Any, **__: Any) -> None:
+        raise AssertionError("the API must not be spawned when our own API is already healthy")
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", fail)
+    assert launch.ensure_api() is launch.Outcome.ALREADY_RUNNING
+
+
+def test_ensure_api_rejects_wrong_environment_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A healthy API answers, but from a *different* venv (the deleted-worktree incident): adopting
+    # it would 404 every request, so ensure aborts with the impostor's venv, pid, and a remedy —
+    # never silently returning ALREADY_RUNNING.
+    impostor = "/deleted/worktree/.venv/bin/python"
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=_identity_body(impostor, pid=9999))
+
+    def fail(*_: Any, **__: Any) -> None:
+        raise AssertionError("a wrong-environment API must never be spawned over or adopted")
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", fail)
+
+    with pytest.raises(SystemExit) as excinfo:
+        launch.ensure_api()
+    message = str(excinfo.value)
+    assert impostor in message
+    assert "9999" in message
+    assert sys.executable in message
+    # The remedy is actionable: it names how to clear the impostor.
+    assert "kill 9999" in message
+
+
+def test_ensure_api_rejects_identity_less_listener(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A process squats the port and answers health checks but reports no Free Agent identity (a
+    # non-JSON body here). It is not our API: ensure refuses rather than adopting it or colliding.
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=b"not json at all")
+
+    def fail(*_: Any, **__: Any) -> None:
+        raise AssertionError("a non-API listener must never be adopted or spawned over")
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", fail)
+
+    with pytest.raises(SystemExit) as excinfo:
+        launch.ensure_api()
+    message = str(excinfo.value)
+    assert "not the Free Agent API" in message
+    assert launch.api_health_url() in message
+    # The lsof remedy names the actual port from the URL, not a misparse of the scheme colon.
+    assert "lsof -nP -iTCP:8000 " in message
+
+
+def test_reject_unidentified_listener_defaults_the_port_from_the_scheme() -> None:
+    # A health URL with no explicit port must still yield a usable lsof hint: the scheme's default
+    # port, never an empty string misparsed from the scheme colon.
+    with pytest.raises(SystemExit) as excinfo:
+        launch._reject_unidentified_listener("http://localhost/health")
+    assert "lsof -nP -iTCP:80 " in str(excinfo.value)
+
+    with pytest.raises(SystemExit) as excinfo:
+        launch._reject_unidentified_listener("https://localhost/health")
+    assert "lsof -nP -iTCP:443 " in str(excinfo.value)
+
+
+def _patch_port_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the initial probe find the port free, so ``ensure_api`` proceeds to spawn.
+
+    Patches :func:`launch._probe_listener` to report :attr:`launch._ListenerState.ABSENT` — nothing
+    is listening — the precondition for the spawn path.
+    """
+    monkeypatch.setattr(launch, "_probe_listener", lambda _: (launch._ListenerState.ABSENT, None))
+
+
 def test_ensure_api_spawns_detached_and_writes_pid(
     monkeypatch: pytest.MonkeyPatch, state_dir_in_tmp: Path
 ) -> None:
-    # Down on the first probe, healthy afterwards (the wait loop then succeeds).
-    probes = iter([False, True, True])
-    monkeypatch.setattr(launch, "_is_healthy", lambda _: next(probes))
+    # The port is free on the initial probe; the spawned API then becomes healthy so the wait loop
+    # succeeds.
+    _patch_port_absent(monkeypatch)
+    monkeypatch.setattr(launch, "_wait_until_healthy", lambda url, timeout=0: True)
     monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/venv/bin/freeagent-api")
     monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", FakePopen)
 
@@ -249,8 +441,8 @@ def test_ensure_api_redirects_stdio_away_from_the_terminal(
 ) -> None:
     # The detached API must not inherit the spawning terminal's stdio: its output would interleave
     # into that shell, and the terminal closing would make the daemon's writes start failing.
-    probes = iter([False, True, True])
-    monkeypatch.setattr(launch, "_is_healthy", lambda _: next(probes))
+    _patch_port_absent(monkeypatch)
+    monkeypatch.setattr(launch, "_wait_until_healthy", lambda url, timeout=0: True)
     monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/venv/bin/freeagent-api")
     monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", FakePopen)
 
@@ -290,8 +482,8 @@ def test_ensure_api_overwrites_stale_pid_file(
     pid_file.parent.mkdir(parents=True)
     pid_file.write_text("999999")
 
-    probes = iter([False, True])
-    monkeypatch.setattr(launch, "_is_healthy", lambda _: next(probes))
+    _patch_port_absent(monkeypatch)
+    monkeypatch.setattr(launch, "_wait_until_healthy", lambda url, timeout=0: True)
     monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/venv/bin/freeagent-api")
     monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", FakePopen)
 
@@ -314,6 +506,82 @@ def test_ensure_api_exits_when_spawn_never_healthy(
 
 
 # --------------------------------------------------------------------------------------------------
+# _probe_listener (the health-identity classifier)
+# --------------------------------------------------------------------------------------------------
+
+
+def test_probe_listener_absent_on_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_health(monkeypatch, set())
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.ABSENT
+    assert identity is None
+
+
+def test_probe_listener_absent_on_non_2xx(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "freeagent.sdk.launch.urllib.request.urlopen", lambda url, timeout=0: FakeResponse(503)
+    )
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.ABSENT
+    assert identity is None
+
+
+def test_probe_listener_identified_on_full_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_health(
+        monkeypatch,
+        {launch.api_health_url()},
+        body=_identity_body("/venv/bin/python", pid=4242),
+    )
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.IDENTIFIED
+    assert identity == launch._ListenerIdentity(executable="/venv/bin/python", pid=4242)
+
+
+def test_probe_listener_unidentified_on_non_json_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=b"<html>hello</html>")
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.UNIDENTIFIED
+    assert identity is None
+
+
+def test_probe_listener_unidentified_on_json_missing_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Valid JSON, healthy, but with no Free Agent identity (the pre-#117 ``{"status": "ok"}``).
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=b'{"status": "ok"}')
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.UNIDENTIFIED
+    assert identity is None
+
+
+def test_probe_listener_unidentified_on_non_object_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A 2xx JSON body that is not an object (a bare list) carries no identity fields.
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=b"[1, 2, 3]")
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.UNIDENTIFIED
+    assert identity is None
+
+
+def test_probe_listener_unidentified_on_non_utf8_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A squatter serving binary content (an image, a compressed stream): the body is not even
+    # decodable text, let alone JSON. That must classify as an unidentified listener — reported with
+    # the friendly "free that port" error — not escape as a UnicodeDecodeError traceback.
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=b"\xff\xfe\x00\x01binary")
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.UNIDENTIFIED
+    assert identity is None
+
+
+def test_probe_listener_unidentified_when_pid_not_int(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An identity whose pid is the wrong type is not a Free Agent API's response shape.
+    body = json.dumps({"status": "ok", "executable": "/venv/bin/python", "pid": "nope"}).encode()
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=body)
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.UNIDENTIFIED
+    assert identity is None
+
+
+# --------------------------------------------------------------------------------------------------
 # stop_api
 # --------------------------------------------------------------------------------------------------
 
@@ -328,11 +596,11 @@ def test_stop_api_clears_stale_pid_file(
     pid_file = state_dir_in_tmp / launch.STATE_DIR_NAME / launch.API_PID_FILE_NAME
     pid_file.parent.mkdir(parents=True)
     pid_file.write_text("999999")
-    # The recorded process is dead.
-    monkeypatch.setattr(launch, "_process_alive", lambda _: False)
+    # Health is the source of truth, and the API is not answering: the pid file is stale.
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: False)
 
     def fail(*_: Any, **__: Any) -> None:
-        raise AssertionError("must not signal a dead process")
+        raise AssertionError("must not signal when the API is not answering health")
 
     monkeypatch.setattr("freeagent.sdk.launch.os.kill", fail)
 
@@ -347,9 +615,10 @@ def test_stop_api_signals_live_process_and_removes_file(
     pid_file.parent.mkdir(parents=True)
     pid_file.write_text("12345")
 
-    # Alive for the initial check, dead once signalled (so the wait loop exits promptly).
-    alive = iter([True, False])
-    monkeypatch.setattr(launch, "_process_alive", lambda _: next(alive))
+    # The API answers health, so the recorded pid is trusted and signalled.
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+    # Dead once signalled, so the wait loop exits promptly.
+    monkeypatch.setattr(launch, "_process_alive", lambda _: False)
 
     signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(
@@ -358,6 +627,46 @@ def test_stop_api_signals_live_process_and_removes_file(
 
     assert launch.stop_api() is True
     assert signalled == [(12345, signal.SIGTERM)]
+    assert not pid_file.exists()
+
+
+def test_stop_api_clears_pid_file_when_signal_finds_recycled_dead_pid(
+    monkeypatch: pytest.MonkeyPatch, state_dir_in_tmp: Path
+) -> None:
+    # Health answers, but the recorded pid vanished between the check and the kill (recycled onto a
+    # process that has since exited): os.kill raises ProcessLookupError.
+    pid_file = state_dir_in_tmp / launch.STATE_DIR_NAME / launch.API_PID_FILE_NAME
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text("12345")
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+
+    def raise_lookup(pid: int, sig: int) -> None:
+        raise ProcessLookupError
+
+    monkeypatch.setattr("freeagent.sdk.launch.os.kill", raise_lookup)
+
+    # No traceback: the stale file is cleared and "nothing to do" is reported.
+    assert launch.stop_api() is False
+    assert not pid_file.exists()
+
+
+def test_stop_api_clears_pid_file_when_signal_is_permission_denied(
+    monkeypatch: pytest.MonkeyPatch, state_dir_in_tmp: Path
+) -> None:
+    # Health answers, but the recorded pid now belongs to another user's process (a stale pid file
+    # after a reboot recycled the pid): os.kill raises PermissionError.
+    pid_file = state_dir_in_tmp / launch.STATE_DIR_NAME / launch.API_PID_FILE_NAME
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text("12345")
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+
+    def raise_perm(pid: int, sig: int) -> None:
+        raise PermissionError
+
+    monkeypatch.setattr("freeagent.sdk.launch.os.kill", raise_perm)
+
+    # No traceback, and the stale file is cleared so later stops do not fail the same way.
+    assert launch.stop_api() is False
     assert not pid_file.exists()
 
 
@@ -374,22 +683,130 @@ def test_stop_api_ignores_malformed_pid_file(state_dir_in_tmp: Path) -> None:
 # --------------------------------------------------------------------------------------------------
 
 
-def test_state_dir_is_repo_root_when_in_repo(
+def test_state_dir_is_repo_state_dir_when_in_repo(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # In a repo the state directory is <repo-root>/.freeagent, shared by every session in the repo
+    # regardless of the subdirectory it is launched from.
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
     subdir = repo / "packages" / "thing"
     subdir.mkdir(parents=True)
     monkeypatch.chdir(subdir)
-    assert launch._state_dir() == repo
+    assert launch._state_dir() == repo / launch.STATE_DIR_NAME
 
 
-def test_state_dir_is_cwd_when_not_in_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_state_dir_is_user_dir_when_not_in_repo_ignoring_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Out of a repo the state directory does NOT depend on cwd: two different loose directories
+    # resolve to the same user-level path, so ensure-here / stop-there agree (issue #116).
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv(launch.XDG_STATE_HOME_ENV, raising=False)
+
+    first = tmp_path / "loose-one"
+    first.mkdir()
+    monkeypatch.chdir(first)
+    from_first = launch._state_dir()
+
+    second = tmp_path / "loose-two"
+    second.mkdir()
+    monkeypatch.chdir(second)
+    from_second = launch._state_dir()
+
+    assert from_first == from_second == home / launch.STATE_DIR_NAME
+
+
+def test_state_dir_honors_xdg_state_home_when_not_in_repo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # When XDG_STATE_HOME is set, the user-level state lives under its freeagent subdirectory.
+    xdg = tmp_path / "xdg-state"
+    xdg.mkdir()
+    monkeypatch.setenv(launch.XDG_STATE_HOME_ENV, str(xdg))
     outside = tmp_path / "loose"
     outside.mkdir()
     monkeypatch.chdir(outside)
-    assert launch._state_dir() == outside
+    assert launch._state_dir() == xdg / launch._USER_STATE_SUBDIR
+
+
+def test_state_dir_falls_back_to_home_when_xdg_state_home_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # An empty XDG_STATE_HOME (set but blank) is treated as unset, per the XDG spec.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv(launch.XDG_STATE_HOME_ENV, "")
+    outside = tmp_path / "loose"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    assert launch._state_dir() == home / launch.STATE_DIR_NAME
+
+
+def test_state_dir_ignores_relative_xdg_state_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A relative XDG_STATE_HOME must be ignored (XDG spec): honoring it would resolve against the
+    # cwd and reopen the cwd-dependence this fix closes. Fall back to the home directory instead.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv(launch.XDG_STATE_HOME_ENV, "relative/state")
+    outside = tmp_path / "loose"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    assert launch._state_dir() == home / launch.STATE_DIR_NAME
+
+
+def test_ensure_from_one_dir_and_stop_from_another_agree_out_of_repo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The exact out-of-repo scenario the issue calls out: an app session ensures the API from one
+    # directory and the switch stops it from another. Both must resolve the same pid file so stop
+    # actually finds and kills the API, instead of orphaning it while the port stays held.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv(launch.XDG_STATE_HOME_ENV, raising=False)
+
+    # No enclosing repo from either directory.
+    monkeypatch.setattr(launch, "_repo_root", lambda: None)
+    monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/venv/bin/freeagent-api")
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", FakePopen)
+
+    # ensure_api from directory A: the port is free on the initial identity probe, so the API is
+    # spawned; it then becomes healthy so the wait loop succeeds. The probe is intercepted at
+    # _probe_listener (ensure gates on identity, not bare liveness — issue #117), so this stays
+    # hermetic and never reaches a real listener on the port.
+    ensure_dir = tmp_path / "app-a"
+    ensure_dir.mkdir()
+    monkeypatch.chdir(ensure_dir)
+    _patch_port_absent(monkeypatch)
+    monkeypatch.setattr(launch, "_wait_until_healthy", lambda url, timeout=0: True)
+    assert launch.ensure_api() is launch.Outcome.STARTED
+    pid_path = launch._api_pid_file()
+    assert pid_path.read_text() == str(FakePopen.instances[0].pid)
+
+    # stop_api from directory B must resolve that same pid file and signal the recorded pid. stop
+    # gates on health (issue #114), so the API answers healthy; the recorded pid is then alive for
+    # the initial post-signal check and gone once signalled.
+    stop_dir = tmp_path / "switch-b"
+    stop_dir.mkdir()
+    monkeypatch.chdir(stop_dir)
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+    alive = iter([True, False])
+    monkeypatch.setattr(launch, "_process_alive", lambda _: next(alive))
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "freeagent.sdk.launch.os.kill", lambda pid, sig: signalled.append((pid, sig))
+    )
+
+    assert launch.stop_api() is True
+    assert signalled == [(FakePopen.instances[0].pid, signal.SIGTERM)]
+    assert not pid_path.exists()
 
 
 def test_process_alive_reports_dead_for_missing_pid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -448,8 +865,10 @@ def test_stop_api_waits_for_process_to_exit(
     pid_file.parent.mkdir(parents=True)
     pid_file.write_text("12345")
 
-    # Alive for the initial check and the first wait-loop check, then gone: the loop sleeps once.
-    alive = iter([True, True, False])
+    # The API answers health, so the pid is signalled; alive for the first wait-loop check, then
+    # gone: the loop sleeps once.
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+    alive = iter([True, False])
     monkeypatch.setattr(launch, "_process_alive", lambda _: next(alive))
     monkeypatch.setattr("freeagent.sdk.launch.os.kill", lambda pid, sig: None)
     slept: list[float] = []
@@ -458,6 +877,77 @@ def test_stop_api_waits_for_process_to_exit(
     assert launch.stop_api() is True
     assert slept == [launch._STOP_POLL_INTERVAL_SECONDS]
     assert not pid_file.exists()
+
+
+def test_stop_api_escalates_to_sigkill_when_sigterm_ignored(
+    monkeypatch: pytest.MonkeyPatch, state_dir_in_tmp: Path
+) -> None:
+    # A SIGTERM-ignoring API (or one wedged mid-request) must be force-killed, not orphaned with its
+    # port still bound where a later start() would see a zombie answering /health.
+    pid_file = state_dir_in_tmp / launch.STATE_DIR_NAME / launch.API_PID_FILE_NAME
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text("12345")
+
+    # The API answers health, so the recorded pid is trusted and signalled.
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+    # Still alive across the whole SIGTERM wait (times out), gone only once SIGKILL is delivered.
+    signalled: list[tuple[int, int]] = []
+
+    def fake_alive(_pid: int) -> bool:
+        # Dead only after SIGKILL was sent.
+        return signal.SIGKILL not in {sig for _, sig in signalled}
+
+    monkeypatch.setattr(launch, "_process_alive", fake_alive)
+    monkeypatch.setattr(
+        "freeagent.sdk.launch.os.kill", lambda pid, sig: signalled.append((pid, sig))
+    )
+    monkeypatch.setattr("freeagent.sdk.launch.time.sleep", lambda _seconds: None)
+    # Make the SIGTERM wait expire immediately so the test doesn't spin for 10s.
+    monkeypatch.setattr(launch, "_STOP_TIMEOUT_SECONDS", 0.0)
+
+    assert launch.stop_api() is True
+    assert signalled == [(12345, signal.SIGTERM), (12345, signal.SIGKILL)]
+    assert not pid_file.exists()
+
+
+def test_stop_api_raises_and_keeps_pid_file_when_sigkill_fails(
+    monkeypatch: pytest.MonkeyPatch, state_dir_in_tmp: Path
+) -> None:
+    # The nastiest case: even SIGKILL cannot reap the process in time (e.g. stuck in uninterruptible
+    # I/O). stop_api must raise a distinct failure (not a False a caller would read as "nothing was
+    # running") and keep the pid file so the live API is not silently forgotten.
+    pid_file = state_dir_in_tmp / launch.STATE_DIR_NAME / launch.API_PID_FILE_NAME
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text("12345")
+
+    # The API answers health, so the recorded pid is trusted and signalled.
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+    # Never dies, no matter what is signalled.
+    monkeypatch.setattr(launch, "_process_alive", lambda _pid: True)
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "freeagent.sdk.launch.os.kill", lambda pid, sig: signalled.append((pid, sig))
+    )
+    monkeypatch.setattr("freeagent.sdk.launch.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(launch, "_STOP_TIMEOUT_SECONDS", 0.0)
+    monkeypatch.setattr(launch, "_STOP_KILL_TIMEOUT_SECONDS", 0.0)
+
+    with pytest.raises(launch.StopFailedError, match="even after SIGKILL"):
+        launch.stop_api()
+    # Both signals were tried, and the pid file survives so the failure is not silently erased.
+    assert signalled == [(12345, signal.SIGTERM), (12345, signal.SIGKILL)]
+    assert pid_file.exists()
+
+
+def test_wait_for_pid_exit_true_when_already_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(launch, "_process_alive", lambda _pid: False)
+    assert launch._wait_for_pid_exit(12345, timeout=1.0) is True
+
+
+def test_wait_for_pid_exit_false_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(launch, "_process_alive", lambda _pid: True)
+    monkeypatch.setattr("freeagent.sdk.launch.time.sleep", lambda _seconds: None)
+    assert launch._wait_for_pid_exit(12345, timeout=0.0) is False
 
 
 # --------------------------------------------------------------------------------------------------
@@ -494,14 +984,31 @@ class FakeServeProcess:
     :param term_code: The code a *live* serve reports after ``terminate``; defaults to ``-SIGTERM``,
         the real default for a process with no SIGTERM handler. Override to model a serve that traps
         SIGTERM and exits 0, or ignores it and dies some other way.
+    :param ignores_sigterm: If True, the serve ignores ``terminate``: ``wait(timeout=...)`` raises
+        :class:`subprocess.TimeoutExpired` until ``kill`` (SIGKILL) is delivered, after which
+        ``wait`` reports ``-SIGKILL``. Models the shell/``npm`` wrapper that does not forward
+        signals — the case bounded-wait teardown must escalate rather than hang on.
+    :param unreapable: If True, the serve never becomes reapable: ``wait(timeout=...)`` raises
+        :class:`subprocess.TimeoutExpired` even after ``kill``. Models a child stuck in
+        uninterruptible I/O — teardown must abandon the wait rather than hang or crash.
     """
 
     def __init__(
-        self, name: str, exit_code: int | None = None, term_code: int = -signal.SIGTERM
+        self,
+        name: str,
+        exit_code: int | None = None,
+        term_code: int = -signal.SIGTERM,
+        ignores_sigterm: bool = False,
+        unreapable: bool = False,
     ) -> None:
         self.name = name
         self._term_code = term_code
+        # An unreapable child also ignores SIGTERM (it never exits on its own), so the SIGTERM wait
+        # must time out and escalate before the post-SIGKILL wait is reached.
+        self._ignores_sigterm = ignores_sigterm or unreapable
+        self._unreapable = unreapable
         self.terminated = False
+        self.killed = False
         # A serve already exited on its own (crashed, or group-SIGINT'd) is reaped in place.
         self._exit_code = exit_code
 
@@ -510,11 +1017,22 @@ class FakeServeProcess:
 
     def terminate(self) -> None:
         self.terminated = True
-        self._exit_code = self._term_code
+        if not self._ignores_sigterm:
+            self._exit_code = self._term_code
 
-    def wait(self) -> int:
-        # A real wait() blocks until exit; a live serve here is considered terminated by teardown.
+    def kill(self) -> None:
+        self.killed = True
+        if not self._unreapable:
+            self._exit_code = -signal.SIGKILL
+
+    def wait(self, timeout: float | None = None) -> int:
+        # A serve that ignores SIGTERM does not exit on terminate(): a bounded wait times out until
+        # kill() (SIGKILL) has been delivered, mirroring a real Popen.wait(timeout=...). An
+        # unreapable child times out even after kill(), so it never returns an exit code.
         if self._exit_code is None:
+            if self._unreapable or (self._ignores_sigterm and not self.killed):
+                raise subprocess.TimeoutExpired(cmd=self.name, timeout=timeout or 0)
+            # A real wait() blocks until exit; a live serve here is treated as teardown-terminated.
             self._exit_code = self._term_code
         return self._exit_code
 
@@ -781,6 +1299,139 @@ def test_terminate_in_reverse_treats_other_signal_death_as_failure() -> None:
         (launch.Service(name="worker", serve=["worker"]), killed),
     ]
     assert launch._terminate_in_reverse(spawned) == -signal.SIGKILL
+
+
+def test_terminate_in_reverse_escalates_to_sigkill_when_sigterm_ignored() -> None:
+    # A serve that ignores SIGTERM (a shell/npm wrapper that doesn't forward signals): the bounded
+    # wait times out, teardown escalates to SIGKILL rather than hang, and the child is reaped.
+    stubborn = FakeServeProcess("worker", ignores_sigterm=True)
+    spawned: list[tuple[launch.Service, Any]] = [
+        (launch.Service(name="worker", serve=["worker"]), stubborn),
+    ]
+
+    # Death by SIGKILL after ignoring SIGTERM is a genuine failure, not a clean teardown.
+    assert launch._terminate_in_reverse(spawned) == -signal.SIGKILL
+    assert stubborn.terminated is True
+    assert stubborn.killed is True
+
+
+def test_terminate_one_uses_the_bounded_teardown_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The wait must be bounded — a real Popen.wait() with no timeout would hang on a stuck child.
+    waited: list[float | None] = []
+    proc: Any = FakeServeProcess("viewer")
+    original_wait = FakeServeProcess.wait
+
+    def record_wait(self: FakeServeProcess, timeout: float | None = None) -> int:
+        waited.append(timeout)
+        return original_wait(self, timeout)
+
+    monkeypatch.setattr(FakeServeProcess, "wait", record_wait)
+
+    assert launch._terminate_one(launch.Service(name="viewer", serve=["viewer"]), proc) < 0
+    assert waited == [launch._TEARDOWN_TIMEOUT_SECONDS]
+
+
+def test_terminate_one_abandons_the_wait_when_even_sigkill_will_not_reap() -> None:
+    # A child stuck in uninterruptible I/O does not become reapable even after SIGKILL.
+    # _terminate_one must not hang on the post-kill wait or let TimeoutExpired escape: it reports
+    # the child as force-killed (-SIGKILL) and returns, so teardown of the rest continues and run()
+    # never crashes.
+    unreapable: Any = FakeServeProcess("worker", unreapable=True)
+    assert launch._terminate_one(launch.Service(name="worker", serve=["worker"]), unreapable) == (
+        -signal.SIGKILL
+    )
+    assert unreapable.terminated is True
+    assert unreapable.killed is True
+
+
+def test_terminate_one_force_kills_the_in_flight_child_on_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A Ctrl-C landing while _terminate_one waits on this child's SIGTERM must not leave that child
+    # running: it is SIGKILLed before the interrupt is allowed to unwind.
+    proc: Any = FakeServeProcess("viewer")
+
+    def wait_interrupted(_self: FakeServeProcess, timeout: float | None = None) -> int:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(FakeServeProcess, "wait", wait_interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        launch._terminate_one(launch.Service(name="viewer", serve=["viewer"]), proc)
+    # The in-flight child was force-killed before the interrupt propagated — it cannot leak.
+    assert proc.terminated is True
+    assert proc.killed is True
+
+
+def test_terminate_in_reverse_reaps_remaining_children_on_mid_teardown_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A second Ctrl-C mid-teardown must not abandon the earlier-spawned children: the interrupt is
+    # caught so the loop finishes terminating every child, then re-raised for run() to handle.
+    first = FakeServeProcess("first")
+    second = FakeServeProcess("second")
+    third = FakeServeProcess("third")
+    spawned: list[tuple[launch.Service, Any]] = [
+        (launch.Service(name="first", serve=["first"]), first),
+        (launch.Service(name="second", serve=["second"]), second),
+        (launch.Service(name="third", serve=["third"]), third),
+    ]
+
+    original_wait = FakeServeProcess.wait
+
+    def interrupt_on_second_wait(self: FakeServeProcess, timeout: float | None = None) -> int:
+        # Teardown runs in reverse order (third, second, first); the interrupt lands while waiting
+        # on the second child's SIGTERM.
+        if self.name == "second":
+            raise KeyboardInterrupt
+        return original_wait(self, timeout)
+
+    monkeypatch.setattr(FakeServeProcess, "wait", interrupt_on_second_wait)
+
+    with pytest.raises(KeyboardInterrupt):
+        launch._terminate_in_reverse(spawned)
+
+    # Every child was terminated — none leaked. The interrupted middle child was force-killed by
+    # _terminate_one before the interrupt unwound; the earlier 'first' was still torn down after.
+    assert third.terminated is True
+    assert second.killed is True
+    assert first.terminated is True
+
+
+def test_run_reaps_children_and_returns_130_on_second_ctrl_c_during_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # End-to-end: a first Ctrl-C ends the block, then a second Ctrl-C lands mid-teardown. run() must
+    # still terminate every spawned child and return the conventional interrupt code, not a
+    # traceback and not a leaked process.
+    _no_platform(monkeypatch)
+    monkeypatch.setattr(launch, "_run_prepare_steps", lambda services: 0)
+
+    early = FakeServeProcess("viewer")
+    late = FakeServeProcess("worker")
+    spawned = [
+        (launch.Service(name="viewer", serve=["viewer"]), early),
+        (launch.Service(name="worker", serve=["worker"]), late),
+    ]
+    monkeypatch.setattr(launch, "_spawn_serves", lambda services: spawned)
+    monkeypatch.setattr(launch, "_block_until_interrupt_or_exit", _raise_keyboard_interrupt)
+
+    original_wait = FakeServeProcess.wait
+
+    def interrupt_on_late_wait(self: FakeServeProcess, timeout: float | None = None) -> int:
+        # The 'worker' is torn down first (reverse order); a second Ctrl-C hits while waiting on it.
+        if self.name == "worker":
+            raise KeyboardInterrupt
+        return original_wait(self, timeout)
+
+    monkeypatch.setattr(FakeServeProcess, "wait", interrupt_on_late_wait)
+
+    assert launch.run(RecordingLauncher("collatz", [])) == 130
+    # Both children were terminated despite the interrupt mid-teardown — nothing leaked. The
+    # interrupted 'worker' was force-killed before the interrupt unwound.
+    assert early.terminated is True
+    assert late.terminated is True
+    assert late.killed is True
 
 
 def test_is_clean_exit_classifies_teardown_codes() -> None:

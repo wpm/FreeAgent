@@ -32,10 +32,10 @@ class FakeCompletedProcess:
 def test_start_ensures_nats_against_the_in_repo_compose_file(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    compose_files: list[Any] = []
+    calls: list[tuple[Any, bool]] = []
 
-    def fake_ensure_nats(compose_file: Any = None) -> launch.Outcome:
-        compose_files.append(compose_file)
+    def fake_ensure_nats(compose_file: Any = None, reconcile: bool = False) -> launch.Outcome:
+        calls.append((compose_file, reconcile))
         return launch.Outcome.STARTED
 
     monkeypatch.setattr(launch, "ensure_nats", fake_ensure_nats)
@@ -43,8 +43,10 @@ def test_start_ensures_nats_against_the_in_repo_compose_file(
 
     start.start()
 
-    # The in-repo compose file is the source of truth, passed explicitly (never the packaged copy).
-    assert compose_files == [start.COMPOSE_FILE]
+    # The in-repo compose file is the source of truth, passed explicitly (never the packaged copy),
+    # and the switch owns the platform so it reconciles: `compose up --wait` runs unconditionally,
+    # bringing a container left on a stale config back in line (see issue #115 F7).
+    assert calls == [(start.COMPOSE_FILE, True)]
     output = capsys.readouterr().out
     assert "NATS network started." in output
     assert "freeagent-api started." in output
@@ -54,7 +56,9 @@ def test_start_reports_everything_already_running(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(
-        launch, "ensure_nats", lambda compose_file=None: launch.Outcome.ALREADY_RUNNING
+        launch,
+        "ensure_nats",
+        lambda compose_file=None, reconcile=False: launch.Outcome.ALREADY_RUNNING,
     )
     monkeypatch.setattr(launch, "ensure_api", lambda: launch.Outcome.ALREADY_RUNNING)
 
@@ -70,7 +74,9 @@ def test_start_reports_mixed_outcomes(
 ) -> None:
     # NATS already up but the API had to be started: each line reflects its own outcome.
     monkeypatch.setattr(
-        launch, "ensure_nats", lambda compose_file=None: launch.Outcome.ALREADY_RUNNING
+        launch,
+        "ensure_nats",
+        lambda compose_file=None, reconcile=False: launch.Outcome.ALREADY_RUNNING,
     )
     monkeypatch.setattr(launch, "ensure_api", lambda: launch.Outcome.STARTED)
 
@@ -82,7 +88,9 @@ def test_start_reports_mixed_outcomes(
 
 
 def test_start_exits_with_guidance_when_docker_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    def raise_docker_unavailable(compose_file: Any = None) -> launch.Outcome:
+    def raise_docker_unavailable(
+        compose_file: Any = None, reconcile: bool = False
+    ) -> launch.Outcome:
         raise launch.DockerUnavailableError("docker is required but was not found on PATH")
 
     monkeypatch.setattr(launch, "ensure_nats", raise_docker_unavailable)
@@ -152,6 +160,26 @@ def test_stop_succeeds_when_api_was_not_running(
     output = capsys.readouterr().out
     assert "freeagent-api was not running." in output
     assert "NATS network is down." in output
+
+
+def test_stop_reports_failure_and_does_not_take_nats_down_when_api_cannot_be_killed(
+    monkeypatch: pytest.MonkeyPatch, docker_on_path: None
+) -> None:
+    # stop_api raises StopFailedError when a live API survives even SIGKILL. stop must surface that
+    # failure and must NOT take NATS down under a still-running API (nor claim it stopped).
+    def raise_stop_failed() -> bool:
+        raise launch.StopFailedError("the API (pid 12345) did not exit even after SIGKILL")
+
+    monkeypatch.setattr(launch, "stop_api", raise_stop_failed)
+
+    def fail_run(*_: Any, **__: Any) -> FakeCompletedProcess:
+        raise AssertionError("docker compose down must not run while the API is still alive")
+
+    monkeypatch.setattr("freeagent.start.subprocess.run", fail_run)
+
+    with pytest.raises(SystemExit) as excinfo:
+        start.stop()
+    assert "even after SIGKILL" in str(excinfo.value)
 
 
 def test_stop_always_takes_nats_down_even_after_stopping_the_api(

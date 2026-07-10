@@ -23,6 +23,7 @@ explicitly.
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -89,6 +90,29 @@ class MessagesResponse(BaseModel):
     messages: list[DataPlaneRecord]
 
 
+class HealthResponse(BaseModel):
+    """The body of a ``GET /health`` response: liveness plus the serving environment's identity.
+
+    Liveness alone is not enough for a launcher to decide the platform is up: any healthy listener
+    on the port — an API from a deleted worktree's venv, from another checkout, or an unrelated
+    process — would satisfy a bare ``status: ok`` probe, and the launcher would silently adopt it
+    even though its environment has no entry point for the caller's applications. So health reveals
+    *which* environment is answering, and the launcher only adopts an API whose identity matches its
+    own (see :func:`freeagent.sdk.launch.ensure_api`).
+
+    :ivar status: ``"ok"`` while the API is serving; the original liveness signal, kept so a bare
+        liveness probe still works.
+    :ivar executable: The serving interpreter's :data:`sys.executable` — the venv the API (and the
+        workers it spawns) runs in. The primary identity: a wrong-venv API is the incident's exact
+        failure, since which applications are installed follows from the venv.
+    :ivar pid: The serving process's pid, so a launcher can name the impostor in a takeover remedy.
+    """
+
+    status: str
+    executable: str
+    pid: int
+
+
 def create_app(nats_url: str | None = None, manager: EpisodeManager | None = None) -> FastAPI:
     """Build and return the FastAPI application.
 
@@ -134,8 +158,8 @@ def create_app(nats_url: str | None = None, manager: EpisodeManager | None = Non
             raise HTTPException(status_code=404, detail=str(error)) from None
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> HealthResponse:
+        return HealthResponse(status="ok", executable=sys.executable, pid=os.getpid())
 
     @app.get("/applications")
     async def applications() -> ApplicationsResponse:
