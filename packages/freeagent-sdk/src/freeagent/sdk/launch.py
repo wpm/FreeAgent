@@ -323,20 +323,35 @@ def ensure_api() -> Outcome:
 def stop_api() -> bool:
     """Stop the API this platform started, if any, and remove its pid file.
 
-    SIGTERMs the pid recorded in the pid file, waits for the process to exit, then removes the file.
-    A silent no-op when nothing is recorded or the recorded process is already gone (a stale pid
-    file is simply cleared) — so ``stop`` is safe to call unconditionally.
+    Health — not the pid file — is the source of truth (see the module docstring), so the pid file
+    is trusted only when the API actually answers :func:`api_health_url`. When it does, the recorded
+    pid is SIGTERMed, waited on until it exits, and the file removed. Otherwise the file is stale —
+    the API is gone even if the OS has recycled its pid onto some innocent process — so it is simply
+    cleared and "nothing to do" reported, never signalled.
+
+    Signalling is itself guarded: a pid recycled between the health check and the kill can no longer
+    be ours, so a :class:`ProcessLookupError` (the pid is gone) or :class:`PermissionError` (the pid
+    now belongs to another user) is caught, the stale file cleared, and "nothing to do" reported —
+    no raw traceback, and the file does not persist to fail every later ``stop`` the same way.
+
+    A silent no-op when nothing is recorded, so ``stop`` is safe to call unconditionally.
 
     :return: True if a live API was signalled and stopped, False if there was nothing to do.
     """
     pid_file = _api_pid_file()
     pid = _read_pid(pid_file)
 
-    if pid is None or not _process_alive(pid):
+    if pid is None or not _is_healthy(api_health_url()):
         pid_file.unlink(missing_ok=True)
         return False
 
-    os.kill(pid, signal.SIGTERM)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        # The pid the health-confirmed API was recorded under is no longer a process we can signal:
+        # recycled onto a dead pid or another user's process. Treat the file as stale, not fatal.
+        pid_file.unlink(missing_ok=True)
+        return False
 
     deadline = time.monotonic() + _STOP_TIMEOUT_SECONDS
     while _process_alive(pid) and time.monotonic() < deadline:

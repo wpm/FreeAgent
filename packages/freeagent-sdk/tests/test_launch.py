@@ -328,11 +328,11 @@ def test_stop_api_clears_stale_pid_file(
     pid_file = state_dir_in_tmp / launch.STATE_DIR_NAME / launch.API_PID_FILE_NAME
     pid_file.parent.mkdir(parents=True)
     pid_file.write_text("999999")
-    # The recorded process is dead.
-    monkeypatch.setattr(launch, "_process_alive", lambda _: False)
+    # Health is the source of truth, and the API is not answering: the pid file is stale.
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: False)
 
     def fail(*_: Any, **__: Any) -> None:
-        raise AssertionError("must not signal a dead process")
+        raise AssertionError("must not signal when the API is not answering health")
 
     monkeypatch.setattr("freeagent.sdk.launch.os.kill", fail)
 
@@ -347,9 +347,10 @@ def test_stop_api_signals_live_process_and_removes_file(
     pid_file.parent.mkdir(parents=True)
     pid_file.write_text("12345")
 
-    # Alive for the initial check, dead once signalled (so the wait loop exits promptly).
-    alive = iter([True, False])
-    monkeypatch.setattr(launch, "_process_alive", lambda _: next(alive))
+    # The API answers health, so the recorded pid is trusted and signalled.
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+    # Dead once signalled, so the wait loop exits promptly.
+    monkeypatch.setattr(launch, "_process_alive", lambda _: False)
 
     signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(
@@ -358,6 +359,46 @@ def test_stop_api_signals_live_process_and_removes_file(
 
     assert launch.stop_api() is True
     assert signalled == [(12345, signal.SIGTERM)]
+    assert not pid_file.exists()
+
+
+def test_stop_api_clears_pid_file_when_signal_finds_recycled_dead_pid(
+    monkeypatch: pytest.MonkeyPatch, state_dir_in_tmp: Path
+) -> None:
+    # Health answers, but the recorded pid vanished between the check and the kill (recycled onto a
+    # process that has since exited): os.kill raises ProcessLookupError.
+    pid_file = state_dir_in_tmp / launch.STATE_DIR_NAME / launch.API_PID_FILE_NAME
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text("12345")
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+
+    def raise_lookup(pid: int, sig: int) -> None:
+        raise ProcessLookupError
+
+    monkeypatch.setattr("freeagent.sdk.launch.os.kill", raise_lookup)
+
+    # No traceback: the stale file is cleared and "nothing to do" is reported.
+    assert launch.stop_api() is False
+    assert not pid_file.exists()
+
+
+def test_stop_api_clears_pid_file_when_signal_is_permission_denied(
+    monkeypatch: pytest.MonkeyPatch, state_dir_in_tmp: Path
+) -> None:
+    # Health answers, but the recorded pid now belongs to another user's process (a stale pid file
+    # after a reboot recycled the pid): os.kill raises PermissionError.
+    pid_file = state_dir_in_tmp / launch.STATE_DIR_NAME / launch.API_PID_FILE_NAME
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text("12345")
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+
+    def raise_perm(pid: int, sig: int) -> None:
+        raise PermissionError
+
+    monkeypatch.setattr("freeagent.sdk.launch.os.kill", raise_perm)
+
+    # No traceback, and the stale file is cleared so later stops do not fail the same way.
+    assert launch.stop_api() is False
     assert not pid_file.exists()
 
 
@@ -448,8 +489,10 @@ def test_stop_api_waits_for_process_to_exit(
     pid_file.parent.mkdir(parents=True)
     pid_file.write_text("12345")
 
-    # Alive for the initial check and the first wait-loop check, then gone: the loop sleeps once.
-    alive = iter([True, True, False])
+    # The API answers health, so the pid is signalled; alive for the first wait-loop check, then
+    # gone: the loop sleeps once.
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+    alive = iter([True, False])
     monkeypatch.setattr(launch, "_process_alive", lambda _: next(alive))
     monkeypatch.setattr("freeagent.sdk.launch.os.kill", lambda pid, sig: None)
     slept: list[float] = []
