@@ -18,6 +18,20 @@ The API cannot join the compose network yet: it spawns ``python -m freeagent.wor
 environment, so it must run on the host in the venv where the applications live (see ADR-0009). We
 therefore own it as a detached host process tracked by a pid file. Health — not the pid file — is
 the source of truth: a pid file pointing at a dead process is stale and simply overwritten.
+
+**State-directory policy.** The pid file must resolve to the same path for the ``ensure`` that
+starts the API and the ``stop`` that later kills it, regardless of the directory each is invoked
+from — otherwise a third-party ``stop`` run from a different directory computes a different path,
+reports "nothing to stop", and orphans the API still holding the port. So:
+
+- **Inside a git repository**, state lives at the repo root: ``<repo-root>/.freeagent/``. Every
+  session in the repo — from any subdirectory — shares one pid file (the #98 behaviour).
+- **Outside any git repository**, state lives in a user-level directory that does not depend on the
+  caller's cwd: ``$XDG_STATE_HOME/freeagent/`` when ``XDG_STATE_HOME`` is set, otherwise
+  ``~/.freeagent/``. This closes the out-of-repo hole from PR #112's review (issue #116): ensure and
+  stop agree wherever they run.
+
+The earlier fallback to :func:`Path.cwd` is gone; nothing here resolves against the caller's cwd.
 """
 
 from __future__ import annotations
@@ -57,7 +71,23 @@ API_EXECUTABLE = "freeagent-api"
 """The console script the API is spawned from; resolved on ``PATH`` within the active venv."""
 
 STATE_DIR_NAME = ".freeagent"
-"""The per-repo state directory holding the API pid file."""
+"""The state directory's name.
+
+In a git repository it is created at the repo root (``<repo-root>/.freeagent/``); out of a
+repository the user-level directory it names is used directly (see :func:`_state_dir`).
+"""
+
+XDG_STATE_HOME_ENV = "XDG_STATE_HOME"
+"""Environment variable naming the base for user-level state.
+
+Out of a git repository the state directory is ``$XDG_STATE_HOME/freeagent/`` when this is set, else
+``~/.freeagent/`` (see :func:`_state_dir`).
+"""
+
+_USER_STATE_SUBDIR = "freeagent"
+"""The application's subdirectory name under an ``$XDG_STATE_HOME`` base (which is shared across
+applications, so state must be namespaced), as opposed to the dotted :data:`STATE_DIR_NAME` used
+directly under ``$HOME``."""
 
 API_PID_FILE_NAME = "api.pid"
 """The pid file recording the detached API process, under :data:`STATE_DIR_NAME`."""
@@ -249,21 +279,47 @@ def _repo_root() -> Path | None:
     return None
 
 
+def _user_state_dir() -> Path:
+    """Return the user-level state directory used when not inside a git repository.
+
+    Follows the XDG Base Directory convention: ``$XDG_STATE_HOME/freeagent`` when ``XDG_STATE_HOME``
+    is set (its base is shared across applications, so the ``freeagent`` subdirectory namespaces
+    our state), otherwise ``~/.freeagent``. Deliberately independent of the caller's cwd so a
+    third-party ``ensure`` and a later ``stop``, from different directories, resolve one pid file.
+
+    A relative ``XDG_STATE_HOME`` is ignored — the spec says to treat a non-absolute value as unset,
+    and honoring it would resolve against the caller's cwd and reopen the very hole this closes.
+
+    :return: The absolute user-level state directory (not created here).
+    """
+    xdg_state_home = os.environ.get(XDG_STATE_HOME_ENV)
+    if xdg_state_home and (base := Path(xdg_state_home)).is_absolute():
+        return base / _USER_STATE_SUBDIR
+    return Path.home() / STATE_DIR_NAME
+
+
 def _state_dir() -> Path:
     """Return the directory holding platform state (the API pid file).
 
-    The repo root when inside a repository, otherwise the current working directory — so an in-repo
-    invocation from any subdirectory shares one pid file, and a third-party invocation still gets a
-    stable location.
+    ``<repo-root>/.freeagent`` when inside a git repository — so every session in the repo, from any
+    subdirectory, shares one pid file (the #98 behaviour) — otherwise the cwd-independent user-level
+    directory from :func:`_user_state_dir`. Never resolves against the caller's cwd, so ``ensure``
+    and ``stop`` agree wherever each is invoked (issue #116).
 
-    :return: The state directory (``.freeagent`` is created beneath it on write, not here).
+    :return: The state directory (the ``.freeagent`` directory itself, created on write, not here).
     """
-    return _repo_root() or Path.cwd()
+    repo_root = _repo_root()
+    if repo_root is not None:
+        return repo_root / STATE_DIR_NAME
+    return _user_state_dir()
 
 
 def _api_pid_file() -> Path:
-    """Return the path to the API pid file under the state directory."""
-    return _state_dir() / STATE_DIR_NAME / API_PID_FILE_NAME
+    """Return the path to the API pid file under the state directory.
+
+    :return: The ``api.pid`` path inside :func:`_state_dir`.
+    """
+    return _state_dir() / API_PID_FILE_NAME
 
 
 def _read_pid(pid_file: Path) -> int | None:

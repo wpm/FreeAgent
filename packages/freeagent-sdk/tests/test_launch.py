@@ -24,10 +24,14 @@ from freeagent.sdk import launch
 def state_dir_in_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Pin the pid-file location under a temp directory so tests never touch a real repo.
 
-    Patches :func:`freeagent.sdk.launch._state_dir`. Not autouse: the dedicated ``_state_dir`` tests
-    exercise the real resolution, so they must not request this fixture.
+    Patches :func:`freeagent.sdk.launch._state_dir` to return a ``.freeagent`` directory under a
+    temp path, mirroring the real layout (the pid and log files live directly inside the state
+    directory). Not autouse: the dedicated ``_state_dir`` tests exercise the real resolution, so
+    they must not request this fixture.
+
+    :return: The temp base directory; the state directory is ``<base>/.freeagent``.
     """
-    monkeypatch.setattr(launch, "_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(launch, "_state_dir", lambda: tmp_path / launch.STATE_DIR_NAME)
     yield tmp_path
 
 
@@ -617,22 +621,127 @@ def test_stop_api_ignores_malformed_pid_file(state_dir_in_tmp: Path) -> None:
 # --------------------------------------------------------------------------------------------------
 
 
-def test_state_dir_is_repo_root_when_in_repo(
+def test_state_dir_is_repo_state_dir_when_in_repo(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # In a repo the state directory is <repo-root>/.freeagent, shared by every session in the repo
+    # regardless of the subdirectory it is launched from.
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
     subdir = repo / "packages" / "thing"
     subdir.mkdir(parents=True)
     monkeypatch.chdir(subdir)
-    assert launch._state_dir() == repo
+    assert launch._state_dir() == repo / launch.STATE_DIR_NAME
 
 
-def test_state_dir_is_cwd_when_not_in_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_state_dir_is_user_dir_when_not_in_repo_ignoring_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Out of a repo the state directory does NOT depend on cwd: two different loose directories
+    # resolve to the same user-level path, so ensure-here / stop-there agree (issue #116).
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv(launch.XDG_STATE_HOME_ENV, raising=False)
+
+    first = tmp_path / "loose-one"
+    first.mkdir()
+    monkeypatch.chdir(first)
+    from_first = launch._state_dir()
+
+    second = tmp_path / "loose-two"
+    second.mkdir()
+    monkeypatch.chdir(second)
+    from_second = launch._state_dir()
+
+    assert from_first == from_second == home / launch.STATE_DIR_NAME
+
+
+def test_state_dir_honors_xdg_state_home_when_not_in_repo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # When XDG_STATE_HOME is set, the user-level state lives under its freeagent subdirectory.
+    xdg = tmp_path / "xdg-state"
+    xdg.mkdir()
+    monkeypatch.setenv(launch.XDG_STATE_HOME_ENV, str(xdg))
     outside = tmp_path / "loose"
     outside.mkdir()
     monkeypatch.chdir(outside)
-    assert launch._state_dir() == outside
+    assert launch._state_dir() == xdg / launch._USER_STATE_SUBDIR
+
+
+def test_state_dir_falls_back_to_home_when_xdg_state_home_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # An empty XDG_STATE_HOME (set but blank) is treated as unset, per the XDG spec.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv(launch.XDG_STATE_HOME_ENV, "")
+    outside = tmp_path / "loose"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    assert launch._state_dir() == home / launch.STATE_DIR_NAME
+
+
+def test_state_dir_ignores_relative_xdg_state_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A relative XDG_STATE_HOME must be ignored (XDG spec): honoring it would resolve against the
+    # cwd and reopen the cwd-dependence this fix closes. Fall back to the home directory instead.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv(launch.XDG_STATE_HOME_ENV, "relative/state")
+    outside = tmp_path / "loose"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    assert launch._state_dir() == home / launch.STATE_DIR_NAME
+
+
+def test_ensure_from_one_dir_and_stop_from_another_agree_out_of_repo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The exact out-of-repo scenario the issue calls out: an app session ensures the API from one
+    # directory and the switch stops it from another. Both must resolve the same pid file so stop
+    # actually finds and kills the API, instead of orphaning it while the port stays held.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv(launch.XDG_STATE_HOME_ENV, raising=False)
+
+    # No enclosing repo from either directory.
+    monkeypatch.setattr(launch, "_repo_root", lambda: None)
+    monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/venv/bin/freeagent-api")
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", FakePopen)
+
+    # ensure_api from directory A: down on the first probe, healthy afterwards.
+    ensure_dir = tmp_path / "app-a"
+    ensure_dir.mkdir()
+    monkeypatch.chdir(ensure_dir)
+    ensure_probes = iter([False, True])
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: next(ensure_probes))
+    assert launch.ensure_api() is launch.Outcome.STARTED
+    pid_path = launch._api_pid_file()
+    assert pid_path.read_text() == str(FakePopen.instances[0].pid)
+
+    # stop_api from directory B must resolve that same pid file and signal the recorded pid. stop
+    # gates on health (issue #114), so the API answers healthy; the recorded pid is then alive for
+    # the initial post-signal check and gone once signalled.
+    stop_dir = tmp_path / "switch-b"
+    stop_dir.mkdir()
+    monkeypatch.chdir(stop_dir)
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+    alive = iter([True, False])
+    monkeypatch.setattr(launch, "_process_alive", lambda _: next(alive))
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "freeagent.sdk.launch.os.kill", lambda pid, sig: signalled.append((pid, sig))
+    )
+
+    assert launch.stop_api() is True
+    assert signalled == [(FakePopen.instances[0].pid, signal.SIGTERM)]
+    assert not pid_path.exists()
 
 
 def test_process_alive_reports_dead_for_missing_pid(monkeypatch: pytest.MonkeyPatch) -> None:
