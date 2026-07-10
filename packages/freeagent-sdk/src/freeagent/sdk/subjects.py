@@ -31,7 +31,7 @@ def valid_subject_token(token: str) -> bool:
     """Whether ``token`` is a single valid NATS subject token.
 
     :param token: The candidate token, e.g. an episode ID or application name.
-    :return:``True`` if the whole string is one token of letters, digits, hyphen, or underscore.
+    :return: Whether the whole string is one token of letters, digits, hyphen, or underscore.
     """
     return _SUBJECT_TOKEN.fullmatch(token) is not None
 
@@ -40,6 +40,6 @@ def valid_subject(subject: str) -> bool:
     """Whether ``subject`` is a valid literal (wildcard-free) NATS subject.
 
     :param subject: The candidate subject, e.g. an episode root like ``episode.collatz.ep-1``.
-    :return:``True`` if the whole string is dot-joined valid tokens.
+    :return: Whether the whole string is dot-joined valid tokens.
     """
     return _SUBJECT.fullmatch(subject) is not None

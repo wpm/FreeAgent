@@ -242,8 +242,8 @@ class CollatzEnvironment(Environment):
 
         :param agent: The agent whose chain this is.
         :param chain: The extended chain the agent returned.
-        :return:``True`` if this chain completed the agent's work for the first time, else ``False``
-            (either the chain isn't complete, or the agent was already finished).
+        :return: Whether this chain completed the agent's work for the first time; ``False`` if the
+            chain isn't complete or the agent was already finished.
         """
         self.chains[agent] = chain
         if is_complete(chain) and agent not in self.finished:
@@ -254,7 +254,7 @@ class CollatzEnvironment(Environment):
     def episode_complete(self) -> bool:
         """Report whether every agent in the episode has finished.
 
-        :return:``True`` once :attr:`finished` covers all of :attr:`agents`; ``False`` while any
+        :return: Whether :attr:`finished` covers all of :attr:`agents` yet; ``False`` while any
             agent's chain is still running.
         """
         return self.finished == set(self.agents)
