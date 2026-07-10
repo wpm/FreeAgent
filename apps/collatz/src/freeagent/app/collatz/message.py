@@ -37,7 +37,7 @@ def collatz_step(n: int) -> int:
     conjecture.
 
     :param n: The number to step; must be a positive integer.
-    :return: ``n // 2`` if ``n`` is even, else ``3 * n + 1``.
+    :return: The value ``n // 2`` if ``n`` is even, else ``3 * n + 1``.
     :raises ValueError: If ``n`` is not a positive integer.
     """
     if n < 1:
@@ -67,6 +67,6 @@ def is_complete(chain: Chain) -> bool:
     carries no value to have reached the fixed point.
 
     :param chain: The chain to judge.
-    :return: ``True`` if the chain's last value is 1, else ``False``.
+    :return: Whether the chain's last value is 1.
     """
     return bool(chain.numbers) and chain.numbers[-1] == 1

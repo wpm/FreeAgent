@@ -53,8 +53,8 @@ definition in :data:`freeagent.api.episodes.SUBJECT_TOKEN_PATTERN`."""
 class CreateEpisodeRequest(BaseModel):
     """The body of a ``POST .../episodes`` request.
 
-    :ivar episode_id: The episode's identifier, or ``None`` to have one generated. Must be a
-        single NATS subject token, since it becomes part of the episode's root subject.
+    :ivar episode_id: The episode's identifier, or ``None`` to have one generated. Must be a single
+        NATS subject token, since it becomes part of the episode's root subject.
     :ivar config: The application-defined episode config, opaque to the API.
     """
 
@@ -92,10 +92,9 @@ class MessagesResponse(BaseModel):
 def create_app(nats_url: str | None = None, manager: EpisodeManager | None = None) -> FastAPI:
     """Build and return the FastAPI application.
 
-    :param nats_url: The NATS server URL; falls back to :data:`NATS_URL_ENV`, then the SDK
-        default.
-    :param manager: The episode manager to serve from, injectable for tests; built from
-        ``nats_url`` when omitted.
+    :param nats_url: The NATS server URL; falls back to :data:`NATS_URL_ENV`, then the SDK default.
+    :param manager: The episode manager to serve from, injectable for tests; built from ``nats_url``
+        when omitted.
     :return: The configured application, whose lifespan shutdown tears the manager down.
     """
     resolved_url = nats_url or os.environ.get(NATS_URL_ENV) or DEFAULT_NATS_SERVER

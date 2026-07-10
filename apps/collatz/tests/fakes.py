@@ -62,8 +62,8 @@ class FakeClient:
     instead of a real connection. Every request is answered with a bare
     :class:`~freeagent.sdk.message.Ack`, matching a real counterpart under the ack-then-work shape.
 
-    :ivar requests:``(subject, payload)`` for every request sent, in order.
-    :ivar published:``(subject, payload)`` for every fire-and-forget publish, in order.
+    :ivar requests: The ``(subject, payload)`` pairs for every request sent, in order.
+    :ivar published: The ``(subject, payload)`` pairs for every fire-and-forget publish, in order.
     :ivar closed: Whether :meth:`close` has been called.
     """
 

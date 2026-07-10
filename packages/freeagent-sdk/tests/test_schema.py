@@ -1,10 +1,10 @@
 """Tests for :mod:`freeagent.sdk.schema` and the ``freeagent schema`` CLI.
 
-These exercise the schema-generation half of the engine→viewer pipeline against the real,
-workspace-installed ``collatz`` application: ``application_schema`` builds the JSON Schema document,
-and ``main`` is the console-script entry point that prints it. The ``collatz`` app contributes a
-single message type, :class:`~freeagent.app.collatz.message.Chain`, whose ``message_type`` tag must
-appear as a ``const`` so the generated TypeScript is a discriminated union.
+These exercise the schema-generation half of the engine→viewer pipeline against the real, workspace-
+installed ``collatz`` application: ``application_schema`` builds the JSON Schema document, and
+``main`` is the console-script entry point that prints it. The ``collatz`` app contributes a single
+message type, :class:`~freeagent.app.collatz.message.Chain`, whose ``message_type`` tag must appear
+as a ``const`` so the generated TypeScript is a discriminated union.
 """
 
 from __future__ import annotations

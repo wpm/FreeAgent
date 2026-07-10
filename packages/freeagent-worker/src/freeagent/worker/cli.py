@@ -9,9 +9,9 @@ episode is driven entirely from these arguments.
 The CLI treats ``--config`` as opaque: it parses the JSON (from a literal string or a file) into a
 dict and hands it to the application inside the :class:`~freeagent.sdk.EpisodeSpec`, never
 inspecting its contents. Every failure -- an unknown application, a subject-unsafe episode ID or
-root, malformed config, or an episode
-that errors or times out -- exits nonzero with a message on stderr, so a caller (a shell, later the
-API) can tell a completed episode from a failed one by exit code alone.
+root, malformed config, or an episode that errors or times out -- exits nonzero with a message on
+stderr, so a caller (a shell, later the API) can tell a completed episode from a failed one by exit
+code alone.
 """
 
 from __future__ import annotations

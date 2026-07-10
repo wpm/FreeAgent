@@ -1,12 +1,10 @@
 """Run one episode of an application to completion, as a dumb host.
 
-The worker's job is
-deliberately small: given an :class:`~freeagent.sdk.Application` and an
-:class:`~freeagent.sdk.EpisodeSpec`, build the episode's one
-:class:`~freeagent.sdk.Environment` and its :class:`~freeagent.sdk.Agent` instances, run them until
-the episode is over, and tear everything down. All application intelligence stays behind the
-:class:`~freeagent.sdk.Application` protocol; the runner here knows nothing about any app's messages
-or config.
+The worker's job is deliberately small: given an :class:`~freeagent.sdk.Application` and an
+:class:`~freeagent.sdk.EpisodeSpec`, build the episode's one :class:`~freeagent.sdk.Environment` and
+its :class:`~freeagent.sdk.Agent` instances, run them until the episode is over, and tear everything
+down. All application intelligence stays behind the :class:`~freeagent.sdk.Application` protocol;
+the runner here knows nothing about any app's messages or config.
 
 The one lifecycle fact the runner relies on is an SDK guarantee, not an application one: an
 :class:`~freeagent.sdk.Environment` publishes exactly one

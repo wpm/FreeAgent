@@ -2,8 +2,8 @@
 
 Each fake satisfies one of the protocols :mod:`freeagent.api.episodes` defines for injection
 (:class:`~freeagent.api.episodes.NatsClient`, :class:`~freeagent.api.episodes.WorkerProcess`), so
-the unit tier exercises the manager's real logic with no server and no subprocesses. The
-integration tier (``test_integration.py``) swaps these for the real things.
+the unit tier exercises the manager's real logic with no server and no subprocesses. The integration
+tier (``test_integration.py``) swaps these for the real things.
 """
 
 from __future__ import annotations
@@ -26,8 +26,7 @@ class FakeSubscription:
 
 
 class FakeNatsClient:
-    """A stand-in for the manager's NATS client that records subscriptions, flushes, and
-    closes."""
+    """A stand-in for the manager's NATS client that records subscriptions, flushes, and closes."""
 
     def __init__(self) -> None:
         self.subscriptions: list[FakeSubscription] = []

@@ -250,8 +250,8 @@ class Environment(Entity):
         publishes a single :class:`~freeagent.sdk.message.EpisodeComplete` on the environment's own
         subject as the last message of the episode, broadcasts the
         :class:`~freeagent.sdk.message.StopEntity` teardown command to every agent not already
-        stopped via :meth:`stop_agent`, and disconnects.
-        The :class:`~freeagent.sdk.message.EpisodeComplete` is published before the broadcast so an
+        stopped via :meth:`stop_agent`, and disconnects. The
+        :class:`~freeagent.sdk.message.EpisodeComplete` is published before the broadcast so an
         observer sees the definite end marker ahead of the agents tearing down; the broadcast still
         runs, and the environment still disconnects, even if either the publish or the broadcast
         raises or times out. Teardown is the invariant; the end marker is a best-effort
@@ -281,8 +281,7 @@ class Environment(Entity):
         await self._stop_agents_and_disconnect()
 
     async def _stop_agents_and_disconnect(self) -> None:
-        """Broadcast :class:`~freeagent.sdk.message.StopEntity` to the live agents, then
-        disconnect.
+        """Broadcast :class:`~freeagent.sdk.message.StopEntity` to the live agents, then disconnect.
 
         The shared tail of :meth:`stop` and :meth:`abort`. The disconnect is the invariant: it
         happens even when the broadcast raises or times out.
@@ -533,8 +532,8 @@ class Agent(Entity):
         subject, and the real ``Msg.respond`` raises on it — which, unguarded, would kill the run
         loop the first time anything publishes (rather than requests) into an agent's subject.
 
-        :param msg: The original NATS message, or ``None``/a publish-delivered message with no
-            reply subject, in which case this does nothing.
+        :param msg: The original NATS message, or ``None``/a publish-delivered message with no reply
+            subject, in which case this does nothing.
         :param reply: The message to send back to the requester.
         """
         if msg is None or not msg.reply:

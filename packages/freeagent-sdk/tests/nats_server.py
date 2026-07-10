@@ -1,9 +1,9 @@
 """Start and stop a real ``nats-server`` subprocess for integration tests.
 
-The test strategy runs integration tests against a *real* NATS server rather than a mock:
-a mock ends up reimplementing subject matching and async delivery badly, and ``nats-server`` is a
-single static Go binary that starts in milliseconds, so the real thing is cheap enough to be the
-only integration dependency.
+The test strategy runs integration tests against a *real* NATS server rather than a mock: a mock
+ends up reimplementing subject matching and async delivery badly, and ``nats-server`` is a single
+static Go binary that starts in milliseconds, so the real thing is cheap enough to be the only
+integration dependency.
 
 This module owns the mechanics — locate the binary, pick a free port, launch the subprocess, wait
 for it to accept connections, and tear it down — so the pytest fixtures in ``conftest.py`` stay
@@ -22,8 +22,8 @@ from contextlib import closing, contextmanager
 NATS_SERVER_BINARY = "nats-server"
 """Name of the server binary looked up on ``PATH``.
 
-Installed locally with ``brew install nats-server`` and in CI as a pinned release binary; either
-way it must be on ``PATH``.
+Installed locally with ``brew install nats-server`` and in CI as a pinned release binary; either way
+it must be on ``PATH``.
 """
 
 STARTUP_TIMEOUT = 10.0
@@ -40,10 +40,10 @@ _POLL_INTERVAL = 0.02
 def _free_port() -> int:
     """Reserve and return a currently-free TCP port on the loopback interface.
 
-    Binds to port 0 to let the OS choose a free port, reads it back, then releases it. This is
-    the standard "ask the OS for a free port" trick; a brief race remains between releasing the
-    port and ``nats-server`` binding it, but the window is tiny and a collision surfaces as a
-    startup failure rather than silent misbehavior.
+    Binds to port 0 to let the OS choose a free port, reads it back, then releases it. This is the
+    standard "ask the OS for a free port" trick; a brief race remains between releasing the port and
+    ``nats-server`` binding it, but the window is tiny and a collision surfaces as a startup failure
+    rather than silent misbehavior.
 
     :return: A port number that was free at the moment it was checked.
     """

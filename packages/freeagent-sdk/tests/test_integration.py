@@ -4,8 +4,8 @@ Unlike the unit tests, which drive the SDK through the ``FakeClient`` stand-in, 
 :class:`~freeagent.sdk.entity.Entity` instances to an actual server started by the ``nats_server``
 fixture (see ``conftest.py`` and ``nats_server.py``). They cover what a fake can't credibly fake:
 real subject matching, real async request/reply delivery, and — the acceptance criterion that
-motivates a *shared* server with *per-test* subject roots — that two entities rooted under
-different ``episode_root`` subjects cannot see each other's messages.
+motivates a *shared* server with *per-test* subject roots — that two entities rooted under different
+``episode_root`` subjects cannot see each other's messages.
 
 Every test here carries the :func:`pytest.mark.integration` marker, so ``pytest -m "not
 integration"`` runs the whole unit suite without needing a NATS binary at all.
