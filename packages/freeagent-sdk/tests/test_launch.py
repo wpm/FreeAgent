@@ -194,7 +194,8 @@ def test_ensure_nats_reconcile_runs_compose_up_even_when_healthy(
 ) -> None:
     # The platform owner (`start`) reconciles: NATS answering healthz is not enough — a stale
     # container from an old config must be brought in line with the compose file, so `compose up
-    # --detach --wait` runs unconditionally and the outcome reflects that it (re)started NATS.
+    # --detach --wait` runs unconditionally. The outcome reports the reconciliation honestly: NATS
+    # was already up, so it was RECONCILED, not "started".
     _patch_health(monkeypatch, {launch.NATS_HEALTH_URL})
     monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/usr/bin/docker")
 
@@ -206,7 +207,7 @@ def test_ensure_nats_reconcile_runs_compose_up_even_when_healthy(
 
     monkeypatch.setattr("freeagent.sdk.launch.subprocess.run", fake_run)
 
-    assert launch.ensure_nats(reconcile=True) is launch.Outcome.STARTED
+    assert launch.ensure_nats(reconcile=True) is launch.Outcome.RECONCILED
     assert calls == [
         [
             "docker",
@@ -218,6 +219,21 @@ def test_ensure_nats_reconcile_runs_compose_up_even_when_healthy(
             "--wait",
         ]
     ]
+
+
+def test_ensure_nats_reconcile_reports_started_when_nats_was_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Reconciling a platform that was not up at all is a plain start, and reports as one.
+    _patch_health(monkeypatch, set())
+    monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/usr/bin/docker")
+
+    def fake_run(cmd: list[str], **_: Any) -> Any:
+        return type("R", (), {"returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.run", fake_run)
+
+    assert launch.ensure_nats(reconcile=True) is launch.Outcome.STARTED
 
 
 def test_ensure_nats_reconcile_still_needs_docker(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -301,6 +317,28 @@ def test_ensure_api_already_running_adopts_our_own_api(monkeypatch: pytest.Monke
     assert launch.ensure_api() is launch.Outcome.ALREADY_RUNNING
 
 
+def test_ensure_api_adopts_our_own_api_reported_under_a_different_alias(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The listener reports the same interpreter through a different alias (venvs symlink `python`
+    # and `python3` to one binary; the API's console-script shebang may name either). Aliases of one
+    # interpreter are the same environment, so ensure must adopt, not reject a legitimate API.
+    binary = tmp_path / "python3.12"
+    binary.write_bytes(b"")
+    ours = tmp_path / "python"
+    ours.symlink_to(binary)
+    theirs = tmp_path / "python3"
+    theirs.symlink_to(binary)
+    monkeypatch.setattr("freeagent.sdk.launch.sys.executable", str(ours))
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=_identity_body(str(theirs)))
+
+    def fail(*_: Any, **__: Any) -> None:
+        raise AssertionError("the API must not be spawned when our own API is already healthy")
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", fail)
+    assert launch.ensure_api() is launch.Outcome.ALREADY_RUNNING
+
+
 def test_ensure_api_rejects_wrong_environment_api(monkeypatch: pytest.MonkeyPatch) -> None:
     # A healthy API answers, but from a *different* venv (the deleted-worktree incident): adopting
     # it would 404 every request, so ensure aborts with the impostor's venv, pid, and a remedy —
@@ -338,6 +376,20 @@ def test_ensure_api_rejects_identity_less_listener(monkeypatch: pytest.MonkeyPat
     message = str(excinfo.value)
     assert "not the Free Agent API" in message
     assert launch.api_health_url() in message
+    # The lsof remedy names the actual port from the URL, not a misparse of the scheme colon.
+    assert "lsof -nP -iTCP:8000 " in message
+
+
+def test_reject_unidentified_listener_defaults_the_port_from_the_scheme() -> None:
+    # A health URL with no explicit port must still yield a usable lsof hint: the scheme's default
+    # port, never an empty string misparsed from the scheme colon.
+    with pytest.raises(SystemExit) as excinfo:
+        launch._reject_unidentified_listener("http://localhost/health")
+    assert "lsof -nP -iTCP:80 " in str(excinfo.value)
+
+    with pytest.raises(SystemExit) as excinfo:
+        launch._reject_unidentified_listener("https://localhost/health")
+    assert "lsof -nP -iTCP:443 " in str(excinfo.value)
 
 
 def _patch_port_absent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -505,6 +557,16 @@ def test_probe_listener_unidentified_on_json_missing_fields(
 def test_probe_listener_unidentified_on_non_object_json(monkeypatch: pytest.MonkeyPatch) -> None:
     # A 2xx JSON body that is not an object (a bare list) carries no identity fields.
     _patch_health(monkeypatch, {launch.api_health_url()}, body=b"[1, 2, 3]")
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.UNIDENTIFIED
+    assert identity is None
+
+
+def test_probe_listener_unidentified_on_non_utf8_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A squatter serving binary content (an image, a compressed stream): the body is not even
+    # decodable text, let alone JSON. That must classify as an unidentified listener — reported with
+    # the friendly "free that port" error — not escape as a UnicodeDecodeError traceback.
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=b"\xff\xfe\x00\x01binary")
     state, identity = launch._probe_listener(launch.api_health_url())
     assert state is launch._ListenerState.UNIDENTIFIED
     assert identity is None

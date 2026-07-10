@@ -46,6 +46,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Sequence
 from importlib import resources
@@ -143,6 +144,10 @@ class Outcome(enum.Enum):
 
     STARTED = "started"
     ALREADY_RUNNING = "already running"
+    RECONCILED = "reconciled"
+    """The service was already up and a reconciling ensure re-applied its configuration — an honest
+    report for :func:`ensure_nats` with ``reconcile=True``, which runs ``compose up`` even over a
+    healthy NATS (saying ``started`` there would misreport a container that never went down)."""
 
 
 class DockerUnavailableError(RuntimeError):
@@ -272,7 +277,9 @@ def _probe_listener(url: str) -> tuple[_ListenerState, _ListenerIdentity | None]
             payload = json.loads(response.read())
     except (urllib.error.URLError, OSError):
         return _ListenerState.ABSENT, None
-    except json.JSONDecodeError:
+    except ValueError:
+        # Covers both json.JSONDecodeError (2xx but not JSON) and UnicodeDecodeError (2xx but not
+        # even decodable text — a squatter serving binary content). Either way: not our API.
         return _ListenerState.UNIDENTIFIED, None
 
     if isinstance(payload, dict):
@@ -416,12 +423,14 @@ def ensure_nats(
     :param reconcile: When True, run ``compose up`` even if NATS already answers healthz, so a
         stale container is brought in line with the compose file. The ``start`` switch passes True;
         sessions leave it False to keep the non-disruptive short-circuit.
-    :return: :attr:`Outcome.ALREADY_RUNNING` if NATS was already healthy and no reconciliation was
-        requested, else :attr:`Outcome.STARTED`.
+    :return: :attr:`Outcome.ALREADY_RUNNING` if NATS was already healthy and no reconciliation
+        was requested; :attr:`Outcome.RECONCILED` if it was already healthy and ``compose up``
+        re-applied the configuration over it; else :attr:`Outcome.STARTED`.
     :raises DockerUnavailableError: If the ``docker`` executable is missing, or ``docker compose
         up`` fails (e.g. the daemon is not running).
     """
-    if not reconcile and _is_healthy(NATS_HEALTH_URL):
+    was_healthy = _is_healthy(NATS_HEALTH_URL)
+    if not reconcile and was_healthy:
         return Outcome.ALREADY_RUNNING
 
     if shutil.which("docker") is None:
@@ -442,7 +451,28 @@ def ensure_nats(
             f"(exit code {result.returncode}). Is the Docker daemon running?\n"
             f"{result.stderr.strip()}"
         )
-    return Outcome.STARTED
+    return Outcome.RECONCILED if was_healthy else Outcome.STARTED
+
+
+def _same_interpreter(executable: str) -> bool:
+    """Report whether a reported interpreter path is this process's own interpreter.
+
+    A venv exposes one binary under several aliases (``python``, ``python3``, ``python3.12`` —
+    symlinks to one file), and the API's console-script shebang may name a different alias than the
+    one this process was launched through. Aliases of one interpreter are the same environment, so
+    the comparison resolves symlinks rather than matching strings — an exact-string check would
+    reject a legitimately-ours API over spelling.
+
+    :param executable: The interpreter path a listener reported at ``/health``.
+    :return: True if it names the same interpreter as :data:`sys.executable`.
+    """
+    if executable == sys.executable:
+        return True
+    try:
+        return Path(executable).resolve() == Path(sys.executable).resolve()
+    except OSError:
+        # An unresolvable path (e.g. a symlink loop) cannot be shown to be ours.
+        return False
 
 
 def _reject_wrong_environment_api(identity: _ListenerIdentity, health_url: str) -> None:
@@ -478,7 +508,8 @@ def _reject_unidentified_listener(health_url: str) -> None:
     :param health_url: The health URL probed, named in the message so the operator knows the port.
     :raises SystemExit: Always, telling the operator to free the port.
     """
-    port = health_url.rsplit(":", 1)[-1].split("/")[0]
+    split = urllib.parse.urlsplit(health_url)
+    port = split.port or (443 if split.scheme == "https" else 80)
     sys.exit(
         f"something that is not the Free Agent API is already listening at {health_url}: it "
         f"answers health checks but does not report a Free Agent identity. Free that port — e.g. "
@@ -495,8 +526,9 @@ def ensure_api() -> Outcome:
     or an unrelated process squatting the port would be silently adopted and never replaced by one
     from the caller's own environment. Instead:
 
-    - The listener's interpreter matches this process's :data:`sys.executable`: it is our API, so
-      this is a no-op returning :attr:`Outcome.ALREADY_RUNNING`.
+    - The listener's interpreter is this process's own (compared with symlink aliases resolved, see
+      :func:`_same_interpreter`): it is our API, so this is a no-op returning
+      :attr:`Outcome.ALREADY_RUNNING`.
     - A listener reports a *different* interpreter (a wrong-venv API), or answers without a
       verifiable identity (a non-API process on the port): it is not ours. We do not adopt it — we
       abort with an actionable error naming the impostor (see
@@ -520,9 +552,10 @@ def ensure_api() -> Outcome:
     """
     health_url = api_health_url()
     state, identity = _probe_listener(health_url)
-    if state is _ListenerState.IDENTIFIED:
-        assert identity is not None  # IDENTIFIED always carries an identity; narrows for the type.
-        if identity.executable == sys.executable:
+    # IDENTIFIED carries an identity and is the only state that does, so gating on the identity
+    # itself both narrows the type and holds under `python -O` (an assert would not).
+    if identity is not None:
+        if _same_interpreter(identity.executable):
             return Outcome.ALREADY_RUNNING
         _reject_wrong_environment_api(identity, health_url)
     elif state is _ListenerState.UNIDENTIFIED:
