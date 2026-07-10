@@ -8,8 +8,10 @@ stale-pid handling.
 
 from __future__ import annotations
 
+import json
 import signal
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -30,10 +32,20 @@ def state_dir_in_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
 
 
 class FakeResponse:
-    """A minimal stand-in for the object ``urllib.request.urlopen`` yields as a context manager."""
+    """A minimal stand-in for the object ``urllib.request.urlopen`` yields as a context manager.
 
-    def __init__(self, status: int) -> None:
+    Carries a ``status`` for the liveness check and an optional ``body`` for the identity probe:
+    :func:`launch._probe_listener` calls ``read()`` and parses the bytes as JSON. The default body
+    is a bare ``{"status": "ok"}`` (no identity), so an unspecified probe reads as an unidentified
+    listener rather than a Free Agent API.
+    """
+
+    def __init__(self, status: int, body: bytes = b'{"status": "ok"}') -> None:
         self.status = status
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
 
     def __enter__(self) -> FakeResponse:
         return self
@@ -42,9 +54,25 @@ class FakeResponse:
         return None
 
 
-def _patch_health(monkeypatch: pytest.MonkeyPatch, healthy_urls: set[str]) -> list[str]:
+def _identity_body(executable: str, pid: int = 4242) -> bytes:
+    """Serialize a ``/health`` identity payload the way the API does, for driving the probe.
+
+    :param executable: The serving interpreter path to report.
+    :param pid: The serving pid to report.
+    :return: The JSON body bytes a healthy identity-revealing ``/health`` returns.
+    """
+    return json.dumps({"status": "ok", "executable": executable, "pid": pid}).encode()
+
+
+def _patch_health(
+    monkeypatch: pytest.MonkeyPatch, healthy_urls: set[str], body: bytes | None = None
+) -> list[str]:
     """Patch ``urlopen`` so URLs in ``healthy_urls`` return 200 and all others raise.
 
+    :param healthy_urls: The URLs that answer 200; every other URL raises a connection error.
+    :param body: The response body healthy URLs return; defaults to a bare ``{"status": "ok"}``
+        liveness payload (no identity), so ``ensure_api`` probes read as an unidentified listener
+        unless a caller passes an identity payload via :func:`_identity_body`.
     :return: A list that records every URL probed, in order.
     """
     probed: list[str] = []
@@ -52,7 +80,7 @@ def _patch_health(monkeypatch: pytest.MonkeyPatch, healthy_urls: set[str]) -> li
     def fake_urlopen(url: str, timeout: float = 0) -> FakeResponse:
         probed.append(url)
         if url in healthy_urls:
-            return FakeResponse(200)
+            return FakeResponse(200) if body is None else FakeResponse(200, body)
         raise OSError("connection refused")
 
     monkeypatch.setattr("freeagent.sdk.launch.urllib.request.urlopen", fake_urlopen)
@@ -255,22 +283,75 @@ def reset_fake_popen() -> Iterator[None]:
     yield
 
 
-def test_ensure_api_already_running_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_health(monkeypatch, {launch.api_health_url()})
+def test_ensure_api_already_running_adopts_our_own_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The listener at the port reports *our* interpreter: it is this environment's API, so ensure is
+    # a no-op and nothing is spawned.
+    _patch_health(
+        monkeypatch, {launch.api_health_url()}, body=_identity_body(sys.executable, pid=4242)
+    )
 
     def fail(*_: Any, **__: Any) -> None:
-        raise AssertionError("the API must not be spawned when already healthy")
+        raise AssertionError("the API must not be spawned when our own API is already healthy")
 
     monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", fail)
     assert launch.ensure_api() is launch.Outcome.ALREADY_RUNNING
 
 
+def test_ensure_api_rejects_wrong_environment_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A healthy API answers, but from a *different* venv (the deleted-worktree incident): adopting
+    # it would 404 every request, so ensure aborts with the impostor's venv, pid, and a remedy —
+    # never silently returning ALREADY_RUNNING.
+    impostor = "/deleted/worktree/.venv/bin/python"
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=_identity_body(impostor, pid=9999))
+
+    def fail(*_: Any, **__: Any) -> None:
+        raise AssertionError("a wrong-environment API must never be spawned over or adopted")
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", fail)
+
+    with pytest.raises(SystemExit) as excinfo:
+        launch.ensure_api()
+    message = str(excinfo.value)
+    assert impostor in message
+    assert "9999" in message
+    assert sys.executable in message
+    # The remedy is actionable: it names how to clear the impostor.
+    assert "kill 9999" in message
+
+
+def test_ensure_api_rejects_identity_less_listener(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A process squats the port and answers health checks but reports no Free Agent identity (a
+    # non-JSON body here). It is not our API: ensure refuses rather than adopting it or colliding.
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=b"not json at all")
+
+    def fail(*_: Any, **__: Any) -> None:
+        raise AssertionError("a non-API listener must never be adopted or spawned over")
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", fail)
+
+    with pytest.raises(SystemExit) as excinfo:
+        launch.ensure_api()
+    message = str(excinfo.value)
+    assert "not the Free Agent API" in message
+    assert launch.api_health_url() in message
+
+
+def _patch_port_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the initial probe find the port free, so ``ensure_api`` proceeds to spawn.
+
+    Patches :func:`launch._probe_listener` to report :attr:`launch._ListenerState.ABSENT` — nothing
+    is listening — the precondition for the spawn path.
+    """
+    monkeypatch.setattr(launch, "_probe_listener", lambda _: (launch._ListenerState.ABSENT, None))
+
+
 def test_ensure_api_spawns_detached_and_writes_pid(
     monkeypatch: pytest.MonkeyPatch, state_dir_in_tmp: Path
 ) -> None:
-    # Down on the first probe, healthy afterwards (the wait loop then succeeds).
-    probes = iter([False, True, True])
-    monkeypatch.setattr(launch, "_is_healthy", lambda _: next(probes))
+    # The port is free on the initial probe; the spawned API then becomes healthy so the wait loop
+    # succeeds.
+    _patch_port_absent(monkeypatch)
+    monkeypatch.setattr(launch, "_wait_until_healthy", lambda url, timeout=0: True)
     monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/venv/bin/freeagent-api")
     monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", FakePopen)
 
@@ -304,8 +385,8 @@ def test_ensure_api_redirects_stdio_away_from_the_terminal(
 ) -> None:
     # The detached API must not inherit the spawning terminal's stdio: its output would interleave
     # into that shell, and the terminal closing would make the daemon's writes start failing.
-    probes = iter([False, True, True])
-    monkeypatch.setattr(launch, "_is_healthy", lambda _: next(probes))
+    _patch_port_absent(monkeypatch)
+    monkeypatch.setattr(launch, "_wait_until_healthy", lambda url, timeout=0: True)
     monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/venv/bin/freeagent-api")
     monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", FakePopen)
 
@@ -345,8 +426,8 @@ def test_ensure_api_overwrites_stale_pid_file(
     pid_file.parent.mkdir(parents=True)
     pid_file.write_text("999999")
 
-    probes = iter([False, True])
-    monkeypatch.setattr(launch, "_is_healthy", lambda _: next(probes))
+    _patch_port_absent(monkeypatch)
+    monkeypatch.setattr(launch, "_wait_until_healthy", lambda url, timeout=0: True)
     monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/venv/bin/freeagent-api")
     monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", FakePopen)
 
@@ -366,6 +447,72 @@ def test_ensure_api_exits_when_spawn_never_healthy(
 
     with pytest.raises(SystemExit, match="did not become healthy"):
         launch.ensure_api()
+
+
+# --------------------------------------------------------------------------------------------------
+# _probe_listener (the health-identity classifier)
+# --------------------------------------------------------------------------------------------------
+
+
+def test_probe_listener_absent_on_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_health(monkeypatch, set())
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.ABSENT
+    assert identity is None
+
+
+def test_probe_listener_absent_on_non_2xx(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "freeagent.sdk.launch.urllib.request.urlopen", lambda url, timeout=0: FakeResponse(503)
+    )
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.ABSENT
+    assert identity is None
+
+
+def test_probe_listener_identified_on_full_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_health(
+        monkeypatch,
+        {launch.api_health_url()},
+        body=_identity_body("/venv/bin/python", pid=4242),
+    )
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.IDENTIFIED
+    assert identity == launch._ListenerIdentity(executable="/venv/bin/python", pid=4242)
+
+
+def test_probe_listener_unidentified_on_non_json_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=b"<html>hello</html>")
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.UNIDENTIFIED
+    assert identity is None
+
+
+def test_probe_listener_unidentified_on_json_missing_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Valid JSON, healthy, but with no Free Agent identity (the pre-#117 ``{"status": "ok"}``).
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=b'{"status": "ok"}')
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.UNIDENTIFIED
+    assert identity is None
+
+
+def test_probe_listener_unidentified_on_non_object_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A 2xx JSON body that is not an object (a bare list) carries no identity fields.
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=b"[1, 2, 3]")
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.UNIDENTIFIED
+    assert identity is None
+
+
+def test_probe_listener_unidentified_when_pid_not_int(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An identity whose pid is the wrong type is not a Free Agent API's response shape.
+    body = json.dumps({"status": "ok", "executable": "/venv/bin/python", "pid": "nope"}).encode()
+    _patch_health(monkeypatch, {launch.api_health_url()}, body=body)
+    state, identity = launch._probe_listener(launch.api_health_url())
+    assert state is launch._ListenerState.UNIDENTIFIED
+    assert identity is None
 
 
 # --------------------------------------------------------------------------------------------------
