@@ -119,10 +119,19 @@ _HEALTH_POLL_INTERVAL_SECONDS = 0.25
 """Delay between health-endpoint polls while waiting for a service to come up."""
 
 _STOP_TIMEOUT_SECONDS = 10.0
-"""How long to wait for the API to exit after SIGTERM before giving up."""
+"""How long to wait for the API to exit after SIGTERM before escalating to SIGKILL."""
 
 _STOP_POLL_INTERVAL_SECONDS = 0.1
 """Delay between liveness checks while waiting for the API to exit."""
+
+_STOP_KILL_TIMEOUT_SECONDS = 5.0
+"""How long to wait for the API to exit after SIGKILL before giving up on it."""
+
+_TEARDOWN_TIMEOUT_SECONDS = 10.0
+"""How long to wait for a spawned serve to exit after SIGTERM before escalating to SIGKILL."""
+
+_TEARDOWN_KILL_TIMEOUT_SECONDS = 5.0
+"""How long to wait for a spawned serve to exit after SIGKILL before giving up on it."""
 
 
 class Outcome(enum.Enum):
@@ -543,23 +552,46 @@ def ensure_api() -> Outcome:
     return Outcome.STARTED
 
 
+def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
+    """Poll a pid's liveness until it exits or the timeout elapses.
+
+    :param pid: The process id to wait on.
+    :param timeout: How long to keep polling, in seconds.
+    :return: True if the process was gone within the timeout, False if it was still alive on expiry.
+    """
+    deadline = time.monotonic() + timeout
+    while _process_alive(pid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_STOP_POLL_INTERVAL_SECONDS)
+    return True
+
+
 def stop_api() -> bool:
     """Stop the API this platform started, if any, and remove its pid file.
 
     Health — not the pid file — is the source of truth (see the module docstring), so the pid file
     is trusted only when the API actually answers :func:`api_health_url`. When it does, the recorded
-    pid is SIGTERMed, waited on until it exits, and the file removed. Otherwise the file is stale —
-    the API is gone even if the OS has recycled its pid onto some innocent process — so it is simply
-    cleared and "nothing to do" reported, never signalled.
+    pid is SIGTERMed and waited on; otherwise the file is stale — the API is gone even if the OS has
+    recycled its pid onto some innocent process — so it is simply cleared and "nothing to do"
+    reported, never signalled.
 
     Signalling is itself guarded: a pid recycled between the health check and the kill can no longer
     be ours, so a :class:`ProcessLookupError` (the pid is gone) or :class:`PermissionError` (the pid
     now belongs to another user) is caught, the stale file cleared, and "nothing to do" reported —
     no raw traceback, and the file does not persist to fail every later ``stop`` the same way.
 
+    If the API has not exited within :data:`_STOP_TIMEOUT_SECONDS`, teardown escalates to SIGKILL and
+    waits again — a SIGTERM-ignoring API (or one wedged mid-request) must not be left orphaned with
+    port 8000 still bound, where a later ``start`` would see the zombie answering ``/health`` and
+    refuse to restart. The pid file is only unlinked once the process is confirmed gone; if even
+    SIGKILL does not reap it within :data:`_STOP_KILL_TIMEOUT_SECONDS`, the pid file is kept so the
+    failure is not silently erased.
+
     A silent no-op when nothing is recorded, so ``stop`` is safe to call unconditionally.
 
-    :return: True if a live API was signalled and stopped, False if there was nothing to do.
+    :return: True if a live API was signalled and confirmed stopped, False if there was nothing to
+        do or the process could not be reaped even with SIGKILL.
     """
     pid_file = _api_pid_file()
     pid = _read_pid(pid_file)
@@ -576,9 +608,26 @@ def stop_api() -> bool:
         pid_file.unlink(missing_ok=True)
         return False
 
-    deadline = time.monotonic() + _STOP_TIMEOUT_SECONDS
-    while _process_alive(pid) and time.monotonic() < deadline:
-        time.sleep(_STOP_POLL_INTERVAL_SECONDS)
+    if _wait_for_pid_exit(pid, _STOP_TIMEOUT_SECONDS):
+        pid_file.unlink(missing_ok=True)
+        return True
+
+    # SIGTERM was ignored (or the process is wedged): escalate rather than orphan a live API. The
+    # same recycled-pid guard applies — the process may have exited (and its pid been reused) between
+    # the SIGTERM wait expiring and this kill.
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pid_file.unlink(missing_ok=True)
+        return True
+    if not _wait_for_pid_exit(pid, _STOP_KILL_TIMEOUT_SECONDS):
+        # Even SIGKILL did not reap it in time (e.g. stuck in uninterruptible I/O). Keep the pid
+        # file so the still-running API is not silently forgotten and can be reported as a failure.
+        print(
+            f"the API (pid {pid}) did not exit after SIGKILL; leaving its pid file in place.",
+            file=sys.stderr,
+        )
+        return False
 
     pid_file.unlink(missing_ok=True)
     return True
@@ -722,33 +771,78 @@ def _is_clean_exit(returncode: int) -> bool:
     return returncode in (0, -signal.SIGTERM, -signal.SIGINT)
 
 
+def _terminate_one(service: Service, process: subprocess.Popen[bytes]) -> int:
+    """Terminate a single spawned serve with a bounded wait, escalating to SIGKILL on expiry.
+
+    A still-running child is SIGTERMed and given :data:`_TEARDOWN_TIMEOUT_SECONDS` to exit; a child
+    that had already exited on its own (crashed, or killed by the terminal's group SIGINT on Ctrl-C)
+    is reaped in place with no signal. A serve that ignores SIGTERM — a common failing of shell or
+    ``npm`` wrappers that do not forward signals — would otherwise block teardown forever on an
+    unbounded ``wait()``; instead it is escalated to SIGKILL and reaped, so teardown always
+    completes and no child leaks with its port still bound.
+
+    :param service: The service owning the process, for the diagnostic message on a real failure.
+    :param process: The spawned serve to terminate and reap.
+    :return: The process's exit code (a POSIX signal death reports ``-signum``); ``-SIGKILL`` if it
+        had to be force-killed after ignoring SIGTERM.
+    """
+    if process.poll() is None:
+        process.terminate()
+    try:
+        return process.wait(timeout=_TEARDOWN_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # The serve ignored SIGTERM. Force it down so teardown cannot hang and no child can leak.
+        print(
+            f"service {service.name!r} did not exit after SIGTERM; escalating to SIGKILL.",
+            file=sys.stderr,
+        )
+        process.kill()
+        return process.wait(timeout=_TEARDOWN_KILL_TIMEOUT_SECONDS)
+
+
 def _terminate_in_reverse(
     spawned: Sequence[tuple[Service, subprocess.Popen[bytes]]],
 ) -> int:
     """SIGTERM the spawned serve processes in reverse spawn order and collect their exit codes.
 
     Reverse order tears the stack down in the opposite order it came up — the last thing started is
-    the first stopped. Each still-running child is SIGTERMed; a child that had already exited on its
-    own (crashed, or killed by the terminal's group SIGINT on Ctrl-C) is reaped in place. Death by
+    the first stopped. Each child is terminated with a bounded wait and SIGKILL escalation (see
+    :func:`_terminate_one`), so a serve that ignores SIGTERM cannot hang teardown or leak. Death by
     the teardown signals SIGTERM/SIGINT is a clean exit, not a failure (see :func:`_is_clean_exit`);
     the returned code is the first genuine failure — a positive nonzero exit or death by another
-    signal — so a crashed serve, but not a cleanly-terminated one, makes the session exit nonzero.
+    signal, including the ``-SIGKILL`` of a force-killed child — so a crashed or wedged serve, but
+    not a cleanly-terminated one, makes the session exit nonzero.
+
+    A :class:`KeyboardInterrupt` mid-teardown — a user's second Ctrl-C while children are still
+    being reaped — must not abandon the remaining children: it is caught so the loop keeps
+    terminating them, then re-raised for :func:`run` to turn into the conventional interrupt exit
+    code. Without this, the interrupt would unwind out through the earlier, not-yet-terminated
+    services, leaking them with their ports still bound.
 
     :param spawned: The service/process pairs to terminate, in spawn order.
     :return: Zero if every child exited cleanly, else the first failing exit code seen, in reverse
         spawn order.
+    :raises KeyboardInterrupt: If a Ctrl-C lands mid-teardown; re-raised only after every remaining
+        child has been terminated.
     """
     failure = 0
+    interrupt: KeyboardInterrupt | None = None
     for service, process in reversed(spawned):
-        if process.poll() is None:
-            process.terminate()
-        returncode = process.wait()
+        try:
+            returncode = _terminate_one(service, process)
+        except KeyboardInterrupt as caught:
+            # A second Ctrl-C during teardown: remember it, but keep terminating the rest before
+            # letting it unwind, so no earlier-spawned child is left running.
+            interrupt = caught
+            continue
         if not _is_clean_exit(returncode) and failure == 0:
             failure = returncode
             print(
                 f"service {service.name!r} exited with code {returncode}",
                 file=sys.stderr,
             )
+    if interrupt is not None:
+        raise interrupt
     return failure
 
 
@@ -791,15 +885,17 @@ def run(launcher: Launcher) -> int:
     4. Block until SIGINT (Ctrl-C) — or until any ``serve`` exits on its own, so a crashed server
        (e.g. its port was already taken) ends the session immediately instead of leaving it
        claiming the stack is up.
-    5. SIGTERM the spawned ``serve`` processes in reverse order and wait for them. The exit code is
-       nonzero if any child failed.
+    5. SIGTERM the spawned ``serve`` processes in reverse order and wait for them, escalating to
+       SIGKILL any that ignore SIGTERM so teardown always completes and no child leaks. The exit
+       code is nonzero if any child failed.
 
     Only what this session spawned is torn down. The platform (NATS, the API) is untouched by the
     teardown — the ``stop`` switch owns it — so a second concurrent session keeps working.
 
     A Ctrl-C landing *outside* the blocking loop — during the platform ensure, a long ``prepare``
-    build, or the spawn window — is also a clean end of the session, never a traceback: anything
-    already spawned is torn down and the conventional interrupt code ``130`` is returned.
+    build, the spawn window, or a second Ctrl-C during teardown itself — is also a clean end of the
+    session, never a traceback: anything already spawned is torn down and the conventional interrupt
+    code ``130`` is returned.
 
     :param launcher: The application's :class:`Launcher`, supplying its :class:`Service` list.
     :return: A process exit code: the failing prepare step's code if one failed, otherwise the
@@ -836,7 +932,9 @@ def run(launcher: Launcher) -> int:
 
         return exit_code
     except KeyboardInterrupt:
-        # Ctrl-C before the blocking loop (ensure, prepare, spawn, URL print): the session ends
-        # cleanly — teardown of anything spawned already ran via the finally above — with the
+        # Ctrl-C before the blocking loop (ensure, prepare, spawn, URL print), or a *second* Ctrl-C
+        # during teardown: either way the session ends cleanly — teardown of anything spawned
+        # already ran via the finally above (a mid-teardown interrupt is caught inside
+        # _terminate_in_reverse, which finishes reaping the children before re-raising) — with the
         # conventional interrupt exit code instead of a traceback.
         return _INTERRUPT_EXIT_CODE

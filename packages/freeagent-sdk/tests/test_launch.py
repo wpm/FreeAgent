@@ -814,6 +814,76 @@ def test_stop_api_waits_for_process_to_exit(
     assert not pid_file.exists()
 
 
+def test_stop_api_escalates_to_sigkill_when_sigterm_ignored(
+    monkeypatch: pytest.MonkeyPatch, state_dir_in_tmp: Path
+) -> None:
+    # A SIGTERM-ignoring API (or one wedged mid-request) must be force-killed, not orphaned with its
+    # port still bound where a later start() would see a zombie answering /health.
+    pid_file = state_dir_in_tmp / launch.STATE_DIR_NAME / launch.API_PID_FILE_NAME
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text("12345")
+
+    # The API answers health, so the recorded pid is trusted and signalled.
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+    # Still alive across the whole SIGTERM wait (times out), gone only once SIGKILL is delivered.
+    signalled: list[tuple[int, int]] = []
+
+    def fake_alive(_pid: int) -> bool:
+        # Dead only after SIGKILL was sent.
+        return signal.SIGKILL not in {sig for _, sig in signalled}
+
+    monkeypatch.setattr(launch, "_process_alive", fake_alive)
+    monkeypatch.setattr(
+        "freeagent.sdk.launch.os.kill", lambda pid, sig: signalled.append((pid, sig))
+    )
+    monkeypatch.setattr("freeagent.sdk.launch.time.sleep", lambda _seconds: None)
+    # Make the SIGTERM wait expire immediately so the test doesn't spin for 10s.
+    monkeypatch.setattr(launch, "_STOP_TIMEOUT_SECONDS", 0.0)
+
+    assert launch.stop_api() is True
+    assert signalled == [(12345, signal.SIGTERM), (12345, signal.SIGKILL)]
+    assert not pid_file.exists()
+
+
+def test_stop_api_reports_failure_and_keeps_pid_file_when_sigkill_fails(
+    monkeypatch: pytest.MonkeyPatch, state_dir_in_tmp: Path
+) -> None:
+    # The nastiest case: even SIGKILL cannot reap the process in time (e.g. stuck in uninterruptible
+    # I/O). stop_api must not report success and must keep the pid file so the live API is not
+    # silently forgotten.
+    pid_file = state_dir_in_tmp / launch.STATE_DIR_NAME / launch.API_PID_FILE_NAME
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text("12345")
+
+    # The API answers health, so the recorded pid is trusted and signalled.
+    monkeypatch.setattr(launch, "_is_healthy", lambda _: True)
+    # Never dies, no matter what is signalled.
+    monkeypatch.setattr(launch, "_process_alive", lambda _pid: True)
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "freeagent.sdk.launch.os.kill", lambda pid, sig: signalled.append((pid, sig))
+    )
+    monkeypatch.setattr("freeagent.sdk.launch.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(launch, "_STOP_TIMEOUT_SECONDS", 0.0)
+    monkeypatch.setattr(launch, "_STOP_KILL_TIMEOUT_SECONDS", 0.0)
+
+    assert launch.stop_api() is False
+    # Both signals were tried, and the pid file survives so the failure is not silently erased.
+    assert signalled == [(12345, signal.SIGTERM), (12345, signal.SIGKILL)]
+    assert pid_file.exists()
+
+
+def test_wait_for_pid_exit_true_when_already_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(launch, "_process_alive", lambda _pid: False)
+    assert launch._wait_for_pid_exit(12345, timeout=1.0) is True
+
+
+def test_wait_for_pid_exit_false_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(launch, "_process_alive", lambda _pid: True)
+    monkeypatch.setattr("freeagent.sdk.launch.time.sleep", lambda _seconds: None)
+    assert launch._wait_for_pid_exit(12345, timeout=0.0) is False
+
+
 # --------------------------------------------------------------------------------------------------
 # Session half: Service, Launcher, run()
 # --------------------------------------------------------------------------------------------------
@@ -848,14 +918,24 @@ class FakeServeProcess:
     :param term_code: The code a *live* serve reports after ``terminate``; defaults to ``-SIGTERM``,
         the real default for a process with no SIGTERM handler. Override to model a serve that traps
         SIGTERM and exits 0, or ignores it and dies some other way.
+    :param ignores_sigterm: If True, the serve ignores ``terminate``: ``wait(timeout=...)`` raises
+        :class:`subprocess.TimeoutExpired` until ``kill`` (SIGKILL) is delivered, after which
+        ``wait`` reports ``-SIGKILL``. Models the shell/``npm`` wrapper that does not forward
+        signals — the case bounded-wait teardown must escalate rather than hang on.
     """
 
     def __init__(
-        self, name: str, exit_code: int | None = None, term_code: int = -signal.SIGTERM
+        self,
+        name: str,
+        exit_code: int | None = None,
+        term_code: int = -signal.SIGTERM,
+        ignores_sigterm: bool = False,
     ) -> None:
         self.name = name
         self._term_code = term_code
+        self._ignores_sigterm = ignores_sigterm
         self.terminated = False
+        self.killed = False
         # A serve already exited on its own (crashed, or group-SIGINT'd) is reaped in place.
         self._exit_code = exit_code
 
@@ -864,11 +944,20 @@ class FakeServeProcess:
 
     def terminate(self) -> None:
         self.terminated = True
-        self._exit_code = self._term_code
+        if not self._ignores_sigterm:
+            self._exit_code = self._term_code
 
-    def wait(self) -> int:
-        # A real wait() blocks until exit; a live serve here is considered terminated by teardown.
+    def kill(self) -> None:
+        self.killed = True
+        self._exit_code = -signal.SIGKILL
+
+    def wait(self, timeout: float | None = None) -> int:
+        # A serve that ignores SIGTERM does not exit on terminate(): a bounded wait times out until
+        # kill() (SIGKILL) has been delivered, mirroring a real Popen.wait(timeout=...).
         if self._exit_code is None:
+            if self._ignores_sigterm and not self.killed:
+                raise subprocess.TimeoutExpired(cmd=self.name, timeout=timeout or 0)
+            # A real wait() blocks until exit; a live serve here is treated as teardown-terminated.
             self._exit_code = self._term_code
         return self._exit_code
 
@@ -1135,6 +1224,103 @@ def test_terminate_in_reverse_treats_other_signal_death_as_failure() -> None:
         (launch.Service(name="worker", serve=["worker"]), killed),
     ]
     assert launch._terminate_in_reverse(spawned) == -signal.SIGKILL
+
+
+def test_terminate_in_reverse_escalates_to_sigkill_when_sigterm_ignored() -> None:
+    # A serve that ignores SIGTERM (a shell/npm wrapper that doesn't forward signals): the bounded
+    # wait times out, teardown escalates to SIGKILL rather than hang, and the child is reaped.
+    stubborn = FakeServeProcess("worker", ignores_sigterm=True)
+    spawned: list[tuple[launch.Service, Any]] = [
+        (launch.Service(name="worker", serve=["worker"]), stubborn),
+    ]
+
+    # Death by SIGKILL after ignoring SIGTERM is a genuine failure, not a clean teardown.
+    assert launch._terminate_in_reverse(spawned) == -signal.SIGKILL
+    assert stubborn.terminated is True
+    assert stubborn.killed is True
+
+
+def test_terminate_one_uses_the_bounded_teardown_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The wait must be bounded — a real Popen.wait() with no timeout would hang on a stuck child.
+    waited: list[float | None] = []
+    proc: Any = FakeServeProcess("viewer")
+    original_wait = FakeServeProcess.wait
+
+    def record_wait(self: FakeServeProcess, timeout: float | None = None) -> int:
+        waited.append(timeout)
+        return original_wait(self, timeout)
+
+    monkeypatch.setattr(FakeServeProcess, "wait", record_wait)
+
+    assert launch._terminate_one(launch.Service(name="viewer", serve=["viewer"]), proc) < 0
+    assert waited == [launch._TEARDOWN_TIMEOUT_SECONDS]
+
+
+def test_terminate_in_reverse_reaps_remaining_children_on_mid_teardown_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A second Ctrl-C mid-teardown must not abandon the earlier-spawned children: the interrupt is
+    # caught so the loop finishes terminating every child, then re-raised for run() to handle.
+    first = FakeServeProcess("first")
+    second = FakeServeProcess("second")
+    third = FakeServeProcess("third")
+    spawned: list[tuple[launch.Service, Any]] = [
+        (launch.Service(name="first", serve=["first"]), first),
+        (launch.Service(name="second", serve=["second"]), second),
+        (launch.Service(name="third", serve=["third"]), third),
+    ]
+
+    original_terminate = FakeServeProcess.terminate
+
+    def interrupt_on_second(self: FakeServeProcess) -> None:
+        # Teardown runs in reverse order (third, second, first); the interrupt lands on the second.
+        if self.name == "second":
+            raise KeyboardInterrupt
+        original_terminate(self)
+
+    monkeypatch.setattr(FakeServeProcess, "terminate", interrupt_on_second)
+
+    with pytest.raises(KeyboardInterrupt):
+        launch._terminate_in_reverse(spawned)
+
+    # Despite the interrupt on the middle child, every child was terminated — none leaked.
+    assert third.terminated is True
+    assert first.terminated is True
+
+
+def test_run_reaps_children_and_returns_130_on_second_ctrl_c_during_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # End-to-end: a first Ctrl-C ends the block, then a second Ctrl-C lands mid-teardown. run() must
+    # still terminate every spawned child and return the conventional interrupt code, not a
+    # traceback and not a leaked process.
+    _no_platform(monkeypatch)
+    monkeypatch.setattr(launch, "_run_prepare_steps", lambda services: 0)
+
+    early = FakeServeProcess("viewer")
+    late = FakeServeProcess("worker")
+    spawned = [
+        (launch.Service(name="viewer", serve=["viewer"]), early),
+        (launch.Service(name="worker", serve=["worker"]), late),
+    ]
+    monkeypatch.setattr(launch, "_spawn_serves", lambda services: spawned)
+    monkeypatch.setattr(launch, "_block_until_interrupt_or_exit", _raise_keyboard_interrupt)
+
+    original_terminate = FakeServeProcess.terminate
+
+    def interrupt_on_late(self: FakeServeProcess) -> None:
+        # The 'worker' is torn down first (reverse order); a second Ctrl-C hits as it terminates.
+        if self.name == "worker":
+            original_terminate(self)
+            raise KeyboardInterrupt
+        original_terminate(self)
+
+    monkeypatch.setattr(FakeServeProcess, "terminate", interrupt_on_late)
+
+    assert launch.run(RecordingLauncher("collatz", [])) == 130
+    # Both children were terminated despite the interrupt mid-teardown — nothing leaked.
+    assert early.terminated is True
+    assert late.terminated is True
 
 
 def test_is_clean_exit_classifies_teardown_codes() -> None:
