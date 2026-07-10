@@ -425,7 +425,8 @@ def ensure_api() -> Outcome:
       this is a no-op returning :attr:`Outcome.ALREADY_RUNNING`.
     - A listener reports a *different* interpreter (a wrong-venv API), or answers without a
       verifiable identity (a non-API process on the port): it is not ours. We do not adopt it — we
-      abort with an actionable error naming the impostor (see :func:`_reject_impostor`).
+      abort with an actionable error naming the impostor (see
+      :func:`_reject_wrong_environment_api` and :func:`_reject_unidentified_listener`).
     - Nothing answers: spawn the ``freeagent-api`` console script in its own session (detached from
       this process group so it outlives the caller), record its pid in the pid file, and poll health
       until ready. The detached process's stdout/stderr append to :data:`API_LOG_FILE_NAME` beside
