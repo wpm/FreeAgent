@@ -82,14 +82,16 @@ def reformat() -> None:
 
     Exits with the first nonzero return code, if any, after all three tools have run.
     """
+    # -z: NUL-separated output is never C-quoted, so non-ASCII tracked paths survive verbatim.
+    # Only stdout is captured; stderr flows through so a failing git explains itself.
     ls_files = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "ls-files", "*.py"],
-        capture_output=True,
+        ["git", "-C", str(REPO_ROOT), "ls-files", "-z", "*.py"],
+        stdout=subprocess.PIPE,
         text=True,
     )
     if ls_files.returncode != 0:
         sys.exit(ls_files.returncode)
-    python_files = [str(REPO_ROOT / line) for line in ls_files.stdout.splitlines() if line]
+    python_files = [str(REPO_ROOT / name) for name in ls_files.stdout.split("\0") if name]
     if not python_files:
         sys.exit(0)
 

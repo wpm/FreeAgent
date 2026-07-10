@@ -8,6 +8,7 @@ report the right outcomes, and propagate exit codes.
 
 from __future__ import annotations
 
+import subprocess
 from typing import Any
 
 import pytest
@@ -228,7 +229,7 @@ def tool_runs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     def fake_run(cmd: list[str], **_: Any) -> Any:
         runs.append(cmd)
         if cmd[0] == "git":
-            return FakeLsFilesProcess(0, "src/freeagent/start.py\ntests/test_start.py\n")
+            return FakeLsFilesProcess(0, "src/freeagent/start.py\0tests/test_start.py\0")
         return FakeCompletedProcess(0)
 
     monkeypatch.setattr("freeagent.start.subprocess.run", fake_run)
@@ -246,7 +247,8 @@ def test_reformat_hands_each_tool_the_tracked_files_git_enumerated(
     assert excinfo.value.code == 0
 
     git_cmd, docformatter_cmd, ruff_format_cmd, ruff_check_cmd = tool_runs
-    assert git_cmd == ["git", "-C", str(start.REPO_ROOT), "ls-files", "*.py"]
+    # -z: NUL-separated output is never C-quoted, so non-ASCII tracked paths survive verbatim.
+    assert git_cmd == ["git", "-C", str(start.REPO_ROOT), "ls-files", "-z", "*.py"]
 
     expected_files = [
         str(start.REPO_ROOT / "src/freeagent/start.py"),
@@ -257,6 +259,27 @@ def test_reformat_hands_each_tool_the_tracked_files_git_enumerated(
     assert "--recursive" not in docformatter_cmd
     assert ruff_format_cmd == ["ruff", "format", *expected_files]
     assert ruff_check_cmd == ["ruff", "check", "--fix", *expected_files]
+
+
+def test_reformat_leaves_git_stderr_uncaptured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only stdout is captured from git: stderr must flow through to the terminal, so a failing
+    # `git ls-files` (say, outside a git checkout) explains itself instead of dying silently.
+    git_kwargs: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        if cmd[0] == "git":
+            git_kwargs.update(kwargs)
+            return FakeLsFilesProcess(0, "")
+        raise AssertionError("no formatter should run when git reports no files")
+
+    monkeypatch.setattr("freeagent.start.subprocess.run", fake_run)
+
+    with pytest.raises(SystemExit):
+        start.reformat()
+    assert git_kwargs.get("stdout") == subprocess.PIPE
+    assert "stderr" not in git_kwargs and "capture_output" not in git_kwargs
 
 
 def test_reformat_treats_docformatter_rewrites_as_success(
