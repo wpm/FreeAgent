@@ -201,3 +201,160 @@ def test_stop_exits_cleanly_when_docker_missing(
     assert "docker is required" in str(excinfo.value)
     # The API teardown still happened before the docker guard tripped.
     assert "freeagent-api stopped." in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------------------------------
+# reformat
+# --------------------------------------------------------------------------------------------------
+
+
+class FakeLsFilesProcess:
+    """A stand-in for the completed ``git ls-files`` process: a return code plus captured stdout."""
+
+    def __init__(self, returncode: int, stdout: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+@pytest.fixture
+def tool_runs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Mock every subprocess ``reformat`` spawns, recording each command line.
+
+    ``git ls-files`` reports two tracked Python files; every formatting tool succeeds. Individual
+    tests override single behaviors on top of this baseline.
+    """
+    runs: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_: Any) -> Any:
+        runs.append(cmd)
+        if cmd[0] == "git":
+            return FakeLsFilesProcess(0, "src/freeagent/start.py\ntests/test_start.py\n")
+        return FakeCompletedProcess(0)
+
+    monkeypatch.setattr("freeagent.start.subprocess.run", fake_run)
+    return runs
+
+
+def test_reformat_hands_each_tool_the_tracked_files_git_enumerated(
+    tool_runs: list[list[str]],
+) -> None:
+    # The whole point of the fix for issue #120: docformatter must receive an explicit file list
+    # (its own recursive walk silently dies on cache directories), and that list must come from
+    # `git ls-files` so caches and other untracked litter can't affect coverage.
+    with pytest.raises(SystemExit) as excinfo:
+        start.reformat()
+    assert excinfo.value.code == 0
+
+    git_cmd, docformatter_cmd, ruff_format_cmd, ruff_check_cmd = tool_runs
+    assert git_cmd == ["git", "-C", str(start.REPO_ROOT), "ls-files", "*.py"]
+
+    expected_files = [
+        str(start.REPO_ROOT / "src/freeagent/start.py"),
+        str(start.REPO_ROOT / "tests/test_start.py"),
+    ]
+    assert docformatter_cmd[0] == "docformatter"
+    assert docformatter_cmd[-2:] == expected_files
+    assert "--recursive" not in docformatter_cmd
+    assert ruff_format_cmd == ["ruff", "format", *expected_files]
+    assert ruff_check_cmd == ["ruff", "check", "--fix", *expected_files]
+
+
+def test_reformat_treats_docformatter_rewrites_as_success(
+    monkeypatch: pytest.MonkeyPatch, tool_runs: list[list[str]]
+) -> None:
+    # docformatter exits 3 when it rewrote files in place; for a fixer that's the job done, not an
+    # error.
+    original_run = start.subprocess.run
+
+    def docformatter_rewrites(cmd: list[str], **kwargs: Any) -> Any:
+        result = original_run(cmd, **kwargs)
+        if cmd[0] == "docformatter":
+            result.returncode = 3
+        return result
+
+    monkeypatch.setattr("freeagent.start.subprocess.run", docformatter_rewrites)
+
+    with pytest.raises(SystemExit) as excinfo:
+        start.reformat()
+    assert excinfo.value.code == 0
+
+
+def test_reformat_propagates_a_real_docformatter_failure(
+    monkeypatch: pytest.MonkeyPatch, tool_runs: list[list[str]]
+) -> None:
+    original_run = start.subprocess.run
+
+    def docformatter_fails(cmd: list[str], **kwargs: Any) -> Any:
+        result = original_run(cmd, **kwargs)
+        if cmd[0] == "docformatter":
+            result.returncode = 1
+        return result
+
+    monkeypatch.setattr("freeagent.start.subprocess.run", docformatter_fails)
+
+    with pytest.raises(SystemExit) as excinfo:
+        start.reformat()
+    assert excinfo.value.code == 1
+    # The remaining tools still ran: reformat reports the first failure only after doing all the
+    # fixing it can.
+    assert [cmd[0] for cmd in tool_runs] == ["git", "docformatter", "ruff", "ruff"]
+
+
+def test_reformat_propagates_a_ruff_failure(
+    monkeypatch: pytest.MonkeyPatch, tool_runs: list[list[str]]
+) -> None:
+    original_run = start.subprocess.run
+
+    def ruff_check_fails(cmd: list[str], **kwargs: Any) -> Any:
+        result = original_run(cmd, **kwargs)
+        if cmd[:3] == ["ruff", "check", "--fix"]:
+            result.returncode = 1
+        return result
+
+    monkeypatch.setattr("freeagent.start.subprocess.run", ruff_check_fails)
+
+    with pytest.raises(SystemExit) as excinfo:
+        start.reformat()
+    assert excinfo.value.code == 1
+
+
+def test_reformat_exits_with_git_error_when_enumeration_fails(
+    monkeypatch: pytest.MonkeyPatch, tool_runs: list[list[str]]
+) -> None:
+    # If git can't list the tracked files there is nothing trustworthy to format: exit with git's
+    # code before any tool touches the tree.
+    original_run = start.subprocess.run
+
+    def git_fails(cmd: list[str], **kwargs: Any) -> Any:
+        result = original_run(cmd, **kwargs)
+        if cmd[0] == "git":
+            result.returncode = 128
+        return result
+
+    monkeypatch.setattr("freeagent.start.subprocess.run", git_fails)
+
+    with pytest.raises(SystemExit) as excinfo:
+        start.reformat()
+    assert excinfo.value.code == 128
+    assert [cmd[0] for cmd in tool_runs] == ["git"]
+
+
+def test_reformat_exits_cleanly_when_no_python_files_are_tracked(
+    monkeypatch: pytest.MonkeyPatch, tool_runs: list[list[str]]
+) -> None:
+    # An empty file list would make docformatter read stdin and ruff format the whole cwd; with
+    # nothing tracked there is nothing to do.
+    original_run = start.subprocess.run
+
+    def git_finds_nothing(cmd: list[str], **kwargs: Any) -> Any:
+        result = original_run(cmd, **kwargs)
+        if cmd[0] == "git":
+            result.stdout = ""
+        return result
+
+    monkeypatch.setattr("freeagent.start.subprocess.run", git_finds_nothing)
+
+    with pytest.raises(SystemExit) as excinfo:
+        start.reformat()
+    assert excinfo.value.code == 0
+    assert [cmd[0] for cmd in tool_runs] == ["git"]
