@@ -715,12 +715,15 @@ def test_ensure_from_one_dir_and_stop_from_another_agree_out_of_repo(
     monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/venv/bin/freeagent-api")
     monkeypatch.setattr("freeagent.sdk.launch.subprocess.Popen", FakePopen)
 
-    # ensure_api from directory A: down on the first probe, healthy afterwards.
+    # ensure_api from directory A: the port is free on the initial identity probe, so the API is
+    # spawned; it then becomes healthy so the wait loop succeeds. The probe is intercepted at
+    # _probe_listener (ensure gates on identity, not bare liveness — issue #117), so this stays
+    # hermetic and never reaches a real listener on the port.
     ensure_dir = tmp_path / "app-a"
     ensure_dir.mkdir()
     monkeypatch.chdir(ensure_dir)
-    ensure_probes = iter([False, True])
-    monkeypatch.setattr(launch, "_is_healthy", lambda _: next(ensure_probes))
+    _patch_port_absent(monkeypatch)
+    monkeypatch.setattr(launch, "_wait_until_healthy", lambda url, timeout=0: True)
     assert launch.ensure_api() is launch.Outcome.STARTED
     pid_path = launch._api_pid_file()
     assert pid_path.read_text() == str(FakePopen.instances[0].pid)
