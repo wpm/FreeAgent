@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import json
 import os
 import shutil
 import signal
@@ -93,6 +94,17 @@ API_PID_FILE_NAME = "api.pid"
 
 API_LOG_FILE_NAME = "api.log"
 """The log file the detached API's stdout/stderr append to, under :data:`STATE_DIR_NAME`."""
+
+_HEALTH_EXECUTABLE_FIELD = "executable"
+"""The ``/health`` field naming the serving interpreter (its venv); the API's identity for adoption.
+
+The API reports its :data:`sys.executable` here (see :class:`freeagent.api.app.HealthResponse`), and
+:func:`ensure_api` adopts a healthy listener only when this equals its own interpreter — so a wrong-
+venv API squatting the port is refused, not silently used.
+"""
+
+_HEALTH_PID_FIELD = "pid"
+"""The ``/health`` field naming the serving process's pid, used to name an impostor in the error."""
 
 _PACKAGE_DATA = "freeagent.sdk._platform"
 """The package holding the shipped compose file and NATS config."""
@@ -173,6 +185,84 @@ def _wait_until_healthy(url: str, timeout: float = _HEALTH_TIMEOUT_SECONDS) -> b
         if time.monotonic() >= deadline:
             return False
         time.sleep(_HEALTH_POLL_INTERVAL_SECONDS)
+
+
+@dataclasses.dataclass(frozen=True)
+class _ListenerIdentity:
+    """The serving environment a listener reported at ``/health`` — the venv and pid answering.
+
+    Only carried by a :attr:`_ListenerState.IDENTIFIED` probe: the fields a launcher compares
+    against its own environment and, on a mismatch, names in the impostor error.
+
+    :ivar executable: The serving interpreter path (its venv) the listener reported.
+    :ivar pid: The serving process's pid the listener reported.
+    """
+
+    executable: str
+    pid: int
+
+
+class _ListenerState(enum.Enum):
+    """How a probe of the API's port came back — the three cases :func:`ensure_api` must tell apart.
+
+    Bare liveness cannot distinguish these, which is why any healthy listener used to be adopted
+    (issue #117). The probe is classified instead, and only :attr:`IDENTIFIED` can mean "our API".
+    """
+
+    ABSENT = "absent"
+    """Nothing answered — connection refused, a timeout, or a non-2xx status.
+
+    The port is free to spawn our own API on.
+    """
+
+    IDENTIFIED = "identified"
+    """A Free Agent API answered with its identity (interpreter path and pid).
+
+    Whether it is *ours* is a further check on the reported interpreter; the identity travels
+    alongside this state.
+    """
+
+    UNIDENTIFIED = "unidentified"
+    """A process answered 2xx but not as a Free Agent API — a non-JSON body, or JSON missing the
+    identity fields.
+
+    Something is squatting the port; it is not ours to adopt, and spawning over it would only
+    collide, so it is an impostor to report.
+    """
+
+
+def _probe_listener(url: str) -> tuple[_ListenerState, _ListenerIdentity | None]:
+    """Probe a health endpoint and classify what, if anything, is answering the API's port.
+
+    Fetches ``url`` and reads its body as :class:`freeagent.api.app.HealthResponse` JSON:
+
+    - a connection error, timeout, or non-2xx status is :attr:`_ListenerState.ABSENT` — the port is
+      free;
+    - a 2xx JSON body carrying both the interpreter path and pid is
+      :attr:`_ListenerState.IDENTIFIED` and its :class:`_ListenerIdentity` is returned alongside;
+    - a 2xx body that is not that shape (non-JSON, or JSON missing either field) is
+      :attr:`_ListenerState.UNIDENTIFIED` — a non-API process holds the port.
+
+    :param url: The health endpoint to probe.
+    :return: The classified state, paired with the reported identity when (and only when) the state
+        is :attr:`_ListenerState.IDENTIFIED`.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:
+            if not 200 <= response.status < 300:
+                return _ListenerState.ABSENT, None
+            payload = json.loads(response.read())
+    except (urllib.error.URLError, OSError):
+        return _ListenerState.ABSENT, None
+    except json.JSONDecodeError:
+        return _ListenerState.UNIDENTIFIED, None
+
+    if isinstance(payload, dict):
+        executable = payload.get(_HEALTH_EXECUTABLE_FIELD)
+        pid = payload.get(_HEALTH_PID_FIELD)
+        if isinstance(executable, str) and isinstance(pid, int):
+            return _ListenerState.IDENTIFIED, _ListenerIdentity(executable=executable, pid=pid)
+    return _ListenerState.UNIDENTIFIED, None
 
 
 def _repo_root() -> Path | None:
@@ -337,28 +427,88 @@ def ensure_nats(
     return Outcome.STARTED
 
 
+def _reject_wrong_environment_api(identity: _ListenerIdentity, health_url: str) -> None:
+    """Abort because a *different environment's* Free Agent API holds the API's port.
+
+    Called when ``/health`` answered with an identity whose interpreter is not this process's own: a
+    wrong-venv API — the classic case being one left running from a since-deleted worktree — or an
+    unrelated Free Agent API from another checkout. Adopting it is the silent-adoption failure the
+    incident hit: its venv has no entry point for the caller's applications, so every request 404s
+    while ``start`` cheerfully reports "already running". So we refuse, naming the impostor's venv
+    and pid and how to clear it, rather than returning :attr:`Outcome.ALREADY_RUNNING`.
+
+    :param identity: The mismatched identity the listener reported at ``/health``.
+    :param health_url: The health URL probed, named in the message so the operator knows the port.
+    :raises SystemExit: Always, with the impostor's venv and pid and the remedy.
+    """
+    sys.exit(
+        f"a different environment's API is already listening at {health_url}: it is running from "
+        f"{identity.executable!r} (pid {identity.pid}), not this environment's "
+        f"{sys.executable!r}. That API's venv has no entry points for this environment's "
+        f"applications, so adopting it would 404 every request. Stop it first — e.g. "
+        f"`kill {identity.pid}` — then try again."
+    )
+
+
+def _reject_unidentified_listener(health_url: str) -> None:
+    """Abort because a process that is not a Free Agent API holds the API's port.
+
+    Called when the port answered 2xx but without a verifiable Free Agent identity — a non-JSON
+    body, or JSON missing the identity fields. It is not our API to adopt, and spawning our own over
+    it would only collide on the port, so we refuse with the port to clear and how.
+
+    :param health_url: The health URL probed, named in the message so the operator knows the port.
+    :raises SystemExit: Always, telling the operator to free the port.
+    """
+    port = health_url.rsplit(":", 1)[-1].split("/")[0]
+    sys.exit(
+        f"something that is not the Free Agent API is already listening at {health_url}: it "
+        f"answers health checks but does not report a Free Agent identity. Free that port — e.g. "
+        f"find the process with `lsof -nP -iTCP:{port} -sTCP:LISTEN` and stop it — then try again."
+    )
+
+
 def ensure_api() -> Outcome:
-    """Ensure the ``freeagent-api`` host process is up, spawning it detached if necessary.
+    """Ensure *this environment's* ``freeagent-api`` host process is up, spawning it if necessary.
 
-    Polls :func:`api_health_url`; if the API already answers, this is a no-op. Otherwise spawns the
-    ``freeagent-api`` console script in its own session (detached from this process group so it
-    outlives the caller), records its pid in the pid file, and polls health until ready. The
-    detached process's stdout/stderr append to :data:`API_LOG_FILE_NAME` beside the pid file —
-    a persistent daemon must not inherit a mortal terminal's stdio.
+    Probes :func:`api_health_url`, then decides by the identity the listener reports at ``/health``
+    (see :class:`freeagent.api.app.HealthResponse`) — never by bare liveness. Any healthy listener
+    would satisfy a liveness-only check, so an API from a deleted worktree's venv, another checkout,
+    or an unrelated process squatting the port would be silently adopted and never replaced by one
+    from the caller's own environment. Instead:
 
-    Health is the source of truth: a pid file left over from a dead process is stale and gets
+    - The listener's interpreter matches this process's :data:`sys.executable`: it is our API, so
+      this is a no-op returning :attr:`Outcome.ALREADY_RUNNING`.
+    - A listener reports a *different* interpreter (a wrong-venv API), or answers without a
+      verifiable identity (a non-API process on the port): it is not ours. We do not adopt it — we
+      abort with an actionable error naming the impostor (see
+      :func:`_reject_wrong_environment_api` and :func:`_reject_unidentified_listener`).
+    - Nothing answers: spawn the ``freeagent-api`` console script in its own session (detached from
+      this process group so it outlives the caller), record its pid in the pid file, and poll health
+      until ready. The detached process's stdout/stderr append to :data:`API_LOG_FILE_NAME` beside
+      the pid file — a persistent daemon must not inherit a mortal terminal's stdio.
+
+    Health remains the source of truth: a pid file left over from a dead process is stale and gets
     overwritten. The API is app-agnostic and belongs to no session, so callers ensure but never own
     it — only the ``start``/``stop`` switch tears it down (see :func:`stop_api`).
 
-    :return: :attr:`Outcome.ALREADY_RUNNING` if the API was already healthy, else
+    :return: :attr:`Outcome.ALREADY_RUNNING` if this environment's API was already healthy, else
         :attr:`Outcome.STARTED`.
-    :raises SystemExit: If the ``freeagent-api`` executable is missing from the environment, with a
-        message telling the author to add ``freeagent-api`` to their dev dependencies; or if the API
-        was spawned but never became healthy within the timeout.
+    :raises SystemExit: If a wrong-environment API or a non-API process is already answering the
+        port (with the impostor's venv, pid, and remedy); if the ``freeagent-api`` executable is
+        missing from the environment (with a message telling the author to add ``freeagent-api`` to
+        their dev dependencies); or if the API was spawned but never became healthy within the
+        timeout.
     """
     health_url = api_health_url()
-    if _is_healthy(health_url):
-        return Outcome.ALREADY_RUNNING
+    state, identity = _probe_listener(health_url)
+    if state is _ListenerState.IDENTIFIED:
+        assert identity is not None  # IDENTIFIED always carries an identity; narrows for the type.
+        if identity.executable == sys.executable:
+            return Outcome.ALREADY_RUNNING
+        _reject_wrong_environment_api(identity, health_url)
+    elif state is _ListenerState.UNIDENTIFIED:
+        _reject_unidentified_listener(health_url)
 
     if shutil.which(API_EXECUTABLE) is None:
         sys.exit(
