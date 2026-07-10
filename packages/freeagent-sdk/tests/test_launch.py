@@ -157,6 +157,61 @@ def test_ensure_nats_passes_explicit_compose_file(monkeypatch: pytest.MonkeyPatc
     assert str(explicit) in captured[0]
 
 
+def test_ensure_nats_reconcile_runs_compose_up_even_when_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The platform owner (`start`) reconciles: NATS answering healthz is not enough — a stale
+    # container from an old config must be brought in line with the compose file, so `compose up
+    # --detach --wait` runs unconditionally and the outcome reflects that it (re)started NATS.
+    _patch_health(monkeypatch, {launch.NATS_HEALTH_URL})
+    monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: "/usr/bin/docker")
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_: Any) -> Any:
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.run", fake_run)
+
+    assert launch.ensure_nats(reconcile=True) is launch.Outcome.STARTED
+    assert calls == [
+        [
+            "docker",
+            "compose",
+            "--file",
+            str(launch.resolve_compose_file(None)),
+            "up",
+            "--detach",
+            "--wait",
+        ]
+    ]
+
+
+def test_ensure_nats_reconcile_still_needs_docker(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Reconciliation runs docker unconditionally, so a missing docker must still raise clearly even
+    # when NATS happens to be answering healthz.
+    _patch_health(monkeypatch, {launch.NATS_HEALTH_URL})
+    monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: None)
+
+    with pytest.raises(launch.DockerUnavailableError, match="docker is required"):
+        launch.ensure_nats(reconcile=True)
+
+
+def test_ensure_nats_without_reconcile_short_circuits_when_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A session (the default) must never disrupt a NATS other sessions share: answering healthz is
+    # enough, and docker is never touched.
+    _patch_health(monkeypatch, {launch.NATS_HEALTH_URL})
+
+    def fail(*_: Any, **__: Any) -> None:
+        raise AssertionError("a session must not run docker compose when NATS is already healthy")
+
+    monkeypatch.setattr("freeagent.sdk.launch.subprocess.run", fail)
+    assert launch.ensure_nats(reconcile=False) is launch.Outcome.ALREADY_RUNNING
+
+
 def test_ensure_nats_raises_when_docker_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_health(monkeypatch, set())
     monkeypatch.setattr("freeagent.sdk.launch.shutil.which", lambda _: None)

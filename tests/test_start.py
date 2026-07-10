@@ -32,10 +32,10 @@ class FakeCompletedProcess:
 def test_start_ensures_nats_against_the_in_repo_compose_file(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    compose_files: list[Any] = []
+    calls: list[tuple[Any, bool]] = []
 
-    def fake_ensure_nats(compose_file: Any = None) -> launch.Outcome:
-        compose_files.append(compose_file)
+    def fake_ensure_nats(compose_file: Any = None, reconcile: bool = False) -> launch.Outcome:
+        calls.append((compose_file, reconcile))
         return launch.Outcome.STARTED
 
     monkeypatch.setattr(launch, "ensure_nats", fake_ensure_nats)
@@ -43,8 +43,10 @@ def test_start_ensures_nats_against_the_in_repo_compose_file(
 
     start.start()
 
-    # The in-repo compose file is the source of truth, passed explicitly (never the packaged copy).
-    assert compose_files == [start.COMPOSE_FILE]
+    # The in-repo compose file is the source of truth, passed explicitly (never the packaged copy),
+    # and the switch owns the platform so it reconciles: `compose up --wait` runs unconditionally,
+    # bringing a container left on a stale config back in line (see issue #115 F7).
+    assert calls == [(start.COMPOSE_FILE, True)]
     output = capsys.readouterr().out
     assert "NATS network started." in output
     assert "freeagent-api started." in output
@@ -54,7 +56,9 @@ def test_start_reports_everything_already_running(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(
-        launch, "ensure_nats", lambda compose_file=None: launch.Outcome.ALREADY_RUNNING
+        launch,
+        "ensure_nats",
+        lambda compose_file=None, reconcile=False: launch.Outcome.ALREADY_RUNNING,
     )
     monkeypatch.setattr(launch, "ensure_api", lambda: launch.Outcome.ALREADY_RUNNING)
 
@@ -70,7 +74,9 @@ def test_start_reports_mixed_outcomes(
 ) -> None:
     # NATS already up but the API had to be started: each line reflects its own outcome.
     monkeypatch.setattr(
-        launch, "ensure_nats", lambda compose_file=None: launch.Outcome.ALREADY_RUNNING
+        launch,
+        "ensure_nats",
+        lambda compose_file=None, reconcile=False: launch.Outcome.ALREADY_RUNNING,
     )
     monkeypatch.setattr(launch, "ensure_api", lambda: launch.Outcome.STARTED)
 
@@ -82,7 +88,9 @@ def test_start_reports_mixed_outcomes(
 
 
 def test_start_exits_with_guidance_when_docker_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    def raise_docker_unavailable(compose_file: Any = None) -> launch.Outcome:
+    def raise_docker_unavailable(
+        compose_file: Any = None, reconcile: bool = False
+    ) -> launch.Outcome:
         raise launch.DockerUnavailableError("docker is required but was not found on PATH")
 
     monkeypatch.setattr(launch, "ensure_nats", raise_docker_unavailable)
