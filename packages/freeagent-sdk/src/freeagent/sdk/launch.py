@@ -227,20 +227,37 @@ def resolve_compose_file(compose_file: str | os.PathLike[str] | None) -> Path:
         return Path(packaged)
 
 
-def ensure_nats(compose_file: str | os.PathLike[str] | None = None) -> Outcome:
+def ensure_nats(
+    compose_file: str | os.PathLike[str] | None = None, reconcile: bool = False
+) -> Outcome:
     """Ensure the NATS docker network is up, starting it if necessary.
 
-    Polls :data:`NATS_HEALTH_URL`; if NATS already answers, this is a no-op. Otherwise runs ``docker
-    compose --file <resolved> up --detach --wait`` and confirms health.
+    Two modes, for the two kinds of caller (see ADR-0009):
+
+    - **Session (the default,** ``reconcile=False`` **).** Polls :data:`NATS_HEALTH_URL`; if NATS
+      already answers, this is a no-op. A launch session must never disrupt a NATS other sessions
+      share, and running ``compose up`` on every ``uv run <app>`` would restart NATS on any config
+      change — so answering healthz is enough and docker is not touched.
+    - **Platform owner (**``reconcile=True``**, passed by the** ``start`` **switch).** Runs ``docker
+      compose --file <resolved> up --detach --wait`` unconditionally — even when NATS already
+      answers healthz — so a container left on a stale config (e.g. after pulling a branch that
+      changed the NATS config) is reconciled against the compose file. This restores the
+      reconciliation the old ``start`` always did, at the one place that owns the platform.
+
+    When docker does run it is ``docker compose --file <resolved> up --detach --wait`` against the
+    resolved compose file; health is confirmed by ``--wait``.
 
     :param compose_file: An explicit compose file, or ``None`` to use the packaged copy; see
         :func:`resolve_compose_file`.
-    :return: :attr:`Outcome.ALREADY_RUNNING` if NATS was already healthy, else
-        :attr:`Outcome.STARTED`.
+    :param reconcile: When True, run ``compose up`` even if NATS already answers healthz, so a
+        stale container is brought in line with the compose file. The ``start`` switch passes True;
+        sessions leave it False to keep the non-disruptive short-circuit.
+    :return: :attr:`Outcome.ALREADY_RUNNING` if NATS was already healthy and no reconciliation was
+        requested, else :attr:`Outcome.STARTED`.
     :raises DockerUnavailableError: If the ``docker`` executable is missing, or ``docker compose
         up`` fails (e.g. the daemon is not running).
     """
-    if _is_healthy(NATS_HEALTH_URL):
+    if not reconcile and _is_healthy(NATS_HEALTH_URL):
         return Outcome.ALREADY_RUNNING
 
     if shutil.which("docker") is None:
