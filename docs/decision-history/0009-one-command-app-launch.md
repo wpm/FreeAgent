@@ -73,7 +73,11 @@ A stdlib-only SDK module with three parts:
   config as package data, so "bring up the platform" works from any repo.
   NATS is ensured via its `/healthz` monitoring endpoint and `docker compose
   up --detach --wait`; the API via its `/health` endpoint and a detached
-  spawn recorded in a pid file under a repo state directory.
+  spawn recorded in a pid file under a state directory. That directory is the
+  repo root's `.freeagent/` in a git repository, and a cwd-independent
+  user-level directory otherwise (`$XDG_STATE_HOME/freeagent/`, falling back
+  to `~/.freeagent/`) so that a third-party `ensure` and a later `stop`, run
+  from different directories, agree on one pid file (issue #116).
 
 ### The API joins the platform switch
 
