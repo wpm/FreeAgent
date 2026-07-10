@@ -74,36 +74,41 @@ def stop() -> None:
 def reformat() -> None:
     """Format and lint-fix the repo: docformatter, then ruff format, then ruff check --fix.
 
-    Runs docformatter recursively over the source trees only (not the repo root), since
-    docformatter's own dir walk doesn't prune hidden/cache directories and aborts the entire walk
-    the moment it meets one, rather than just skipping it. Exits with the first nonzero return code,
-    if any, after all three tools have run.
+    Every tool gets an explicit list of the tracked Python files, enumerated with ``git ls-files``,
+    rather than a directory to walk. docformatter's own recursive walk silently drops most of the
+    tree the moment it meets a cache directory (``.mypy_cache`` and friends), so on any checkout
+    that had run the tools it formatted almost nothing while looking green — see issue #120. A git-
+    enumerated list makes coverage identical on every checkout, fresh or littered.
+
+    Exits with the first nonzero return code, if any, after all three tools have run.
     """
-    source_dirs = [
-        str(REPO_ROOT / "src"),
-        str(REPO_ROOT / "packages"),
-        str(REPO_ROOT / "apps"),
-    ]
+    # -z: NUL-separated output is never C-quoted, so non-ASCII tracked paths survive verbatim.
+    # Only stdout is captured; stderr flows through so a failing git explains itself.
+    ls_files = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "-z", "*.py"],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    if ls_files.returncode != 0:
+        sys.exit(ls_files.returncode)
+    python_files = [str(REPO_ROOT / name) for name in ls_files.stdout.split("\0") if name]
+    if not python_files:
+        sys.exit(0)
+
     docformatter_code = subprocess.run(
         [
             "docformatter",
             "--in-place",
-            "--recursive",
             "--wrap-summaries=100",
             "--wrap-descriptions=100",
-            *source_dirs,
-            "--exclude",
-            ".mypy_cache",
-            ".ruff_cache",
-            ".pytest_cache",
-            "__pycache__",
+            *python_files,
         ]
     ).returncode
     # docformatter exits 3 when it rewrites files; that's not a failure here.
     docformatter_code = 0 if docformatter_code == 3 else docformatter_code
 
-    ruff_format_code = subprocess.run(["ruff", "format", *source_dirs]).returncode
-    ruff_check_code = subprocess.run(["ruff", "check", "--fix", *source_dirs]).returncode
+    ruff_format_code = subprocess.run(["ruff", "format", *python_files]).returncode
+    ruff_check_code = subprocess.run(["ruff", "check", "--fix", *python_files]).returncode
 
     sys.exit(docformatter_code or ruff_format_code or ruff_check_code)
 

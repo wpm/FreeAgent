@@ -52,6 +52,18 @@ jobs:
           uv run ruff check .
           uv run ruff format --check .
 
+      # The committed tree must be a fixed point of `uv run reformat`, so the pre-commit hook and
+      # CI cannot disagree about what "formatted" means (issue #120). This is deliberately not a
+      # raw `docformatter --check`: docformatter and ruff format disagree about blank lines after
+      # a few docstrings, and ruff — which reformat runs last — wins in the committed tree.
+      - name: Enforce formatting fixed point (uv run reformat)
+        run: |
+          uv run reformat
+          if ! git diff --exit-code; then
+            echo "::error::The tree is not reformat-clean. Run 'uv run reformat' and commit the result."
+            exit 1
+          fi
+
       # The import invariant, mechanically enforced: freeagent-api may only depend on names
       # defined in freeagent-sdk. Contracts live in [tool.importlinter] in pyproject.toml.
       - name: Enforce import boundaries (import-linter)
