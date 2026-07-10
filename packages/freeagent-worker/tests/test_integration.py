@@ -2,10 +2,10 @@
 
 This is the epic's first over-the-wire proof (issue #80). Everything above it -- the SDK's entities,
 the Collatz application, the loader, the worker's runner and CLI -- is exercised together against a
-real ``nats-server`` subprocess, because this is the level at which subject-routing and
-lifecycle-ordering bugs live: exactly the class of bug the rewrite's testing discipline exists to
-catch, and the class a fake NATS client cannot surface (a fake acks instantly, so it hides the run-
-loop-ack ordering that deadlocks a multi-agent episode over a real server).
+real ``nats-server`` subprocess, because this is the level at which subject-routing and lifecycle-
+ordering bugs live: exactly the class of bug the rewrite's testing discipline exists to catch, and
+the class a fake NATS client cannot surface (a fake acks instantly, so it hides the run- loop-ack
+ordering that deadlocks a multi-agent episode over a real server).
 
 A passive *wire tap* -- a second NATS connection subscribed to the whole episode subtree -- records
 every message the episode puts on the wire, so the test can assert on the control-plane traffic

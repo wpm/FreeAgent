@@ -48,8 +48,8 @@ EPISODE_TIMEOUT = 60.0
 class WireTap:
     """A passive NATS connection recording every JSON payload on an episode's subtree.
 
-    The independent record of "what the engine sent" that the feed endpoint is compared against:
-    it subscribes to ``{episode_root}.>`` on its own connection, so what it sees is exactly what
+    The independent record of "what the engine sent" that the feed endpoint is compared against: it
+    subscribes to ``{episode_root}.>`` on its own connection, so what it sees is exactly what
     crossed the wire, unmediated by the API.
     """
 
@@ -131,8 +131,8 @@ async def test_collatz_episode_runs_to_completion_and_serves_its_feed_verbatim(
 
     The tap subscribes to the (deterministic) episode root before the POST so it cannot miss a
     frame. After the status polls to ``complete``, every feed record must be a ``Chain`` (the
-    control plane is filtered out) and, subject by subject, the feed's payloads must equal what
-    the tap saw the engine send, in the same order.
+    control plane is filtered out) and, subject by subject, the feed's payloads must equal what the
+    tap saw the engine send, in the same order.
     """
     app = create_app(nats_url=nats_server)
     manager: EpisodeManager = app.state.manager

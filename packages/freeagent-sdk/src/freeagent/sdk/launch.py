@@ -396,8 +396,8 @@ class Launcher(Protocol):
     worker code.
 
     There is deliberately no ``freeagent.launchers`` entry-point group yet: each app declares its
-    own console script whose ``main()`` hands a launcher to :func:`run`, and a generic
-    ``launch <name>`` consumer that would need an enumerable group does not exist yet (ADR-0009).
+    own console script whose ``main()`` hands a launcher to :func:`run`, and a generic ``launch
+    <name>`` consumer that would need an enumerable group does not exist yet (ADR-0009).
 
     Because it is a :class:`~typing.Protocol`, a launcher need not inherit from anything — any
     object with a matching ``name`` and ``services()`` qualifies — and it is
@@ -424,7 +424,7 @@ def _run_prepare_steps(services: Sequence[Service]) -> int:
     is returned — no ``serve`` should start once a build step has failed.
 
     :param services: The services whose prepare steps to run.
-    :return: ``0`` if every prepare command succeeded, else the exit code of the first that failed.
+    :return:``0`` if every prepare command succeeded, else the exit code of the first that failed.
     """
     for service in services:
         for command in service.prepare:
@@ -497,7 +497,7 @@ def _terminate_in_reverse(
     signal — so a crashed serve, but not a cleanly-terminated one, makes the session exit nonzero.
 
     :param spawned: The service/process pairs to terminate, in spawn order.
-    :return: ``0`` if every child exited cleanly, else the first failing exit code seen, in reverse
+    :return:``0`` if every child exited cleanly, else the first failing exit code seen, in reverse
         spawn order.
     """
     failure = 0

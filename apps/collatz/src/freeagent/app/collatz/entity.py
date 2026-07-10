@@ -1,19 +1,18 @@
 """The Collatz :class:`~freeagent.sdk.Agent` and :class:`~freeagent.sdk.Environment`.
 
-Collatz rehearses the platform's ack-then-counter-request shape on deterministic,
-LLM-free logic. The :class:`CollatzEnvironment` seeds each agent with a starting :class:`Chain` and
-owns *all* game-state judgment: agents are purely reactive. A :class:`CollatzAgent`, handed a chain,
-extends it by exactly one Collatz step and sends the longer chain back to the environment as its own
-request; the reply it gets is a bare :class:`~freeagent.sdk.message.Ack`, never the next chain.
+Collatz rehearses the platform's ack-then-counter-request shape on deterministic, LLM-free logic.
+The :class:`CollatzEnvironment` seeds each agent with a starting :class:`Chain` and owns *all* game-
+state judgment: agents are purely reactive. A :class:`CollatzAgent`, handed a chain, extends it by
+exactly one Collatz step and sends the longer chain back to the environment as its own request; the
+reply it gets is a bare :class:`~freeagent.sdk.message.Ack`, never the next chain.
 
 The environment learns which agent a returned chain belongs to from the *subject* it arrives on, not
 from the message body: each agent sends its chains to a per-agent environment subject
 ``{episode_root}.environment.replies.{agent}``, so the single shared :class:`Chain` type stays free
 of any sender field and direction is carried entirely by the subject. When a returned chain has
-reached 1
-the environment stops exactly that agent with :class:`~freeagent.sdk.message.StopAgent`; when every
-agent's chain is complete it publishes :class:`~freeagent.sdk.message.EpisodeComplete` and shuts
-itself down.
+reached 1 the environment stops exactly that agent with :class:`~freeagent.sdk.message.StopAgent`;
+when every agent's chain is complete it publishes :class:`~freeagent.sdk.message.EpisodeComplete`
+and shuts itself down.
 
 The per-agent bookkeeping and completion judgment used here are exercised directly, without a NATS
 server, by the unit tests in ``tests/``; the full over-the-wire episode is a separate integration
@@ -243,8 +242,8 @@ class CollatzEnvironment(Environment):
 
         :param agent: The agent whose chain this is.
         :param chain: The extended chain the agent returned.
-        :return: ``True`` if this chain completed the agent's work for the first time, else
-            ``False`` (either the chain isn't complete, or the agent was already finished).
+        :return:``True`` if this chain completed the agent's work for the first time, else ``False``
+            (either the chain isn't complete, or the agent was already finished).
         """
         self.chains[agent] = chain
         if is_complete(chain) and agent not in self.finished:
@@ -255,7 +254,7 @@ class CollatzEnvironment(Environment):
     def episode_complete(self) -> bool:
         """Report whether every agent in the episode has finished.
 
-        :return: ``True`` once :attr:`finished` covers all of :attr:`agents`; ``False`` while any
+        :return:``True`` once :attr:`finished` covers all of :attr:`agents`; ``False`` while any
             agent's chain is still running.
         """
         return self.finished == set(self.agents)

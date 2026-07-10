@@ -75,9 +75,9 @@ def _owned_message_types(package: str) -> list[type[Message]]:
 
     Walks the shared ``Message._by_type`` registry — which holds SDK types plus every message class
     imported into the process — and keeps only those whose defining module is ``package`` itself or
-    nested under it. This registry-walk filter ensures an application's schema
-    contains only its own message vocabulary, never the SDK's control-plane types or another loaded
-    application's. The result is sorted by class name for a stable, deterministic document.
+    nested under it. This registry-walk filter ensures an application's schema contains only its own
+    message vocabulary, never the SDK's control-plane types or another loaded application's. The
+    result is sorted by class name for a stable, deterministic document.
 
     :param package: The dotted package name to select types from, from :func:`_application_package`.
     :return: The application's own message types, sorted by class name.

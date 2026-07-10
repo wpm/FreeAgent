@@ -37,8 +37,8 @@ class UnknownApplication(LookupError):
     """Raised when :func:`load_application` is asked for an application name that isn't installed.
 
     A subclass of :class:`LookupError` so the name-not-found case is catchable in isolation — the
-    API turns it into a 404 — without also swallowing errors raised while *importing* an
-    application that does exist.
+    API turns it into a 404 — without also swallowing errors raised while *importing* an application
+    that does exist.
     """
 
 
@@ -46,12 +46,12 @@ class AmbiguousApplication(LookupError):
     """Raised when a name resolves to more than one installed application.
 
     Entry points aren't deduplicated across distributions, so two installed distributions can each
-    register the ``freeagent.applications`` group under the same name — a collision possible
-    between third-party authors. Rather than let the single-match unpack in
-    :func:`load_application` fail with a bare, uncatchable :class:`ValueError`, that case raises
-    this. A :class:`LookupError` like :class:`UnknownApplication`, so a caller can catch both
-    resolution failures at once, while their distinct types let the API tell "no such application"
-    (a 404) apart from "ambiguous install" (an operator misconfiguration).
+    register the ``freeagent.applications`` group under the same name — a collision possible between
+    third-party authors. Rather than let the single-match unpack in :func:`load_application` fail
+    with a bare, uncatchable :class:`ValueError`, that case raises this. A :class:`LookupError` like
+    :class:`UnknownApplication`, so a caller can catch both resolution failures at once, while their
+    distinct types let the API tell "no such application" (a 404) apart from "ambiguous install" (an
+    operator misconfiguration).
     """
 
 
@@ -60,8 +60,8 @@ class InvalidApplication(TypeError):
 
     An entry point can point at anything importable; :func:`load_application` checks that what it
     loads actually satisfies the :class:`Application` protocol (has ``name`` and both factory
-    methods) and raises this if it doesn't, so a misregistered entry point fails loudly at load
-    time — naming the offending application — rather than deep inside the worker with an opaque
+    methods) and raises this if it doesn't, so a misregistered entry point fails loudly at load time
+    — naming the offending application — rather than deep inside the worker with an opaque
     :class:`AttributeError` when a missing method is finally called. A :class:`TypeError`, not a
     :class:`LookupError`: the application was *found*, it's just the wrong shape.
     """
@@ -95,8 +95,8 @@ class Application(Protocol):
     An entry point in the ``freeagent.applications`` group resolves to an object satisfying this
     protocol (see :func:`load_application`). Given an :class:`EpisodeSpec`, the object builds the
     one :class:`~freeagent.sdk.entity.Environment` and the :class:`~freeagent.sdk.entity.Agent`
-    instances that make up an episode; the worker then runs them. All application intelligence
-    lives behind this protocol, so the worker stays a dumb host.
+    instances that make up an episode; the worker then runs them. All application intelligence lives
+    behind this protocol, so the worker stays a dumb host.
 
     Because it is a :class:`~typing.Protocol`, an application need not inherit from anything — any
     object with a matching ``name`` and the two methods qualifies. It is also

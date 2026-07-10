@@ -1,9 +1,8 @@
 """Unit tests for the REST surface in :mod:`freeagent.api.app`.
 
 The routes are driven through FastAPI's ``TestClient`` against an
-:class:`~freeagent.api.episodes.EpisodeManager` wired to the fakes in ``api_fakes.py``, so
-every HTTP
-status and response shape is pinned without a NATS server or worker subprocesses. The full
+:class:`~freeagent.api.episodes.EpisodeManager` wired to the fakes in ``api_fakes.py``, so every
+HTTP status and response shape is pinned without a NATS server or worker subprocesses. The full
 over-the-wire behavior lives in ``test_integration.py``.
 """
 

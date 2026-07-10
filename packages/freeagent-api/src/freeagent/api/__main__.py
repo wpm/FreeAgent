@@ -15,10 +15,10 @@ PORT_ENV = "FREEAGENT_API_PORT"
 RELOAD_ENV = "FREEAGENT_API_RELOAD"
 """Environment variable enabling uvicorn's auto-reload when set to ``1``; off by default.
 
-Reload is a development convenience with a real cost: uvicorn runs a supervisor process that
-watches the source tree, and any file change restarts the server — dropping the in-memory
-:class:`~freeagent.api.episodes.EpisodeManager` state mid-episode and orphaning worker
-subprocesses. It is therefore opt-in rather than the default.
+Reload is a development convenience with a real cost: uvicorn runs a supervisor process that watches
+the source tree, and any file change restarts the server — dropping the in-memory
+:class:`~freeagent.api.episodes.EpisodeManager` state mid-episode and orphaning worker subprocesses.
+It is therefore opt-in rather than the default.
 """
 
 

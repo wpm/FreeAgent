@@ -1,9 +1,8 @@
 """Unit tests for :mod:`freeagent.api.episodes`: the monitor's state machine and the manager.
 
-The monitor is pure bookkeeping, so the whole control/data plane split is exercised
-here message by message without a server; the manager runs against the fakes in
-``api_fakes.py``. The
-over-the-wire behavior is covered by ``test_integration.py``.
+The monitor is pure bookkeeping, so the whole control/data plane split is exercised here message by
+message without a server; the manager runs against the fakes in ``api_fakes.py``. The over-the-wire
+behavior is covered by ``test_integration.py``.
 """
 
 from __future__ import annotations

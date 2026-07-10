@@ -69,9 +69,9 @@ CONTROL_PLANE_TYPES: tuple[type[Message], ...] = (
 A message of one of these concrete types updates episode lifecycle state; every other message —
 including SDK :class:`~freeagent.sdk.message.Message` subclasses this process happens to have
 registered — is data plane, recorded opaquely and served verbatim. Deliberately an explicit set
-rather than "whatever :meth:`~freeagent.sdk.message.Message.try_decode` recognizes": the registry
-is process-global and open, so what decodes depends on what happens to be imported, and the plane
-split must not.
+rather than "whatever :meth:`~freeagent.sdk.message.Message.try_decode` recognizes": the registry is
+process-global and open, so what decodes depends on what happens to be imported, and the plane split
+must not.
 """
 
 _CONTROL_PLANE_TYPE_NAMES = frozenset(cls.__name__ for cls in CONTROL_PLANE_TYPES)
@@ -99,8 +99,8 @@ Re-exported from :mod:`freeagent.sdk.subjects` (the platform-wide definition, sh
 worker's command line) for the REST request model (see :mod:`freeagent.api.app`), so the HTTP-layer
 validation and :meth:`EpisodeManager.create`'s own guard cannot drift apart.
 
-Application names and episode IDs both become tokens of the episode's root subject, so anything
-with a ``.``, whitespace, or a wildcard character would corrupt the subject hierarchy (and let one
+Application names and episode IDs both become tokens of the episode's root subject, so anything with
+a ``.``, whitespace, or a wildcard character would corrupt the subject hierarchy (and let one
 episode's subscription overlap another's).
 """
 
@@ -190,10 +190,10 @@ class EpisodeStatus(BaseModel):
 class EpisodeMonitor:
     """Derives one episode's state from the messages crossing its subject subtree.
 
-    Fed every message the API's subscription sees under the episode root, it maintains the
-    control-plane view (lifecycle state, which agents are alive) and the data-plane feed (an
-    ordered list of :class:`DataPlaneRecord`). Pure bookkeeping — no I/O — so the whole state
-    machine is unit-testable without a server.
+    Fed every message the API's subscription sees under the episode root, it maintains the control-
+    plane view (lifecycle state, which agents are alive) and the data-plane feed (an ordered list of
+    :class:`DataPlaneRecord`). Pure bookkeeping — no I/O — so the whole state machine is unit-
+    testable without a server.
 
     Agent liveness is read from subjects, not payloads: lifecycle commands are addressed to
     ``{episode_root}.agents.{name}``, so a :class:`~freeagent.sdk.message.StartEntity` seen there
@@ -203,7 +203,6 @@ class EpisodeMonitor:
     :param application: The application the episode belongs to.
     :param episode_id: The episode's identifier.
     :param episode_root: The root NATS subject the episode's traffic lives under.
-
     :ivar state: The episode's current lifecycle state.
     :ivar agents_alive: Names of the agents started and not yet stopped.
     :ivar messages: The data-plane feed, in arrival order.
@@ -315,8 +314,8 @@ class EpisodeMonitor:
         """Record that the worker process died before the episode ended, unless already terminal.
 
         Called when the worker's exit code turns up nonzero. A nonzero exit *after* the episode
-        completed or was stopped changes nothing — e.g. the terminate signal a stop sends the
-        worker also surfaces as a nonzero exit, and must not relabel a deliberate stop as failure.
+        completed or was stopped changes nothing — e.g. the terminate signal a stop sends the worker
+        also surfaces as a nonzero exit, and must not relabel a deliberate stop as failure.
         """
         if self.state not in TERMINAL_STATES:
             self.state = EpisodeState.FAILED
@@ -448,11 +447,11 @@ class EpisodeManager:
 
     Episodes are keyed by (application, episode ID) and each lives under its own root subject,
     ``episode.{application}.{episode_id}``, so multiple applications and multiple concurrent
-    episodes of one application never share a subject subtree — one subscription per episode root
-    is the isolation. All episodes share a single lazily opened NATS connection.
+    episodes of one application never share a subject subtree — one subscription per episode root is
+    the isolation. All episodes share a single lazily opened NATS connection.
 
-    Creation subscribes *before* spawning the worker, so no message of the episode can be missed
-    by a late subscription — the same discipline as the worker's own observer.
+    Creation subscribes *before* spawning the worker, so no message of the episode can be missed by
+    a late subscription — the same discipline as the worker's own observer.
 
     :param nats_url: The NATS server URL, used both for the API's own subscriptions and passed to
         every spawned worker so the whole episode runs on one server.
@@ -566,8 +565,8 @@ class EpisodeManager:
     def list_episodes(self, application: str) -> list[Episode]:
         """List an application's episodes in creation order, refreshing each on the way.
 
-        The same worker-death refresh as :meth:`get`, applied to every episode listed, so a
-        viewer enumerating episodes sees the same states it would polling them one at a time.
+        The same worker-death refresh as :meth:`get`, applied to every episode listed, so a viewer
+        enumerating episodes sees the same states it would polling them one at a time.
 
         :param application: The application whose episodes to list.
         :return: The application's episodes, oldest first (creation order).
@@ -584,10 +583,10 @@ class EpisodeManager:
     def _require_installed(application: str) -> None:
         """Reject an application name that doesn't belong to an installed application.
 
-        The one definition of the guard :meth:`create` and :meth:`list_episodes` share. The
-        subject-token pre-check isn't only an optimization: a name that can't be a subject token
-        can't be an installed application's name, and rejecting it without consulting the entry
-        points keeps the error uniform however malformed the input.
+        The one definition of the guard :meth:`create` and :meth:`list_episodes` share. The subject-
+        token pre-check isn't only an optimization: a name that can't be a subject token can't be an
+        installed application's name, and rejecting it without consulting the entry points keeps the
+        error uniform however malformed the input.
 
         :param application: The application name to check.
         :raises UnknownApplication: If ``application`` isn't installed (or couldn't be a subject
@@ -645,9 +644,9 @@ class EpisodeManager:
     async def _halt(self, episode: Episode) -> None:
         """Stop one episode's worker and subscription, marking it stopped unless already terminal.
 
-        The worker is terminated and reaped off the event loop (its ``wait`` blocks), escalating
-        to a kill if it ignores the terminate for :data:`WORKER_STOP_TIMEOUT` seconds. Idempotent:
-        an exited worker isn't re-signaled and a dropped subscription isn't re-dropped.
+        The worker is terminated and reaped off the event loop (its ``wait`` blocks), escalating to
+        a kill if it ignores the terminate for :data:`WORKER_STOP_TIMEOUT` seconds. Idempotent: an
+        exited worker isn't re-signaled and a dropped subscription isn't re-dropped.
 
         :param episode: The episode to halt.
         """
@@ -683,8 +682,8 @@ class EpisodeManager:
 
         Launches :data:`WORKER_MODULE` under the same interpreter serving the API, so the worker
         sees the same installed applications. The episode root is passed explicitly (rather than
-        left to the worker's default) because the API's per-episode subscription and the worker
-        must agree on it exactly.
+        left to the worker's default) because the API's per-episode subscription and the worker must
+        agree on it exactly.
 
         :param application: The application to run.
         :param episode_id: The episode's identifier.

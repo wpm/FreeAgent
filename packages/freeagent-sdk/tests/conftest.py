@@ -60,9 +60,9 @@ def nats_server() -> Iterator[str]:
 
     Session-scoped because ``nats-server`` startup, though fast, is pure overhead to repeat: one
     server serves every integration test, with per-test isolation coming from :func:`episode_root`
-    instead (a shared server plus per-test subject roots is deliberate, so that
-    cross-test leakage through the subject namespace is *observable* as a failure rather than hidden
-    by a fresh server each time).
+    instead (a shared server plus per-test subject roots is deliberate, so that cross-test leakage
+    through the subject namespace is *observable* as a failure rather than hidden by a fresh server
+    each time).
 
     :yield: The ``nats://127.0.0.1:{port}`` URL to connect entities to.
     """
