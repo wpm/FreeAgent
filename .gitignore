@@ -22,6 +22,7 @@ __screenshots__/
 
 # Episode artifacts
 *.parquet
+.freeagent/
 
 # OS
 .DS_Store
