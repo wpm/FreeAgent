@@ -162,6 +162,26 @@ def test_stop_succeeds_when_api_was_not_running(
     assert "NATS network is down." in output
 
 
+def test_stop_reports_failure_and_does_not_take_nats_down_when_api_cannot_be_killed(
+    monkeypatch: pytest.MonkeyPatch, docker_on_path: None
+) -> None:
+    # stop_api raises StopFailedError when a live API survives even SIGKILL. stop must surface that
+    # failure and must NOT take NATS down under a still-running API (nor claim it stopped).
+    def raise_stop_failed() -> bool:
+        raise launch.StopFailedError("the API (pid 12345) did not exit even after SIGKILL")
+
+    monkeypatch.setattr(launch, "stop_api", raise_stop_failed)
+
+    def fail_run(*_: Any, **__: Any) -> FakeCompletedProcess:
+        raise AssertionError("docker compose down must not run while the API is still alive")
+
+    monkeypatch.setattr("freeagent.start.subprocess.run", fail_run)
+
+    with pytest.raises(SystemExit) as excinfo:
+        start.stop()
+    assert "even after SIGKILL" in str(excinfo.value)
+
+
 def test_stop_always_takes_nats_down_even_after_stopping_the_api(
     monkeypatch: pytest.MonkeyPatch, docker_on_path: None
 ) -> None:

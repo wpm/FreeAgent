@@ -53,12 +53,18 @@ def stop() -> None:
     """Tear down the Free Agent platform: stop the ``freeagent-api`` process and the NATS network.
 
     Delegates the API teardown to :func:`freeagent.sdk.launch.stop_api` (which SIGTERMs the pid this
-    switch recorded and clears the pid file), then runs ``docker compose down`` on this repo's
-    compose file. Both halves are safe from any state — fully up, half up, or already down — so
-    ``stop`` always leaves the platform down. Exits with docker's return code, or with a clean
-    guidance message (never a raw traceback) if docker is not installed.
+    switch recorded, escalates to SIGKILL if needed, and clears the pid file), then runs ``docker
+    compose down`` on this repo's compose file. Both halves are safe from any state — fully up, half
+    up, or already down — so ``stop`` always leaves the platform down. If the API could not be
+    reaped even with SIGKILL, exits nonzero with the failure rather than falsely reporting it
+    stopped and taking NATS down under a still-running API. Exits with docker's return code, or with
+    a clean guidance message (never a raw traceback) if docker is not installed.
     """
-    if launch.stop_api():
+    try:
+        stopped = launch.stop_api()
+    except launch.StopFailedError as error:
+        sys.exit(str(error))
+    if stopped:
         print("freeagent-api stopped.")
     else:
         print("freeagent-api was not running.")
