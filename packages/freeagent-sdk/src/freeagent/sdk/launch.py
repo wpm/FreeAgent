@@ -149,6 +149,15 @@ class DockerUnavailableError(RuntimeError):
     """Raised by :func:`ensure_nats` when docker cannot be used to bring NATS up."""
 
 
+class StopFailedError(RuntimeError):
+    """Raised by :func:`stop_api` when a live API could not be reaped even with SIGKILL.
+
+    Distinguishes a genuine teardown failure — the API is still running, with its port still bound —
+    from the ordinary "nothing to stop" case (which :func:`stop_api` returns ``False`` for). Callers
+    (the ``stop`` switch) surface this rather than misreporting the still-running API as stopped.
+    """
+
+
 def api_health_url() -> str:
     """Return the API health endpoint, honoring the same bind variables ``freeagent-api`` reads.
 
@@ -581,17 +590,20 @@ def stop_api() -> bool:
     now belongs to another user) is caught, the stale file cleared, and "nothing to do" reported —
     no raw traceback, and the file does not persist to fail every later ``stop`` the same way.
 
-    If the API has not exited within :data:`_STOP_TIMEOUT_SECONDS`, teardown escalates to SIGKILL and
-    waits again — a SIGTERM-ignoring API (or one wedged mid-request) must not be left orphaned with
-    port 8000 still bound, where a later ``start`` would see the zombie answering ``/health`` and
-    refuse to restart. The pid file is only unlinked once the process is confirmed gone; if even
-    SIGKILL does not reap it within :data:`_STOP_KILL_TIMEOUT_SECONDS`, the pid file is kept so the
-    failure is not silently erased.
+    If the API has not exited within :data:`_STOP_TIMEOUT_SECONDS`, teardown escalates to SIGKILL
+    and waits again — a SIGTERM-ignoring API (or one wedged mid-request) must not be left orphaned
+    with port 8000 still bound, where a later ``start`` would see the zombie answering ``/health``
+    and refuse to restart. The pid file is only unlinked once the process is confirmed gone; if even
+    SIGKILL does not reap it within :data:`_STOP_KILL_TIMEOUT_SECONDS`, the pid file is kept and
+    :class:`StopFailedError` is raised so the still-running API is reported as a failure, distinct
+    from the "nothing to do" case and never silently erased.
 
     A silent no-op when nothing is recorded, so ``stop`` is safe to call unconditionally.
 
     :return: True if a live API was signalled and confirmed stopped, False if there was nothing to
-        do or the process could not be reaped even with SIGKILL.
+        do (no pid recorded, the API was not answering health, or its pid was recycled).
+    :raises StopFailedError: If a live API could not be reaped even with SIGKILL; the pid file is
+        kept so the still-running process is not forgotten.
     """
     pid_file = _api_pid_file()
     pid = _read_pid(pid_file)
@@ -613,8 +625,8 @@ def stop_api() -> bool:
         return True
 
     # SIGTERM was ignored (or the process is wedged): escalate rather than orphan a live API. The
-    # same recycled-pid guard applies — the process may have exited (and its pid been reused) between
-    # the SIGTERM wait expiring and this kill.
+    # same recycled-pid guard applies — the process may have exited (and its pid been reused)
+    # between the SIGTERM wait expiring and this kill.
     try:
         os.kill(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
@@ -622,12 +634,12 @@ def stop_api() -> bool:
         return True
     if not _wait_for_pid_exit(pid, _STOP_KILL_TIMEOUT_SECONDS):
         # Even SIGKILL did not reap it in time (e.g. stuck in uninterruptible I/O). Keep the pid
-        # file so the still-running API is not silently forgotten and can be reported as a failure.
-        print(
-            f"the API (pid {pid}) did not exit after SIGKILL; leaving its pid file in place.",
-            file=sys.stderr,
+        # file so the still-running API is not silently forgotten, and report the failure loudly
+        # rather than returning a False that a caller would misread as "nothing was running".
+        raise StopFailedError(
+            f"the API (pid {pid}) did not exit even after SIGKILL; its pid file has been left in "
+            f"place. The process may be stuck in uninterruptible I/O — check {pid_file}."
         )
-        return False
 
     pid_file.unlink(missing_ok=True)
     return True
@@ -781,10 +793,17 @@ def _terminate_one(service: Service, process: subprocess.Popen[bytes]) -> int:
     unbounded ``wait()``; instead it is escalated to SIGKILL and reaped, so teardown always
     completes and no child leaks with its port still bound.
 
+    A :class:`KeyboardInterrupt` (a Ctrl-C landing in one of the waits) SIGKILLs the child before it
+    is allowed to unwind, so the very process being reaped when the interrupt arrives is never left
+    running — the interrupt then propagates for the caller to keep tearing the rest down.
+
     :param service: The service owning the process, for the diagnostic message on a real failure.
     :param process: The spawned serve to terminate and reap.
     :return: The process's exit code (a POSIX signal death reports ``-signum``); ``-SIGKILL`` if it
-        had to be force-killed after ignoring SIGTERM.
+        had to be force-killed after ignoring SIGTERM, even when the force-kill could not be reaped
+        in time (teardown never blocks on an unreapable child).
+    :raises KeyboardInterrupt: If a Ctrl-C lands during a wait; re-raised only after the child has
+        been SIGKILLed so it cannot leak.
     """
     if process.poll() is None:
         process.terminate()
@@ -796,8 +815,23 @@ def _terminate_one(service: Service, process: subprocess.Popen[bytes]) -> int:
             f"service {service.name!r} did not exit after SIGTERM; escalating to SIGKILL.",
             file=sys.stderr,
         )
+    except KeyboardInterrupt:
+        # A second Ctrl-C landed while waiting on this child's SIGTERM. Force-kill it before letting
+        # the interrupt unwind, so the child being reaped is not left running with its port bound.
         process.kill()
+        raise
+    process.kill()
+    try:
         return process.wait(timeout=_TEARDOWN_KILL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # Even SIGKILL has not been reaped yet (e.g. the child is stuck in uninterruptible I/O). Do
+        # not let the wait hang teardown or escape as a traceback: report it and treat the child as
+        # force-killed. The kernel will reap it once the syscall returns.
+        print(
+            f"service {service.name!r} did not exit even after SIGKILL; abandoning the wait.",
+            file=sys.stderr,
+        )
+        return -signal.SIGKILL
 
 
 def _terminate_in_reverse(
