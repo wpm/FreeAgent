@@ -1,6 +1,6 @@
 # Werewolf
 
-The social deception game, played by [free agents](../../crates/free-agent).
+The social deception game, played by [free agents](../../README.md).
 
 Each player is an actor with its own task and its own memory, so a player
 knows only what it has been told. An environment actor runs the game: it wakes
