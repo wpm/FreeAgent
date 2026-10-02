@@ -1,5 +1,8 @@
 # Free Agent
 
+[![CI](https://github.com/wpm/FreeAgent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wpm/FreeAgent/actions/workflows/ci.yml?query=branch%3Amain)
+[![codecov](https://codecov.io/gh/wpm/FreeAgent/graph/badge.svg)](https://codecov.io/gh/wpm/FreeAgent)
+
 Small agents that perceive, act, and talk to each other.
 
 An **episode** runs a fixed roster of actors, each as a task of its own on the
