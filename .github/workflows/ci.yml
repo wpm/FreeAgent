@@ -1,0 +1,81 @@
+name: CI
+
+# The run on main is what fills the build cache that a new pull request
+# starts from: a cache saved by one pull request is invisible to the others.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to a pull request makes the run in progress pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Clippy's lints are warnings, which on their own would never fail the job.
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build
+      - run: cargo test
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Rustdoc's complaints, a broken link among them, are warnings too.
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # The one check a ruleset needs to require: it passes only if every job
+  # above did, so jobs can come and go without the ruleset changing.
+  required:
+    name: Required
+    needs: [format, clippy, test, docs]
+    # Without always() a failure above would skip this job, and a ruleset
+    # counts a skipped check as passing.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check that every job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq 'map_values(.result)' <<< "$NEEDS"
+          jq --exit-status 'all(.result == "success")' <<< "$NEEDS"
