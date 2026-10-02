@@ -63,8 +63,8 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-  # The one check a ruleset needs to require: it passes only if every job
-  # above did, so jobs can come and go without the ruleset changing.
+  # The one check a ruleset needs to require: it passes only if every job it
+  # needs did, so jobs can come and go without the ruleset changing.
   required:
     name: Required
     needs: [format, clippy, test, docs]
@@ -79,3 +79,29 @@ jobs:
         run: |
           jq 'map_values(.result)' <<< "$NEEDS"
           jq --exit-status 'all(.result == "success")' <<< "$NEEDS"
+
+  # Deliberately not one of Required's jobs: an outage at Codecov should not
+  # block a merge, and the tests it runs already gate one in Build and test.
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      # Without --workspace the tests of the applications still run, but the
+      # report leaves their source files out.
+      - run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: wpm/FreeAgent
+          files: lcov.info
+          # The upload's default is to fail silently.
+          fail_ci_if_error: true
