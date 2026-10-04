@@ -18,16 +18,12 @@
 //! ties broken at random eliminates a uniformly random candidate, which is
 //! exactly the paper's rule.
 
-pub mod config;
-pub mod llm;
-pub mod moderator;
-pub mod random;
+pub use crate::config::{Config, PolicyConfig};
+pub use crate::variation::llm::Llm;
+pub use crate::moderator::{Moderator, Settings};
+pub use crate::variation::random::UniformRandom;
 
-pub use config::{Config, PolicyConfig};
-pub use llm::Llm;
-pub use moderator::{Moderator, Settings};
-pub use random::UniformRandom;
-
+use crate::moderator;
 use anyhow::{Result, ensure};
 use free_agent::{ActorId, Ending, Log, Policy, episode};
 use rand::prelude::*;

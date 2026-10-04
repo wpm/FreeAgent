@@ -1,6 +1,6 @@
 //! The player who has no idea.
 
-use super::{Message, PlayerId};
+use crate::game::{Message, PlayerId};
 use anyhow::Result;
 use async_trait::async_trait;
 use free_agent::{ActorId, Context, Policy};

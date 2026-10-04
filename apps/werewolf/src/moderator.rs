@@ -1,6 +1,6 @@
 //! The actor that runs the game.
 
-use super::{Message, Outcome, Phase, PlayerId, Role, State, Team, leaders, plurality};
+use crate::game::{Message, Outcome, Phase, PlayerId, Role, State, Team, leaders, plurality};
 use anyhow::Result;
 use async_trait::async_trait;
 use free_agent::{ActorId, Context, Policy, Recipient, Reply};

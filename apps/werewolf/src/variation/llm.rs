@@ -9,8 +9,8 @@
 //! choice, and an instruction in the prompt plus a second chance does
 //! the same job everywhere.
 
-use super::config::{LlmConfig, Prompts};
-use super::{Message, Phase, PlayerId, Team};
+use crate::game::{Message, Phase, PlayerId, Role, Team};
+use crate::config::{LlmConfig, Prompts};
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use async_trait::async_trait;
 use free_agent::{ActorId, Context, Policy};
@@ -55,7 +55,7 @@ impl Llm {
     fn introduce(
         &mut self,
         me: &PlayerId,
-        role: super::Role,
+        role: Role,
         players: &[PlayerId],
         werewolves: &[PlayerId],
     ) {
@@ -367,6 +367,7 @@ fn nomination(call: &ToolCall, candidates: &[PlayerId]) -> Result<PlayerId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Timing;
     use crate::game::Role;
     use free_agent::{Ending, Reply, episode};
     use std::collections::HashSet;
@@ -847,7 +848,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_whole_game_can_be_played_by_a_model() {
-        use crate::game::{Config, PolicyConfig, config::Timing, play};
+        use crate::game::{Config, PolicyConfig, play};
 
         let (base_url, _seen) = fake_player().await;
         // The variable is this test's own, so no other reader races it.
