@@ -1,0 +1,33 @@
+# Werewolf played by a language model. Every decision, every word, and
+# every vote comes from the model. The API key is read from the
+# environment variable named below and never appears in a file or a log.
+
+players = 6
+werewolves = 2
+names = ["Ann", "Bob", "Cat", "Dan", "Eve", "Fay"]
+
+[timing]
+day_secs = 300      # the village has five minutes to agree, then the leader goes
+patience_secs = 120 # how long to wait for any one answer from the model
+
+[policy]
+kind = "llm"
+model = "claude-opus-5-5"
+base_url = "https://api.anthropic.com/v1"   # Anthropic's OpenAI-compatible endpoint
+api_key_env = "ANTHROPIC_API_KEY"
+attempts = 3
+# Current Claude models reject sampling settings, so no temperature is
+# set. For an OpenAI model instead, use for example:
+#   model = "gpt-4o-mini"
+#   base_url = "https://api.openai.com/v1"
+#   api_key_env = "OPENAI_API_KEY"
+#   temperature = 1.0
+
+# Each role's system prompt. Leave any of these out for the default,
+# which explains the rules and the role.
+#
+# [prompts]
+# werewolf = "..."
+# villager = "..."
+# doctor = "..."
+# seer = "..."

@@ -3,60 +3,87 @@
 [![CI](https://github.com/wpm/FreeAgent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wpm/FreeAgent/actions/workflows/ci.yml?query=branch%3Amain)
 [![codecov](https://codecov.io/gh/wpm/FreeAgent/graph/badge.svg)](https://codecov.io/gh/wpm/FreeAgent)
 
-Small agents that perceive, act, and talk to each other.
+Episodes in which actors talk to each other by request and reply.
 
-An **episode** runs a fixed roster of actors, each as a task of its own on the
-[Tokio](https://tokio.rs) runtime, until they are all finished. Actors reach
-one another through **channels**: everyone can message everyone, themselves
-included, and the same shape carries shutdown signals. Everything they observe
-goes to one **sink** the episode was given.
+An **episode** is the world in which everything here takes place. It brings a
+set of actors into being together, decides which of them can reach which, and
+runs them on the [Tokio](https://tokio.rs) runtime until every one of them has
+shut itself down or a time limit passes. Nothing exists before the episode
+begins and nothing survives its end.
+
+Within an episode, an **actor** is a [`Policy`] driven by an inbox. Actors
+communicate one way only: one asks a set of others a question through
+[`Context::request`] and awaits their answers, and each of the others answers
+through [`Policy::reply`].
+
+The vocabulary comes from reinforcement learning. A typical episode has one
+environment actor and several agent actors. The agents are reactive: they
+answer whatever they are asked. The environment makes the opening move in
+[`Policy::start`], asks the agents what they want to do, and decides when the
+episode is over.
 
 ## Example
 
+An environment asks an agent for a move, hears "north", and ends the episode.
+
 ```rust
 use anyhow::Result;
-use free_agent::actor::{Actor, ActorId, async_trait};
-use free_agent::episode::{self, Channels, Memory};
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use async_trait::async_trait;
+use free_agent::{episode, ActorId, Context, Ending, Policy, Reply};
+use std::collections::HashSet;
 use std::time::Duration;
 
-// Actors exchange domain objects, not strings.
-#[derive(Clone, Serialize, Deserialize)]
-struct Greeting {
-    from: ActorId,
-}
-
-struct Greeter {
-    greet: ActorId,
-}
+/// Asks the agent what it wants to do, then leaves.
+struct Environment;
 
 #[async_trait]
-impl Actor<Greeting> for Greeter {
-    async fn perceive(&mut self, channels: &mut Channels<Greeting>) -> Result<()> {
-        channels.send(Greeting { from: channels.id.clone() }, &self.greet)?;
+impl Policy for Environment {
+    type Message = String;
 
-        if let Some(greeting) = channels.inbox.recv().await {
-            channels.log(&format!("heard from {}", greeting.from))?;
-        }
+    async fn start(&mut self, context: &Context<String>) -> Result<()> {
+        let agent = HashSet::from([Some("agent".to_string())]);
+        let replies = context.request(&agent, "what next?".to_string(), None).await?;
+        assert_eq!(replies, vec![("agent".to_string(), Reply::Message("north".to_string()))]);
+        context.shutdown();
         Ok(())
+    }
+
+    async fn reply(
+        &mut self,
+        _from: ActorId,
+        _message: String,
+        _context: &Context<String>,
+    ) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+/// Always goes north, and leaves once it has been asked.
+struct Agent;
+
+#[async_trait]
+impl Policy for Agent {
+    type Message = String;
+
+    async fn reply(
+        &mut self,
+        _from: ActorId,
+        _message: String,
+        context: &Context<String>,
+    ) -> Result<Option<String>> {
+        context.shutdown();
+        Ok(Some("north".to_string()))
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let heard = Arc::new(Memory::new());
-    episode::episode(
-        [
-            ("Alice", Box::new(Greeter { greet: "Bob".into() }) as Box<dyn Actor<Greeting>>),
-            ("Bob", Box::new(Greeter { greet: "Alice".into() })),
-        ],
-        heard.clone(),
-        Some(Duration::from_secs(5)),
-    )
-    .await?;
-
-    assert_eq!(heard.entries().len(), 2);
+    let actors: [(ActorId, Box<dyn Policy<Message = String> + Send>); 2] = [
+        ("environment".to_string(), Box::new(Environment)),
+        ("agent".to_string(), Box::new(Agent)),
+    ];
+    let ending = episode(actors, None, Duration::from_secs(5), None).await?;
+    assert_eq!(ending, Ending::Finished);
     Ok(())
 }
 ```
@@ -65,149 +92,135 @@ For a game built on this, see the `werewolf` crate under `apps/`.
 
 ## Concepts
 
-### Actors
+### Policies
 
-An actor is anything implementing [`Actor<M>`]. An actor that only needs to be
-present implements nothing at all:
-
-```rust,ignore
-struct Bystander;
-
-impl Actor<String> for Bystander {}
-```
-
-An actor runs as **one task**. Left to the default, that task wakes the actor
-and then hands it its messages one at a time:
+A policy is what an actor does with the requests it receives. It implements
+[`Policy`], putting `#[async_trait]` on the impl block and writing the methods
+as `async fn`:
 
 ```rust,ignore
 #[async_trait]
-impl Actor<Question> for Oracle {
-    async fn wake(&mut self, channels: &mut Channels<Question>) -> Result<Acting> {
-        channels.request(question, &peer).await?;   // speak first, if you like
-        Ok(Acting::Continue)
+impl Policy for Oracle {
+    type Message = Question;
+
+    async fn start(&mut self, context: &Context<Question>) -> Result<()> {
+        // The opening move, before anything has been heard. Reactive
+        // policies leave this out.
+        Ok(())
     }
 
-    async fn act(&mut self, message: Question, channels: &mut Channels<Question>)
-        -> Result<Acting>
-    {
-        let answer = slow_llm_call(&message).await;   // take as long as needed
-        Ok(Acting::Done)
+    async fn reply(
+        &mut self,
+        from: ActorId,
+        question: Question,
+        context: &Context<Question>,
+    ) -> Result<Option<Question>> {
+        let answer = slow_model_call(&question).await?; // take as long as needed
+        Ok(Some(answer))                                // or None to acknowledge
     }
 }
 ```
 
-`act` may take its time, so long as it waits by **awaiting**. While it waits on
-an LLM call or a peer's answer the rest of the episode runs, and whatever is
-sent to this actor queues in its inbox until it is ready for the next message.
+Every method receives a [`Context`], the part of the actor a step is allowed
+to touch: its name, a way to ask the other actors things, and a way to shut
+itself down.
 
-What it must not do is block. Actors share the runtime's threads, so a
-synchronous call that takes its time holds up actors that have nothing to do
-with it, and cannot be cut off by the episode's timeout. Hand that kind of
-work to `tokio::task::spawn_blocking` and await the handle.
+Each actor takes one step at a time. A step may take its time, so long as it
+waits by awaiting: while it waits on a model or on a peer's answer, the rest
+of the episode runs, and whatever is sent to the actor queues in its inbox.
+What a step must not do is block the thread.
 
-Override `perceive` to take over the whole run instead, for control flow that
-loop cannot express.
-
-The methods are `async` and an episode holds its roster as `Box<dyn Actor<M>>`,
-which is what `#[async_trait]` is for. It is re-exported from
-`free_agent::actor`, and an impl that writes no methods does not need it.
-
-An actor does not own its connections: the episode builds those once the whole
-roster is known and lends each actor a [`Channels`] for the duration of its run.
+Policies of different types share an episode by boxing them as
+`Box<dyn Policy<Message = M> + Send>`, as the example does.
 
 ### Messages
 
 One episode carries one message type, chosen where [`episode`] is called and
-checked at compile time. Any type serde can round-trip qualifies, and there is
-nothing to implement:
+checked at compile time. Any plain data type with the serde derives qualifies,
+and there is nothing to implement:
 
 ```rust,ignore
-#[derive(Clone, Serialize, Deserialize)]
-struct Observation { saw: String }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Question { about: String }
 ```
 
 The serde bounds are not needed to move a value between actors. They are the
-standing promise that a message can also leave the process — be logged,
-replayed, or sent to an actor running elsewhere — without this crate knowing
-the domain.
+standing promise that what actors say can also leave the process: be logged,
+replayed, or carried to an actor running elsewhere.
 
-### Asking a question
+### Requests and replies
 
-`send` is fire-and-forget. When an actor needs an answer, `request` asks and
-waits for one:
-
-```rust,ignore
-let answer = channels.request(question, &peer).await?;
-```
-
-The question reaches the peer on its `requests` channel as an [`Envelope`],
-which carries the means of answering. Only the request waits: the rest of the
-episode runs on.
-
-To ask several peers at once, join the requests:
+A request asks every recipient the same thing and awaits one [`Reply`] per
+recipient:
 
 ```rust,ignore
-let answers = join_all(
-    wolves.iter().map(|wolf| channels.request(question.clone(), wolf)),
-)
-.await;
-
-for (wolf, answer) in wolves.iter().zip(answers) {
-    votes.insert(wolf.clone(), answer?);
+let replies = context.request(&recipients, question, Some(patience)).await?;
+for (who, reply) in replies {
+    match reply {
+        Reply::Message(answer) => ...,  // they said something
+        Reply::Acknowledge => ...,      // they handled it without a word
+        Reply::Unanswered => ...,       // patience ran out, or they had gone
+    }
 }
 ```
 
-Every question is in flight before any answer is waited on, so three peers
-that take a second each cost a second rather than three. Each request carries
-its own reply channel, which is all the correlation there is: an answer can
-only come back to the request it answers.
+The request goes out as soon as it is made; awaiting the result waits for the
+answers, bounded by the patience if one is given. Every question is in flight
+before any answer is waited on, so three recipients that take a second each
+cost a second rather than three.
 
-A request is a future like any other, so giving up on one needs nothing
-special: wrap it in `tokio::time::timeout`, or give several requests one
-`timeout_at` deadline to share.
+Dropping the future sends the request and forgets about the answers. That is
+how an actor leaves a note for itself: a recipient of `None` means the asking
+actor, and such a request lands in its own inbox to be handled in a later
+step. Awaiting a request to oneself can never succeed, since the actor cannot
+take a step while it is waiting for one to finish.
 
-### Episodes and ending one
+### Topology
 
-An episode is over when every actor has returned. An actor holds a sender to
-its own inbox, so no inbox closes while its actor runs, and waiting for one to
-close is waiting forever. An actor is expected to **finish** once its work is
-done — by returning `Acting::Done`, or by returning from `perceive` — or to be
-stopped by a peer:
+By default everybody can talk to everybody. A [`Topology`] restricts that: it
+maps each actor to the set of actors it may address, links are one-way, and an
+actor absent from the map can reach no one but itself. A request to an actor
+the topology does not allow is an error, and nothing is sent to anyone.
+
+### Ending an episode
+
+An actor shuts itself down by calling `shutdown` on its context. The step that
+does so still completes, and a reply it returns is still delivered. The
+episode ends with [`Ending::Finished`] once every actor has done this.
+
+The time limit is the backstop for when they do not. When it passes, every
+actor still running is stopped, even in the middle of a step, and the episode
+ends with [`Ending::TimedOut`].
+
+A run that fails anywhere fails as a whole. An error returned from any step
+stops that actor, the rest are shut down, and the episode's error names every
+actor that failed and why.
+
+### Recording
+
+A [`Log`] handed to [`episode`] receives a copy of everything said on the
+wire as an [`Event`]: every request as its asker sends it, every reply as its
+recipient sends it, and every request that went unanswered, each stamped with
+the instant it was recorded and tied to its question by a request id. The
+record is complete and uninterpreted, fit for driving a display or for
+training. Nothing waits on the log's receiver, so a slow consumer costs memory
+rather than time.
 
 ```rust,ignore
-channels.stop(&peer)?;
+let (log, mut events) = Log::new();
+let ending = episode(actors, None, time_limit, Some(log)).await?;
+while let Ok(event) = events.try_recv() {
+    println!("{}", serde_json::to_string(&event)?);
+}
 ```
 
-A stop is a request, not a kill: the actor hears it the next time it looks at
-`channels.stop`, as the default loop does between messages. An actor may also
-stop itself this way.
+### Deadlock
 
-The `timeout` argument is the backstop for when neither happens. Actors still
-running when it expires are cut off, and the episode fails.
-
-A run that fails anywhere fails as a whole, and at once. An actor that returns
-an error, one that panics, and a log that cannot be written all surface as the
-episode's own error rather than being quietly absorbed, and the other actors
-are not waited for.
-
-### Logging
-
-Actors log through `channels.log(&payload)`, and decide for themselves what is
-worth recording. The episode supplies the rest: every entry is tagged with the
-actor that made it and the time it was made.
-
-A payload is kept as serialized structure rather than rendered text, so a sink
-can write columns, frames, or rows and a reader is not left parsing prose.
-
-| Sink | Use |
-| --- | --- |
-| [`Stderr`] | One JSON object per line, for watching a run |
-| [`Memory`] | Keeps entries for a test to assert on |
-| [`Discard`] | Records nothing |
-
-Implement [`Sink`] for anywhere else — a file, a socket, a parquet writer.
-`flush` is called as the episode ends, on the way out of a successful run and a
-failed or timed-out one alike.
+Each actor takes one step at a time, and a step that is awaiting answers is
+the actor's current step. So an actor waiting on a request answers no one
+meanwhile, and two actors that await each other at the same moment are stuck
+until one of them runs out of patience. An environment asking its agents never
+forms such a cycle. Agents asking each other should always give a patience.
 
 ## Development
 
@@ -216,12 +229,15 @@ cargo test                        # unit tests and doctests
 cargo doc --no-deps --lib --open  # the API docs
 ```
 
-[`Actor`]: actor::Actor
-[`Actor<M>`]: actor::Actor
-[`Channels`]: episode::Channels
-[`Sink`]: episode::Sink
-[`Stderr`]: episode::Stderr
-[`Memory`]: episode::Memory
-[`Discard`]: episode::Discard
-[`Envelope`]: episode::Envelope
-[`episode`]: episode::episode
+[`Policy`]: Policy
+[`Policy::start`]: Policy::start
+[`Policy::reply`]: Policy::reply
+[`Context`]: Context
+[`Context::request`]: Context::request
+[`Reply`]: Reply
+[`Topology`]: Topology
+[`Ending::Finished`]: Ending::Finished
+[`Ending::TimedOut`]: Ending::TimedOut
+[`Log`]: Log
+[`Event`]: Event
+[`episode`]: episode
