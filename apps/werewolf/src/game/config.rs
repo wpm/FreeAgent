@@ -311,6 +311,7 @@ yourself away.";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secrecy::ExposeSecret;
 
     #[test]
     fn a_random_game_needs_only_the_counts_and_the_policy() {
@@ -387,6 +388,95 @@ mod tests {
 
         assert!(!format!("{key:?}").contains("sk-secret"), "{key:?}");
         assert!(config.api_key_from(|_| None).is_err());
+    }
+
+    /// A configuration file that lives for the test.
+    fn config_file(name: &str, contents: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "werewolf-config-{}-{name}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_configuration_file_is_read_and_checked() {
+        let good = config_file(
+            "good",
+            "players = 4\nwerewolves = 1\n[policy]\nkind = \"random\"\n",
+        );
+        let config = Config::load(&good).unwrap();
+        assert_eq!((config.players, config.werewolves), (4, 1));
+
+        let unplayable = config_file(
+            "unplayable",
+            "players = 1\nwerewolves = 2\n[policy]\nkind = \"random\"\n",
+        );
+        let error = Config::load(&unplayable).unwrap_err();
+        assert!(error.to_string().contains("cannot fit"), "{error}");
+
+        let garbled = config_file("garbled", "players = [\n");
+        let error = Config::load(&garbled).unwrap_err();
+        assert!(error.to_string().contains("cannot parse"), "{error}");
+
+        let error = Config::load("/nowhere/at/all.toml").unwrap_err();
+        assert!(error.to_string().contains("cannot read"), "{error}");
+    }
+
+    #[test]
+    fn the_key_is_read_from_the_named_variable_in_the_environment() {
+        let config: Config = toml::from_str(
+            r#"
+            players = 4
+            werewolves = 1
+
+            [policy]
+            kind = "llm"
+            model = "m"
+            api_key_env = "WEREWOLF_CONFIG_TEST_KEY"
+            "#,
+        )
+        .unwrap();
+        let PolicyConfig::Llm(llm) = &config.policy else {
+            panic!("{config:?}");
+        };
+        // The variable is this test's own, so no other reader races it.
+        unsafe { std::env::set_var("WEREWOLF_CONFIG_TEST_KEY", "sk-from-env") };
+
+        let key = llm.api_key().unwrap();
+
+        assert_eq!(key.expose_secret(), "sk-from-env");
+    }
+
+    #[test]
+    fn the_key_variable_defaults_to_openais() {
+        let config: Config = toml::from_str(
+            r#"
+            players = 4
+            werewolves = 1
+
+            [policy]
+            kind = "llm"
+            model = "m"
+            "#,
+        )
+        .unwrap();
+
+        let PolicyConfig::Llm(llm) = &config.policy else {
+            panic!("{config:?}");
+        };
+        assert_eq!(llm.api_key_env, "OPENAI_API_KEY");
+    }
+
+    #[test]
+    fn every_role_has_a_prompt_that_names_it() {
+        let prompts = Prompts::default();
+
+        assert!(prompts.for_role(Role::Werewolf).contains("werewolf"));
+        assert!(prompts.for_role(Role::Villager).contains("villager"));
+        assert!(prompts.for_role(Role::Doctor).contains("doctor"));
+        assert!(prompts.for_role(Role::Seer).contains("seer"));
     }
 
     #[test]
