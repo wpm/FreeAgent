@@ -368,7 +368,7 @@ fn nomination(call: &ToolCall, candidates: &[PlayerId]) -> Result<PlayerId> {
 mod tests {
     use super::*;
     use crate::game::Role;
-    use free_agent::{Reply, episode};
+    use free_agent::{Ending, Reply, episode};
     use std::collections::HashSet;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
@@ -441,14 +441,17 @@ mod tests {
         );
     }
 
-    /// A model that answers each request with the next canned response,
-    /// and hands every request it received to the test.
-    async fn fake_model(responses: Vec<Value>) -> (String, UnboundedReceiver<Value>) {
+    /// A model served over HTTP by `respond`, which sees each request and
+    /// gives the status and body to answer with, or `None` to stop
+    /// serving. Every request also goes to the test.
+    async fn serve(
+        mut respond: impl FnMut(&Value) -> Option<(u16, Value)> + Send + 'static,
+    ) -> (String, UnboundedReceiver<Value>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (requests, received) = unbounded_channel();
         tokio::spawn(async move {
-            for response in responses {
+            loop {
                 let (socket, _) = listener.accept().await.unwrap();
                 let mut socket = BufReader::new(socket);
                 let mut length = 0;
@@ -465,10 +468,15 @@ mod tests {
                 }
                 let mut body = vec![0; length];
                 socket.read_exact(&mut body).await.unwrap();
-                let _ = requests.send(serde_json::from_slice(&body).unwrap());
+                let request: Value = serde_json::from_slice(&body).unwrap();
+                let Some((status, response)) = respond(&request) else {
+                    break;
+                };
+                let _ = requests.send(request);
                 let body = response.to_string();
+                let reason = if status == 200 { "OK" } else { "Not OK" };
                 let reply = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 socket.write_all(reply.as_bytes()).await.unwrap();
@@ -476,6 +484,43 @@ mod tests {
             }
         });
         (url, received)
+    }
+
+    /// A model that answers each request with the next canned response.
+    async fn fake_model(responses: Vec<(u16, Value)>) -> (String, UnboundedReceiver<Value>) {
+        let mut responses = responses.into_iter();
+        serve(move |_| responses.next()).await
+    }
+
+    /// A model that plays: it reads who it is from the system prompt and
+    /// nominates the first candidate that is not itself, for as long as it
+    /// is asked.
+    async fn fake_player() -> (String, UnboundedReceiver<Value>) {
+        serve(|request| {
+            let system = request["messages"][0]["content"]
+                .as_str()
+                .unwrap_or_default();
+            let me = system
+                .split("You are ")
+                .nth(1)
+                .and_then(|rest| rest.split('.').next())
+                .unwrap_or_default();
+            let candidates = request["tools"][0]["function"]["parameters"]["properties"]["player"]
+                ["enum"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let choice = candidates
+                .iter()
+                .filter_map(Value::as_str)
+                .find(|name| *name != me);
+            Some((200, answer(Some("Hmm."), choice)))
+        })
+        .await
+    }
+
+    fn ok(response: Value) -> (u16, Value) {
+        (200, response)
     }
 
     fn answer(content: Option<&str>, nominate: Option<&str>) -> Value {
@@ -529,19 +574,33 @@ mod tests {
         }
     }
 
-    /// Run a script against a model player on a fake model, returning the
-    /// player's answers and the requests the model saw.
-    async fn drive(
+    /// What came of driving a model player: how the episode ended, the
+    /// player's answers, and the requests the model saw.
+    struct Driven {
+        ending: Result<Ending>,
+        answers: Vec<Option<Message>>,
+        requests: Vec<Value>,
+    }
+
+    /// Run a script against a model player on a fake model.
+    async fn drive(script: Vec<Message>, responses: Vec<(u16, Value)>) -> Driven {
+        let (base_url, seen) = fake_model(responses).await;
+        drive_at(script, base_url, 1, seen).await
+    }
+
+    /// Run a script against a model player on whatever is at `base_url`.
+    async fn drive_at(
         script: Vec<Message>,
-        responses: Vec<Value>,
-    ) -> (Vec<Option<Message>>, Vec<Value>) {
-        let (base_url, mut seen) = fake_model(responses).await;
+        base_url: String,
+        attempts: u32,
+        mut seen: UnboundedReceiver<Value>,
+    ) -> Driven {
         let config = LlmConfig {
             base_url,
             model: "fake".to_string(),
             api_key_env: "KEY".to_string(),
             temperature: Some(0.5),
-            attempts: 1,
+            attempts,
         };
         let player = Llm::new(
             config,
@@ -555,9 +614,7 @@ mod tests {
             ("driver".to_string(), Box::new(driver)),
             ("Ann".to_string(), Box::new(player)),
         ];
-        episode(actors, None, Duration::from_secs(10), None)
-            .await
-            .unwrap();
+        let ending = episode(actors, None, Duration::from_secs(10), None).await;
         let mut answers = Vec::new();
         while let Ok(answer) = reported.try_recv() {
             answers.push(answer);
@@ -566,7 +623,11 @@ mod tests {
         while let Ok(request) = seen.try_recv() {
             requests.push(request);
         }
-        (answers, requests)
+        Driven {
+            ending,
+            answers,
+            requests,
+        }
     }
 
     fn you_are(role: Role) -> Message {
@@ -594,9 +655,15 @@ mod tests {
                 candidates: names(&["Ann", "Bob", "Cat"]),
             },
         ];
-        let responses = vec![answer(Some("  I suspect Bob. "), Some("Bob"))];
+        let responses = vec![ok(answer(Some("  I suspect Bob. "), Some("Bob")))];
 
-        let (answers, requests) = drive(script, responses).await;
+        let Driven {
+            ending,
+            answers,
+            requests,
+        } = drive(script, responses).await;
+
+        ending.unwrap();
 
         assert_eq!(
             answers,
@@ -640,9 +707,11 @@ mod tests {
                 candidates: names(&["Bob", "Cat"]),
             },
         ];
-        let responses = vec![answer(None, Some("Ann")), answer(None, Some("Cat"))];
+        let responses = vec![ok(answer(None, Some("Ann"))), ok(answer(None, Some("Cat")))];
 
-        let (answers, requests) = drive(script, responses).await;
+        let Driven {
+            answers, requests, ..
+        } = drive(script, responses).await;
 
         assert_eq!(answers[1], Some(Message::Choice("Cat".to_string())));
         assert_eq!(requests.len(), 2);
@@ -668,8 +737,137 @@ mod tests {
             },
         ];
 
-        let (_, requests) = drive(script, vec![answer(Some("Hello."), None)]).await;
+        let Driven { requests, .. } = drive(script, vec![ok(answer(Some("Hello."), None))]).await;
 
         assert!(!requests[0].to_string().contains("sk-test"));
+    }
+
+    fn a_turn() -> Vec<Message> {
+        vec![
+            you_are(Role::Villager),
+            Message::Turn {
+                candidates: names(&["Ann", "Bob"]),
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_server_error_is_tried_again() {
+        let responses = vec![
+            (503, json!({ "error": "try later" })),
+            ok(answer(Some("Back."), None)),
+        ];
+        let (base_url, seen) = fake_model(responses).await;
+
+        let Driven {
+            ending,
+            answers,
+            requests,
+        } = drive_at(a_turn(), base_url, 2, seen).await;
+
+        ending.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            matches!(&answers[1], Some(Message::Statement { said: Some(said), .. }) if said == "Back."),
+            "{answers:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_error_is_not_tried_again() {
+        let responses = vec![(400, json!({ "error": "bad request" }))];
+        let (base_url, seen) = fake_model(responses).await;
+
+        let Driven {
+            ending, requests, ..
+        } = drive_at(a_turn(), base_url, 3, seen).await;
+
+        let error = ending.unwrap_err().to_string();
+        assert!(
+            error.contains("400") && error.contains("bad request"),
+            "{error}"
+        );
+        assert_eq!(requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_model_that_cannot_be_reached_is_an_error() {
+        let (_, seen) = unbounded_channel();
+
+        let Driven { ending, .. } =
+            drive_at(a_turn(), "http://127.0.0.1:1".to_string(), 1, seen).await;
+
+        let error = ending.unwrap_err().to_string();
+        assert!(error.contains("could not reach the model"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_answer_not_from_the_assistant_is_an_error() {
+        let responses = vec![ok(
+            json!({ "choices": [{ "message": { "role": "user", "content": "?" } }] }),
+        )];
+
+        let Driven { ending, .. } = drive(a_turn(), responses).await;
+
+        let error = ending.unwrap_err().to_string();
+        assert!(error.contains("did not answer as the assistant"), "{error}");
+    }
+
+    #[test]
+    fn the_conversation_begins_with_the_role_and_the_cast() {
+        let config = LlmConfig {
+            base_url: "http://nowhere".to_string(),
+            model: "m".to_string(),
+            api_key_env: "KEY".to_string(),
+            temperature: None,
+            attempts: 1,
+        };
+        let mut player = Llm::new(
+            config,
+            SecretString::from("k"),
+            Prompts::default(),
+            Client::new(),
+        );
+
+        player.introduce(
+            &"Ann".to_string(),
+            Role::Werewolf,
+            &names(&["Ann", "Bob"]),
+            &names(&["Ann"]),
+        );
+
+        let [ChatMessage::System { content }] = player.history() else {
+            panic!("{:?}", player.history());
+        };
+        assert!(
+            content.contains("You are Ann.") && content.contains("The werewolves are Ann."),
+            "{content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_whole_game_can_be_played_by_a_model() {
+        use crate::game::{Config, PolicyConfig, config::Timing, play};
+
+        let (base_url, _seen) = fake_player().await;
+        // The variable is this test's own, so no other reader races it.
+        unsafe { std::env::set_var("WEREWOLF_LLM_TEST_KEY", "sk-test") };
+        let mut config = Config::random(4, 1);
+        config.names = names(&["Ann", "Bob", "Cat", "Dan"]);
+        config.timing = Timing {
+            day_secs: 5,
+            patience_secs: 5,
+        };
+        config.policy = PolicyConfig::Llm(LlmConfig {
+            base_url,
+            model: "fake".to_string(),
+            api_key_env: "WEREWOLF_LLM_TEST_KEY".to_string(),
+            temperature: None,
+            attempts: 1,
+        });
+
+        let outcome = play(&config, 1, None).await.unwrap();
+
+        assert!(outcome.rounds.get() <= 4, "{outcome:?}");
     }
 }

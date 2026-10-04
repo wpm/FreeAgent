@@ -1003,6 +1003,36 @@ mod tests {
         );
     }
 
+    /// Panics as soon as it starts.
+    struct Crasher;
+
+    #[async_trait]
+    impl Policy for Crasher {
+        type Message = String;
+
+        async fn start(&mut self, _context: &Context<String>) -> Result<()> {
+            panic!("the crasher crashed")
+        }
+
+        async fn reply(
+            &mut self,
+            _from: ActorId,
+            _message: String,
+            _context: &Context<String>,
+        ) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn episode_reports_an_actor_that_panics() {
+        let actors = cast![("crasher", Crasher), ("echo", echo())];
+
+        let error = episode(actors, None, PATIENCE, None).await.unwrap_err();
+
+        assert!(error.to_string().contains("panicked"), "{error}");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn episode_rejects_a_topology_that_names_unknown_actors() {
         let actors = [("a".to_string(), mute())];
