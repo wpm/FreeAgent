@@ -387,6 +387,7 @@ mod tests {
             .api_key_from(|name| (name == "MY_KEY").then(|| "sk-secret".to_string()))
             .unwrap();
 
+        // There is no Display at all, by design; Debug is redacted.
         assert!(!format!("{key:?}").contains("sk-secret"), "{key:?}");
         assert!(config.api_key_from(|_| None).is_err());
     }
