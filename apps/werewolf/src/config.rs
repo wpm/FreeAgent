@@ -19,7 +19,8 @@
 //! werewolf = "..."               # each role's system prompt; sensible defaults
 //! ```
 
-use crate::game::{PlayerId, Role};
+use crate::PlayerId;
+use crate::Role;
 use anyhow::{Context as _, Result, ensure};
 use secrecy::SecretString;
 use serde::Deserialize;

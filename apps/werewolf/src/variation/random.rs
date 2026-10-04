@@ -1,6 +1,6 @@
 //! The player who has no idea.
 
-use crate::game::{Message, PlayerId};
+use crate::{Message, PlayerId};
 use anyhow::Result;
 use async_trait::async_trait;
 use free_agent::{ActorId, Context, Policy};
@@ -68,7 +68,7 @@ impl Policy for UniformRandom {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::Team;
+    use crate::Team;
     use free_agent::{Reply, episode};
     use std::collections::HashSet;
     use std::time::Duration;

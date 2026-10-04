@@ -9,8 +9,8 @@
 //! choice, and an instruction in the prompt plus a second chance does
 //! the same job everywhere.
 
-use crate::game::{Message, Phase, PlayerId, Role, Team};
 use crate::config::{LlmConfig, Prompts};
+use crate::{Message, Phase, PlayerId, Role, Team};
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use async_trait::async_trait;
 use free_agent::{ActorId, Context, Policy};
@@ -367,8 +367,8 @@ fn nomination(call: &ToolCall, candidates: &[PlayerId]) -> Result<PlayerId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Role;
     use crate::config::Timing;
-    use crate::game::Role;
     use free_agent::{Ending, Reply, episode};
     use std::collections::HashSet;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
