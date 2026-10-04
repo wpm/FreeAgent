@@ -88,7 +88,8 @@ async fn main() -> Result<()> {
 }
 ```
 
-For a game built on this, see the `werewolf` crate under `apps/`.
+The library lives at the root of the repository and the applications built on
+it under `apps/`. For a game built on this, see [`werewolf`](apps/werewolf).
 
 ## Concepts
 
@@ -225,8 +226,12 @@ forms such a cycle. Agents asking each other should always give a patience.
 ## Development
 
 ```sh
-cargo test                        # unit tests and doctests
-cargo doc --no-deps --lib --open  # the API docs
+cargo test                                   # unit tests and doctests, the README's example among them
+cargo doc --no-deps --open                   # the API docs
+cargo fmt --check                            # what CI checks, besides the above
+cargo clippy --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+cargo llvm-cov --workspace                   # test coverage, which CI reports to Codecov
 ```
 
 [`Policy`]: Policy

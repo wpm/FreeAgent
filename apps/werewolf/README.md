@@ -7,22 +7,32 @@ A moderator actor runs the game: it deals the roles, asks the living players
 what they want to do, and announces the winner. Each player is an actor too,
 and knows only what the moderator has told it.
 
+From the repository root:
+
 ```sh
 # The paper's random game: sixteen players, four werewolves
-cargo run -p werewolf -- configs/random.toml
+cargo run -p werewolf -- apps/werewolf/configs/random.toml
 
 # The same game replayed from a seed
-cargo run -p werewolf -- configs/random.toml --seed 5
+cargo run -p werewolf -- apps/werewolf/configs/random.toml --seed 5
 
 # A game of models; the key comes from the environment
 export ANTHROPIC_API_KEY=...
-cargo run -p werewolf -- configs/llm.toml
+cargo run -p werewolf -- apps/werewolf/configs/llm.toml
 ```
 
 The output is the record of the game: one JSON object per line for every
 request and every reply between the moderator and the players, in the order
-they happened, and a last line saying how the game ended. A loop reproducing
-the paper keeps the last line; a display or a training set keeps them all.
+they happened, and a last line saying how the game ended:
+
+```json
+{"players":16,"werewolves":4,"seed":5,"winner":"Werewolves","rounds":5}
+```
+
+The seed is always printed, drawn at random when neither the file nor the
+command line gives one, so any game can be replayed from its own last line. A
+loop reproducing the paper keeps that line; a display or a training set keeps
+them all.
 
 ## The game
 
@@ -81,17 +91,20 @@ day_secs = 300        # the village has this long to agree
 patience_secs = 120   # how long to wait for any one answer
 
 [policy]
-kind = "llm"
+kind = "llm"          # or "random", which needs nothing else
 model = "claude-opus-5-5"
-base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
+base_url = "https://api.anthropic.com/v1"   # any OpenAI-compatible endpoint
+api_key_env = "ANTHROPIC_API_KEY"           # the key itself is never in a file
+attempts = 3          # tries for a request that fails on the way to the model
+# temperature = 1.0   # optional; current Claude models reject it
 
-[prompts]              # each role's system prompt; sensible defaults
+[prompts]             # each role's system prompt; sensible defaults
 villager = "..."
 ```
 
 Unknown keys, more werewolves than players, and a list of names that is not
-one per player are all errors. See `configs/` for complete examples.
+one per player are all errors, as is a missing key. See `configs/` for
+complete examples of both kinds of game.
 
 ## Not yet
 
