@@ -6,6 +6,7 @@ pub mod config;
 pub mod game;
 pub mod moderator;
 mod variation;
+mod rounds;
 
 /// What a player is. The random game deals only werewolves and villagers;
 /// the other roles are the paper's extensions, kept for when they are
