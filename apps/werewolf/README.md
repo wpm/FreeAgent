@@ -1,126 +1,99 @@
 # Werewolf
 
-The social deception game, played by [free agents](../../README.md).
+The social deception game, played by [free agents](../../README.md), either at
+random or by a language model.
 
-Each player is an actor with its own task and its own memory, so a player
-knows only what it has been told. An environment actor runs the game: it wakes
-whoever the phase calls for, asks them all at once, waits out one deadline for
-the round, and applies whatever came back.
+A moderator actor runs the game: it deals the roles, asks the living players
+what they want to do, and announces the winner. Each player is an actor too,
+and knows only what the moderator has told it.
 
 ```sh
-cargo run -p werewolf -- --players 8 --seed 42
+# The paper's random game: sixteen players, four werewolves
+cargo run -p werewolf -- configs/random.toml
+
+# The same game replayed from a seed
+cargo run -p werewolf -- configs/random.toml --seed 5
+
+# A game of models; the key comes from the environment
+export ANTHROPIC_API_KEY=...
+cargo run -p werewolf -- configs/llm.toml
 ```
 
-One JSON object per line goes to stdout. That is the whole output, and it is
-the record a model is trained on.
+The output is the record of the game: one JSON object per line for every
+request and every reply between the moderator and the players, in the order
+they happened, and a last line saying how the game ended. A loop reproducing
+the paper keeps the last line; a display or a training set keeps them all.
 
 ## The game
 
-Play alternates between night and day:
+Play begins with a day and alternates from there.
 
-| Role | Night | Day |
-| --- | --- | --- |
-| Werewolf | Names a victim. Knows the other wolves. | Votes. |
-| Doctor | Names someone to save, themselves included. | Votes. |
-| Seer | Names someone and learns their team. | Votes. |
-| Villager | Sleeps. | Votes. |
+By day, the living take turns in a shuffled order. On a turn a player may say
+something to the village and may nominate one living player to eliminate; the
+rest of the village hears each turn as it is taken, and a nomination replaces
+the player's earlier one. After a full round, if everyone has nominated and
+one player leads, that player is eliminated. Otherwise another round begins,
+until the day's time limit, when the current leader goes, with a tie broken at
+random and no nominations hanging nobody.
 
-The wolves' plurality names the victim, and **a tie among the wolves is broken
-at random** — sparing everyone would let wolves who never agree keep a game
-alive forever. The doctor cancels the kill by naming the same person. By day
-the village needs a plurality to lynch, and a tie hangs nobody.
+By night, each werewolf names a villager to kill. The plurality dies, with a
+tie broken at random.
 
-The wolves win on reaching parity, since at parity no vote can go against
-them. The villagers win when the last wolf is gone.
+The villagers win when the last werewolf is dead. The werewolves win when they
+are at least as many as the villagers.
 
-Nothing else ends a game. Nearly every night kills someone, so one side runs
-out soon enough. A game where that never happens — the wolves never choosing,
-the doctor always guessing right — plays on until `--limit` stops the
-episode.
+## At random
 
-## Observations, actions, policies
+With `kind = "random"`, every player nominates uniformly at random among the
+candidates, never itself, and says nothing. This is the game of
 
-The vocabulary is reinforcement learning's, so that a model trained here
-reads the same way as one trained on anything else built on free-agent:
+> Braverman, Etesami, and Mossel. *Mafia: A theoretical study of players and
+> coalitions in a partial information environment.*
 
-| RL | Here | What it is |
-| --- | --- | --- |
-| Observation | `Observation` | The round, the phase, who is alive. What the environment will tell this player. |
-| Action space | `ActionSpace` | Who this player may name, which the environment enforces. |
-| Action | `Action` | The one player named. |
-| Agent state | `State` | What the player remembers across turns — a seer's readings, a werewolf's allies. |
-| Policy | `Policy::decide` | State and observation in, action out. |
+With everyone choosing uniformly, a plurality vote with ties broken at random
+eliminates a uniformly random candidate, which is the paper's rule, and a
+tied day is simply rolled again. The paper's result is that the game is
+balanced when the werewolves number about the square root of the players.
 
-Every action, for every role, is **naming one living player**. Speech will
-join the action space later, which is why `ActionSpace` is a type rather than
-a bare list.
+## By language model
 
-A player is an `Agent<P: Policy>`. The agent does everything that does not
-vary — watching its channels, folding what it hears into its `State`,
-answering inside the deadline — and calls the policy for the decision alone:
+With `kind = "llm"`, every word and every vote comes from a model speaking the
+OpenAI chat completions protocol, which Anthropic's models do through their
+compatible endpoint. Each player is one conversation: its role's system prompt,
+then everything the moderator tells it. On a turn the model may speak and may
+nominate with a `nominate` tool whose only argument is the list of living
+candidates; at night it is told to nominate and asked again if it does not.
 
-```rust,ignore
-pub trait Policy: Send + 'static {
-    fn decide(&mut self, state: &State, observation: &Observation, space: &ActionSpace)
-        -> Result<Action>;
-}
+The API key is read from the environment variable the configuration names. It
+is held as a secret that never prints, and goes into the request header and
+nowhere else; the game's record contains only what was said in the game.
+
+## Configuration
+
+```toml
+players = 6
+werewolves = 2
+names = ["Ann", "Bob", "Cat", "Dan", "Eve", "Fay"]   # optional
+seed = 42                                            # optional
+
+[timing]
+day_secs = 300        # the village has this long to agree
+patience_secs = 120   # how long to wait for any one answer
+
+[policy]
+kind = "llm"
+model = "claude-opus-5-5"
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[prompts]              # each role's system prompt; sensible defaults
+villager = "..."
 ```
 
-`Random` is the baseline: it ignores the observation and picks uniformly from
-what `State::worth_considering` leaves. Heuristic and LLM policies differ from
-it only in `decide`.
+Unknown keys, more werewolves than players, and a list of names that is not
+one per player are all errors. See `configs/` for complete examples.
 
-Three things decide what a player does, and they belong in different places:
+## Not yet
 
-- **Legality** is the rules, enforced by the environment. A wolf does not eat
-  its own, a seer does not read itself. It arrives as the `ActionSpace`, and
-  an action outside it is logged `silent`.
-- **Sense** is `State::worth_considering`: a seer gains nothing by reading
-  someone twice. Advisory, and every policy wants it.
-- **Choice** is the policy. That is the only part a new player replaces.
-
-## The rules as a state machine
-
-A round walks through four types, and each transition consumes the one
-before:
-
-```mermaid
-stateDiagram-v2
-    [*] --> Night
-    Night --> Dawn: resolve(choices, rng)
-    Dawn --> Day: announce()
-    Day --> Dusk: resolve(votes)
-    Dusk --> Night: nightfall()
-
-    Night --> Over: decided
-    Dawn --> Over: decided
-    Day --> Over: decided
-    Dusk --> Over: decided
-    Over --> [*]
-```
-
-Every transition returns `Step<S>` — either `Going(S)` or `Over` — so any of
-them can end the game and a finished game cannot be stepped. There is no
-method on `Night` that counts votes and none on `Day` that resolves a kill:
-the compiler enforces the order.
-
-## The log
-
-Every line is `{at, actor, payload}`, where the payload is one `Event`. An
-`acted` event carries the role that acted and the full set of choices it had,
-because an action without its action space teaches nothing. The log also
-records the hidden truth — who is really a werewolf — which no player ever
-sees.
-
-A player that misses the round deadline, or names someone it was not offered,
-is logged as `silent` and simply does not act. One slow player cannot hold up
-a round.
-
-## Players
-
-`Random` is the baseline: it chooses uniformly among the choices it was
-offered, minus whatever its own memory rules out. Seeding makes an episode
-replay exactly, environment tie-breaks included.
-
-Heuristic and LLM-driven players come next. They differ only in how they
-answer a `YourTurn`.
+The doctor and the seer have prompts but are never dealt, and the werewolves
+do not confer at night. Both are next.
