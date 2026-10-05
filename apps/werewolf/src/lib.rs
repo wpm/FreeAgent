@@ -81,7 +81,7 @@ enum Team {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-enum ObservedPhase {
+enum PhaseName {
     Night,
     Day,
 }
@@ -92,10 +92,7 @@ struct Day;
 
 trait Phase: Sealed {
     type Next;
-
-    fn phase(&self) -> ObservedPhase {
-        ObservedPhase::Day
-    }
+    const NAME: PhaseName;
 }
 
 impl Sealed for Night {}
@@ -103,18 +100,12 @@ impl Sealed for Night {}
 impl Sealed for Day {}
 impl Phase for Night {
     type Next = Option<State<Day>>;
-
-    fn phase(&self) -> ObservedPhase {
-        ObservedPhase::Night
-    }
+    const NAME: PhaseName = PhaseName::Night;
 }
 
 impl Phase for Day {
     type Next = Option<State<Night>>;
-
-    fn phase(&self) -> ObservedPhase {
-        ObservedPhase::Day
-    }
+    const NAME: PhaseName = PhaseName::Day;
 }
 
 mod sealed {
