@@ -4,30 +4,12 @@ pub mod config;
 mod variant;
 
 use crate::sealed::Sealed;
-use crate::variant::Rules;
 use serde::{Deserialize, Serialize};
+use std::cmp::PartialEq;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
 
-#[derive(Debug, Serialize, Deserialize)]
-struct State<P: Phase> {
-    phase: P,
-    round: NonZero<u8>,
-    werewolves: HashMap<PlayerId, bool>,
-    villagers: HashMap<PlayerId, bool>,
-    doctor: (PlayerId, bool),
-    seer: (PlayerId, bool),
-    known_roles: HashMap<PlayerId, Role>,
-}
-
-struct Observation {
-    phase: ObservedPhase,
-    round: NonZero<u8>,
-    alive: HashSet<PlayerId, bool>,
-    known_roles: HashMap<PlayerId, Role>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 enum Role {
     Werewolf,
     Villager,
@@ -36,32 +18,17 @@ enum Role {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-enum ObservedPhase {
-    Night,
-    Day,
+struct State<P: Phase> {
+    phase: P,
+    round: NonZero<u8>,
+    roles: HashMap<PlayerId, Role>,
+    alive: HashSet<PlayerId>,
 }
 
 impl<P: Phase> State<P> {
-    fn observation(&self, player_id: PlayerId) -> Observation {
-        Observation {
-            phase: self.phase.phase(),
-            round: self.round,
-            alive: alive,
-            known_roles: self.known_roles,
-        }
-    }
     pub fn winner(&self) -> Option<Team> {
-        fn alive(players: &HashMap<PlayerId, bool>) -> usize {
-            players.values().filter(|alive| **alive).count()
-        }
-        let werewolves = alive(&self.werewolves);
-        let mut villagers = alive(&self.villagers);
-        if self.seer.1 {
-            villagers += 1
-        }
-        if self.doctor.1 {
-            villagers += 1
-        }
+        let werewolves = self.surviving(Team::Werewolves);
+        let villagers = self.surviving(Team::Villagers);
         if werewolves == 0 {
             Some(Team::Villagers)
         } else if werewolves >= villagers {
@@ -70,51 +37,40 @@ impl<P: Phase> State<P> {
             None
         }
     }
+
+    fn surviving(&self, team: Team) -> usize {
+        self.alive
+            .iter()
+            .filter(|player_id| {
+                let role = self.roles[*player_id];
+                match team {
+                    Team::Werewolves => role == Role::Werewolf,
+                    Team::Villagers => role != Role::Werewolf,
+                }
+            })
+            .count()
+    }
 }
 
 impl State<Night> {
-    fn new(
-        werewolves: HashSet<PlayerId>,
-        villagers: HashSet<PlayerId>,
-        doctor: PlayerId,
-        seer: PlayerId,
-    ) -> Self {
-        fn all_alive(player_ids: HashSet<PlayerId>) -> HashMap<PlayerId, bool> {
-            player_ids
-                .into_iter()
-                .map(|player_id| (player_id, true))
-                .collect()
-        }
-        let mut known_roles: HashMap<PlayerId, Role> = werewolves
-            .iter()
-            .map(|player_id| (player_id.clone(), Role::Werewolf))
-            .collect();
-        known_roles.extend(
-            villagers
-                .iter()
-                .map(|player_id| (player_id.clone(), Role::Villager)),
-        );
-        known_roles.insert(doctor.clone(), Role::Doctor);
-        known_roles.insert(seer.clone(), Role::Seer);
+    fn new(roles: HashMap<PlayerId, Role>) -> Self {
+        let alive = roles.keys().cloned().collect();
         Self {
             phase: Night,
-            round: NonZero::new(1).unwrap(),
-            werewolves: all_alive(werewolves),
-            villagers: all_alive(villagers),
-            doctor: (doctor, true),
-            seer: (seer, true),
-            known_roles,
+            round: NonZero::<u8>::MIN,
+            roles,
+            alive,
         }
     }
 
-    pub fn run<R: Rules>(mut self, rules: &mut R) -> <Night as Phase>::Next {
-        let wolves = self.surviving_player_roles(&[Role::Werewolf]);
-        rules.werewolves_at_night(&mut self, &wolves);
-        if let Some(seer) = self.player_with(Role::Seer) {
-            rules.seer_at_night(&mut self, &seer);
-        }
-        self.dawn_or_end() // the win check stays in your crate
-    }
+    // pub fn run<R: Rules>(mut self, rules: &mut R) -> <Night as Phase>::Next {
+    //     let wolves = self.surviving_player_roles(&[Role::Werewolf]);
+    //     rules.werewolves_at_night(&mut self, &wolves);
+    //     if let Some(seer) = self.player_with(Role::Seer) {
+    //         rules.seer_at_night(&mut self, &seer);
+    //     }
+    //     self.dawn_or_end() // the win check stays in your crate
+    // }
 }
 type PlayerId = String;
 
@@ -122,6 +78,12 @@ type PlayerId = String;
 enum Team {
     Werewolves,
     Villagers,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+enum ObservedPhase {
+    Night,
+    Day,
 }
 
 struct Night;
