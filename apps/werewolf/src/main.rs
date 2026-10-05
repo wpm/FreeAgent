@@ -9,8 +9,8 @@ use serde::Serialize;
 use std::io::Write;
 use std::num::NonZero;
 use std::path::PathBuf;
+use werewolf::Team;
 use werewolf::config::Config;
-use werewolf::werewolf::Team;
 
 /// Play one game of Werewolf as a configuration file describes.
 ///
