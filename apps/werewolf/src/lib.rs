@@ -9,23 +9,15 @@ use std::cmp::PartialEq;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
-enum Role {
-    Werewolf,
-    Villager,
-    Doctor,
-    Seer,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
-struct State<P: Phase> {
+struct State<P: PhaseType> {
     phase: P,
     round: NonZero<u8>,
     roles: HashMap<PlayerId, Role>,
     alive: HashSet<PlayerId>,
 }
 
-impl<P: Phase> State<P> {
+impl<P: PhaseType> State<P> {
     pub fn winner(&self) -> Option<Team> {
         let werewolves = self.surviving(Team::Werewolves);
         let villagers = self.surviving(Team::Villagers);
@@ -62,26 +54,25 @@ impl State<Night> {
             alive,
         }
     }
-
-    // pub fn run<R: Rules>(mut self, rules: &mut R) -> <Night as Phase>::Next {
-    //     let wolves = self.surviving_player_roles(&[Role::Werewolf]);
-    //     rules.werewolves_at_night(&mut self, &wolves);
-    //     if let Some(seer) = self.player_with(Role::Seer) {
-    //         rules.seer_at_night(&mut self, &seer);
-    //     }
-    //     self.dawn_or_end() // the win check stays in your crate
-    // }
 }
 type PlayerId = String;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+enum Role {
+    Werewolf,
+    Villager,
+    Doctor,
+    Seer,
+}
+
 #[derive(Debug, Serialize)]
-enum Team {
+pub enum Team {
     Werewolves,
     Villagers,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-enum PhaseName {
+enum Phase {
     Night,
     Day,
 }
@@ -90,22 +81,22 @@ struct Night;
 
 struct Day;
 
-trait Phase: Sealed {
+trait PhaseType: Sealed {
     type Next;
-    const NAME: PhaseName;
+    const PHASE: Phase;
 }
 
 impl Sealed for Night {}
 
 impl Sealed for Day {}
-impl Phase for Night {
+impl PhaseType for Night {
     type Next = Option<State<Day>>;
-    const NAME: PhaseName = PhaseName::Night;
+    const PHASE: Phase = Phase::Night;
 }
 
-impl Phase for Day {
+impl PhaseType for Day {
     type Next = Option<State<Night>>;
-    const NAME: PhaseName = PhaseName::Day;
+    const PHASE: Phase = Phase::Day;
 }
 
 mod sealed {
