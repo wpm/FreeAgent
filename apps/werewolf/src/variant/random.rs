@@ -34,8 +34,8 @@ pub struct Random {
 }
 
 impl Variant for Random {
-    fn environment(&self, seed: u64) -> Box<dyn Moderate> {
-        Box::new(Environment::new(seed, self.patience))
+    fn environment(&self, state: State, seed: u64) -> Box<dyn Moderate> {
+        Box::new(Environment::new(state, seed, self.patience))
     }
 
     fn player(&self, role: Role, seed: u64) -> Box<dyn Play> {
@@ -48,14 +48,17 @@ impl Variant for Random {
 
 /// The environment's side: a poll each phase, with ties broken at random.
 pub struct Environment {
+    state: State,
     rng: StdRng,
     patience: Duration,
 }
 
 impl Environment {
-    /// An environment whose tie-breaks follow from the seed.
-    pub fn new(seed: u64, patience: Duration) -> Self {
+    /// An environment for this game, whose tie-breaks follow from the
+    /// seed.
+    pub fn new(state: State, seed: u64, patience: Duration) -> Self {
         Environment {
+            state,
             rng: StdRng::seed_from_u64(seed),
             patience,
         }
@@ -64,13 +67,21 @@ impl Environment {
 
 #[async_trait]
 impl Moderate for Environment {
+    fn state(&self) -> &State {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut State {
+        &mut self.state
+    }
+
     /// The living werewolves each name a victim among the living
     /// villagers, and the plurality dies.
-    async fn night(&mut self, state: &mut State, context: &Context<Message>) -> Result<()> {
-        let werewolves = state.living_on(Team::Werewolves);
-        let villagers = state.living_on(Team::Villagers);
+    async fn night(&mut self, context: &Context<Message>) -> Result<()> {
+        let werewolves = self.state.living_on(Team::Werewolves);
+        let villagers = self.state.living_on(Team::Villagers);
         let votes = poll(
-            state,
+            &self.state,
             context,
             &werewolves,
             Message::Night,
@@ -79,17 +90,17 @@ impl Moderate for Environment {
         )
         .await?;
         if let Some(victim) = plurality(&votes, &mut self.rng) {
-            self.kill(state, &victim, context)?;
+            self.kill(&victim, context)?;
         }
         Ok(())
     }
 
     /// The living each vote for someone living other than themselves,
     /// and the plurality is eliminated.
-    async fn day(&mut self, state: &mut State, context: &Context<Message>) -> Result<()> {
-        let living = state.living();
+    async fn day(&mut self, context: &Context<Message>) -> Result<()> {
+        let living = self.state.living();
         let votes = poll(
-            state,
+            &self.state,
             context,
             &living,
             Message::Day,
@@ -98,7 +109,7 @@ impl Moderate for Environment {
         )
         .await?;
         if let Some(victim) = plurality(&votes, &mut self.rng) {
-            self.kill(state, &victim, context)?;
+            self.kill(&victim, context)?;
         }
         Ok(())
     }

@@ -6,22 +6,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use free_agent::{ActorId, Context, Policy};
 
-/// One player. What it does with what it is sent is the variant's; what
-/// is the same in every variant is here: the end of the game is the end
-/// of the actor.
-pub struct Player {
-    play: Box<dyn Play>,
-}
-
-impl Player {
-    /// A player who plays this way.
-    pub fn new(play: Box<dyn Play>) -> Self {
-        Player { play }
-    }
-}
-
+/// Any [`Play`], boxed, is a player actor. What it does with what it is
+/// sent is the variant's; what is the same in every variant is here: the
+/// end of the game is the end of the actor.
 #[async_trait]
-impl Policy for Player {
+impl Policy for Box<dyn Play> {
     type Message = Message;
 
     async fn reply(
@@ -34,7 +23,7 @@ impl Policy for Player {
             context.shutdown();
             return Ok(None);
         }
-        self.play.act(from, message, context).await
+        self.act(from, message, context).await
     }
 }
 
@@ -106,8 +95,7 @@ mod tests {
         };
         let pollster: Box<dyn Policy<Message = Message> + Send> =
             Box::new(Pollster { question, report });
-        let player: Box<dyn Policy<Message = Message> + Send> =
-            Box::new(Player::new(random.player(role, 3)));
+        let player: Box<dyn Policy<Message = Message> + Send> = Box::new(random.player(role, 3));
         episode(
             [
                 ("pollster".to_string(), pollster),

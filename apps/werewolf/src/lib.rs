@@ -2,13 +2,13 @@
 
 //! Werewolf as an episode in the [`free_agent`] framework.
 //!
-//! An [`Environment`](environment::Environment) actor referees: it asks
-//! the werewolves for a kill by night and the village for a vote by day,
-//! and it alone knows the whole [`State`](state::State). Each player is a
-//! [`Player`](player::Player) actor that answers what it is asked, seeing
-//! only its own [observation](state::State::observation_for). What a
-//! player does is fixed by its role; how it decides is the game's
-//! [variant].
+//! An [environment] actor referees: it asks the werewolves for a kill by
+//! night and the village for a vote by day, and it alone knows the whole
+//! [`State`](state::State). Each [player] actor answers what it is asked,
+//! seeing only its own [observation](state::State::observation_for). What
+//! each of them does is the game's [variant]: the environment's side is a
+//! [`Moderate`](variant::Moderate) and a player's side is a
+//! [`Play`](variant::Play), and either, boxed, is an actor.
 
 use free_agent::ActorId;
 use serde::{Deserialize, Serialize};

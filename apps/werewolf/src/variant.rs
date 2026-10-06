@@ -17,26 +17,34 @@ use anyhow::Result;
 use async_trait::async_trait;
 use free_agent::{ActorId, Context};
 
-/// The environment's side of a variant: how it runs each phase.
+/// The environment's side of a variant: the state of the game, and how
+/// each phase is run on it.
 ///
-/// Each method is given the whole state to read and change, and the
-/// environment's context to talk to the players through. When it
-/// returns, the phase is over; the environment checks for a winner and
-/// moves on.
+/// Every environment holds the whole [`State`], which is why the trait
+/// asks for it: there is no environment without one. Each phase is given
+/// the environment's context to talk to the players through, and does
+/// what it likes to the state. When it returns, the phase is over; the
+/// environment checks for a winner and moves on.
 #[async_trait]
 pub trait Moderate: Send {
+    /// The game as the environment knows it.
+    fn state(&self) -> &State;
+
+    /// The game as the environment knows it, to change.
+    fn state_mut(&mut self) -> &mut State;
+
     /// Run the night.
-    async fn night(&mut self, state: &mut State, context: &Context<Message>) -> Result<()>;
+    async fn night(&mut self, context: &Context<Message>) -> Result<()>;
 
     /// Run the day.
-    async fn day(&mut self, state: &mut State, context: &Context<Message>) -> Result<()>;
+    async fn day(&mut self, context: &Context<Message>) -> Result<()>;
 
     /// Take a player out of the game. Dead is dead: the player's actor is
     /// stopped and the player leaves the living, together and nowhere
     /// else.
-    fn kill(&self, state: &mut State, victim: &PlayerId, context: &Context<Message>) -> Result<()> {
+    fn kill(&mut self, victim: &PlayerId, context: &Context<Message>) -> Result<()> {
         context.stop(victim)?;
-        state.kill(victim);
+        self.state_mut().kill(victim);
         Ok(())
     }
 }
@@ -66,8 +74,8 @@ pub trait Play: Send {
 
 /// A whole variant: a way to build each participant.
 pub trait Variant {
-    /// The environment's side.
-    fn environment(&self, seed: u64) -> Box<dyn Moderate>;
+    /// The environment's side, holding this game.
+    fn environment(&self, state: State, seed: u64) -> Box<dyn Moderate>;
 
     /// One player's side, for a seat dealt this role.
     fn player(&self, role: Role, seed: u64) -> Box<dyn Play>;

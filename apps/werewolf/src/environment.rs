@@ -2,7 +2,7 @@
 
 use crate::state::State;
 use crate::variant::Moderate;
-use crate::{Message, Phase, PlayerId, Role};
+use crate::{Message, Phase, PlayerId};
 use anyhow::Result;
 use async_trait::async_trait;
 use free_agent::{ActorId, Context, Policy, Recipient, Reply};
@@ -13,57 +13,37 @@ use std::time::Duration;
 /// The environment's name as an actor.
 pub const NAME: &str = "environment";
 
-/// Runs one game from the first night to the announcement of the winner.
-/// It alone holds the whole [`State`]; each player is sent only its own
-/// observation.
+/// Any [`Moderate`], boxed, is the environment actor: it runs one game
+/// from the first night to the announcement of the winner. The variant
+/// holds the whole [`State`] and plays each phase on it; each player is
+/// sent only its own observation.
 ///
 /// What happens within a night or a day is the variant's. What is the
 /// same in every variant is here: the rounds, the win check between
 /// phases, and telling the living how it ended.
-pub struct Environment {
-    state: State,
-    moderate: Box<dyn Moderate>,
-}
-
-impl Environment {
-    /// An environment for a game among players dealt these roles, run by
-    /// this variant.
-    pub fn new(roles: HashMap<PlayerId, Role>, moderate: Box<dyn Moderate>) -> Self {
-        Environment {
-            state: State::new(roles),
-            moderate,
-        }
-    }
-
-    /// The game as the environment knows it.
-    pub fn state(&self) -> &State {
-        &self.state
-    }
-}
-
 #[async_trait]
-impl Policy for Environment {
+impl Policy for Box<dyn Moderate> {
     type Message = Message;
 
     /// The whole game, start to finish.
     async fn start(&mut self, context: &Context<Message>) -> Result<()> {
         let winner = loop {
-            if let Some(winner) = self.state.winner() {
+            if let Some(winner) = self.state().winner() {
                 break winner;
             }
-            match self.state.phase() {
-                Phase::Night => self.moderate.night(&mut self.state, context).await?,
-                Phase::Day => self.moderate.day(&mut self.state, context).await?,
+            match self.state().phase() {
+                Phase::Night => self.night(context).await?,
+                Phase::Day => self.day(context).await?,
             }
-            if let Some(winner) = self.state.winner() {
+            if let Some(winner) = self.state().winner() {
                 break winner;
             }
-            self.state.advance();
+            self.state_mut().advance();
         };
         // The living are told, and nobody's acknowledgment is waited for:
         // the request goes out when it is made, and a player's answer to
         // the news is to shut down.
-        let living: HashSet<Recipient> = self.state.living().into_iter().map(Some).collect();
+        let living: HashSet<Recipient> = self.state().living().into_iter().map(Some).collect();
         drop(context.request(&living, Message::Over(winner), None));
         context.shutdown();
         Ok(())
@@ -149,10 +129,9 @@ pub fn plurality(votes: &[PlayerId], rng: &mut impl Rng) -> Option<PlayerId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Team;
-    use crate::player::Player;
-    use crate::variant::Variant;
     use crate::variant::random::Random;
+    use crate::variant::{Play, Variant};
+    use crate::{Role, Team};
     use free_agent::{Ending, Event, Log, Said, episode};
     use rand::rngs::StdRng;
     use tokio::sync::mpsc::UnboundedReceiver;
@@ -199,11 +178,11 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(n, (id, role))| {
-                let player: Boxed = Box::new(Player::new(RANDOM.player(*role, seed + n as u64)));
+                let player: Boxed = Box::new(RANDOM.player(*role, seed + n as u64));
                 (id.clone(), player)
             })
             .collect();
-        let environment: Boxed = Box::new(Environment::new(roles, RANDOM.environment(seed)));
+        let environment: Boxed = Box::new(RANDOM.environment(State::new(roles), seed));
         actors.push((NAME.to_string(), environment));
         let ending = episode(actors, None, Duration::from_secs(30), Some(log))
             .await
@@ -322,7 +301,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl crate::variant::Play for Rogue {
+    impl Play for Rogue {
         async fn act(
             &mut self,
             _from: ActorId,
@@ -343,13 +322,14 @@ mod tests {
         // kills one of them the first night and reaches parity; if an
         // unasked `Select` counted, the villagers would win instead.
         let (log, events) = Log::new();
-        let wolf: Boxed = Box::new(Player::new(RANDOM.player(Role::Werewolf, 1)));
+        let wolf: Boxed = Box::new(RANDOM.player(Role::Werewolf, 1));
         let rogue = || -> Boxed {
-            Box::new(Player::new(Box::new(Rogue {
+            let rogue: Box<dyn Play> = Box::new(Rogue {
                 target: "wolf-1".to_string(),
-            })))
+            });
+            Box::new(rogue)
         };
-        let environment: Boxed = Box::new(Environment::new(roles(1, 2), RANDOM.environment(1)));
+        let environment: Boxed = Box::new(RANDOM.environment(State::new(roles(1, 2)), 1));
         let actors = [
             ("wolf-1".to_string(), wolf),
             ("villager-1".to_string(), rogue()),
