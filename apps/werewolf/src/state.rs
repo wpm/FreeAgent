@@ -64,7 +64,9 @@ impl State {
             .collect()
     }
 
-    /// Take a player out of the game.
+    /// Take a player out of the game. The variant's side does this through
+    /// [`Moderate::kill`](crate::variant::Moderate::kill), which also stops
+    /// the player's actor.
     pub fn kill(&mut self, id: &PlayerId) {
         self.alive.remove(id);
     }

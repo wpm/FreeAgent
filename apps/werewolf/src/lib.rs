@@ -8,7 +8,7 @@
 //! [`Player`](player::Player) actor that answers what it is asked, seeing
 //! only its own [observation](state::State::observation_for). What a
 //! player does is fixed by its role; how it decides is the game's
-//! [variant](variant::Decide).
+//! [variant].
 
 use free_agent::ActorId;
 use serde::{Deserialize, Serialize};
@@ -67,15 +67,14 @@ pub enum Phase {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Message {
     /// Environment to a player: it is night, here is what you can see.
-    /// A werewolf answers with a [`Kill`](Message::Kill).
+    /// A werewolf answers with a [`Select`](Message::Select).
     Night(state::State),
     /// Environment to a player: it is day, here is what you can see.
-    /// Everyone answers with a [`Vote`](Message::Vote).
+    /// Everyone answers with a [`Select`](Message::Select).
     Day(state::State),
-    /// A werewolf's choice of victim.
-    Kill(PlayerId),
-    /// A player's choice of whom to eliminate.
-    Vote(PlayerId),
+    /// A player's answer to a prompt: the player it selects. What
+    /// selecting someone does is the asker's business.
+    Select(PlayerId),
     /// Environment to everyone: the game is over and this side won.
     Over(Team),
 }
