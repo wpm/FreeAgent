@@ -1,7 +1,13 @@
-//! The actor that referees the game.
+//! The environment as an actor: any [`Environment`], boxed, is a policy
+//! that runs one game from the first night to the end.
+//!
+//! What is the same for every environment is here: the rounds, with each
+//! phase routed to the environment's day or night policy; the win check
+//! between phases; and the end of the game. Also here are helpers an
+//! environment may use to run a phase, though nothing obliges it to.
 
 use crate::state::State;
-use crate::variant::Moderate;
+use crate::variant::Environment;
 use crate::{Message, Phase, PlayerId};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -13,16 +19,8 @@ use std::time::Duration;
 /// The environment's name as an actor.
 pub const NAME: &str = "environment";
 
-/// Any [`Moderate`], boxed, is the environment actor: it runs one game
-/// from the first night to the announcement of the winner. The variant
-/// holds the whole [`State`] and plays each phase on it; each player is
-/// sent only its own observation.
-///
-/// What happens within a night or a day is the variant's. What is the
-/// same in every variant is here: the rounds, the win check between
-/// phases, and telling the living how it ended.
 #[async_trait]
-impl Policy for Box<dyn Moderate> {
+impl Policy for Box<dyn Environment> {
     type Message = Message;
 
     /// The whole game, start to finish.
@@ -32,8 +30,8 @@ impl Policy for Box<dyn Moderate> {
                 break winner;
             }
             match self.state().phase() {
-                Phase::Night => self.night(context).await?,
                 Phase::Day => self.day(context).await?,
+                Phase::Night => self.night(context).await?,
             }
             if let Some(winner) = self.state().winner() {
                 break winner;
@@ -41,7 +39,7 @@ impl Policy for Box<dyn Moderate> {
             self.state_mut().advance();
         };
         // The living are told, and nobody's acknowledgment is waited for:
-        // the request goes out when it is made, and a player's answer to
+        // the request goes out when it is made, and an agent's answer to
         // the news is to shut down.
         let living: HashSet<Recipient> = self.state().living().into_iter().map(Some).collect();
         drop(context.request(&living, Message::Over(winner), None));
@@ -60,45 +58,42 @@ impl Policy for Box<dyn Moderate> {
     }
 }
 
-/// Put a phase's question to some players, each seeing its own
-/// observation of `state`, and collect the valid choices that come back.
+/// Send some agents their observations of `state` and collect the valid
+/// selections that come back.
 ///
-/// `question` wraps an observation as the message to send, and `valid`
-/// says whether a voter may select a candidate. A player that answers
-/// late, answers with something other than a selection, or selects
-/// someone it may not, abstains.
+/// `valid` says whether an agent may select a candidate. An agent that
+/// answers late, answers with something other than a selection, or
+/// selects someone it may not, abstains.
 pub async fn poll(
     state: &State,
     context: &Context<Message>,
-    voters: &[PlayerId],
-    question: fn(State) -> Message,
+    agents: &[PlayerId],
     patience: Duration,
     valid: impl Fn(&PlayerId, &PlayerId) -> bool,
 ) -> Result<Vec<PlayerId>> {
-    let asked: Vec<_> = voters
+    let asked: Vec<_> = agents
         .iter()
-        .map(|voter| {
-            let seen = state.observation_for(voter);
-            let to: HashSet<Recipient> = HashSet::from([Some(voter.clone())]);
+        .map(|agent| {
+            let observation = Message::Observation(state.observation_for(agent));
+            let to: HashSet<Recipient> = HashSet::from([Some(agent.clone())]);
             (
-                voter.clone(),
-                context.request(&to, question(seen), Some(patience)),
+                agent.clone(),
+                context.request(&to, observation, Some(patience)),
             )
         })
         .collect();
-    let mut choices = Vec::new();
-    for (voter, pending) in asked {
+    let mut selections = Vec::new();
+    for (agent, pending) in asked {
         for (_, reply) in pending.await? {
-            let chosen = match reply {
-                Reply::Message(Message::Select(id)) => id,
-                _ => continue,
+            let Reply::Message(Message::Select(selected)) = reply else {
+                continue;
             };
-            if valid(&voter, &chosen) {
-                choices.push(chosen);
+            if valid(&agent, &selected) {
+                selections.push(selected);
             }
         }
     }
-    Ok(choices)
+    Ok(selections)
 }
 
 /// Everyone tied for the most votes, in a fixed order. No votes, no
@@ -130,15 +125,16 @@ pub fn plurality(votes: &[PlayerId], rng: &mut impl Rng) -> Option<PlayerId> {
 mod tests {
     use super::*;
     use crate::variant::random::Random;
-    use crate::variant::{Play, Variant};
+    use crate::variant::{Variant, Villager};
     use crate::{Role, Team};
     use free_agent::{Ending, Event, Log, Said, episode};
     use rand::rngs::StdRng;
     use tokio::sync::mpsc::UnboundedReceiver;
 
-    const RANDOM: Random = Random {
-        patience: Duration::from_secs(5),
-    };
+    /// The random variant for these seats, seeded.
+    fn random(seed: u64, roles: &HashMap<PlayerId, Role>) -> Random {
+        Random::new(seed, roles.keys().cloned(), Duration::from_secs(5))
+    }
 
     fn votes(names: &[&str]) -> Vec<PlayerId> {
         names.iter().map(|name| name.to_string()).collect()
@@ -172,17 +168,12 @@ mod tests {
     /// wire.
     async fn play(roles: HashMap<PlayerId, Role>, seed: u64) -> Vec<Event<Message>> {
         let (log, events) = Log::new();
-        let mut seats: Vec<_> = roles.iter().collect();
-        seats.sort_by(|a, b| a.0.cmp(b.0));
-        let mut actors: Vec<(ActorId, Boxed)> = seats
-            .into_iter()
-            .enumerate()
-            .map(|(n, (id, role))| {
-                let player: Boxed = Box::new(RANDOM.player(*role, seed + n as u64));
-                (id.clone(), player)
-            })
+        let random = random(seed, &roles);
+        let mut actors: Vec<(ActorId, Boxed)> = roles
+            .iter()
+            .map(|(id, role)| (id.clone(), random.agent(*role, id)))
             .collect();
-        let environment: Boxed = Box::new(RANDOM.environment(State::new(roles), seed));
+        let environment: Boxed = Box::new(random.environment(State::new(roles)));
         actors.push((NAME.to_string(), environment));
         let ending = episode(actors, None, Duration::from_secs(30), Some(log))
             .await
@@ -213,10 +204,16 @@ mod tests {
             .collect()
     }
 
-    /// The side the environment announced as the winner, once per player
+    /// The side the environment announced as the winner, once per agent
     /// told.
     fn announced(events: &[Event<Message>]) -> Vec<Team> {
         told(events).into_iter().map(|(_, team)| team).collect()
+    }
+
+    /// Whether an event sent `to` an observation of this phase.
+    fn observed(event: &Event<Message>, to: &str, phase: Phase) -> bool {
+        event.to == to
+            && matches!(&event.said, Said::Asked(Message::Observation(seen)) if seen.phase() == phase)
     }
 
     #[tokio::test]
@@ -226,8 +223,8 @@ mod tests {
         assert!(
             !events
                 .iter()
-                .any(|event| matches!(event.said, Said::Asked(Message::Night(_)))),
-            "nobody should have been asked anything"
+                .any(|event| matches!(event.said, Said::Asked(Message::Observation(_)))),
+            "nobody should have been sent anything"
         );
     }
 
@@ -246,16 +243,25 @@ mod tests {
                 Said::Replied(Reply::Message(Message::Select(victim))) => Some(victim.clone()),
                 _ => None,
             })
-            .expect("the werewolf should have chosen a victim");
+            .expect("the werewolf should have selected a victim");
         assert!(first_kill.starts_with("villager-"), "{first_kill}");
-        // The victim is never asked to vote, and is not told the ending.
+        // The victim never sees a day, and is not told the ending.
         assert!(!events.iter().any(|event| {
-            event.to == first_kill
-                && matches!(
-                    event.said,
-                    Said::Asked(Message::Day(_)) | Said::Asked(Message::Over(_))
-                )
+            observed(event, &first_kill, Phase::Day)
+                || (event.to == first_kill && matches!(event.said, Said::Asked(Message::Over(_))))
         }));
+    }
+
+    #[tokio::test]
+    async fn only_werewolves_see_the_night() {
+        let events = play(roles(1, 5), 2).await;
+        for event in &events {
+            if let Said::Asked(Message::Observation(seen)) = &event.said
+                && seen.phase() == Phase::Night
+            {
+                assert!(event.to.starts_with("wolf-"), "{} saw the night", event.to);
+            }
+        }
     }
 
     #[tokio::test]
@@ -269,45 +275,24 @@ mod tests {
         assert!(!told.is_empty() && told.len() < 6, "{told:?}");
         let mut names: Vec<_> = told.iter().map(|(name, _)| name.clone()).collect();
         names.dedup();
-        assert_eq!(names.len(), told.len(), "each living player is told once");
+        assert_eq!(names.len(), told.len(), "each living agent is told once");
         assert!(told.iter().all(|(_, team)| *team == told[0].1));
     }
 
-    /// Everything said, as a sorted list of one-line summaries. Replies
-    /// to one poll can land in the log in any order, and an observation
-    /// prints its maps in any order, so neither is part of the summary.
-    fn said(events: Vec<Event<Message>>) -> Vec<String> {
-        let mut said: Vec<_> = events
-            .into_iter()
-            .map(|event| {
-                let what = match event.said {
-                    Said::Asked(Message::Night(seen)) => format!("night {}", seen.round()),
-                    Said::Asked(Message::Day(seen)) => format!("day {}", seen.round()),
-                    Said::Asked(other) => format!("{other:?}"),
-                    Said::Replied(reply) => format!("{reply:?}"),
-                };
-                format!("{} -> {}: {what}", event.from, event.to)
-            })
-            .collect();
-        said.sort();
-        said
-    }
-
-    /// A player who, whatever it is sent, sends the environment a
-    /// `Select` naming its target, as a werewolf would in answer to a
-    /// night prompt, except unasked. It answers nothing itself.
+    /// A villager who, whatever it is sent, sends the environment a
+    /// `Select` naming its target, as a werewolf would in answer to the
+    /// night, except unasked. It answers nothing itself.
     struct Rogue {
         target: PlayerId,
     }
 
     #[async_trait]
-    impl Play for Rogue {
-        async fn act(
+    impl Villager for Rogue {
+        async fn day(
             &mut self,
-            _from: ActorId,
-            _observation: Message,
+            _observation: &State,
             context: &Context<Message>,
-        ) -> Result<Option<Message>> {
+        ) -> Result<Option<PlayerId>> {
             let environment = HashSet::from([Some(NAME.to_string())]);
             // Sent and forgotten: awaiting the environment mid-game would
             // only wait out its patience.
@@ -317,21 +302,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_player_cannot_kill_by_saying_so() {
+    async fn an_agent_cannot_kill_by_saying_so() {
         // One wolf and two rogue villagers who keep selecting it. The wolf
         // kills one of them the first night and reaches parity; if an
         // unasked `Select` counted, the villagers would win instead.
         let (log, events) = Log::new();
-        let wolf: Boxed = Box::new(RANDOM.player(Role::Werewolf, 1));
         let rogue = || -> Boxed {
-            let rogue: Box<dyn Play> = Box::new(Rogue {
+            let rogue: Box<dyn Villager> = Box::new(Rogue {
                 target: "wolf-1".to_string(),
             });
             Box::new(rogue)
         };
-        let environment: Boxed = Box::new(RANDOM.environment(State::new(roles(1, 2)), 1));
+        let roles = roles(1, 2);
+        let random = random(1, &roles);
+        let environment: Boxed = Box::new(random.environment(State::new(roles)));
         let actors = [
-            ("wolf-1".to_string(), wolf),
+            (
+                "wolf-1".to_string(),
+                random.agent(Role::Werewolf, &"wolf-1".to_string()),
+            ),
             ("villager-1".to_string(), rogue()),
             ("villager-2".to_string(), rogue()),
             (NAME.to_string(), environment),
@@ -346,6 +335,27 @@ mod tests {
             winners.iter().all(|team| *team == Team::Werewolves),
             "{winners:?}"
         );
+    }
+
+    /// Everything said, as a sorted list of one-line summaries. Replies
+    /// to one poll can land in the log in any order, and an observation
+    /// prints its maps in any order, so neither is part of the summary.
+    fn said(events: Vec<Event<Message>>) -> Vec<String> {
+        let mut said: Vec<_> = events
+            .into_iter()
+            .map(|event| {
+                let what = match event.said {
+                    Said::Asked(Message::Observation(seen)) => {
+                        format!("{:?} {}", seen.phase(), seen.round())
+                    }
+                    Said::Asked(other) => format!("{other:?}"),
+                    Said::Replied(reply) => format!("{reply:?}"),
+                };
+                format!("{} -> {}: {what}", event.from, event.to)
+            })
+            .collect();
+        said.sort();
+        said
     }
 
     #[tokio::test]

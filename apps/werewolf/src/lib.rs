@@ -1,21 +1,22 @@
 #![allow(dead_code)]
 
-//! Werewolf as an episode in the [`free_agent`] framework.
+//! Werewolf as an episode in the [`free_agent`] framework, in the shape
+//! of reinforcement learning.
 //!
-//! An [environment] actor referees: it asks the werewolves for a kill by
-//! night and the village for a vote by day, and it alone knows the whole
-//! [`State`](state::State). Each [player] actor answers what it is asked,
-//! seeing only its own [observation](state::State::observation_for). What
-//! each of them does is the game's [variant]: the environment's side is a
-//! [`Moderate`](variant::Moderate) and a player's side is a
-//! [`Play`](variant::Play), and either, boxed, is an actor.
+//! An [environment] actor has the whole [`State`](state::State) and runs
+//! the game on it. Each [agent] actor has no state of the game at all: it
+//! is sent [observations](state::State::observation_for), which are what
+//! it is allowed to see, and answers with actions. Both have a policy for
+//! the day and one for the night, and which kind of agent a player is,
+//! werewolf, villager, doctor, or seer, fixes which it has. The
+//! [variant] is what those policies do.
 
 use free_agent::ActorId;
 use serde::{Deserialize, Serialize};
 
+pub mod agent;
 pub mod config;
 pub mod environment;
-pub mod player;
 pub mod state;
 pub mod variant;
 
@@ -63,18 +64,17 @@ pub enum Phase {
 }
 
 /// Everything that crosses the wire between the environment and the
-/// players. The environment asks; the players answer.
+/// agents. The environment sends observations; the agents send actions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Message {
-    /// Environment to a player: it is night, here is what you can see.
-    /// A werewolf answers with a [`Select`](Message::Select).
-    Night(state::State),
-    /// Environment to a player: it is day, here is what you can see.
-    /// Everyone answers with a [`Select`](Message::Select).
-    Day(state::State),
-    /// A player's answer to a prompt: the player it selects. What
-    /// selecting someone does is the asker's business.
+    /// Environment to an agent: what it can see of the game, phase
+    /// included. The agent acts on it.
+    Observation(state::State),
+    /// An agent's action: the player it selects. What selecting someone
+    /// does is the environment's business.
     Select(PlayerId),
-    /// Environment to everyone: the game is over and this side won.
+    /// Environment to the living: the game is over and this side won.
+    /// Pending the reward going to the log instead, this is how the
+    /// living agents learn to shut down.
     Over(Team),
 }

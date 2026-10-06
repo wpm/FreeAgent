@@ -1,4 +1,4 @@
-//! What the referee knows, and what each player is allowed to see of it.
+//! What the environment knows, and what each player is allowed to see of it.
 
 use crate::{Phase, PlayerId, Role, Team};
 use serde::{Deserialize, Serialize};
@@ -64,9 +64,9 @@ impl State {
             .collect()
     }
 
-    /// Take a player out of the game. The variant's side does this through
-    /// [`Moderate::kill`](crate::variant::Moderate::kill), which also stops
-    /// the player's actor.
+    /// Take a player out of the game. An environment does this through
+    /// [`Environment::kill`](crate::variant::Environment::kill), which also
+    /// stops the player's actor.
     pub fn kill(&mut self, id: &PlayerId) {
         self.alive.remove(id);
     }
