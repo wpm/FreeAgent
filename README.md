@@ -122,9 +122,8 @@ impl Policy for Oracle {
 }
 ```
 
-Every method receives a [`Context`], the part of the actor a step is allowed
-to touch: its name, a way to ask the other actors things, and a way to shut
-itself down.
+Every method receives a [`Context`], what the policy talks through: its name,
+a way to ask the other actors things, and a way to shut itself down.
 
 Each actor takes one step at a time. A step may take its time, so long as it
 waits by awaiting: while it waits on a model or on a peer's answer, the rest
@@ -188,6 +187,12 @@ the topology does not allow is an error, and nothing is sent to anyone.
 An actor shuts itself down by calling `shutdown` on its context. The step that
 does so still completes, and a reply it returns is still delivered. The
 episode ends with [`Ending::Finished`] once every actor has done this.
+
+An actor can also stop another by calling `stop` on its context with that
+actor's name, without the other's cooperation: the other is stopped at once,
+even in the middle of a step. An actor may stop any actor it may address under
+the topology. This is how an environment ends an episode whose agents have no
+reason to stop on their own.
 
 The time limit is the backstop for when they do not. When it passes, every
 actor still running is stopped, even in the middle of a step, and the episode

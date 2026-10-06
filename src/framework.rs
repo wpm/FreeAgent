@@ -146,14 +146,13 @@ pub enum Reply<M> {
     Unanswered,
 }
 
-/// The part of an actor that a step is allowed to touch: who it is, how
-/// it reaches the other actors, and how it stops.
+/// What a policy talks through: its actor's name, a way to ask the other
+/// actors things, and a way to shut the actor down.
 ///
-/// An actor is busy while one of its steps runs. Its policy is the code
-/// taking the step, and its inbox is what the loop reads from between
-/// steps, so neither can be handed to the step without letting it call
-/// itself or steal the next request. What remains holds still while the
-/// actor acts, and that is what a step gets.
+/// Every [`Policy`] method receives one of these rather than the actor
+/// itself. The actor also owns the policy and the inbox its loop reads
+/// from, and neither can be handed to a policy method without letting it
+/// call itself or take the next request out of turn.
 pub struct Context<M> {
     id: ActorId,
     outbox: Outbox<M>,
@@ -178,6 +177,30 @@ impl<M: Message> Context<M> {
     /// has done so.
     pub fn shutdown(&self) {
         self.shutdown.cancel()
+    }
+
+    /// Stop another actor, without its cooperation.
+    ///
+    /// It takes effect as [`shutdown`](Context::shutdown) does for the
+    /// actor itself: a step it is in the middle of is abandoned, nothing
+    /// waiting in its inbox is taken in, and anyone awaiting an answer
+    /// from it gets [`Reply::Unanswered`]. An actor may stop any actor it
+    /// may address under the topology. To stop itself it calls
+    /// `shutdown`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `who` is not an actor this one may address, either because
+    /// no actor of that name is in the episode or because the topology
+    /// does not allow the link.
+    pub fn stop(&self, who: &ActorId) -> Result<()> {
+        match self.outbox.peers.get(who) {
+            Some(link) => {
+                link.shutdown.cancel();
+                Ok(())
+            }
+            None => bail!("{} cannot stop {who}: not an actor it may address", self.id),
+        }
     }
 
     /// Ask every recipient the same thing and await their answers.
@@ -286,27 +309,31 @@ impl<M: Message> Context<M> {
     }
 }
 
-/// The channels through which an actor reaches every actor it may address,
+/// One actor as another may reach it: the way into its inbox, and the
+/// way to stop it.
+struct Link<M> {
+    sender: UnboundedSender<Request<M>>,
+    shutdown: CancellationToken,
+}
+
+/// The links through which an actor reaches every actor it may address,
 /// itself included.
 struct Outbox<M> {
     /// Reaches the actor's own inbox. An actor may be alone in the
     /// universe and still have things to say to itself, so this keeps the
     /// inbox open no matter who else is around.
     loopback: UnboundedSender<Request<M>>,
-    peers: HashMap<ActorId, UnboundedSender<Request<M>>>,
+    peers: HashMap<ActorId, Link<M>>,
 }
 
 impl<M: Message> Outbox<M> {
-    fn new(
-        loopback: UnboundedSender<Request<M>>,
-        peers: HashMap<ActorId, UnboundedSender<Request<M>>>,
-    ) -> Self {
+    fn new(loopback: UnboundedSender<Request<M>>, peers: HashMap<ActorId, Link<M>>) -> Self {
         Outbox { loopback, peers }
     }
 
     fn sender(&self, to: &Recipient) -> Option<&UnboundedSender<Request<M>>> {
         match to {
-            Some(to) => self.peers.get(to),
+            Some(to) => self.peers.get(to).map(|link| &link.sender),
             None => Some(&self.loopback),
         }
     }
@@ -563,28 +590,37 @@ pub async fn episode<P: Policy + Send + 'static>(
     }
 
     let shutdown = CancellationToken::new();
+    // A child token per actor lets any one of them be stopped without
+    // stopping the others, while the episode's own token still stops
+    // everyone.
+    let tokens: HashMap<ActorId, CancellationToken> = senders
+        .keys()
+        .map(|id| (id.clone(), shutdown.child_token()))
+        .collect();
+    let link = |to: &ActorId| Link {
+        sender: senders[to].clone(),
+        shutdown: tokens[to].clone(),
+    };
     let next_request = Arc::new(AtomicU64::new(0));
     let mut actors = JoinSet::new();
     for (id, policy) in policies_by_id {
         let peers = match &topology {
-            None => senders.clone(),
+            None => senders.keys().map(|to| (to.clone(), link(to))).collect(),
             Some(topology) => topology
                 .get(&id)
                 .into_iter()
                 .flatten()
-                .map(|to| (to.clone(), senders[to].clone()))
+                .map(|to| (to.clone(), link(to)))
                 .collect(),
         };
         let outbox = Outbox::new(senders[&id].clone(), peers);
         let inbox = inboxes.remove(&id).expect("every actor has an inbox");
-        // A child token lets the actor stop itself without stopping the
-        // others, while the episode's own token still stops everyone.
         let actor = Actor::new(
             id.clone(),
             policy,
             inbox,
             outbox,
-            shutdown.child_token(),
+            tokens[&id].clone(),
             log.clone(),
             next_request.clone(),
         );
@@ -1001,6 +1037,54 @@ mod tests {
             report.contains("asker") && report.contains("echo"),
             "{report}"
         );
+    }
+
+    /// Stops the named actor as soon as it starts, then shuts itself down.
+    struct Stopper(ActorId);
+
+    #[async_trait]
+    impl Policy for Stopper {
+        type Message = String;
+
+        async fn start(&mut self, context: &Context<String>) -> Result<()> {
+            context.stop(&self.0)?;
+            context.shutdown();
+            Ok(())
+        }
+
+        async fn reply(
+            &mut self,
+            _from: ActorId,
+            _message: String,
+            _context: &Context<String>,
+        ) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_actor_can_stop_another_it_may_address() {
+        // The mute actor never shuts itself down, so without being
+        // stopped the episode would run to its time limit.
+        let actors = cast![("stopper", Stopper("mute".to_string())), ("mute", mute())];
+
+        let ending = episode(actors, None, PATIENCE, None).await.unwrap();
+
+        assert_eq!(ending, Ending::Finished);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_actor_cannot_stop_one_it_may_not_address() {
+        let actors = cast![("stopper", Stopper("mute".to_string())), ("mute", mute())];
+        // The stopper may address no one.
+        let topology =
+            HashMap::from([("mute".to_string(), HashSet::from(["stopper".to_string()]))]);
+
+        let error = episode(actors, Some(topology), PATIENCE, None)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("mute"), "{error}");
     }
 
     /// Panics as soon as it starts.
