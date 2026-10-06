@@ -19,6 +19,7 @@ pub mod config;
 pub mod environment;
 pub mod state;
 pub mod variant;
+mod rl;
 
 pub type PlayerId = ActorId;
 
