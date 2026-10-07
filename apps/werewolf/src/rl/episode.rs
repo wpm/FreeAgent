@@ -192,7 +192,11 @@ mod tests {
         }
     }
 
-    fn episode(
+    /// An episode of [`Reporter`]s named `ids`, those in `failing` set to
+    /// refuse to start, along with the channel on which every reporter
+    /// announces that it was started. None of the actors may send to or
+    /// shut down any other.
+    fn episode_of(
         ids: &[&str],
         failing: &[&str],
     ) -> (Episode<Idle, Reporter>, UnboundedReceiver<ActorId>) {
@@ -220,7 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_starts_every_actor_then_waits_for_them_to_finish() {
-        let (episode, mut starts) = episode(&["ann", "bob"], &[]);
+        let (episode, mut starts) = episode_of(&["ann", "bob"], &[]);
         let stops: Vec<_> = episode
             .actors
             .values()
@@ -244,14 +248,14 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn run_gives_up_after_patience() {
-        let (episode, _starts) = episode(&["ann", "bob"], &[]);
+        let (episode, _starts) = episode_of(&["ann", "bob"], &[]);
         let error = episode.run(Duration::from_secs(5)).await.unwrap_err();
         assert!(error.to_string().contains("patience"), "{error}");
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_failing_actor_ends_the_episode_with_its_error() {
-        let (episode, _starts) = episode(&["ann", "bob"], &["bob"]);
+        let (episode, _starts) = episode_of(&["ann", "bob"], &["bob"]);
         let error = episode.run(Duration::from_secs(60)).await.unwrap_err();
         let text = format!("{error:#}");
         assert!(text.contains("actor bob failed"), "{text}");
