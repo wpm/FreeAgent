@@ -23,6 +23,9 @@ pub(super) struct Actor<L: Lifecycle, B: Behavior> {
     /// How this Actor handles incoming Messages. It owns the [`Context`]
     /// through which it reaches other actors.
     pub(super) behavior: B,
+    /// This Actor's one-time signal to the episode that it is initialized
+    /// and running its message loop.
+    pub(super) ready: oneshot::Sender<()>,
     /// The episode's one-time signal that every actor is running.
     pub(super) start: oneshot::Receiver<()>,
     /// The channel on which this Actor receives incoming Messages.
@@ -33,15 +36,25 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
     /// Initialize, then handle the start signal and observations until shut
     /// down or until every sender to this actor's inbox is gone, then clean
     /// up.
+    ///
+    /// An actor shut down while still initializing stops at once, without
+    /// cleaning up, since there is no telling how far initialization got.
     pub(super) async fn run(mut self) -> anyhow::Result<()> {
-        self.lifecycle.initialize().await?;
+        let shutdown = self.behavior.context().shutdown.mine.clone();
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => return Ok(()),
+            initialized = self.lifecycle.initialize() => initialized?,
+        }
+        // The episode may already be gone, in which case no one is waiting.
+        let _ = self.ready.send(());
         // A oneshot receiver panics if polled after it completes, so it is
         // taken out of the select once it has fired.
         let mut start = Some(self.start);
         loop {
             tokio::select! {
                 biased;
-                _ = self.behavior.context().shutdown.mine.cancelled() => break,
+                _ = shutdown.cancelled() => break,
                 started = async { start.as_mut().expect("guarded by the branch condition").await },
                     if start.is_some() =>
                 {
@@ -284,6 +297,7 @@ mod tests {
         can_stop: HashMap<ActorId, CancellationToken>,
     ) -> Rig {
         let (sender, inbox) = unbounded_channel();
+        let (ready, _) = oneshot::channel();
         let (start, started) = oneshot::channel();
         let stop = CancellationToken::new();
         let context = Context {
@@ -300,6 +314,7 @@ mod tests {
         let actor = Actor {
             lifecycle: Idle,
             behavior: Echo { context },
+            ready,
             start: started,
             inbox,
         };
