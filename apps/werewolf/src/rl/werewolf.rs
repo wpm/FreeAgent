@@ -1,12 +1,43 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 type ActorId = String;
-pub trait Message: Debug {}
+trait Message: Debug {}
+
+fn episode<B: Behavior>(behaviors: HashMap<ActorId, (B, HashSet<ActorId>)>) -> Result<()> {
+    let channels: HashMap<
+        ActorId,
+        (
+            UnboundedSender<Observation<B::Message>>,
+            UnboundedReceiver<Observation<B::Message>>,
+        ),
+    > = behaviors
+        .keys()
+        .map(|actor_id| (actor_id.clone(), unbounded_channel()))
+        .collect();
+    // One directory of senders, shared by everyone. Each actor's outbox is a
+    // clone of it, so an actor can message itself like any other peer.
+    let directory: HashMap<ActorId, UnboundedSender<Observation<B::Message>>> = channels
+        .iter()
+        .map(|(actor_id, (sender, _))| (actor_id.clone(), sender.clone()))
+        .collect();
+    let senders: HashMap<ActorId, HashMap<ActorId, UnboundedSender<Observation<B::Message>>>> =
+        channels
+            .keys()
+            .map(|actor_id| (actor_id.clone(), directory.clone()))
+            .collect();
+    Ok(())
+}
+
+// struct Outbox<M: Message> {
+//     senders: HashMap<ActorId, UnboundedSender<Observation<M>>>,
+//     shutdown: HashMap<ActorId, CancellationToken>,
+// }
+
 struct Actor<B: Behavior> {
     id: ActorId,
     behavior: B,
@@ -57,8 +88,7 @@ trait Behavior {
 }
 
 struct Outbox<M: Message> {
-    loopback: UnboundedSender<Action<M>>,
-    sender: HashMap<ActorId, UnboundedSender<Action<M>>>,
+    senders: HashMap<ActorId, UnboundedSender<Observation<M>>>,
     shutdown: HashMap<ActorId, CancellationToken>,
 }
 
@@ -69,11 +99,11 @@ enum Observation<M: Message> {
     Request(Request<M>),
 }
 
-/// Messages an [`Actor`](Actor) sends.
+/// Messages an [`Actor`](Actor) sends. A reply is not one of these: it goes
+/// straight back down the request's own channel.
 #[derive(Debug)]
 enum Action<M: Message> {
     Broadcast(M),
-    Reply(Reply<M>),
 }
 
 type RequestId = u64;
