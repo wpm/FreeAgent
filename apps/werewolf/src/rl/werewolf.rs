@@ -13,21 +13,52 @@ struct Episode<B: Behavior> {
 }
 impl<B: Behavior> Episode<B> {
     fn new(init: HashMap<ActorId, (B, HashSet<ActorId>)>) -> Self {
-        let (behavior, topology): (HashMap<ActorId, B>, HashMap<ActorId, HashSet<ActorId>>) = init
+        // First pass: give every actor a channel and a shutdown token. The
+        // behavior and the receiver are unique, so they stay together in one
+        // map. The senders and tokens are clonable, so they go into lookup
+        // tables that every outbox can copy.
+        let mut senders = HashMap::new();
+        let mut shutdowns = HashMap::new();
+        let staged: HashMap<
+            ActorId,
+            (
+                B,
+                HashSet<ActorId>,
+                UnboundedReceiver<Observation<B::Message>>,
+            ),
+        > = init
             .into_iter()
-            .map(|(id, (b, peers))| ((id.clone(), b), (id, peers)))
-            .unzip();
-        let (senders, receivers): (
-            HashMap<ActorId, UnboundedSender<Observation<B::Message>>>,
-            HashMap<ActorId, UnboundedReceiver<Observation<B::Message>>>,
-        ) = behavior
-            .keys()
-            .map(|id| {
-                let (sender, receiver) = unbounded_channel();
-                ((id.clone(), sender), (id.clone(), receiver))
+            .map(|(id, (behavior, peers))| {
+                let (tx, rx) = unbounded_channel();
+                senders.insert(id.clone(), tx);
+                shutdowns.insert(id.clone(), CancellationToken::new());
+                (id, (behavior, peers, rx))
             })
-            .unzip();
-        todo!()
+            .collect();
+        // Second pass: now that the directory of senders is complete, build
+        // each actor around its behavior and inbox.
+        let actors = staged
+            .into_iter()
+            .map(|(id, (behavior, _peers, inbox))| {
+                let loopback = senders[&id].clone();
+                let outbox = Outbox {
+                    loopback,
+                    senders: senders.clone(),
+                };
+                let shutdown = shutdowns[&id].clone();
+                (
+                    id,
+                    Actor {
+                        behavior,
+                        inbox,
+                        outbox,
+                        shutdown,
+                        shutdowns: shutdowns.clone(),
+                    },
+                )
+            })
+            .collect();
+        Self { actors }
     }
     fn run() -> Result<()> {
         todo!()
@@ -35,10 +66,16 @@ impl<B: Behavior> Episode<B> {
 }
 
 struct Actor<B: Behavior> {
+    /// How this Actor handles startup and incoming Messages.
     behavior: B,
+    /// The channel on which this Actor receives incoming Messages.
     inbox: UnboundedReceiver<Observation<B::Message>>,
+    /// The channels on which this Actor sends Messages to other Actors.
     outbox: Outbox<B::Message>,
+    /// Token other Actors use to shut down this Actor..
     shutdown: CancellationToken,
+    /// Tokens the Actor uses to shutdown other Actors.
+    shutdowns: HashMap<ActorId, CancellationToken>,
 }
 
 impl<B: Behavior> Actor<B> {
@@ -83,9 +120,10 @@ trait Behavior {
 }
 
 struct Outbox<M: Message> {
+    /// Channel on which an Actor sends a Message to itself.
     loopback: UnboundedSender<Observation<M>>,
+    /// Channels on which an Actor sends Messages to other Actors.
     senders: HashMap<ActorId, UnboundedSender<Observation<M>>>,
-    shutdown: HashMap<ActorId, CancellationToken>,
 }
 
 /// Messages an [`Actor`](Actor) receives.
