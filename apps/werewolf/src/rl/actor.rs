@@ -40,15 +40,16 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
     /// down or until every sender to this actor's inbox is gone, then clean
     /// up.
     ///
-    /// An actor shut down while still initializing stops at once, without
-    /// cleaning up, since there is no telling how far initialization got.
+    /// Shutdown takes effect at once. A step in progress is abandoned at its
+    /// next await, and nothing else waiting in the inbox is taken in. An
+    /// actor shut down while still initializing stops without cleaning up,
+    /// since there is no telling how far initialization got.
     pub(super) async fn run(mut self) -> anyhow::Result<()> {
         let shutdown = self.behavior.context().shutdown.mine.clone();
-        tokio::select! {
-            biased;
-            _ = shutdown.cancelled() => return Ok(()),
-            initialized = self.lifecycle.initialize() => initialized?,
-        }
+        let Some(initialized) = unless_stopped(&shutdown, self.lifecycle.initialize()).await else {
+            return Ok(());
+        };
+        initialized?;
         // The episode may already be gone, in which case no one is waiting.
         let _ = self.ready.send(());
         // A oneshot receiver panics if polled after it completes, so it is
@@ -63,24 +64,50 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
                 {
                     start = None;
                     match started {
-                        Ok(()) => self.behavior.start().await?,
+                        Ok(()) => {
+                            let Some(opened) = unless_stopped(&shutdown, self.behavior.start()).await else {
+                                break;
+                            };
+                            opened?;
+                        }
                         Err(_) => break, // The episode is gone.
                     }
                 }
                 observation = self.inbox.recv() => match observation {
                     None => break, // Every sender is gone.
                     Some(Observation::Broadcast(message)) => {
-                        self.behavior.policy(&message).await?;
+                        let step = self.behavior.policy(&message);
+                        let Some(acted) = unless_stopped(&shutdown, step).await else {
+                            break;
+                        };
+                        acted?;
                     }
                     Some(Observation::Request(request)) => {
-                        let action = self.behavior.policy(request.message()).await?;
-                        request.reply(action).expect("failed to send reply");
+                        let step = self.behavior.policy(request.message());
+                        let Some(acted) = unless_stopped(&shutdown, step).await else {
+                            break;
+                        };
+                        // The asker may have stopped waiting, which is no
+                        // fault of this actor.
+                        let _ = request.reply(acted?);
                     }
                 },
             }
         }
         self.lifecycle.clean_up().await?;
         Ok(())
+    }
+}
+
+/// Run `step`, unless `shutdown` fires first.
+async fn unless_stopped<T>(
+    shutdown: &CancellationToken,
+    step: impl Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        _ = shutdown.cancelled() => None,
+        outcome = step => Some(outcome),
     }
 }
 
@@ -200,9 +227,9 @@ impl<M: Message, P> Context<M, P> {
         }
     }
 
-    /// Shut this actor down. The step that calls this still runs to
-    /// completion, and a reply it returns is still delivered. The actor then
-    /// stops without taking anything else from its inbox.
+    /// Shut this actor down. The step that calls this is abandoned at its
+    /// next await, so a behavior with last words says them first. The actor
+    /// then stops without taking anything else from its inbox.
     pub(super) fn shutdown(&self) {
         self.shutdown.mine.cancel();
     }
@@ -270,7 +297,11 @@ pub(super) enum Observation<M: Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Semaphore;
     use tokio::sync::mpsc::unbounded_channel;
+    use tokio::time::{sleep, timeout};
 
     #[derive(Debug, Clone, PartialEq)]
     struct Note(&'static str);
@@ -280,9 +311,11 @@ mod tests {
     #[async_trait]
     impl Lifecycle for Idle {}
 
-    /// A behavior that answers every request with the message it was sent.
+    /// A behavior that answers every request with the message it was sent,
+    /// after waiting for a permit from its gate if it has one.
     struct Echo {
         context: Context<Note>,
+        gate: Option<Arc<Semaphore>>,
     }
     #[async_trait]
     impl Behavior for Echo {
@@ -292,6 +325,9 @@ mod tests {
             &self.context
         }
         async fn policy(&self, observation: &Note) -> anyhow::Result<Vec<Note>> {
+            if let Some(gate) = &self.gate {
+                gate.acquire().await?.forget();
+            }
             Ok(vec![observation.clone()])
         }
     }
@@ -334,7 +370,10 @@ mod tests {
         };
         let actor = Actor {
             lifecycle: Idle,
-            behavior: Echo { context },
+            behavior: Echo {
+                context,
+                gate: None,
+            },
             ready,
             start: started,
             inbox,
@@ -504,5 +543,80 @@ mod tests {
         ann.context().shutdown();
 
         assert!(ann.stop.is_cancelled());
+    }
+
+    /// A rig whose actor blocks in every step until the gate gives a permit.
+    fn gated_rig(name: &str) -> (Rig, Arc<Semaphore>) {
+        let gate = Arc::new(Semaphore::new(0));
+        let mut rig = rig(name, HashMap::new(), HashMap::new());
+        rig.actor.behavior.gate = Some(Arc::clone(&gate));
+        (rig, gate)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_kill_stops_an_actor_in_the_middle_of_a_step() {
+        let (bob, _gate) = gated_rig("bob");
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        bob.sender
+            .send(Observation::Broadcast(Note("take your time")))
+            .unwrap();
+        // Let Bob take the message and block in its policy.
+        sleep(Duration::from_secs(1)).await;
+
+        bob.stop.cancel();
+
+        let stopped = timeout(Duration::from_secs(5), running).await;
+        stopped.expect("bob should stop").unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_recipient_killed_mid_step_is_left_out_of_the_replies() {
+        let (bob, _gate) = gated_rig("bob");
+        let ann = rig(
+            "ann",
+            HashMap::from([(id("bob"), bob.sender.clone())]),
+            HashMap::new(),
+        );
+        let bob_running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        let asking = tokio::spawn(async move {
+            ann.context()
+                .request(Note("well?"), HashSet::from([id("bob")]))
+                .await
+        });
+        sleep(Duration::from_secs(1)).await;
+
+        bob.stop.cancel();
+
+        let replies = asking.await.unwrap().unwrap();
+        assert!(replies.is_empty(), "{replies:?}");
+        bob_running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_responder_whose_asker_gave_up_carries_on() {
+        let (bob, gate) = gated_rig("bob");
+        let ann = rig(
+            "ann",
+            HashMap::from([(id("bob"), bob.sender.clone())]),
+            HashMap::new(),
+        );
+        let bob_running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        let asking = tokio::spawn(async move {
+            ann.context()
+                .request(Note("well?"), HashSet::from([id("bob")]))
+                .await
+        });
+        sleep(Duration::from_secs(1)).await;
+
+        // Ann gives up, dropping her reply channel, and then Bob answers.
+        asking.abort();
+        gate.add_permits(1);
+        sleep(Duration::from_secs(1)).await;
+
+        bob.stop.cancel();
+        bob_running.await.unwrap().unwrap();
     }
 }
