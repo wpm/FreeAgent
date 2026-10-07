@@ -80,7 +80,6 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
     where
         L: 'static,
         B: 'static,
-        B::Message: Send + 'static,
     {
         let stops: Vec<_> = self
             .actors
@@ -158,7 +157,7 @@ mod tests {
     use async_trait::async_trait;
     use tokio::sync::mpsc::UnboundedSender;
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     struct Note;
     impl Message for Note {}
 
