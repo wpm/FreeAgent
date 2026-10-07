@@ -8,38 +8,33 @@ use tokio_util::sync::CancellationToken;
 type ActorId = String;
 trait Message: Debug {}
 
-fn episode<B: Behavior>(behaviors: HashMap<ActorId, (B, HashSet<ActorId>)>) -> Result<()> {
-    let channels: HashMap<
-        ActorId,
-        (
-            UnboundedSender<Observation<B::Message>>,
-            UnboundedReceiver<Observation<B::Message>>,
-        ),
-    > = behaviors
-        .keys()
-        .map(|actor_id| (actor_id.clone(), unbounded_channel()))
-        .collect();
-    // One directory of senders, shared by everyone. Each actor's outbox is a
-    // clone of it, so an actor can message itself like any other peer.
-    let directory: HashMap<ActorId, UnboundedSender<Observation<B::Message>>> = channels
-        .iter()
-        .map(|(actor_id, (sender, _))| (actor_id.clone(), sender.clone()))
-        .collect();
-    let senders: HashMap<ActorId, HashMap<ActorId, UnboundedSender<Observation<B::Message>>>> =
-        channels
+struct Episode<B: Behavior> {
+    actors: HashMap<ActorId, Actor<B>>,
+}
+impl<B: Behavior> Episode<B> {
+    fn new(init: HashMap<ActorId, (B, HashSet<ActorId>)>) -> Self {
+        let (behavior, topology): (HashMap<ActorId, B>, HashMap<ActorId, HashSet<ActorId>>) = init
+            .into_iter()
+            .map(|(id, (b, peers))| ((id.clone(), b), (id, peers)))
+            .unzip();
+        let (senders, receivers): (
+            HashMap<ActorId, UnboundedSender<Observation<B::Message>>>,
+            HashMap<ActorId, UnboundedReceiver<Observation<B::Message>>>,
+        ) = behavior
             .keys()
-            .map(|actor_id| (actor_id.clone(), directory.clone()))
-            .collect();
-    Ok(())
+            .map(|id| {
+                let (sender, receiver) = unbounded_channel();
+                ((id.clone(), sender), (id.clone(), receiver))
+            })
+            .unzip();
+        todo!()
+    }
+    fn run() -> Result<()> {
+        todo!()
+    }
 }
 
-// struct Outbox<M: Message> {
-//     senders: HashMap<ActorId, UnboundedSender<Observation<M>>>,
-//     shutdown: HashMap<ActorId, CancellationToken>,
-// }
-
 struct Actor<B: Behavior> {
-    id: ActorId,
     behavior: B,
     inbox: UnboundedReceiver<Observation<B::Message>>,
     outbox: Outbox<B::Message>,
@@ -88,6 +83,7 @@ trait Behavior {
 }
 
 struct Outbox<M: Message> {
+    loopback: UnboundedSender<Observation<M>>,
     senders: HashMap<ActorId, UnboundedSender<Observation<M>>>,
     shutdown: HashMap<ActorId, CancellationToken>,
 }
