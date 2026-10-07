@@ -17,9 +17,9 @@ use serde::{Deserialize, Serialize};
 pub mod agent;
 pub mod config;
 pub mod environment;
+mod rl;
 pub mod state;
 pub mod variant;
-mod rl;
 
 pub type PlayerId = ActorId;
 

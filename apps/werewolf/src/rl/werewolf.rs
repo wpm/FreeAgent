@@ -11,49 +11,47 @@ trait Message: Debug {}
 struct Episode<B: Behavior> {
     actors: HashMap<ActorId, Actor<B>>,
 }
+struct ActorInit<B: Behavior> {
+    behavior: B,
+    can_send_to: HashSet<ActorId>,
+    can_shut_down: HashSet<ActorId>,
+}
 impl<B: Behavior> Episode<B> {
-    fn new(init: HashMap<ActorId, (B, HashSet<ActorId>)>) -> Self {
+    fn new(init: HashMap<ActorId, ActorInit<B>>) -> Self {
         // First pass: give every actor a channel and a shutdown token. The
-        // behavior and the receiver are unique, so they stay together in one
+        // init and the receiver are unique, so they stay together in one
         // map. The senders and tokens are clonable, so they go into lookup
-        // tables that every outbox can copy.
+        // tables that each actor copies the permitted entries from.
         let mut senders = HashMap::new();
         let mut shutdowns = HashMap::new();
-        let staged: HashMap<
-            ActorId,
-            (
-                B,
-                HashSet<ActorId>,
-                UnboundedReceiver<Observation<B::Message>>,
-            ),
-        > = init
-            .into_iter()
-            .map(|(id, (behavior, peers))| {
-                let (tx, rx) = unbounded_channel();
-                senders.insert(id.clone(), tx);
-                shutdowns.insert(id.clone(), CancellationToken::new());
-                (id, (behavior, peers, rx))
-            })
-            .collect();
-        // Second pass: now that the directory of senders is complete, build
-        // each actor around its behavior and inbox.
+        let staged: HashMap<ActorId, (ActorInit<B>, UnboundedReceiver<Observation<B::Message>>)> =
+            init.into_iter()
+                .map(|(id, init)| {
+                    let (tx, rx) = unbounded_channel();
+                    senders.insert(id.clone(), tx);
+                    shutdowns.insert(id.clone(), CancellationToken::new());
+                    (id, (init, rx))
+                })
+                .collect();
+        // Second pass: now that the directories are complete, build each
+        // actor with only the senders and tokens its init allows.
         let actors = staged
             .into_iter()
-            .map(|(id, (behavior, _peers, inbox))| {
-                let loopback = senders[&id].clone();
+            .map(|(id, (init, inbox))| {
                 let outbox = Outbox {
-                    loopback,
-                    senders: senders.clone(),
+                    loopback: senders[&id].clone(),
+                    senders: pick(&senders, &init.can_send_to),
                 };
                 let shutdown = shutdowns[&id].clone();
+                let shutdowns = pick(&shutdowns, &init.can_shut_down);
                 (
                     id,
                     Actor {
-                        behavior,
+                        behavior: init.behavior,
                         inbox,
                         outbox,
                         shutdown,
-                        shutdowns: shutdowns.clone(),
+                        shutdowns,
                     },
                 )
             })
@@ -63,6 +61,23 @@ impl<B: Behavior> Episode<B> {
     fn run() -> Result<()> {
         todo!()
     }
+}
+
+/// The entries of `directory` named in `allowed`. Naming an actor that does
+/// not exist is a mistake in the episode's init, so it panics.
+fn pick<V: Clone>(
+    directory: &HashMap<ActorId, V>,
+    allowed: &HashSet<ActorId>,
+) -> HashMap<ActorId, V> {
+    allowed
+        .iter()
+        .map(|id| {
+            let v = directory
+                .get(id)
+                .unwrap_or_else(|| panic!("init names unknown actor {id:?}"));
+            (id.clone(), v.clone())
+        })
+        .collect()
 }
 
 struct Actor<B: Behavior> {
