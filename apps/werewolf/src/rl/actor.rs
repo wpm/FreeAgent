@@ -1,5 +1,5 @@
 use crate::rl::message::{Message, Request};
-use anyhow::Context;
+use anyhow::{Context as _, bail};
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -10,7 +10,9 @@ pub(super) type ActorId = String;
 
 pub(super) struct ActorInit<L: Lifecycle, B: Behavior> {
     pub(super) lifecycle: L,
-    pub(super) behavior: B,
+    /// Builds the behavior once its [`Context`] exists, which is not until
+    /// the episode has opened every actor's channels.
+    pub(super) behavior: Box<dyn FnOnce(Context<B::Message>) -> B + Send>,
     pub(super) can_send_to: HashSet<ActorId>,
     pub(super) can_shut_down: HashSet<ActorId>,
 }
@@ -18,16 +20,13 @@ pub(super) struct ActorInit<L: Lifecycle, B: Behavior> {
 pub(super) struct Actor<L: Lifecycle, B: Behavior> {
     /// How this Actor handles startup and shutdown.
     pub(super) lifecycle: L,
-    /// How this Actor handles incoming Messages.
+    /// How this Actor handles incoming Messages. It owns the [`Context`]
+    /// through which it reaches other actors.
     pub(super) behavior: B,
     /// The episode's one-time signal that every actor is running.
     pub(super) start: oneshot::Receiver<()>,
     /// The channel on which this Actor receives incoming Messages.
     pub(super) inbox: UnboundedReceiver<Observation<B::Message>>,
-    /// The channels on which this Actor sends Messages to other Actors.
-    pub(super) outbox: Outbox<B::Message>,
-    /// Tokens on which this Actor is shut down, and shuts down others.
-    pub(super) shutdown: Shutdown,
 }
 
 impl<L: Lifecycle, B: Behavior> Actor<L, B> {
@@ -42,7 +41,7 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
         loop {
             tokio::select! {
                 biased;
-                _ = self.shutdown.mine.cancelled() => break,
+                _ = self.behavior.context().shutdown.mine.cancelled() => break,
                 started = async { start.as_mut().expect("guarded by the branch condition").await },
                     if start.is_some() =>
                 {
@@ -67,15 +66,43 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
         self.lifecycle.clean_up().await?;
         Ok(())
     }
+}
 
+/// The ways out of an [`Actor`]: what a [`Behavior`] may do besides answer.
+///
+/// A behavior owns one of these and nothing else of the actor. In particular
+/// it cannot reach the inbox, so it cannot take the next message out of
+/// turn.
+pub(super) struct Context<M: Message> {
+    /// This actor's name, as the other actors know it.
+    pub(super) id: ActorId,
+    /// The channels on which this Actor sends Messages.
+    pub(super) outbox: Outbox<M>,
+    /// Tokens on which this Actor is shut down, and shuts down others.
+    pub(super) shutdown: Shutdown,
+}
+
+impl<M: Message> Context<M> {
     /// Broadcast `message` to every actor this one may send to. An actor
     /// that has already stopped is skipped.
-    pub(super) fn send(&self, message: B::Message) -> anyhow::Result<()> {
+    pub(super) fn send(&self, message: M) -> anyhow::Result<()> {
         for sender in self.outbox.others.values() {
             // A failed send means the recipient's inbox is gone.
             let _ = sender.send(Observation::Broadcast(message.clone()));
         }
         Ok(())
+    }
+
+    /// Leave `message` in this actor's own inbox, to be handled in a later
+    /// step. This is fire and forget: the only way an actor may message
+    /// itself, since it cannot take a step while it is waiting for one to
+    /// finish.
+    pub(super) fn note(&self, message: M) -> anyhow::Result<()> {
+        self.outbox
+            .loopback
+            .send(Observation::Broadcast(message))
+            .ok()
+            .context("this actor's own inbox is gone")
     }
 
     /// Ask every actor in `to` the same thing and collect their replies. A
@@ -85,17 +112,26 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
     /// # Errors
     ///
     /// Fails, sending nothing, if any recipient is not an actor this one
-    /// may send to.
+    /// may send to, or is this actor itself, which could never answer.
     pub(super) async fn request(
         &self,
-        message: B::Message,
+        message: M,
         to: HashSet<ActorId>,
-    ) -> anyhow::Result<HashMap<ActorId, Vec<B::Message>>> {
+    ) -> anyhow::Result<HashMap<ActorId, Vec<M>>> {
+        if to.contains(&self.id) {
+            bail!(
+                "{} cannot request from itself: it would wait forever",
+                self.id
+            );
+        }
         let senders = to
             .iter()
             .map(|id| {
                 self.outbox.others.get_key_value(id).with_context(|| {
-                    format!("cannot request from {id}: not an actor it may send to")
+                    format!(
+                        "{} cannot request from {id}: not an actor it may send to",
+                        self.id
+                    )
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -115,13 +151,47 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
         }
         Ok(replies)
     }
+
+    /// Stop another actor, without its cooperation.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `who` is not an actor this one may shut down.
+    pub(super) fn stop(&self, who: &ActorId) -> anyhow::Result<()> {
+        match self.shutdown.others.get(who) {
+            Some(token) => {
+                token.cancel();
+                Ok(())
+            }
+            None => bail!(
+                "{} cannot stop {who}: not an actor it may shut down",
+                self.id
+            ),
+        }
+    }
+
+    /// Shut this actor down. The step that calls this still runs to
+    /// completion, and a reply it returns is still delivered. The actor then
+    /// stops without taking anything else from its inbox.
+    pub(super) fn shutdown(&self) {
+        self.shutdown.mine.cancel();
+    }
 }
 
+/// How an actor maps what it observes to what it does. The signature of
+/// [`policy`](Behavior::policy) is the reinforcement-learning one: an
+/// observation in, actions out. Anything else the behavior wants to say,
+/// such as who it is, goes inside its messages.
+///
 /// Actors run on a multi-threaded runtime, so a behavior has to be shareable
 /// across threads.
 #[async_trait]
 pub(super) trait Behavior: Send + Sync {
     type Message: Message;
+    /// The ways out of this actor, handed to the behavior when it was built.
+    fn context(&self) -> &Context<Self::Message>;
+    /// Handle `observation`. The result is the reply if the observation was
+    /// a request, and is ignored if it was a broadcast.
     async fn policy(&self, observation: &Self::Message) -> anyhow::Result<Vec<Self::Message>>;
     /// Called once every actor in the episode is running. This is where an
     /// actor with an opening move makes it.
@@ -165,13 +235,6 @@ pub(super) enum Observation<M: Message> {
     Request(Request<M>),
 }
 
-/// Messages an [`Actor`](Actor) sends. A reply is not one of these: it goes
-/// straight back down the request's own channel.
-#[derive(Debug)]
-enum Action<M: Message> {
-    Broadcast(M),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,10 +249,15 @@ mod tests {
     impl Lifecycle for Idle {}
 
     /// A behavior that answers every request with the message it was sent.
-    struct Echo;
+    struct Echo {
+        context: Context<Note>,
+    }
     #[async_trait]
     impl Behavior for Echo {
         type Message = Note;
+        fn context(&self) -> &Context<Note> {
+            &self.context
+        }
         async fn policy(&self, observation: &Note) -> anyhow::Result<Vec<Note>> {
             Ok(vec![observation.clone()])
         }
@@ -204,23 +272,36 @@ mod tests {
         stop: CancellationToken,
     }
 
-    fn rig(others: HashMap<ActorId, UnboundedSender<Observation<Note>>>) -> Rig {
+    impl Rig {
+        fn context(&self) -> &Context<Note> {
+            self.actor.behavior.context()
+        }
+    }
+
+    fn rig(
+        name: &str,
+        others: HashMap<ActorId, UnboundedSender<Observation<Note>>>,
+        can_stop: HashMap<ActorId, CancellationToken>,
+    ) -> Rig {
         let (sender, inbox) = unbounded_channel();
         let (start, started) = oneshot::channel();
         let stop = CancellationToken::new();
-        let actor = Actor {
-            lifecycle: Idle,
-            behavior: Echo,
-            start: started,
-            inbox,
+        let context = Context {
+            id: id(name),
             outbox: Outbox {
                 loopback: sender.clone(),
                 others,
             },
             shutdown: Shutdown {
                 mine: stop.clone(),
-                others: HashMap::new(),
+                others: can_stop,
             },
+        };
+        let actor = Actor {
+            lifecycle: Idle,
+            behavior: Echo { context },
+            start: started,
+            inbox,
         };
         Rig {
             actor,
@@ -238,9 +319,13 @@ mod tests {
     async fn send_broadcasts_to_every_actor_it_may_send_to() {
         let (bob, mut bob_inbox) = unbounded_channel();
         let (cat, mut cat_inbox) = unbounded_channel();
-        let ann = rig(HashMap::from([(id("bob"), bob), (id("cat"), cat)]));
+        let ann = rig(
+            "ann",
+            HashMap::from([(id("bob"), bob), (id("cat"), cat)]),
+            HashMap::new(),
+        );
 
-        ann.actor.send(Note("hello")).unwrap();
+        ann.context().send(Note("hello")).unwrap();
 
         for inbox in [&mut bob_inbox, &mut cat_inbox] {
             let heard = inbox.recv().await.unwrap();
@@ -252,20 +337,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn note_lands_in_the_actors_own_inbox() {
+        let mut ann = rig("ann", HashMap::new(), HashMap::new());
+
+        ann.context().note(Note("remember this")).unwrap();
+
+        let heard = ann.actor.inbox.recv().await.unwrap();
+        assert!(
+            matches!(heard, Observation::Broadcast(Note("remember this"))),
+            "{heard:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn request_collects_a_reply_from_every_recipient() {
-        let bob = rig(HashMap::new());
-        let cat = rig(HashMap::new());
-        let ann = rig(HashMap::from([
-            (id("bob"), bob.sender.clone()),
-            (id("cat"), cat.sender.clone()),
-        ]));
+        let bob = rig("bob", HashMap::new(), HashMap::new());
+        let cat = rig("cat", HashMap::new(), HashMap::new());
+        let ann = rig(
+            "ann",
+            HashMap::from([
+                (id("bob"), bob.sender.clone()),
+                (id("cat"), cat.sender.clone()),
+            ]),
+            HashMap::new(),
+        );
         let bob_running = tokio::spawn(bob.actor.run());
         let cat_running = tokio::spawn(cat.actor.run());
         bob.start.send(()).unwrap();
         cat.start.send(()).unwrap();
 
         let replies = ann
-            .actor
+            .context()
             .request(Note("who's there?"), HashSet::from([id("bob"), id("cat")]))
             .await
             .unwrap();
@@ -284,10 +386,10 @@ mod tests {
     #[tokio::test]
     async fn request_fails_without_sending_if_a_recipient_may_not_be_addressed() {
         let (bob, mut bob_inbox) = unbounded_channel();
-        let ann = rig(HashMap::from([(id("bob"), bob)]));
+        let ann = rig("ann", HashMap::from([(id("bob"), bob)]), HashMap::new());
 
         let error = ann
-            .actor
+            .context()
             .request(Note("psst"), HashSet::from([id("bob"), id("zed")]))
             .await
             .unwrap_err();
@@ -297,17 +399,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_refuses_to_ask_the_actor_itself() {
+        let ann = rig("ann", HashMap::new(), HashMap::new());
+
+        let error = ann
+            .context()
+            .request(Note("hello me"), HashSet::from([id("ann")]))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("itself"), "{error}");
+    }
+
+    #[tokio::test]
     async fn request_leaves_out_a_recipient_that_has_stopped() {
         let (bob, bob_inbox) = unbounded_channel();
-        let ann = rig(HashMap::from([(id("bob"), bob)]));
+        let ann = rig("ann", HashMap::from([(id("bob"), bob)]), HashMap::new());
         drop(bob_inbox);
 
         let replies = ann
-            .actor
+            .context()
             .request(Note("anyone?"), HashSet::from([id("bob")]))
             .await
             .unwrap();
 
         assert!(replies.is_empty(), "{replies:?}");
+    }
+
+    #[tokio::test]
+    async fn stop_cancels_an_actor_it_may_shut_down_and_refuses_others() {
+        let bob = rig("bob", HashMap::new(), HashMap::new());
+        let ann = rig(
+            "ann",
+            HashMap::new(),
+            HashMap::from([(id("bob"), bob.stop.clone())]),
+        );
+
+        ann.context().stop(&id("bob")).unwrap();
+        assert!(bob.stop.is_cancelled());
+
+        let error = ann.context().stop(&id("zed")).unwrap_err();
+        assert!(error.to_string().contains("zed"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_the_actors_own_token() {
+        let ann = rig("ann", HashMap::new(), HashMap::new());
+
+        ann.context().shutdown();
+
+        assert!(ann.stop.is_cancelled());
     }
 }

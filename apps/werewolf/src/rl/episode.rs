@@ -1,7 +1,7 @@
 use crate::rl::actor::{
-    Actor, ActorId, ActorInit, Behavior, Lifecycle, Observation, Outbox, Shutdown,
+    Actor, ActorId, ActorInit, Behavior, Context, Lifecycle, Observation, Outbox, Shutdown,
 };
-use anyhow::{Context, bail};
+use anyhow::{Context as _, bail};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -44,23 +44,24 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
             .map(|(id, (init, inbox))| {
                 let (start, started) = oneshot::channel();
                 starts.insert(id.clone(), start);
-                let outbox = Outbox {
-                    loopback: senders[&id].clone(),
-                    others: pick(&senders, &init.can_send_to),
-                };
-                let shutdown = Shutdown {
-                    mine: shutdowns[&id].clone(),
-                    others: pick(&shutdowns, &init.can_shut_down),
+                let context = Context {
+                    id: id.clone(),
+                    outbox: Outbox {
+                        loopback: senders[&id].clone(),
+                        others: pick(&senders, &init.can_send_to),
+                    },
+                    shutdown: Shutdown {
+                        mine: shutdowns[&id].clone(),
+                        others: pick(&shutdowns, &init.can_shut_down),
+                    },
                 };
                 (
                     id,
                     Actor {
                         lifecycle: init.lifecycle,
-                        behavior: init.behavior,
+                        behavior: (init.behavior)(context),
                         start: started,
                         inbox,
-                        outbox,
-                        shutdown,
                     },
                 )
             })
@@ -84,7 +85,7 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
         let stops: Vec<_> = self
             .actors
             .values()
-            .map(|actor| actor.shutdown.mine.clone())
+            .map(|actor| actor.behavior.context().shutdown.mine.clone())
             .collect();
         let mut tasks = JoinSet::new();
         for (id, actor) in self.actors {
@@ -169,21 +170,24 @@ mod tests {
     /// A behavior that reports when it is started, fails to start if told
     /// to, and otherwise never says anything.
     struct Reporter {
-        id: ActorId,
+        context: Context<Note>,
         started: UnboundedSender<ActorId>,
         fails: bool,
     }
     #[async_trait]
     impl Behavior for Reporter {
         type Message = Note;
+        fn context(&self) -> &Context<Note> {
+            &self.context
+        }
         async fn policy(&self, _observation: &Note) -> anyhow::Result<Vec<Note>> {
             Ok(vec![])
         }
         async fn start(&self) -> anyhow::Result<()> {
             if self.fails {
-                bail!("{} refuses to start", self.id);
+                bail!("{} refuses to start", self.context.id);
             }
-            self.started.send(self.id.clone())?;
+            self.started.send(self.context.id.clone())?;
             Ok(())
         }
     }
@@ -196,14 +200,15 @@ mod tests {
         let init = ids
             .iter()
             .map(|id| {
-                let behavior = Reporter {
-                    id: id.to_string(),
-                    started: started.clone(),
-                    fails: failing.contains(id),
-                };
+                let started = started.clone();
+                let fails = failing.contains(id);
                 let init = ActorInit {
                     lifecycle: Idle,
-                    behavior,
+                    behavior: Box::new(move |context| Reporter {
+                        context,
+                        started,
+                        fails,
+                    }),
                     can_send_to: HashSet::new(),
                     can_shut_down: HashSet::new(),
                 };
@@ -219,7 +224,7 @@ mod tests {
         let stops: Vec<_> = episode
             .actors
             .values()
-            .map(|actor| actor.shutdown.mine.clone())
+            .map(|actor| actor.behavior.context().shutdown.mine.clone())
             .collect();
         let running = tokio::spawn(episode.run(Duration::from_secs(60)));
 
