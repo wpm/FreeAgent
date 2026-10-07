@@ -23,6 +23,10 @@ impl<M: Message> Request<M> {
             .ok()
             .context("the asker stopped waiting")
     }
+
+    pub(super) fn message(&self) -> &M {
+        &self.message
+    }
 }
 
 #[derive(Debug)]
