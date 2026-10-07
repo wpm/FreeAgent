@@ -1,3 +1,4 @@
+use crate::rl::log::{Event, Logger};
 use crate::rl::message::{Message, Request};
 use anyhow::{Context as _, bail};
 use async_trait::async_trait;
@@ -12,9 +13,11 @@ pub(super) struct ActorInit<L: Lifecycle, B: Behavior> {
     pub(super) lifecycle: L,
     /// Builds the behavior once its [`Context`] exists, which is not until
     /// the episode has opened every actor's channels.
-    pub(super) behavior: Box<dyn FnOnce(Context<B::Message>) -> B + Send>,
+    pub(super) behavior: Box<dyn FnOnce(Context<B::Message, B::Payload>) -> B + Send>,
     pub(super) can_send_to: HashSet<ActorId>,
     pub(super) can_shut_down: HashSet<ActorId>,
+    /// Whether this actor gets a copy of the episode's logger.
+    pub(super) has_logger: bool,
 }
 
 pub(super) struct Actor<L: Lifecycle, B: Behavior> {
@@ -86,16 +89,30 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
 /// A behavior owns one of these and nothing else of the actor. In particular
 /// it cannot reach the inbox, so it cannot take the next message out of
 /// turn.
-pub(super) struct Context<M: Message> {
+///
+/// `P` is what this actor logs. It defaults to the message type, which is
+/// what most actors log.
+pub(super) struct Context<M: Message, P = M> {
     /// This actor's name, as the other actors know it.
     pub(super) id: ActorId,
     /// The channels on which this Actor sends Messages.
     pub(super) outbox: Outbox<M>,
     /// Tokens on which this Actor is shut down, and shuts down others.
     pub(super) shutdown: Shutdown,
+    /// Where this Actor's events go, if it has a logger at all.
+    pub(super) log: Option<Logger<P>>,
 }
 
-impl<M: Message> Context<M> {
+impl<M: Message, P> Context<M, P> {
+    /// Log `payload` as an event stamped now. Nothing happens if this actor
+    /// has no logger, or if the log has stopped listening. Logging never
+    /// fails an actor.
+    pub(super) fn log(&self, payload: P) {
+        if let Some(log) = &self.log {
+            let _ = log.send(Event::now(payload));
+        }
+    }
+
     /// Broadcast `message` to every actor this one may send to. An actor
     /// that has already stopped is skipped.
     pub(super) fn send(&self, message: M) -> anyhow::Result<()> {
@@ -201,8 +218,10 @@ impl<M: Message> Context<M> {
 #[async_trait]
 pub(super) trait Behavior: Send + Sync {
     type Message: Message;
+    /// What this behavior logs. Most often the message type.
+    type Payload: Send + 'static;
     /// The ways out of this actor, handed to the behavior when it was built.
-    fn context(&self) -> &Context<Self::Message>;
+    fn context(&self) -> &Context<Self::Message, Self::Payload>;
     /// Handle `observation`. The result is the reply if the observation was
     /// a request, and is ignored if it was a broadcast.
     async fn policy(&self, observation: &Self::Message) -> anyhow::Result<Vec<Self::Message>>;
@@ -268,6 +287,7 @@ mod tests {
     #[async_trait]
     impl Behavior for Echo {
         type Message = Note;
+        type Payload = Note;
         fn context(&self) -> &Context<Note> {
             &self.context
         }
@@ -310,6 +330,7 @@ mod tests {
                 mine: stop.clone(),
                 others: can_stop,
             },
+            log: None,
         };
         let actor = Actor {
             lifecycle: Idle,
@@ -455,6 +476,25 @@ mod tests {
 
         let error = ann.context().stop(&id("zed")).unwrap_err();
         assert!(error.to_string().contains("zed"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn log_sends_a_stamped_event_down_the_logger_if_there_is_one() {
+        let (logger, mut events) = unbounded_channel();
+        let mut ann = rig("ann", HashMap::new(), HashMap::new());
+        ann.actor.behavior.context.log = Some(logger);
+
+        ann.context().log(Note("for the record"));
+
+        let event = events.recv().await.unwrap();
+        assert_eq!(event.payload, Note("for the record"));
+    }
+
+    #[tokio::test]
+    async fn log_does_nothing_without_a_logger() {
+        let ann = rig("ann", HashMap::new(), HashMap::new());
+
+        ann.context().log(Note("into the void"));
     }
 
     #[tokio::test]

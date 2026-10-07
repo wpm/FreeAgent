@@ -1,6 +1,7 @@
 use crate::rl::actor::{
     Actor, ActorId, ActorInit, Behavior, Context, Lifecycle, Observation, Outbox, Shutdown,
 };
+use crate::rl::log::Logger;
 use anyhow::{Context as _, bail};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -19,7 +20,9 @@ struct Episode<L: Lifecycle, B: Behavior> {
 }
 
 impl<L: Lifecycle, B: Behavior> Episode<L, B> {
-    fn new(init: HashMap<ActorId, ActorInit<L, B>>) -> Self {
+    /// The actors described by `init`, wired to one another as it allows.
+    /// Those with `has_logger` get a copy of `logger`.
+    fn new(init: HashMap<ActorId, ActorInit<L, B>>, logger: Logger<B::Payload>) -> Self {
         // First pass: give every actor a channel and a shutdown token. The
         // init and the receiver are unique, so they stay together in one
         // map. The senders and tokens are clonable, so they go into lookup
@@ -59,6 +62,7 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
                         mine: shutdowns[&id].clone(),
                         others: pick(&shutdowns, &init.can_shut_down),
                     },
+                    log: init.has_logger.then(|| logger.clone()),
                 };
                 (
                     id,
@@ -192,6 +196,7 @@ fn pick<V: Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rl::log::Event;
     use crate::rl::message::Message;
     use async_trait::async_trait;
     use std::sync::Arc;
@@ -224,17 +229,20 @@ mod tests {
         }
     }
 
-    /// A behavior that reports when it is started, fails to start if told
-    /// to, and otherwise never says anything.
+    /// A behavior that reports when it is started, both to the test and to
+    /// the log, fails to start if told to, and otherwise never says
+    /// anything.
     struct Reporter {
-        context: Context<Note>,
+        context: Context<Note, ActorId>,
         started: UnboundedSender<ActorId>,
         fails: bool,
     }
     #[async_trait]
     impl Behavior for Reporter {
         type Message = Note;
-        fn context(&self) -> &Context<Note> {
+        /// A reporter logs its own name.
+        type Payload = ActorId;
+        fn context(&self) -> &Context<Note, ActorId> {
             &self.context
         }
         async fn policy(&self, _observation: &Note) -> anyhow::Result<Vec<Note>> {
@@ -244,21 +252,33 @@ mod tests {
             if self.fails {
                 bail!("{} refuses to start", self.context.id);
             }
+            self.context.log(self.context.id.clone());
             self.started.send(self.context.id.clone())?;
             Ok(())
         }
     }
 
+    /// An episode under test, with the channels the test watches it through.
+    struct Stage {
+        episode: Episode<Gated, Reporter>,
+        /// Every reporter announces here that it was started.
+        starts: UnboundedReceiver<ActorId>,
+        /// The episode's log.
+        log: UnboundedReceiver<Event<ActorId>>,
+    }
+
     /// An episode of [`Reporter`]s named `ids`, those in `failing` set to
-    /// refuse to start, along with the channel on which every reporter
-    /// announces that it was started. None of the actors may send to or
-    /// shut down any other, and each has `lifecycle(id)`.
+    /// refuse to start and those in `logging` holding the episode's logger.
+    /// None of the actors may send to or shut down any other, and each has
+    /// `lifecycle(id)`.
     fn episode_with(
         ids: &[&str],
         failing: &[&str],
+        logging: &[&str],
         lifecycle: impl Fn(&str) -> Gated,
-    ) -> (Episode<Gated, Reporter>, UnboundedReceiver<ActorId>) {
+    ) -> Stage {
         let (started, starts) = unbounded_channel();
+        let (logger, log) = unbounded_channel();
         let init = ids
             .iter()
             .map(|id| {
@@ -273,19 +293,22 @@ mod tests {
                     }),
                     can_send_to: HashSet::new(),
                     can_shut_down: HashSet::new(),
+                    has_logger: logging.contains(id),
                 };
                 (id.to_string(), init)
             })
             .collect();
-        (Episode::new(init), starts)
+        Stage {
+            episode: Episode::new(init, logger),
+            starts,
+            log,
+        }
     }
 
-    /// [`episode_with`] where every actor initializes at once.
-    fn episode_of(
-        ids: &[&str],
-        failing: &[&str],
-    ) -> (Episode<Gated, Reporter>, UnboundedReceiver<ActorId>) {
-        episode_with(ids, failing, |_| Gated::default())
+    /// [`episode_with`] where every actor initializes at once and none
+    /// holds the logger.
+    fn episode_of(ids: &[&str], failing: &[&str]) -> Stage {
+        episode_with(ids, failing, &[], |_| Gated::default())
     }
 
     fn stops<L: Lifecycle, B: Behavior>(episode: &Episode<L, B>) -> Vec<CancellationToken> {
@@ -298,7 +321,11 @@ mod tests {
 
     #[tokio::test]
     async fn run_starts_every_actor_then_waits_for_them_to_finish() {
-        let (episode, mut starts) = episode_of(&["ann", "bob"], &[]);
+        let Stage {
+            episode,
+            mut starts,
+            ..
+        } = episode_of(&["ann", "bob"], &[]);
         let stops = stops(&episode);
         let running = tokio::spawn(episode.run(Duration::from_secs(60)));
 
@@ -318,14 +345,24 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn run_gives_up_after_patience() {
-        let (episode, _starts) = episode_of(&["ann", "bob"], &[]);
+        // The reporters announce on `starts`, so it has to stay open.
+        let Stage {
+            episode,
+            starts: _starts,
+            ..
+        } = episode_of(&["ann", "bob"], &[]);
         let error = episode.run(Duration::from_secs(5)).await.unwrap_err();
         assert!(error.to_string().contains("patience"), "{error}");
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_failing_actor_ends_the_episode_with_its_error() {
-        let (episode, _starts) = episode_of(&["ann", "bob"], &["bob"]);
+        // The reporters announce on `starts`, so it has to stay open.
+        let Stage {
+            episode,
+            starts: _starts,
+            ..
+        } = episode_of(&["ann", "bob"], &["bob"]);
         let error = episode.run(Duration::from_secs(60)).await.unwrap_err();
         let text = format!("{error:#}");
         assert!(text.contains("actor bob failed"), "{text}");
@@ -336,7 +373,11 @@ mod tests {
     async fn no_actor_starts_until_every_actor_has_initialized() {
         let gate = Arc::new(Semaphore::new(0));
         let slow = Arc::clone(&gate);
-        let (episode, mut starts) = episode_with(&["ann", "bob"], &[], move |id| Gated {
+        let Stage {
+            episode,
+            mut starts,
+            ..
+        } = episode_with(&["ann", "bob"], &[], &[], move |id| Gated {
             gate: (id == "bob").then(|| Arc::clone(&slow)),
             broken: false,
         });
@@ -365,7 +406,11 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_actor_that_fails_to_initialize_fails_the_episode_before_anyone_starts() {
-        let (episode, mut starts) = episode_with(&["ann", "bob"], &[], |id| Gated {
+        let Stage {
+            episode,
+            mut starts,
+            ..
+        } = episode_with(&["ann", "bob"], &[], &[], |id| Gated {
             gate: None,
             broken: id == "bob",
         });
@@ -381,7 +426,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn patience_runs_out_while_an_actor_is_still_initializing() {
         let gate = Arc::new(Semaphore::new(0));
-        let (episode, mut starts) = episode_with(&["ann", "bob"], &[], move |id| Gated {
+        let Stage {
+            episode,
+            mut starts,
+            ..
+        } = episode_with(&["ann", "bob"], &[], &[], move |id| Gated {
             gate: (id == "bob").then(|| Arc::clone(&gate)),
             broken: false,
         });
@@ -390,5 +439,26 @@ mod tests {
 
         assert!(error.to_string().contains("patience"), "{error}");
         assert!(starts.try_recv().is_err(), "nobody should have started");
+    }
+
+    #[tokio::test]
+    async fn only_an_actor_with_the_logger_logs() {
+        let Stage {
+            episode,
+            mut starts,
+            mut log,
+        } = episode_with(&["ann", "bob"], &[], &["ann"], |_| Gated::default());
+        let stops = stops(&episode);
+        let running = tokio::spawn(episode.run(Duration::from_secs(60)));
+        starts.recv().await.unwrap();
+        starts.recv().await.unwrap();
+        for stop in stops {
+            stop.cancel();
+        }
+        running.await.unwrap().unwrap();
+
+        let event = log.recv().await.unwrap();
+        assert_eq!(event.payload, "ann");
+        assert!(log.try_recv().is_err(), "bob has no logger");
     }
 }
