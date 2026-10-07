@@ -40,10 +40,12 @@ impl<B: Behavior> Episode<B> {
             .map(|(id, (init, inbox))| {
                 let outbox = Outbox {
                     loopback: senders[&id].clone(),
-                    senders: pick(&senders, &init.can_send_to),
+                    others: pick(&senders, &init.can_send_to),
                 };
-                let shutdown = shutdowns[&id].clone();
-                let shutdowns = pick(&shutdowns, &init.can_shut_down);
+                let shutdown = Shutdown {
+                    mine: shutdowns[&id].clone(),
+                    others: pick(&shutdowns, &init.can_shut_down),
+                };
                 (
                     id,
                     Actor {
@@ -51,7 +53,6 @@ impl<B: Behavior> Episode<B> {
                         inbox,
                         outbox,
                         shutdown,
-                        shutdowns,
                     },
                 )
             })
@@ -87,10 +88,8 @@ struct Actor<B: Behavior> {
     inbox: UnboundedReceiver<Observation<B::Message>>,
     /// The channels on which this Actor sends Messages to other Actors.
     outbox: Outbox<B::Message>,
-    /// Token other Actors use to shut down this Actor..
-    shutdown: CancellationToken,
-    /// Tokens the Actor uses to shutdown other Actors.
-    shutdowns: HashMap<ActorId, CancellationToken>,
+    /// Tokens on which this Actor is shut down, and shuts down others.
+    shutdown: Shutdown,
 }
 
 impl<B: Behavior> Actor<B> {
@@ -98,7 +97,7 @@ impl<B: Behavior> Actor<B> {
         loop {
             let observation = tokio::select! {
                 biased;
-                _ = self.shutdown.cancelled() => return Ok(()),
+                _ = self.shutdown.mine.cancelled() => return Ok(()),
                 observation = self.inbox.recv() => observation,
             };
             match observation {
@@ -138,7 +137,14 @@ struct Outbox<M: Message> {
     /// Channel on which an Actor sends a Message to itself.
     loopback: UnboundedSender<Observation<M>>,
     /// Channels on which an Actor sends Messages to other Actors.
-    senders: HashMap<ActorId, UnboundedSender<Observation<M>>>,
+    others: HashMap<ActorId, UnboundedSender<Observation<M>>>,
+}
+
+struct Shutdown {
+    /// Token other Actors cancel to shut this Actor down.
+    mine: CancellationToken,
+    /// Tokens this Actor cancels to shut down other Actors.
+    others: HashMap<ActorId, CancellationToken>,
 }
 
 /// Messages an [`Actor`](Actor) receives.
