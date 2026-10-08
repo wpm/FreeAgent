@@ -82,7 +82,7 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
         if let Some(ready) = self.ready.take() {
             let _ = ready.send(());
         }
-        let mut started = false;
+        let mut start_consumed = false;
         loop {
             // Wait for whichever happens first: shutdown, the start signal,
             // or the next envelope. Each arm is `pattern = future => body`;
@@ -93,8 +93,8 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
             let flow = tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => Break(()),
-                signal = &mut self.start, if !started => {
-                    started = true;
+                signal = &mut self.start, if !start_consumed => {
+                    start_consumed = true;
                     self.open(signal).await?
                 }
                 envelope = self.mailbox.recv() => self.deliver(envelope).await?,
@@ -125,8 +125,9 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
         Ok(Continue(()))
     }
 
-    /// Hand `envelope` to the strategy: a statement to receive, a request to
-    /// answer and reply to. No envelope means every sender is gone.
+    /// Hand `envelope` to the strategy: either a statement to receive or a
+    /// request to answer and reply to. No envelope means every sender is
+    /// gone.
     ///
     /// The message loop watches for shutdown only between envelopes, so each
     /// step races shutdown on its own here.
