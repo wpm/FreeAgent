@@ -75,45 +75,44 @@ impl State {
 
     fn observation(&self, player_id: PlayerId) -> anyhow::Result<Observation> {
         let role = self.observable.roles[&player_id];
-        let mut observation = self.observable.clone();
-        match role {
+        let roles = match role {
             Role::Werewolf => {
                 // Werewolves know who all the other werewolves are.
-                let werewolves = observation
+                self.observable
                     .roles
-                    .into_iter()
-                    .filter(|(_, role)| *role == Role::Werewolf)
-                    .map(|(id, role)| (id.clone(), role))
-                    .collect();
-                observation.roles = werewolves;
+                    .iter()
+                    .filter(|(_, role)| **role == Role::Werewolf)
+                    .map(|(id, role)| (id.clone(), *role))
+                    .collect()
             }
             Role::Seer => {
                 // Seers know their own role and that of anyone they have discovered.
-                let oneself = HashMap::from([(player_id, role)]);
-                observation.roles = oneself;
-                let seer_discovered: HashMap<PlayerId, Role> = self
-                    .seer_discovered
-                    .clone()
-                    .into_iter()
-                    .map(|id| (id.clone(), self.observable.roles[&id]))
-                    .collect();
-                observation.roles.extend(seer_discovered);
+                let mut roles = HashMap::from([(player_id, role)]);
+                roles.extend(
+                    self.seer_discovered
+                        .iter()
+                        .map(|id| (id.clone(), self.observable.roles[id])),
+                );
+                roles
             }
             _ => {
                 // Everyone else just knows their own role.
-                let oneself = HashMap::from([(player_id, role)]);
-                observation.roles = oneself;
+                HashMap::from([(player_id, role)])
             }
         };
-        Ok(observation)
+        Ok(ObservableState {
+            round: self.observable.round,
+            phase: self.observable.phase.clone(),
+            roles,
+            alive: self.observable.alive.clone(),
+        })
     }
 
     fn surviving(&self, team: Team) -> usize {
         self.observable
             .alive
             .iter()
-            .cloned()
-            .filter(|player_id| self.observable.roles[player_id].team() == team)
+            .filter(|player_id| self.observable.roles[*player_id].team() == team)
             .count()
     }
 
