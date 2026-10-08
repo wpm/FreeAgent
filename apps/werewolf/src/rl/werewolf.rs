@@ -141,8 +141,11 @@ struct Action {
     selection: ActorId,
 }
 
+#[async_trait]
 trait Environment {
-    fn state() -> State;
+    fn state(&self) -> State;
+    fn send(&self, observation: Observation, players: HashSet<PlayerId>) -> anyhow::Result<()>;
+    async fn request() -> anyhow::Result<HashMap<ActorId, Vec<Action>>>;
 
     fn seer_knows() -> HashSet<PlayerId>;
     async fn night(&mut self) -> anyhow::Result<()> {
@@ -158,4 +161,4 @@ trait Environment {
         todo!()
     }
 }
-fn create<E: Environment>(environment: E, players: HashMap<PlayerId, (Role, Box<dyn Policy>)>) {}
+fn create<E: Environment>(_environment: E, _players: HashMap<PlayerId, (Role, Box<dyn Policy>)>) {}
