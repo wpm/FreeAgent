@@ -92,7 +92,7 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
                 }
                 observation = self.inbox.recv() => match observation {
                     None => break, // Every sender is gone.
-                    Some(Observation::Broadcast(message)) => {
+                    Some(Observation::Statement(message)) => {
                         let step = self.strategy.policy(&message);
                         let Some(acted) = unless_stopped(&shutdown, step).await else {
                             break;
@@ -161,7 +161,7 @@ impl<M: Message, L> Context<M, L> {
     pub fn send(&self, message: M) -> anyhow::Result<()> {
         for sender in self.outbox.others.values() {
             // A failed send means the recipient's inbox is gone.
-            let _ = sender.send(Observation::Broadcast(message.clone()));
+            let _ = sender.send(Observation::Statement(message.clone()));
         }
         Ok(())
     }
@@ -172,7 +172,7 @@ impl<M: Message, L> Context<M, L> {
     pub fn note(&self, message: M) -> anyhow::Result<()> {
         self.outbox
             .loopback
-            .send(Observation::Broadcast(message))
+            .send(Observation::Statement(message))
             .ok()
             .context("this actor's own inbox is gone")
     }
@@ -267,7 +267,7 @@ pub trait Strategy: Send + Sync {
     /// The ways out of this actor, handed to the strategy when it was built.
     fn context(&self) -> &Context<Self::Message, Self::Log>;
     /// Handle `observation`. The result is the reply to a request, and is
-    /// dropped after a broadcast.
+    /// dropped after a statement.
     async fn policy(&self, observation: &Self::Message) -> anyhow::Result<Vec<Self::Message>>;
     /// Called once every actor in the episode is running. This is where an
     /// actor with an opening move makes it.
@@ -314,9 +314,9 @@ pub(crate) struct Shutdown {
 /// What arrives in an actor's inbox.
 #[derive(Debug)]
 pub(crate) enum Observation<M: Message> {
-    /// A message sent and forgotten.
-    Broadcast(M),
-    /// A message whose sender is waiting for an answer.
+    /// A message that does not require a reply.
+    Statement(M),
+    /// A message whose sender is waiting for reply.
     Request(Request<M>),
 }
 
@@ -473,7 +473,7 @@ mod tests {
         for inbox in [&mut bob_inbox, &mut cat_inbox] {
             let heard = inbox.recv().await.unwrap();
             assert!(
-                matches!(heard, Observation::Broadcast(Note("hello"))),
+                matches!(heard, Observation::Statement(Note("hello"))),
                 "{heard:?}"
             );
         }
@@ -487,7 +487,7 @@ mod tests {
 
         let heard = ann.actor.inbox.recv().await.unwrap();
         assert!(
-            matches!(heard, Observation::Broadcast(Note("remember this"))),
+            matches!(heard, Observation::Statement(Note("remember this"))),
             "{heard:?}"
         );
     }
@@ -627,7 +627,7 @@ mod tests {
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
         bob.sender
-            .send(Observation::Broadcast(Note("take your time")))
+            .send(Observation::Statement(Note("take your time")))
             .unwrap();
         // Let Bob take the message and block in its policy.
         sleep(Duration::from_secs(1)).await;
@@ -684,7 +684,7 @@ mod tests {
         bob.start.send(()).unwrap();
 
         bob.sender
-            .send(Observation::Broadcast(Note("hello")))
+            .send(Observation::Statement(Note("hello")))
             .unwrap();
 
         let error = running.await.unwrap().unwrap_err();

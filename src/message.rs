@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 ///
 /// An episode carries one message type, and every actor in it sends and
 /// receives that type. A message is cloned for every recipient of a
-/// broadcast or a request, and travels between actors on a multi-threaded
+/// statement or a request, and travels between actors on a multi-threaded
 /// runtime, which is what the bounds say. Implementing it takes one empty
 /// line:
 ///
