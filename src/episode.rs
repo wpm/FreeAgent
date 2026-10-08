@@ -327,6 +327,30 @@ mod tests {
         episode_with(ids, failing, &[], |_| Gated::default())
     }
 
+    /// An episode of Ann and Bob in which Bob's initialization waits for a
+    /// permit from the returned gate.
+    fn episode_with_bob_held_up() -> (Stage, Arc<Semaphore>) {
+        let gate = Arc::new(Semaphore::new(0));
+        let slow = Arc::clone(&gate);
+        let stage = episode_with(&["ann", "bob"], &[], &[], move |id| Gated {
+            gate: (id == "bob").then(|| Arc::clone(&slow)),
+            broken: false,
+        });
+        (stage, gate)
+    }
+
+    /// The next two actors to announce themselves on `starts`.
+    async fn two_starts(starts: &mut UnboundedReceiver<ActorId>) -> HashSet<ActorId> {
+        let mut started = HashSet::new();
+        started.insert(starts.recv().await.unwrap());
+        started.insert(starts.recv().await.unwrap());
+        started
+    }
+
+    fn ann_and_bob() -> HashSet<ActorId> {
+        HashSet::from(["ann".to_string(), "bob".to_string()])
+    }
+
     fn stops<L: Lifecycle, B: Behavior>(episode: &Episode<L, B>) -> Vec<CancellationToken> {
         episode
             .actors
@@ -345,13 +369,7 @@ mod tests {
         let stops = stops(&episode);
         let running = tokio::spawn(episode.run(Duration::from_secs(60)));
 
-        let mut started = HashSet::new();
-        started.insert(starts.recv().await.unwrap());
-        started.insert(starts.recv().await.unwrap());
-        assert_eq!(
-            started,
-            HashSet::from(["ann".to_string(), "bob".to_string()])
-        );
+        assert_eq!(two_starts(&mut starts).await, ann_and_bob());
 
         for stop in stops {
             stop.cancel();
@@ -387,16 +405,14 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn no_actor_starts_until_every_actor_has_initialized() {
-        let gate = Arc::new(Semaphore::new(0));
-        let slow = Arc::clone(&gate);
-        let Stage {
-            episode,
-            mut starts,
-            ..
-        } = episode_with(&["ann", "bob"], &[], &[], move |id| Gated {
-            gate: (id == "bob").then(|| Arc::clone(&slow)),
-            broken: false,
-        });
+        let (
+            Stage {
+                episode,
+                mut starts,
+                ..
+            },
+            gate,
+        ) = episode_with_bob_held_up();
         let stops = stops(&episode);
         let running = tokio::spawn(episode.run(Duration::from_secs(60)));
 
@@ -406,13 +422,7 @@ mod tests {
         assert!(starts.try_recv().is_err(), "nobody should have started");
 
         gate.add_permits(1);
-        let mut started = HashSet::new();
-        started.insert(starts.recv().await.unwrap());
-        started.insert(starts.recv().await.unwrap());
-        assert_eq!(
-            started,
-            HashSet::from(["ann".to_string(), "bob".to_string()])
-        );
+        assert_eq!(two_starts(&mut starts).await, ann_and_bob());
 
         for stop in stops {
             stop.cancel();
@@ -441,15 +451,14 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn patience_runs_out_while_an_actor_is_still_initializing() {
-        let gate = Arc::new(Semaphore::new(0));
-        let Stage {
-            episode,
-            mut starts,
-            ..
-        } = episode_with(&["ann", "bob"], &[], &[], move |id| Gated {
-            gate: (id == "bob").then(|| Arc::clone(&gate)),
-            broken: false,
-        });
+        let (
+            Stage {
+                episode,
+                mut starts,
+                ..
+            },
+            _gate,
+        ) = episode_with_bob_held_up();
 
         let error = episode.run(Duration::from_secs(5)).await.unwrap_err();
 
