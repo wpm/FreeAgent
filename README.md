@@ -10,9 +10,9 @@ them can reach which, and runs them on the [Tokio](https://tokio.rs) runtime
 until every one of them has stopped. An **actor** is one in the sense of the
 [actor model](https://en.wikipedia.org/wiki/Actor_model): it keeps its own
 state, takes messages from a mailbox one at a time, and reaches other actors
-only by sending them messages. Here it is a [`Strategy`] driven by a mailbox:
-the strategy handles statements with [`receive`](Strategy::receive)
-and requests with [`answer`](Strategy::answer), and its [`Context`] is how it
+only by sending them messages. Here it is a [`Behavior`] driven by a mailbox:
+the behavior handles statements with [`receive`](Behavior::receive)
+and requests with [`answer`](Behavior::answer), and its [`Context`] is how it
 reaches the rest of the episode, to send statements, to request and await
 replies, to stop other actors, and to log. A typical episode has one
 environment actor and several agent actors.

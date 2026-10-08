@@ -1,5 +1,5 @@
 //! Logging is out of band. The episode is given one logger channel, each
-//! actor that wants to log holds a copy of it, and a strategy logs through
+//! actor that wants to log holds a copy of it, and a behavior logs through
 //! [`Context::log`](crate::Context::log). The other end of the
 //! channel is drained by [`console_log`] or [`drain`].
 

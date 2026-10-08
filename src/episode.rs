@@ -2,7 +2,7 @@
 //! one another as their inits allow, and runs them until every one has
 //! stopped.
 
-use crate::actor::{Actor, ActorId, ActorInit, Context, Envelope, Lifecycle, Shutdown, Strategy};
+use crate::actor::{Actor, ActorId, ActorInit, Behavior, Context, Envelope, Lifecycle, Shutdown};
 use crate::log::Logger;
 use anyhow::{Context as _, bail};
 use std::collections::{HashMap, HashSet};
@@ -15,15 +15,15 @@ use tokio_util::sync::CancellationToken;
 
 /// A set of actors brought into being together, wired to one another as
 /// their inits allow, and run until every one of them has stopped.
-pub struct Episode<L: Lifecycle, S: Strategy> {
-    actors: HashMap<ActorId, Actor<L, S>>,
+pub struct Episode<L: Lifecycle, B: Behavior> {
+    actors: HashMap<ActorId, Actor<L, B>>,
     /// One-time signals from each actor that it is running its message loop.
     readies: HashMap<ActorId, oneshot::Receiver<()>>,
     /// One-time signals telling each actor that every actor is running.
     starts: HashMap<ActorId, oneshot::Sender<()>>,
 }
 
-impl<L: Lifecycle, S: Strategy> Episode<L, S> {
+impl<L: Lifecycle, B: Behavior> Episode<L, B> {
     /// The actors described by `init`, wired to one another as it allows.
     /// Those with `has_logger` get a copy of `logger`.
     ///
@@ -31,14 +31,14 @@ impl<L: Lifecycle, S: Strategy> Episode<L, S> {
     ///
     /// Panics when an init's `can_send_to` or `can_shut_down` names an actor
     /// missing from `init`. An episode's wiring is checked when it is built.
-    pub fn new(init: HashMap<ActorId, ActorInit<L, S>>, logger: Logger<S::Log>) -> Self {
+    pub fn new(init: HashMap<ActorId, ActorInit<L, B>>, logger: Logger<B::Log>) -> Self {
         // First pass: give every actor a channel and a shutdown token. The
         // init and the receiver are unique, so they stay together in one
         // map. The senders and tokens are clonable, so they go into lookup
         // tables that each actor copies the permitted entries from.
         let mut senders = HashMap::new();
         let mut shutdowns = HashMap::new();
-        let staged: Staged<L, S> = init
+        let staged: Staged<L, B> = init
             .into_iter()
             .map(|(id, init)| {
                 let (tx, rx) = unbounded_channel();
@@ -74,7 +74,7 @@ impl<L: Lifecycle, S: Strategy> Episode<L, S> {
                     id,
                     Actor {
                         lifecycle: init.lifecycle,
-                        strategy: (init.strategy)(context),
+                        behavior: (init.behavior)(context),
                         ready: Some(ready),
                         start: started,
                         mailbox,
@@ -105,12 +105,12 @@ impl<L: Lifecycle, S: Strategy> Episode<L, S> {
     pub async fn run(self, patience: Duration) -> anyhow::Result<()>
     where
         L: 'static,
-        S: 'static,
+        B: 'static,
     {
         let stops: Vec<_> = self
             .actors
             .values()
-            .map(|actor| actor.strategy.context().shutdown.mine.clone())
+            .map(|actor| actor.behavior.context().shutdown.mine.clone())
             .collect();
         let mut tasks = JoinSet::new();
         for (id, actor) in self.actors {
@@ -153,11 +153,11 @@ impl<L: Lifecycle, S: Strategy> Episode<L, S> {
 
 /// Each actor's init, together with the receiving end of its mailbox, between
 /// the two passes of [`Episode::new`].
-type Staged<L, S> = HashMap<
+type Staged<L, B> = HashMap<
     ActorId,
     (
-        ActorInit<L, S>,
-        UnboundedReceiver<Envelope<<S as Strategy>::Message>>,
+        ActorInit<L, B>,
+        UnboundedReceiver<Envelope<<B as Behavior>::Message>>,
     ),
 >;
 
@@ -245,7 +245,7 @@ mod tests {
         }
     }
 
-    /// A strategy that reports when it is started, both to the test and to
+    /// A behavior that reports when it is started, both to the test and to
     /// the log, fails to start if told to, and is otherwise silent.
     struct Reporter {
         context: Context<Note, ActorId>,
@@ -253,7 +253,7 @@ mod tests {
         fails: bool,
     }
     #[async_trait]
-    impl Strategy for Reporter {
+    impl Behavior for Reporter {
         type Message = Note;
         /// A reporter logs its own name.
         type Log = ActorId;
@@ -297,7 +297,7 @@ mod tests {
                 let fails = failing.contains(id);
                 let init = ActorInit {
                     lifecycle: lifecycle(id),
-                    strategy: Box::new(move |context| Reporter {
+                    behavior: Box::new(move |context| Reporter {
                         context,
                         started,
                         fails,
@@ -358,7 +358,7 @@ mod tests {
                 let others: HashSet<ActorId> = others.iter().map(|o| o.to_string()).collect();
                 let init = ActorInit {
                     lifecycle: Gated::default(),
-                    strategy: Box::new(move |context| Reporter {
+                    behavior: Box::new(move |context| Reporter {
                         context,
                         started,
                         fails: false,
@@ -373,11 +373,11 @@ mod tests {
         Episode::new(init, logger)
     }
 
-    fn stops<L: Lifecycle, S: Strategy>(episode: &Episode<L, S>) -> Vec<CancellationToken> {
+    fn stops<L: Lifecycle, B: Behavior>(episode: &Episode<L, B>) -> Vec<CancellationToken> {
         episode
             .actors
             .values()
-            .map(|actor| actor.strategy.context().shutdown.mine.clone())
+            .map(|actor| actor.behavior.context().shutdown.mine.clone())
             .collect()
     }
 
@@ -385,13 +385,13 @@ mod tests {
     fn new_wires_each_actor_to_itself_and_the_actors_its_init_names() {
         let episode = wired(&[("ann", &["bob"]), ("bob", &[])]);
 
-        let ann = episode.actors["ann"].strategy.context();
+        let ann = episode.actors["ann"].behavior.context();
         let mut reaches: Vec<_> = ann.mailboxes.keys().cloned().collect();
         reaches.sort();
         let stops: Vec<_> = ann.shutdown.others.keys().cloned().collect();
         assert_eq!(reaches, ["ann", "bob"]);
         assert_eq!(stops, ["bob"]);
-        let bob = episode.actors["bob"].strategy.context();
+        let bob = episode.actors["bob"].behavior.context();
         let reaches: Vec<_> = bob.mailboxes.keys().cloned().collect();
         assert_eq!(reaches, ["bob"]);
         assert!(bob.shutdown.others.is_empty());

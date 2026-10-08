@@ -2,8 +2,8 @@
 //! takes messages from a mailbox one at a time, and reaches other actors
 //! only by sending them messages.
 //!
-//! Here an actor is a [`Strategy`] driven by a mailbox, with a [`Lifecycle`]
-//! around it. The strategy reaches the rest of the episode through its
+//! Here an actor is a [`Behavior`] driven by a mailbox, with a [`Lifecycle`]
+//! around it. The behavior reaches the rest of the episode through its
 //! [`Context`], which an [`Episode`](crate::Episode) builds from the
 //! actor's [`ActorInit`].
 //!
@@ -22,18 +22,18 @@ use tokio_util::sync::CancellationToken;
 /// An actor's name, unique within an episode.
 pub type ActorId = String;
 
-/// Builds a [`Strategy`] from the [`Context`] it will own.
-pub type Builder<S> =
-    Box<dyn FnOnce(Context<<S as Strategy>::Message, <S as Strategy>::Log>) -> S + Send>;
+/// Builds a [`Behavior`] from the [`Context`] it will own.
+pub type Builder<B> =
+    Box<dyn FnOnce(Context<<B as Behavior>::Message, <B as Behavior>::Log>) -> B + Send>;
 
 /// Everything an [`Episode`](crate::Episode) needs to build one actor: how
 /// it lives, how it behaves, and whom it may reach.
-pub struct ActorInit<L: Lifecycle, S: Strategy> {
+pub struct ActorInit<L: Lifecycle, B: Behavior> {
     /// How this actor sets up and tears down.
     pub lifecycle: L,
-    /// Builds the strategy once its [`Context`] exists, which is when the
+    /// Builds the behavior once its [`Context`] exists, which is when the
     /// episode has opened every actor's channels.
-    pub strategy: Builder<S>,
+    pub behavior: Builder<B>,
     /// The actors this one may send to and request from.
     pub can_send_to: HashSet<ActorId>,
     /// The actors this one may stop.
@@ -42,43 +42,43 @@ pub struct ActorInit<L: Lifecycle, S: Strategy> {
     pub has_logger: bool,
 }
 
-/// A running actor: its lifecycle, its strategy, its mailbox, and the two
+/// A running actor: its lifecycle, its behavior, its mailbox, and the two
 /// one-time signals it exchanges with the episode on the way up.
-pub(crate) struct Actor<L: Lifecycle, S: Strategy> {
+pub(crate) struct Actor<L: Lifecycle, B: Behavior> {
     /// How this Actor handles startup and shutdown.
     pub(crate) lifecycle: L,
     /// How this Actor handles incoming Messages. It owns the [`Context`]
     /// through which it reaches other actors.
-    pub(crate) strategy: S,
+    pub(crate) behavior: B,
     /// This Actor's one-time signal to the episode that it is initialized
     /// and running its message loop. Taken when it is sent.
     pub(crate) ready: Option<oneshot::Sender<()>>,
     /// The episode's one-time signal that every actor is running.
     pub(crate) start: oneshot::Receiver<()>,
     /// The channel on which this Actor receives incoming Messages.
-    pub(crate) mailbox: UnboundedReceiver<Envelope<S::Message>>,
+    pub(crate) mailbox: UnboundedReceiver<Envelope<B::Message>>,
 }
 
-impl<L: Lifecycle, S: Strategy> Actor<L, S> {
+impl<L: Lifecycle, B: Behavior> Actor<L, B> {
     /// An actor's whole life, in four phases.
     ///
     /// 1. Initialize, through the lifecycle, and tell the episode this actor
     ///    is ready.
     /// 2. Wait for the episode's start signal, which comes once every actor
-    ///    is ready, and make the strategy's opening move.
-    /// 3. Deliver each envelope in the mailbox to the strategy, one at a
+    ///    is ready, and make the behavior's opening move.
+    /// 3. Deliver each envelope in the mailbox to the behavior, one at a
     ///    time, until shut down.
     /// 4. Clean up, through the lifecycle.
     ///
     /// Phases 2 and 3 overlap: mail that arrives before the start signal is
-    /// delivered as it comes. An error from the lifecycle or the strategy
+    /// delivered as it comes. An error from the lifecycle or the behavior
     /// ends the actor with that error.
     ///
     /// Shutdown cuts any phase short. A step in progress is dropped at its
     /// next await, mail still in the mailbox stays there, and cleanup runs
     /// only after a finished initialization.
     pub(crate) async fn run(mut self) -> anyhow::Result<()> {
-        let shutdown = self.strategy.context().shutdown.mine.clone();
+        let shutdown = self.behavior.context().shutdown.mine.clone();
         let Some(initialized) = run_unless_stopped(&shutdown, self.lifecycle.initialize()).await
         else {
             return Ok(());
@@ -127,25 +127,25 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
         if signal.is_err() {
             return Ok(Break(()));
         }
-        let shutdown = self.strategy.context().shutdown.mine.clone();
-        let Some(opened) = run_unless_stopped(&shutdown, self.strategy.start()).await else {
+        let shutdown = self.behavior.context().shutdown.mine.clone();
+        let Some(opened) = run_unless_stopped(&shutdown, self.behavior.start()).await else {
             return Ok(Break(()));
         };
         opened?;
         Ok(Continue(()))
     }
 
-    /// Hand `envelope` to the strategy: either a statement to receive or a
+    /// Hand `envelope` to the behavior: either a statement to receive or a
     /// request to answer and reply to.
     ///
     /// The message loop watches for shutdown only between envelopes, so each
     /// step races shutdown on its own here.
-    async fn deliver(&mut self, envelope: Envelope<S::Message>) -> anyhow::Result<ControlFlow<()>> {
-        let shutdown = self.strategy.context().shutdown.mine.clone();
+    async fn deliver(&mut self, envelope: Envelope<B::Message>) -> anyhow::Result<ControlFlow<()>> {
+        let shutdown = self.behavior.context().shutdown.mine.clone();
         match envelope {
             Envelope::Statement(message) => {
                 let Some(received) =
-                    run_unless_stopped(&shutdown, self.strategy.receive(&message)).await
+                    run_unless_stopped(&shutdown, self.behavior.receive(&message)).await
                 else {
                     return Ok(Break(()));
                 };
@@ -153,7 +153,7 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
             }
             Envelope::Request(request) => {
                 let Some(answered) =
-                    run_unless_stopped(&shutdown, self.strategy.answer(request.message())).await
+                    run_unless_stopped(&shutdown, self.behavior.answer(request.message())).await
                 else {
                     return Ok(Break(()));
                 };
@@ -179,10 +179,10 @@ async fn run_unless_stopped<T>(
     }
 }
 
-/// The ways out of an actor: what a [`Strategy`] may do besides answer.
+/// The ways out of an actor: what a [`Behavior`] may do besides answer.
 ///
-/// A strategy owns one of these, and the actor keeps the mailbox, so messages
-/// reach the strategy one step at a time.
+/// A behavior owns one of these, and the actor keeps the mailbox, so messages
+/// reach the behavior one step at a time.
 ///
 /// `L` is what this actor logs. It defaults to the message type, which is
 /// what most actors log.
@@ -303,7 +303,7 @@ impl<M: Message, L> Context<M, L> {
     }
 
     /// Shut this actor down. The step that calls this is abandoned at its
-    /// next await, so a strategy with last words says them first. The actor
+    /// next await, so a behavior with last words says them first. The actor
     /// then stops, leaving whatever is in its mailbox there.
     pub fn shutdown(&self) {
         self.shutdown.mine.cancel();
@@ -311,20 +311,20 @@ impl<M: Message, L> Context<M, L> {
 }
 
 /// How an actor maps what it receives to what it does: a statement goes to
-/// [`receive`](Strategy::receive) and a request to [`answer`](Strategy::answer),
-/// whose result is the reply. Anything else the strategy wants to say, such
+/// [`receive`](Behavior::receive) and a request to [`answer`](Behavior::answer),
+/// whose result is the reply. Anything else the behavior wants to say, such
 /// as who it is, goes inside its messages.
 ///
-/// A strategy's state is its own: the mailbox hands it one message at a
+/// A behavior's state is its own: the mailbox hands it one message at a
 /// time, so each step may change that state freely. Actors run on a
-/// multi-threaded runtime, so a strategy has to be sendable between threads.
+/// multi-threaded runtime, so a behavior has to be sendable between threads.
 #[async_trait]
-pub trait Strategy: Send {
-    /// What this strategy sends and receives.
+pub trait Behavior: Send {
+    /// What this behavior sends and receives.
     type Message: Message;
-    /// What this strategy logs. Most often the message type.
+    /// What this behavior logs. Most often the message type.
     type Log: Send + 'static;
-    /// The ways out of this actor, handed to the strategy when it was built.
+    /// The ways out of this actor, handed to the behavior when it was built.
     fn context(&self) -> &Context<Self::Message, Self::Log>;
     /// Handle the statement `message`. By default it is ignored.
     async fn receive(&mut self, _message: &Self::Message) -> anyhow::Result<()> {
@@ -395,7 +395,7 @@ mod tests {
     #[async_trait]
     impl Lifecycle for Idle {}
 
-    /// A strategy that answers every request with the message it was sent,
+    /// A behavior that answers every request with the message it was sent,
     /// after waiting for a permit from its gate if it has one, and waits at
     /// the gate on statements too. Slow to start, it waits for a permit in
     /// `start` as well. Broken, it fails every step.
@@ -406,7 +406,7 @@ mod tests {
         broken: bool,
     }
     #[async_trait]
-    impl Strategy for Echo {
+    impl Behavior for Echo {
         type Message = Note;
         type Log = Note;
         fn context(&self) -> &Context<Note> {
@@ -442,11 +442,11 @@ mod tests {
         }
     }
 
-    /// A strategy with every default: no opening move, statements ignored,
+    /// A behavior with every default: no opening move, statements ignored,
     /// and requests answered with nothing.
     struct Mute(Context<Note>);
     #[async_trait]
-    impl Strategy for Mute {
+    impl Behavior for Mute {
         type Message = Note;
         type Log = Note;
         fn context(&self) -> &Context<Note> {
@@ -454,14 +454,14 @@ mod tests {
         }
     }
 
-    /// A strategy that counts the statements it has received and answers
+    /// A behavior that counts the statements it has received and answers
     /// every request with that many notes.
     struct Tally {
         context: Context<Note>,
         seen: usize,
     }
     #[async_trait]
-    impl Strategy for Tally {
+    impl Behavior for Tally {
         type Message = Note;
         type Log = Note;
         fn context(&self) -> &Context<Note> {
@@ -478,16 +478,16 @@ mod tests {
 
     /// An actor, along with what a test needs to feed it, start it, and stop
     /// it from the outside.
-    struct Rig<S: Strategy = Echo> {
-        actor: Actor<Idle, S>,
+    struct Rig<B: Behavior = Echo> {
+        actor: Actor<Idle, B>,
         sender: UnboundedSender<Envelope<Note>>,
         start: oneshot::Sender<()>,
         stop: CancellationToken,
     }
 
-    impl<S: Strategy<Message = Note, Log = Note>> Rig<S> {
+    impl<B: Behavior<Message = Note, Log = Note>> Rig<B> {
         fn context(&self) -> &Context<Note> {
-            self.actor.strategy.context()
+            self.actor.behavior.context()
         }
     }
 
@@ -505,14 +505,14 @@ mod tests {
         })
     }
 
-    /// A rig around the strategy `build` makes from its context, which may
+    /// A rig around the behavior `build` makes from its context, which may
     /// send to itself and to `others`.
-    fn rig_with<S: Strategy<Message = Note, Log = Note>>(
+    fn rig_with<B: Behavior<Message = Note, Log = Note>>(
         name: &str,
         others: HashMap<ActorId, UnboundedSender<Envelope<Note>>>,
         can_stop: HashMap<ActorId, CancellationToken>,
-        build: impl FnOnce(Context<Note>) -> S,
-    ) -> Rig<S> {
+        build: impl FnOnce(Context<Note>) -> B,
+    ) -> Rig<B> {
         let (sender, mailbox) = unbounded_channel();
         let (ready, _) = oneshot::channel();
         let (start, started) = oneshot::channel();
@@ -530,7 +530,7 @@ mod tests {
         };
         let actor = Actor {
             lifecycle: Idle,
-            strategy: build(context),
+            behavior: build(context),
             ready: Some(ready),
             start: started,
             mailbox,
@@ -636,7 +636,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_strategy_keeps_its_state_between_steps() {
+    async fn a_behavior_keeps_its_state_between_steps() {
         let bob = rig_with("bob", HashMap::new(), HashMap::new(), |context| Tally {
             context,
             seen: 0,
@@ -777,7 +777,7 @@ mod tests {
     async fn log_sends_a_stamped_event_down_the_logger_if_there_is_one() {
         let (logger, mut events) = unbounded_channel();
         let mut ann = rig("ann", HashMap::new(), HashMap::new());
-        ann.actor.strategy.context.log = Some(logger);
+        ann.actor.behavior.context.log = Some(logger);
 
         ann.context().log(Note("for the record"));
 
@@ -805,7 +805,7 @@ mod tests {
     fn gated_rig(name: &str) -> (Rig, Arc<Semaphore>) {
         let gate = Arc::new(Semaphore::new(0));
         let mut rig = rig(name, HashMap::new(), HashMap::new());
-        rig.actor.strategy.gate = Some(Arc::clone(&gate));
+        rig.actor.behavior.gate = Some(Arc::clone(&gate));
         (rig, gate)
     }
 
@@ -829,7 +829,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_kill_stops_an_actor_in_the_middle_of_starting() {
         let (mut bob, _gate) = gated_rig("bob");
-        bob.actor.strategy.slow_start = true;
+        bob.actor.behavior.slow_start = true;
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
         // Let Bob take the start signal and block in its opening move.
@@ -842,7 +842,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_strategy_with_no_opening_move_starts_and_waits() {
+    async fn a_behavior_with_no_opening_move_starts_and_waits() {
         let bob = rig_with("bob", HashMap::new(), HashMap::new(), Mute);
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
@@ -865,9 +865,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_strategy_that_fails_to_receive_a_statement_fails_the_actor() {
+    async fn a_behavior_that_fails_to_receive_a_statement_fails_the_actor() {
         let mut bob = rig("bob", HashMap::new(), HashMap::new());
-        bob.actor.strategy.broken = true;
+        bob.actor.behavior.broken = true;
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
 
@@ -878,9 +878,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_strategy_that_fails_to_answer_a_request_fails_the_actor() {
+    async fn a_behavior_that_fails_to_answer_a_request_fails_the_actor() {
         let mut bob = rig("bob", HashMap::new(), HashMap::new());
-        bob.actor.strategy.broken = true;
+        bob.actor.behavior.broken = true;
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
         let (request, _reply) = Request::new(Note("well?"));
