@@ -117,14 +117,14 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
     /// actor is running. An error in place of the signal means the episode
     /// is gone, and there is nothing to open.
     async fn open(
-        &self,
+        &mut self,
         signal: Result<(), oneshot::error::RecvError>,
     ) -> anyhow::Result<ControlFlow<()>> {
         if signal.is_err() {
             return Ok(Break(()));
         }
-        let shutdown = &self.strategy.context().shutdown.mine;
-        let Some(opened) = run_unless_stopped(shutdown, self.strategy.start()).await else {
+        let shutdown = self.strategy.context().shutdown.mine.clone();
+        let Some(opened) = run_unless_stopped(&shutdown, self.strategy.start()).await else {
             return Ok(Break(()));
         };
         opened?;
@@ -138,17 +138,17 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
     /// The message loop watches for shutdown only between envelopes, so each
     /// step races shutdown on its own here.
     async fn deliver(
-        &self,
+        &mut self,
         envelope: Option<Envelope<S::Message>>,
     ) -> anyhow::Result<ControlFlow<()>> {
         let Some(envelope) = envelope else {
             return Ok(Break(()));
         };
-        let shutdown = &self.strategy.context().shutdown.mine;
+        let shutdown = self.strategy.context().shutdown.mine.clone();
         match envelope {
             Envelope::Statement(message) => {
                 let Some(received) =
-                    run_unless_stopped(shutdown, self.strategy.receive(&message)).await
+                    run_unless_stopped(&shutdown, self.strategy.receive(&message)).await
                 else {
                     return Ok(Break(()));
                 };
@@ -156,7 +156,7 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
             }
             Envelope::Request(request) => {
                 let Some(answered) =
-                    run_unless_stopped(shutdown, self.strategy.answer(request.message())).await
+                    run_unless_stopped(&shutdown, self.strategy.answer(request.message())).await
                 else {
                     return Ok(Break(()));
                 };
@@ -210,25 +210,24 @@ impl<M: Message, L> Context<M, L> {
         }
     }
 
-    /// Broadcast `message` to every actor this one may send to. An actor
-    /// that has already stopped is skipped.
-    pub fn send(&self, message: M) -> anyhow::Result<()> {
-        for sender in self.outbox.others.values() {
+    /// Send the statement `message` to every actor in `to`. An actor that
+    /// has already stopped is skipped. An actor may send to itself: the
+    /// message waits in its own mailbox for the current step to finish.
+    ///
+    /// # Errors
+    ///
+    /// Fails before anything is sent when `to` names an actor outside those
+    /// this one may send to.
+    pub fn send(&self, message: M, to: HashSet<ActorId>) -> anyhow::Result<()> {
+        let senders = to
+            .iter()
+            .map(|id| self.mailbox_of(id))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        for sender in senders {
             // A failed send means the recipient's mailbox is gone.
             let _ = sender.send(Envelope::Statement(message.clone()));
         }
         Ok(())
-    }
-
-    /// Leave `message` in this actor's own mailbox, to be handled in a later
-    /// step. This is how an actor messages itself: it takes one step at a
-    /// time, so the message waits for the current step to finish.
-    pub fn note(&self, message: M) -> anyhow::Result<()> {
-        self.outbox
-            .loopback
-            .send(Envelope::Statement(message))
-            .ok()
-            .context("this actor's own mailbox is gone")
     }
 
     /// Ask every actor in `to` the same thing and collect their replies. A
@@ -253,14 +252,7 @@ impl<M: Message, L> Context<M, L> {
         }
         let senders = to
             .iter()
-            .map(|id| {
-                self.outbox.others.get_key_value(id).with_context(|| {
-                    format!(
-                        "{} cannot request from {id}: not an actor it may send to",
-                        self.id
-                    )
-                })
-            })
+            .map(|id| self.mailbox_of(id).map(|sender| (id, sender)))
             .collect::<anyhow::Result<Vec<_>>>()?;
         let mut pending = Vec::new();
         for (id, sender) in senders {
@@ -277,6 +269,24 @@ impl<M: Message, L> Context<M, L> {
             }
         }
         Ok(replies)
+    }
+
+    /// The sending end of the mailbox of `id`, which is this actor's own
+    /// when `id` is its own name.
+    ///
+    /// # Errors
+    ///
+    /// Fails when `id` is not an actor this one may send to.
+    fn mailbox_of(&self, id: &ActorId) -> anyhow::Result<&UnboundedSender<Envelope<M>>> {
+        if *id == self.id {
+            return Ok(&self.outbox.loopback);
+        }
+        self.outbox.others.get(id).with_context(|| {
+            format!(
+                "{} cannot send to {id}: not an actor it may send to",
+                self.id
+            )
+        })
     }
 
     /// Stop another actor at once, wherever it is in its step.
@@ -310,10 +320,11 @@ impl<M: Message, L> Context<M, L> {
 /// whose result is the reply. Anything else the strategy wants to say, such
 /// as who it is, goes inside its messages.
 ///
-/// Actors run on a multi-threaded runtime, so a strategy has to be shareable
-/// across threads.
+/// A strategy's state is its own: the mailbox hands it one message at a
+/// time, so each step may change that state freely. Actors run on a
+/// multi-threaded runtime, so a strategy has to be sendable between threads.
 #[async_trait]
-pub trait Strategy: Send + Sync {
+pub trait Strategy: Send {
     /// What this strategy sends and receives.
     type Message: Message;
     /// What this strategy logs. Most often the message type.
@@ -321,15 +332,15 @@ pub trait Strategy: Send + Sync {
     /// The ways out of this actor, handed to the strategy when it was built.
     fn context(&self) -> &Context<Self::Message, Self::Log>;
     /// Handle the statement `message`.
-    async fn receive(&self, message: &Self::Message) -> anyhow::Result<()>;
+    async fn receive(&mut self, message: &Self::Message) -> anyhow::Result<()>;
     /// Answer the request `message`. The result is the reply, which by
     /// default is nothing.
-    async fn answer(&self, _message: &Self::Message) -> anyhow::Result<Vec<Self::Message>> {
+    async fn answer(&mut self, _message: &Self::Message) -> anyhow::Result<Vec<Self::Message>> {
         Ok(vec![])
     }
     /// Called once every actor in the episode is running. This is where an
     /// actor with an opening move makes it.
-    async fn start(&self) -> anyhow::Result<()> {
+    async fn start(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -412,14 +423,14 @@ mod tests {
         fn context(&self) -> &Context<Note> {
             &self.context
         }
-        async fn receive(&self, _message: &Note) -> anyhow::Result<()> {
+        async fn receive(&mut self, _message: &Note) -> anyhow::Result<()> {
             self.step().await
         }
-        async fn answer(&self, message: &Note) -> anyhow::Result<Vec<Note>> {
+        async fn answer(&mut self, message: &Note) -> anyhow::Result<Vec<Note>> {
             self.step().await?;
             Ok(vec![message.clone()])
         }
-        async fn start(&self) -> anyhow::Result<()> {
+        async fn start(&mut self) -> anyhow::Result<()> {
             if self.slow_start
                 && let Some(gate) = &self.gate
             {
@@ -452,8 +463,30 @@ mod tests {
         fn context(&self) -> &Context<Note> {
             &self.0
         }
-        async fn receive(&self, _message: &Note) -> anyhow::Result<()> {
+        async fn receive(&mut self, _message: &Note) -> anyhow::Result<()> {
             Ok(())
+        }
+    }
+
+    /// A strategy that counts the statements it has received and answers
+    /// every request with that many notes.
+    struct Tally {
+        context: Context<Note>,
+        seen: usize,
+    }
+    #[async_trait]
+    impl Strategy for Tally {
+        type Message = Note;
+        type Log = Note;
+        fn context(&self) -> &Context<Note> {
+            &self.context
+        }
+        async fn receive(&mut self, _message: &Note) -> anyhow::Result<()> {
+            self.seen += 1;
+            Ok(())
+        }
+        async fn answer(&mut self, _message: &Note) -> anyhow::Result<Vec<Note>> {
+            Ok(vec![Note("seen"); self.seen])
         }
     }
 
@@ -529,16 +562,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_reaches_every_actor_it_may_send_to() {
+    async fn send_reaches_each_actor_it_is_addressed_to() {
         let (bob, mut bob_mailbox) = unbounded_channel();
         let (cat, mut cat_mailbox) = unbounded_channel();
+        let (dan, mut dan_mailbox) = unbounded_channel();
         let ann = rig(
             "ann",
-            HashMap::from([(id("bob"), bob), (id("cat"), cat)]),
+            HashMap::from([(id("bob"), bob), (id("cat"), cat), (id("dan"), dan)]),
             HashMap::new(),
         );
 
-        ann.context().send(Note("hello")).unwrap();
+        ann.context()
+            .send(Note("hello"), HashSet::from([id("bob"), id("cat")]))
+            .unwrap();
 
         for mailbox in [&mut bob_mailbox, &mut cat_mailbox] {
             let heard = mailbox.recv().await.unwrap();
@@ -547,13 +583,30 @@ mod tests {
                 "{heard:?}"
             );
         }
+        assert!(dan_mailbox.try_recv().is_err(), "nothing should reach dan");
     }
 
     #[tokio::test]
-    async fn note_lands_in_the_actors_own_mailbox() {
+    async fn send_fails_without_sending_if_a_recipient_may_not_be_addressed() {
+        let (bob, mut bob_mailbox) = unbounded_channel();
+        let ann = rig("ann", HashMap::from([(id("bob"), bob)]), HashMap::new());
+
+        let error = ann
+            .context()
+            .send(Note("psst"), HashSet::from([id("bob"), id("zed")]))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("zed"), "{error}");
+        assert!(bob_mailbox.try_recv().is_err(), "nothing should reach bob");
+    }
+
+    #[tokio::test]
+    async fn send_to_itself_lands_in_the_actors_own_mailbox() {
         let mut ann = rig("ann", HashMap::new(), HashMap::new());
 
-        ann.context().note(Note("remember this")).unwrap();
+        ann.context()
+            .send(Note("remember this"), HashSet::from([id("ann")]))
+            .unwrap();
 
         let heard = ann.actor.mailbox.recv().await.unwrap();
         assert!(
@@ -594,6 +647,37 @@ mod tests {
         cat.stop.cancel();
         bob_running.await.unwrap().unwrap();
         cat_running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_strategy_keeps_its_state_between_steps() {
+        let bob = rig_with("bob", HashMap::new(), HashMap::new(), |context| Tally {
+            context,
+            seen: 0,
+        });
+        let ann = rig(
+            "ann",
+            HashMap::from([(id("bob"), bob.sender.clone())]),
+            HashMap::new(),
+        );
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        for _ in 0..2 {
+            ann.context()
+                .send(Note("one more"), HashSet::from([id("bob")]))
+                .unwrap();
+        }
+
+        let replies = ann
+            .context()
+            .request(Note("how many?"), HashSet::from([id("bob")]))
+            .await
+            .unwrap();
+
+        let expected = HashMap::from([(id("bob"), vec![Note("seen"), Note("seen")])]);
+        assert_eq!(replies, expected);
+        bob.stop.cancel();
+        running.await.unwrap().unwrap();
     }
 
     #[tokio::test]

@@ -262,10 +262,10 @@ mod tests {
         fn context(&self) -> &Context<Note, ActorId> {
             &self.context
         }
-        async fn receive(&self, _message: &Note) -> anyhow::Result<()> {
+        async fn receive(&mut self, _message: &Note) -> anyhow::Result<()> {
             Ok(())
         }
-        async fn start(&self) -> anyhow::Result<()> {
+        async fn start(&mut self) -> anyhow::Result<()> {
             if self.fails {
                 bail!("{} refuses to start", self.context.id);
             }
