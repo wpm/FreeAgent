@@ -1,7 +1,13 @@
-//! An actor is a [`Strategy`] driven by a mailbox, with a [`Lifecycle`]
+//! Actors in the sense of the [actor model]: each one keeps its own state,
+//! takes messages from a mailbox one at a time, and reaches other actors
+//! only by sending them messages.
+//!
+//! Here an actor is a [`Strategy`] driven by a mailbox, with a [`Lifecycle`]
 //! around it. The strategy reaches the rest of the episode through its
 //! [`Context`], which an [`Episode`](crate::Episode) builds from the
 //! actor's [`ActorInit`].
+//!
+//! [actor model]: https://en.wikipedia.org/wiki/Actor_model
 
 use crate::log::{Event, Logger};
 use crate::message::{Message, Request};
