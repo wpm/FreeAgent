@@ -262,8 +262,8 @@ mod tests {
         fn context(&self) -> &Context<Note, ActorId> {
             &self.context
         }
-        async fn receive(&self, _message: &Note) -> anyhow::Result<Vec<Note>> {
-            Ok(vec![])
+        async fn receive(&self, _message: &Note) -> anyhow::Result<()> {
+            Ok(())
         }
         async fn start(&self) -> anyhow::Result<()> {
             if self.fails {

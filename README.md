@@ -8,11 +8,11 @@ Episodes in which actors talk to each other by statement, request, and reply.
 An **episode** brings a set of actors into being together, decides which of
 them can reach which, and runs them on the [Tokio](https://tokio.rs) runtime
 until every one of them has stopped. An **actor** is a [`Strategy`] driven by
-a mailbox: the strategy's [`receive`](Strategy::receive) takes a message in
-and gives messages out, and its [`Context`] is how it reaches the rest of the
-episode, to send statements, to request and await replies, to stop other
-actors, and to log. A typical episode has one environment actor and several
-agent actors.
+a mailbox: the strategy handles statements with [`receive`](Strategy::receive)
+and requests with [`answer`](Strategy::answer), and its [`Context`] is how it
+reaches the rest of the episode, to send statements, to request and await
+replies, to stop other actors, and to log. A typical episode has one
+environment actor and several agent actors.
 
 The library lives at the root of the repository and the applications built on
 it under `apps/`. For a game built on this, see [`werewolf`](apps/werewolf).

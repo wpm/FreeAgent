@@ -63,7 +63,8 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
     /// a finished initialization.
     pub(crate) async fn run(mut self) -> anyhow::Result<()> {
         let shutdown = self.strategy.context().shutdown.mine.clone();
-        let Some(initialized) = unless_stopped(&shutdown, self.lifecycle.initialize()).await else {
+        let Some(initialized) = run_unless_stopped(&shutdown, self.lifecycle.initialize()).await
+        else {
             return Ok(());
         };
         initialized?;
@@ -82,7 +83,9 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
                     start = None;
                     match started {
                         Ok(()) => {
-                            let Some(opened) = unless_stopped(&shutdown, self.strategy.start()).await else {
+                            let Some(opened) =
+                                run_unless_stopped(&shutdown, self.strategy.start()).await
+                            else {
                                 break;
                             };
                             opened?;
@@ -90,23 +93,28 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
                         Err(_) => break, // The episode is gone.
                     }
                 }
+                // This select watches for shutdown only between envelopes,
+                // so each step races shutdown on its own.
                 envelope = self.mailbox.recv() => match envelope {
                     None => break, // Every sender is gone.
                     Some(Envelope::Statement(message)) => {
-                        let step = self.strategy.receive(&message);
-                        let Some(acted) = unless_stopped(&shutdown, step).await else {
+                        let Some(received) =
+                            run_unless_stopped(&shutdown, self.strategy.receive(&message)).await
+                        else {
                             break;
                         };
-                        acted?;
+                        received?;
                     }
                     Some(Envelope::Request(request)) => {
-                        let step = self.strategy.receive(request.message());
-                        let Some(acted) = unless_stopped(&shutdown, step).await else {
+                        let Some(answered) =
+                            run_unless_stopped(&shutdown, self.strategy.answer(request.message()))
+                                .await
+                        else {
                             break;
                         };
                         // The asker may have stopped waiting, which is no
                         // fault of this actor.
-                        let _ = request.reply(acted?);
+                        let _ = request.reply(answered?);
                     }
                 },
             }
@@ -116,8 +124,9 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
     }
 }
 
-/// Run `step`, unless `shutdown` fires first.
-async fn unless_stopped<T>(
+/// Run `step` to completion, unless `shutdown` fires first, in which case
+/// the step is dropped where it stands.
+async fn run_unless_stopped<T>(
     shutdown: &CancellationToken,
     step: impl Future<Output = T>,
 ) -> Option<T> {
@@ -251,10 +260,10 @@ impl<M: Message, L> Context<M, L> {
     }
 }
 
-/// How an actor maps what it receives to what it does. The signature of
-/// [`receive`](Strategy::receive) is a message in, messages out. Anything
-/// else the strategy wants to say, such as who it is, goes inside its
-/// messages.
+/// How an actor maps what it receives to what it does: a statement goes to
+/// [`receive`](Strategy::receive) and a request to [`answer`](Strategy::answer),
+/// whose result is the reply. Anything else the strategy wants to say, such
+/// as who it is, goes inside its messages.
 ///
 /// Actors run on a multi-threaded runtime, so a strategy has to be shareable
 /// across threads.
@@ -266,9 +275,13 @@ pub trait Strategy: Send + Sync {
     type Log: Send + 'static;
     /// The ways out of this actor, handed to the strategy when it was built.
     fn context(&self) -> &Context<Self::Message, Self::Log>;
-    /// Handle `message`. The result is the reply to a request, and is
-    /// dropped after a statement.
-    async fn receive(&self, message: &Self::Message) -> anyhow::Result<Vec<Self::Message>>;
+    /// Handle the statement `message`.
+    async fn receive(&self, message: &Self::Message) -> anyhow::Result<()>;
+    /// Answer the request `message`. The result is the reply, which by
+    /// default is nothing.
+    async fn answer(&self, _message: &Self::Message) -> anyhow::Result<Vec<Self::Message>> {
+        Ok(vec![])
+    }
     /// Called once every actor in the episode is running. This is where an
     /// actor with an opening move makes it.
     async fn start(&self) -> anyhow::Result<()> {
@@ -338,9 +351,9 @@ mod tests {
     impl Lifecycle for Idle {}
 
     /// A strategy that answers every request with the message it was sent,
-    /// after waiting for a permit from its gate if it has one. Slow to
-    /// start, it waits for a permit in `start` too. Broken, it fails every
-    /// step.
+    /// after waiting for a permit from its gate if it has one, and waits at
+    /// the gate on statements too. Slow to start, it waits for a permit in
+    /// `start` as well. Broken, it fails every step.
     struct Echo {
         context: Context<Note>,
         gate: Option<Arc<Semaphore>>,
@@ -354,13 +367,11 @@ mod tests {
         fn context(&self) -> &Context<Note> {
             &self.context
         }
-        async fn receive(&self, message: &Note) -> anyhow::Result<Vec<Note>> {
-            if self.broken {
-                bail!("echo is broken");
-            }
-            if let Some(gate) = &self.gate {
-                gate.acquire().await?.forget();
-            }
+        async fn receive(&self, _message: &Note) -> anyhow::Result<()> {
+            self.step().await
+        }
+        async fn answer(&self, message: &Note) -> anyhow::Result<Vec<Note>> {
+            self.step().await?;
             Ok(vec![message.clone()])
         }
         async fn start(&self) -> anyhow::Result<()> {
@@ -373,7 +384,21 @@ mod tests {
         }
     }
 
-    /// A strategy with the default opening move, which answers nothing.
+    impl Echo {
+        /// Fail if broken, otherwise wait at the gate if there is one.
+        async fn step(&self) -> anyhow::Result<()> {
+            if self.broken {
+                bail!("echo is broken");
+            }
+            if let Some(gate) = &self.gate {
+                gate.acquire().await?.forget();
+            }
+            Ok(())
+        }
+    }
+
+    /// A strategy with the default opening move, which is none, and the
+    /// default answer, which is nothing.
     struct Mute(Context<Note>);
     #[async_trait]
     impl Strategy for Mute {
@@ -382,8 +407,8 @@ mod tests {
         fn context(&self) -> &Context<Note> {
             &self.0
         }
-        async fn receive(&self, _message: &Note) -> anyhow::Result<Vec<Note>> {
-            Ok(vec![])
+        async fn receive(&self, _message: &Note) -> anyhow::Result<()> {
+            Ok(())
         }
     }
 
@@ -524,6 +549,28 @@ mod tests {
         cat.stop.cancel();
         bob_running.await.unwrap().unwrap();
         cat_running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_default_answer_is_nothing() {
+        let bob = rig_with("bob", HashMap::new(), HashMap::new(), Mute);
+        let ann = rig(
+            "ann",
+            HashMap::from([(id("bob"), bob.sender.clone())]),
+            HashMap::new(),
+        );
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+
+        let replies = ann
+            .context()
+            .request(Note("anything?"), HashSet::from([id("bob")]))
+            .await
+            .unwrap();
+
+        assert_eq!(replies, HashMap::from([(id("bob"), vec![])]));
+        bob.stop.cancel();
+        running.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -690,7 +737,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_strategy_that_fails_to_receive_a_request_fails_the_actor() {
+    async fn a_strategy_that_fails_to_answer_a_request_fails_the_actor() {
         let mut bob = rig("bob", HashMap::new(), HashMap::new());
         bob.actor.strategy.broken = true;
         let running = tokio::spawn(bob.actor.run());
