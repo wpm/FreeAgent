@@ -1,4 +1,4 @@
-//! An actor is a [`Strategy`] driven by an inbox, with a [`Lifecycle`]
+//! An actor is a [`Strategy`] driven by a mailbox, with a [`Lifecycle`]
 //! around it. The strategy reaches the rest of the episode through its
 //! [`Context`], which an [`Episode`](crate::Episode) builds from the
 //! actor's [`ActorInit`].
@@ -35,7 +35,7 @@ pub struct ActorInit<L: Lifecycle, S: Strategy> {
     pub has_logger: bool,
 }
 
-/// A running actor: its lifecycle, its strategy, its inbox, and the two
+/// A running actor: its lifecycle, its strategy, its mailbox, and the two
 /// one-time signals it exchanges with the episode on the way up.
 pub(crate) struct Actor<L: Lifecycle, S: Strategy> {
     /// How this Actor handles startup and shutdown.
@@ -49,16 +49,16 @@ pub(crate) struct Actor<L: Lifecycle, S: Strategy> {
     /// The episode's one-time signal that every actor is running.
     pub(crate) start: oneshot::Receiver<()>,
     /// The channel on which this Actor receives incoming Messages.
-    pub(crate) inbox: UnboundedReceiver<Observation<S::Message>>,
+    pub(crate) mailbox: UnboundedReceiver<Envelope<S::Message>>,
 }
 
 impl<L: Lifecycle, S: Strategy> Actor<L, S> {
-    /// Initialize, then handle the start signal and observations until shut
-    /// down or until every sender to this actor's inbox is gone, then clean
+    /// Initialize, then handle the start signal and envelopes until shut
+    /// down or until every sender to this actor's mailbox is gone, then clean
     /// up.
     ///
     /// Shutdown takes effect at once: a step in progress is abandoned at its
-    /// next await, and whatever is waiting in the inbox stays there. An actor
+    /// next await, and whatever is waiting in the mailbox stays there. An actor
     /// shut down while still initializing stops right there; cleanup follows
     /// a finished initialization.
     pub(crate) async fn run(mut self) -> anyhow::Result<()> {
@@ -90,17 +90,17 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
                         Err(_) => break, // The episode is gone.
                     }
                 }
-                observation = self.inbox.recv() => match observation {
+                envelope = self.mailbox.recv() => match envelope {
                     None => break, // Every sender is gone.
-                    Some(Observation::Statement(message)) => {
-                        let step = self.strategy.policy(&message);
+                    Some(Envelope::Statement(message)) => {
+                        let step = self.strategy.receive(&message);
                         let Some(acted) = unless_stopped(&shutdown, step).await else {
                             break;
                         };
                         acted?;
                     }
-                    Some(Observation::Request(request)) => {
-                        let step = self.strategy.policy(request.message());
+                    Some(Envelope::Request(request)) => {
+                        let step = self.strategy.receive(request.message());
                         let Some(acted) = unless_stopped(&shutdown, step).await else {
                             break;
                         };
@@ -130,7 +130,7 @@ async fn unless_stopped<T>(
 
 /// The ways out of an actor: what a [`Strategy`] may do besides answer.
 ///
-/// A strategy owns one of these, and the actor keeps the inbox, so messages
+/// A strategy owns one of these, and the actor keeps the mailbox, so messages
 /// reach the strategy one step at a time.
 ///
 /// `L` is what this actor logs. It defaults to the message type, which is
@@ -160,21 +160,21 @@ impl<M: Message, L> Context<M, L> {
     /// that has already stopped is skipped.
     pub fn send(&self, message: M) -> anyhow::Result<()> {
         for sender in self.outbox.others.values() {
-            // A failed send means the recipient's inbox is gone.
-            let _ = sender.send(Observation::Statement(message.clone()));
+            // A failed send means the recipient's mailbox is gone.
+            let _ = sender.send(Envelope::Statement(message.clone()));
         }
         Ok(())
     }
 
-    /// Leave `message` in this actor's own inbox, to be handled in a later
+    /// Leave `message` in this actor's own mailbox, to be handled in a later
     /// step. This is how an actor messages itself: it takes one step at a
     /// time, so the message waits for the current step to finish.
     pub fn note(&self, message: M) -> anyhow::Result<()> {
         self.outbox
             .loopback
-            .send(Observation::Statement(message))
+            .send(Envelope::Statement(message))
             .ok()
-            .context("this actor's own inbox is gone")
+            .context("this actor's own mailbox is gone")
     }
 
     /// Ask every actor in `to` the same thing and collect their replies. A
@@ -211,7 +211,7 @@ impl<M: Message, L> Context<M, L> {
         let mut pending = Vec::new();
         for (id, sender) in senders {
             let (request, reply) = Request::new(message.clone());
-            if sender.send(Observation::Request(request)).is_ok() {
+            if sender.send(Envelope::Request(request)).is_ok() {
                 pending.push((id.clone(), reply));
             }
         }
@@ -245,16 +245,16 @@ impl<M: Message, L> Context<M, L> {
 
     /// Shut this actor down. The step that calls this is abandoned at its
     /// next await, so a strategy with last words says them first. The actor
-    /// then stops, leaving whatever is in its inbox there.
+    /// then stops, leaving whatever is in its mailbox there.
     pub fn shutdown(&self) {
         self.shutdown.mine.cancel();
     }
 }
 
-/// How an actor maps what it observes to what it does. The signature of
-/// [`policy`](Strategy::policy) is the reinforcement-learning one: an
-/// observation in, actions out. Anything else the strategy wants to say,
-/// such as who it is, goes inside its messages.
+/// How an actor maps what it receives to what it does. The signature of
+/// [`receive`](Strategy::receive) is a message in, messages out. Anything
+/// else the strategy wants to say, such as who it is, goes inside its
+/// messages.
 ///
 /// Actors run on a multi-threaded runtime, so a strategy has to be shareable
 /// across threads.
@@ -266,9 +266,9 @@ pub trait Strategy: Send + Sync {
     type Log: Send + 'static;
     /// The ways out of this actor, handed to the strategy when it was built.
     fn context(&self) -> &Context<Self::Message, Self::Log>;
-    /// Handle `observation`. The result is the reply to a request, and is
+    /// Handle `message`. The result is the reply to a request, and is
     /// dropped after a statement.
-    async fn policy(&self, observation: &Self::Message) -> anyhow::Result<Vec<Self::Message>>;
+    async fn receive(&self, message: &Self::Message) -> anyhow::Result<Vec<Self::Message>>;
     /// Called once every actor in the episode is running. This is where an
     /// actor with an opening move makes it.
     async fn start(&self) -> anyhow::Result<()> {
@@ -294,12 +294,12 @@ pub trait Lifecycle: Send + Sync {
     }
 }
 
-/// The sending ends of the inboxes an actor may put something in.
+/// The sending ends of the mailboxes an actor may put something in.
 pub(crate) struct Outbox<M: Message> {
     /// Channel on which an Actor sends a Message to itself.
-    pub(crate) loopback: UnboundedSender<Observation<M>>,
+    pub(crate) loopback: UnboundedSender<Envelope<M>>,
     /// Channels on which an Actor sends Messages to other Actors.
-    pub(crate) others: HashMap<ActorId, UnboundedSender<Observation<M>>>,
+    pub(crate) others: HashMap<ActorId, UnboundedSender<Envelope<M>>>,
 }
 
 /// The cancellation tokens an actor is stopped through and stops others
@@ -311,9 +311,9 @@ pub(crate) struct Shutdown {
     pub(crate) others: HashMap<ActorId, CancellationToken>,
 }
 
-/// What arrives in an actor's inbox.
+/// A message and what its recipient owes for it.
 #[derive(Debug)]
-pub(crate) enum Observation<M: Message> {
+pub(crate) enum Envelope<M: Message> {
     /// A message that does not require a reply.
     Statement(M),
     /// A message whose sender is waiting for reply.
@@ -354,14 +354,14 @@ mod tests {
         fn context(&self) -> &Context<Note> {
             &self.context
         }
-        async fn policy(&self, observation: &Note) -> anyhow::Result<Vec<Note>> {
+        async fn receive(&self, message: &Note) -> anyhow::Result<Vec<Note>> {
             if self.broken {
                 bail!("echo is broken");
             }
             if let Some(gate) = &self.gate {
                 gate.acquire().await?.forget();
             }
-            Ok(vec![observation.clone()])
+            Ok(vec![message.clone()])
         }
         async fn start(&self) -> anyhow::Result<()> {
             if self.slow_start
@@ -382,7 +382,7 @@ mod tests {
         fn context(&self) -> &Context<Note> {
             &self.0
         }
-        async fn policy(&self, _observation: &Note) -> anyhow::Result<Vec<Note>> {
+        async fn receive(&self, _message: &Note) -> anyhow::Result<Vec<Note>> {
             Ok(vec![])
         }
     }
@@ -391,7 +391,7 @@ mod tests {
     /// it from the outside.
     struct Rig<S: Strategy = Echo> {
         actor: Actor<Idle, S>,
-        sender: UnboundedSender<Observation<Note>>,
+        sender: UnboundedSender<Envelope<Note>>,
         start: oneshot::Sender<()>,
         stop: CancellationToken,
     }
@@ -405,7 +405,7 @@ mod tests {
     /// A rig around an [`Echo`] with no gate.
     fn rig(
         name: &str,
-        others: HashMap<ActorId, UnboundedSender<Observation<Note>>>,
+        others: HashMap<ActorId, UnboundedSender<Envelope<Note>>>,
         can_stop: HashMap<ActorId, CancellationToken>,
     ) -> Rig {
         rig_with(name, others, can_stop, |context| Echo {
@@ -419,11 +419,11 @@ mod tests {
     /// A rig around the strategy `build` makes from its context.
     fn rig_with<S: Strategy<Message = Note, Log = Note>>(
         name: &str,
-        others: HashMap<ActorId, UnboundedSender<Observation<Note>>>,
+        others: HashMap<ActorId, UnboundedSender<Envelope<Note>>>,
         can_stop: HashMap<ActorId, CancellationToken>,
         build: impl FnOnce(Context<Note>) -> S,
     ) -> Rig<S> {
-        let (sender, inbox) = unbounded_channel();
+        let (sender, mailbox) = unbounded_channel();
         let (ready, _) = oneshot::channel();
         let (start, started) = oneshot::channel();
         let stop = CancellationToken::new();
@@ -444,7 +444,7 @@ mod tests {
             strategy: build(context),
             ready,
             start: started,
-            inbox,
+            mailbox,
         };
         Rig {
             actor,
@@ -459,9 +459,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_broadcasts_to_every_actor_it_may_send_to() {
-        let (bob, mut bob_inbox) = unbounded_channel();
-        let (cat, mut cat_inbox) = unbounded_channel();
+    async fn send_reaches_every_actor_it_may_send_to() {
+        let (bob, mut bob_mailbox) = unbounded_channel();
+        let (cat, mut cat_mailbox) = unbounded_channel();
         let ann = rig(
             "ann",
             HashMap::from([(id("bob"), bob), (id("cat"), cat)]),
@@ -470,24 +470,24 @@ mod tests {
 
         ann.context().send(Note("hello")).unwrap();
 
-        for inbox in [&mut bob_inbox, &mut cat_inbox] {
-            let heard = inbox.recv().await.unwrap();
+        for mailbox in [&mut bob_mailbox, &mut cat_mailbox] {
+            let heard = mailbox.recv().await.unwrap();
             assert!(
-                matches!(heard, Observation::Statement(Note("hello"))),
+                matches!(heard, Envelope::Statement(Note("hello"))),
                 "{heard:?}"
             );
         }
     }
 
     #[tokio::test]
-    async fn note_lands_in_the_actors_own_inbox() {
+    async fn note_lands_in_the_actors_own_mailbox() {
         let mut ann = rig("ann", HashMap::new(), HashMap::new());
 
         ann.context().note(Note("remember this")).unwrap();
 
-        let heard = ann.actor.inbox.recv().await.unwrap();
+        let heard = ann.actor.mailbox.recv().await.unwrap();
         assert!(
-            matches!(heard, Observation::Statement(Note("remember this"))),
+            matches!(heard, Envelope::Statement(Note("remember this"))),
             "{heard:?}"
         );
     }
@@ -528,7 +528,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_fails_without_sending_if_a_recipient_may_not_be_addressed() {
-        let (bob, mut bob_inbox) = unbounded_channel();
+        let (bob, mut bob_mailbox) = unbounded_channel();
         let ann = rig("ann", HashMap::from([(id("bob"), bob)]), HashMap::new());
 
         let error = ann
@@ -538,7 +538,7 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("zed"), "{error}");
-        assert!(bob_inbox.try_recv().is_err(), "nothing should reach bob");
+        assert!(bob_mailbox.try_recv().is_err(), "nothing should reach bob");
     }
 
     #[tokio::test]
@@ -556,9 +556,9 @@ mod tests {
 
     #[tokio::test]
     async fn request_leaves_out_a_recipient_that_has_stopped() {
-        let (bob, bob_inbox) = unbounded_channel();
+        let (bob, bob_mailbox) = unbounded_channel();
         let ann = rig("ann", HashMap::from([(id("bob"), bob)]), HashMap::new());
-        drop(bob_inbox);
+        drop(bob_mailbox);
 
         let replies = ann
             .context()
@@ -627,9 +627,9 @@ mod tests {
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
         bob.sender
-            .send(Observation::Statement(Note("take your time")))
+            .send(Envelope::Statement(Note("take your time")))
             .unwrap();
-        // Let Bob take the message and block in its policy.
+        // Let Bob take the message and block in `receive`.
         sleep(Duration::from_secs(1)).await;
 
         bob.stop.cancel();
@@ -677,29 +677,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_policy_that_fails_on_a_broadcast_fails_the_actor() {
+    async fn a_strategy_that_fails_to_receive_a_statement_fails_the_actor() {
         let mut bob = rig("bob", HashMap::new(), HashMap::new());
         bob.actor.strategy.broken = true;
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
 
-        bob.sender
-            .send(Observation::Statement(Note("hello")))
-            .unwrap();
+        bob.sender.send(Envelope::Statement(Note("hello"))).unwrap();
 
         let error = running.await.unwrap().unwrap_err();
         assert!(error.to_string().contains("broken"), "{error}");
     }
 
     #[tokio::test]
-    async fn a_policy_that_fails_on_a_request_fails_the_actor() {
+    async fn a_strategy_that_fails_to_receive_a_request_fails_the_actor() {
         let mut bob = rig("bob", HashMap::new(), HashMap::new());
         bob.actor.strategy.broken = true;
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
         let (request, _reply) = Request::new(Note("well?"));
 
-        bob.sender.send(Observation::Request(request)).unwrap();
+        bob.sender.send(Envelope::Request(request)).unwrap();
 
         let error = running.await.unwrap().unwrap_err();
         assert!(error.to_string().contains("broken"), "{error}");

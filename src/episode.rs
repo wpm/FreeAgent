@@ -3,7 +3,7 @@
 //! stopped.
 
 use crate::actor::{
-    Actor, ActorId, ActorInit, Context, Lifecycle, Observation, Outbox, Shutdown, Strategy,
+    Actor, ActorId, ActorInit, Context, Envelope, Lifecycle, Outbox, Shutdown, Strategy,
 };
 use crate::log::Logger;
 use anyhow::{Context as _, bail};
@@ -55,7 +55,7 @@ impl<L: Lifecycle, S: Strategy> Episode<L, S> {
         let mut starts = HashMap::new();
         let actors = staged
             .into_iter()
-            .map(|(id, (init, inbox))| {
+            .map(|(id, (init, mailbox))| {
                 let (ready, is_ready) = oneshot::channel();
                 readies.insert(id.clone(), is_ready);
                 let (start, started) = oneshot::channel();
@@ -79,7 +79,7 @@ impl<L: Lifecycle, S: Strategy> Episode<L, S> {
                         strategy: (init.strategy)(context),
                         ready,
                         start: started,
-                        inbox,
+                        mailbox,
                     },
                 )
             })
@@ -153,13 +153,13 @@ impl<L: Lifecycle, S: Strategy> Episode<L, S> {
     }
 }
 
-/// Each actor's init, together with the receiving end of its inbox, between
+/// Each actor's init, together with the receiving end of its mailbox, between
 /// the two passes of [`Episode::new`].
 type Staged<L, S> = HashMap<
     ActorId,
     (
         ActorInit<L, S>,
-        UnboundedReceiver<Observation<<S as Strategy>::Message>>,
+        UnboundedReceiver<Envelope<<S as Strategy>::Message>>,
     ),
 >;
 
@@ -262,7 +262,7 @@ mod tests {
         fn context(&self) -> &Context<Note, ActorId> {
             &self.context
         }
-        async fn policy(&self, _observation: &Note) -> anyhow::Result<Vec<Note>> {
+        async fn receive(&self, _message: &Note) -> anyhow::Result<Vec<Note>> {
             Ok(vec![])
         }
         async fn start(&self) -> anyhow::Result<()> {
