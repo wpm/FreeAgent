@@ -38,7 +38,7 @@ pub type Logger<P> = UnboundedSender<Event<P>>;
 ///
 /// # Errors
 ///
-/// Fails if `sink` cannot be written to.
+/// Fails when writing to `sink` fails.
 pub async fn drain<P: Display, W: Write>(
     mut events: UnboundedReceiver<Event<P>>,
     mut sink: W,
@@ -52,8 +52,8 @@ pub async fn drain<P: Display, W: Write>(
 /// [`drain`] to standard error.
 ///
 /// Spawn this beside the episode, then await it once the episode is over.
-/// It finishes when the last actor lets go of its logger, so nothing logged
-/// is lost.
+/// It finishes when the last actor lets go of its logger, so every event
+/// logged is written.
 pub async fn console_log<P: Display>(events: UnboundedReceiver<Event<P>>) -> io::Result<()> {
     drain(events, io::stderr()).await
 }

@@ -1,12 +1,17 @@
-#![allow(dead_code)]
-
 //! Werewolf as an episode in the [`free_agent`] framework, in the shape
 //! of reinforcement learning.
 //!
 //! An environment has the whole `State` and runs the game on it. Each
-//! player has no state of the game at all: it is sent observations, which
-//! are what it is allowed to see, and answers with actions through a
-//! `Policy`.
+//! player sees the game through the observations it is sent, each of
+//! what that player is allowed to see, and answers with an action through
+//! a `Policy`. Which policy a player has depends on its [`Role`]; the
+//! `uniform_random` policies choose at random, as in Braverman, Etesami,
+//! and Mossel's study of the game.
+
+#![warn(missing_docs)]
+// The game is still being rebuilt on the framework, so much of it is not
+// yet reached from anywhere.
+#![allow(dead_code)]
 
 mod uniform_random;
 
@@ -16,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
 
+/// A player is an actor, named as the episode names it.
 type PlayerId = ActorId;
 
 /// The two sides. A game ends when one of them has won.
@@ -32,7 +38,7 @@ pub enum Team {
 pub enum Role {
     /// Kills by night, and knows the other werewolves.
     Werewolf,
-    /// Votes by day and nothing more.
+    /// Votes by day.
     Villager,
     /// Saves one player from the night's kill.
     Doctor,
@@ -41,6 +47,7 @@ pub enum Role {
 }
 
 impl Role {
+    /// Which side this role wins with.
     pub fn team(self) -> Team {
         match self {
             Role::Werewolf => Team::Werewolves,
@@ -49,26 +56,42 @@ impl Role {
     }
 }
 
+/// The two halves of a round. A game begins with night.
 #[derive(Debug, Clone)]
 enum Phase {
+    /// The werewolves choose a victim, the doctor someone to save, and the
+    /// seer someone to learn about.
     Night,
+    /// The village votes someone out.
     Day,
 }
 
+/// The part of the game a player may be shown. The environment's own copy
+/// has every role in it; the one sent to a player has the roles that
+/// player knows.
 #[derive(Debug, Clone)]
 struct ObservableState {
+    /// Rounds count from one. A round is a night and then a day.
     round: NonZero<u8>,
+    /// Which half of the round it is.
     phase: Phase,
+    /// The roles known to whoever holds this state.
     roles: HashMap<PlayerId, Role>,
+    /// Everyone still in the game.
     alive: HashSet<PlayerId>,
 }
 
+/// The whole game, as the environment holds it.
 struct State {
+    /// Everything about the game that some player might be shown.
     observable: ObservableState,
+    /// The players whose team the seer has learned.
     seer_discovered: HashSet<PlayerId>,
 }
 
 impl State {
+    /// A game about to begin its first night, with everyone in `roles`
+    /// alive and the seer's discoveries still to come.
     fn new(roles: HashMap<PlayerId, Role>) -> Self {
         let alive: HashSet<PlayerId> = roles.keys().cloned().collect();
         let phase_round_players = ObservableState {
@@ -83,6 +106,10 @@ impl State {
         }
     }
 
+    /// What `player_id` is allowed to see: the round, the phase, who is
+    /// alive, and the roles it knows. A werewolf knows every werewolf, the
+    /// seer knows itself and whoever it has discovered, and everyone else
+    /// knows only itself.
     fn observation(&self, player_id: PlayerId) -> anyhow::Result<Observation> {
         let role = self.observable.roles[&player_id];
         let roles = match role {
@@ -118,6 +145,7 @@ impl State {
         })
     }
 
+    /// How many of `team` are alive.
     fn surviving(&self, team: Team) -> usize {
         self.observable
             .alive
@@ -126,6 +154,9 @@ impl State {
             .count()
     }
 
+    /// Who has won, if anyone: the villagers when the last werewolf is
+    /// dead, the werewolves when they are at least as many as the
+    /// villagers.
     fn winner(&self) -> Option<Team> {
         let werewolves = self.surviving(Team::Werewolves);
         let villagers = self.surviving(Team::Villagers);
@@ -139,24 +170,47 @@ impl State {
     }
 }
 
+/// How a player maps what it sees to what it does. The signature is the
+/// reinforcement-learning one: an observation in, an action out, or none
+/// for a phase the player sits out.
+///
+/// Policies run on a multi-threaded runtime, so they have to be shareable
+/// across threads.
 #[async_trait]
 trait Policy: Send + Sync {
+    /// Decide what to do about `observation`.
     async fn policy(&self, observation: Observation) -> Option<Action>;
 }
 
+/// What a player is sent: the game as it is allowed to see it.
 type Observation = ObservableState;
 
+/// What a player does: select another player. What selecting someone
+/// means depends on the role and the phase. A werewolf by night selects
+/// a victim, the doctor someone to save, the seer someone to learn
+/// about, and anyone by day someone to vote out.
 struct Action {
+    /// The player selected.
     selection: ActorId,
 }
 
+/// The actor that runs the game. It holds the [`State`], shows each
+/// player its observation, asks the players for their actions, and
+/// applies the rules to what comes back.
 #[async_trait]
 trait Environment {
+    /// The whole game.
     fn state(&self) -> State;
+    /// Show `observation` to `players` and carry on.
     fn send(&self, observation: Observation, players: HashSet<PlayerId>) -> anyhow::Result<()>;
+    /// Ask the players for their actions and collect what they answer.
     async fn request() -> anyhow::Result<HashMap<ActorId, Vec<Action>>>;
 
+    /// The players whose team the seer has learned.
     fn seer_knows() -> HashSet<PlayerId>;
+    /// Play one night: show everyone what they may see, then ask the
+    /// doctor whom to save, the werewolves whom to kill, and the seer whom
+    /// to learn about.
     async fn night(&mut self) -> anyhow::Result<()> {
         // Send out observations.
         // Request doctor selection.
@@ -164,12 +218,16 @@ trait Environment {
         // Request seer selection.
         todo!()
     }
+    /// Play one day: show everyone what they may see, then collect the
+    /// village's votes.
     async fn day(&mut self) -> anyhow::Result<()> {
         // Send out observations.
         // Accumulate villager decisions.
         todo!()
     }
 }
+/// Set up a game of `players`, each with a role and the policy that plays
+/// it, run by `environment`.
 fn create<E: Environment>(_environment: E, _players: HashMap<PlayerId, (Role, Box<dyn Policy>)>) {}
 
 #[cfg(test)]

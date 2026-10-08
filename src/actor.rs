@@ -1,3 +1,8 @@
+//! An actor is a [`Behavior`] driven by an inbox, with a [`Lifecycle`]
+//! around it. The behavior reaches the rest of the episode through its
+//! [`Context`], which an [`Episode`](crate::Episode) builds from the
+//! actor's [`ActorInit`].
+
 use crate::log::{Event, Logger};
 use crate::message::{Message, Request};
 use anyhow::{Context as _, bail};
@@ -19,8 +24,8 @@ pub type Builder<B> =
 pub struct ActorInit<L: Lifecycle, B: Behavior> {
     /// How this actor sets up and tears down.
     pub lifecycle: L,
-    /// Builds the behavior once its [`Context`] exists, which is not until
-    /// the episode has opened every actor's channels.
+    /// Builds the behavior once its [`Context`] exists, which is when the
+    /// episode has opened every actor's channels.
     pub behavior: Builder<B>,
     /// The actors this one may send to and request from.
     pub can_send_to: HashSet<ActorId>,
@@ -30,6 +35,8 @@ pub struct ActorInit<L: Lifecycle, B: Behavior> {
     pub has_logger: bool,
 }
 
+/// A running actor: its lifecycle, its behavior, its inbox, and the two
+/// one-time signals it exchanges with the episode on the way up.
 pub(crate) struct Actor<L: Lifecycle, B: Behavior> {
     /// How this Actor handles startup and shutdown.
     pub(crate) lifecycle: L,
@@ -50,10 +57,10 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
     /// down or until every sender to this actor's inbox is gone, then clean
     /// up.
     ///
-    /// Shutdown takes effect at once. A step in progress is abandoned at its
-    /// next await, and nothing else waiting in the inbox is taken in. An
-    /// actor shut down while still initializing stops without cleaning up,
-    /// since there is no telling how far initialization got.
+    /// Shutdown takes effect at once: a step in progress is abandoned at its
+    /// next await, and whatever is waiting in the inbox stays there. An actor
+    /// shut down while still initializing stops right there; cleanup follows
+    /// a finished initialization.
     pub(crate) async fn run(mut self) -> anyhow::Result<()> {
         let shutdown = self.behavior.context().shutdown.mine.clone();
         let Some(initialized) = unless_stopped(&shutdown, self.lifecycle.initialize()).await else {
@@ -123,9 +130,8 @@ async fn unless_stopped<T>(
 
 /// The ways out of an actor: what a [`Behavior`] may do besides answer.
 ///
-/// A behavior owns one of these and nothing else of the actor. In particular
-/// it cannot reach the inbox, so it cannot take the next message out of
-/// turn.
+/// A behavior owns one of these, and the actor keeps the inbox, so messages
+/// reach the behavior one step at a time.
 ///
 /// `P` is what this actor logs. It defaults to the message type, which is
 /// what most actors log.
@@ -136,14 +142,14 @@ pub struct Context<M: Message, P = M> {
     pub(crate) outbox: Outbox<M>,
     /// Tokens on which this Actor is shut down, and shuts down others.
     pub(crate) shutdown: Shutdown,
-    /// Where this Actor's events go, if it has a logger at all.
+    /// Where this Actor's events go, when it has a logger.
     pub(crate) log: Option<Logger<P>>,
 }
 
 impl<M: Message, P> Context<M, P> {
-    /// Log `payload` as an event stamped now. Nothing happens if this actor
-    /// has no logger, or if the log has stopped listening. Logging never
-    /// fails an actor.
+    /// Log `payload` as an event stamped now. The event reaches the log when
+    /// this actor holds a logger and the log is listening; otherwise it is
+    /// dropped, and the actor carries on either way.
     pub fn log(&self, payload: P) {
         if let Some(log) = &self.log {
             let _ = log.send(Event::now(payload));
@@ -161,9 +167,8 @@ impl<M: Message, P> Context<M, P> {
     }
 
     /// Leave `message` in this actor's own inbox, to be handled in a later
-    /// step. This is fire and forget: the only way an actor may message
-    /// itself, since it cannot take a step while it is waiting for one to
-    /// finish.
+    /// step. This is how an actor messages itself: it takes one step at a
+    /// time, so the message waits for the current step to finish.
     pub fn note(&self, message: M) -> anyhow::Result<()> {
         self.outbox
             .loopback
@@ -178,8 +183,9 @@ impl<M: Message, P> Context<M, P> {
     ///
     /// # Errors
     ///
-    /// Fails, sending nothing, if any recipient is not an actor this one
-    /// may send to, or is this actor itself, which could never answer.
+    /// Fails before anything is sent when `to` names an actor outside those
+    /// this one may send to, or names this actor itself, which is busy with this
+    /// very step.
     pub async fn request(
         &self,
         message: M,
@@ -219,11 +225,11 @@ impl<M: Message, P> Context<M, P> {
         Ok(replies)
     }
 
-    /// Stop another actor, without its cooperation.
+    /// Stop another actor at once, wherever it is in its step.
     ///
     /// # Errors
     ///
-    /// Fails if `who` is not an actor this one may shut down.
+    /// Fails when `who` is outside the actors this one may shut down.
     pub fn stop(&self, who: &ActorId) -> anyhow::Result<()> {
         match self.shutdown.others.get(who) {
             Some(token) => {
@@ -239,7 +245,7 @@ impl<M: Message, P> Context<M, P> {
 
     /// Shut this actor down. The step that calls this is abandoned at its
     /// next await, so a behavior with last words says them first. The actor
-    /// then stops without taking anything else from its inbox.
+    /// then stops, leaving whatever is in its inbox there.
     pub fn shutdown(&self) {
         self.shutdown.mine.cancel();
     }
@@ -260,8 +266,8 @@ pub trait Behavior: Send + Sync {
     type Payload: Send + 'static;
     /// The ways out of this actor, handed to the behavior when it was built.
     fn context(&self) -> &Context<Self::Message, Self::Payload>;
-    /// Handle `observation`. The result is the reply if the observation was
-    /// a request, and is ignored if it was a broadcast.
+    /// Handle `observation`. The result is the reply to a request, and is
+    /// dropped after a broadcast.
     async fn policy(&self, observation: &Self::Message) -> anyhow::Result<Vec<Self::Message>>;
     /// Called once every actor in the episode is running. This is where an
     /// actor with an opening move makes it.
@@ -270,6 +276,10 @@ pub trait Behavior: Send + Sync {
     }
 }
 
+/// What an actor does before its first step and after its last: open a
+/// connection, say, and close it again. Both methods have empty defaults,
+/// so the simplest lifecycle is an empty impl.
+///
 /// Actors run on a multi-threaded runtime, so a lifecycle has to be
 /// shareable across threads.
 #[async_trait]
@@ -284,6 +294,7 @@ pub trait Lifecycle: Send + Sync {
     }
 }
 
+/// The sending ends of the inboxes an actor may put something in.
 pub(crate) struct Outbox<M: Message> {
     /// Channel on which an Actor sends a Message to itself.
     pub(crate) loopback: UnboundedSender<Observation<M>>,
@@ -291,6 +302,8 @@ pub(crate) struct Outbox<M: Message> {
     pub(crate) others: HashMap<ActorId, UnboundedSender<Observation<M>>>,
 }
 
+/// The cancellation tokens an actor is stopped through and stops others
+/// through.
 pub(crate) struct Shutdown {
     /// Token other Actors cancel to shut this Actor down.
     pub(crate) mine: CancellationToken,
@@ -298,10 +311,12 @@ pub(crate) struct Shutdown {
     pub(crate) others: HashMap<ActorId, CancellationToken>,
 }
 
-/// Messages an [`Actor`](Actor) receives.
+/// What arrives in an actor's inbox.
 #[derive(Debug)]
 pub(crate) enum Observation<M: Message> {
+    /// A message sent and forgotten.
     Broadcast(M),
+    /// A message whose sender is waiting for an answer.
     Request(Request<M>),
 }
 

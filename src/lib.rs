@@ -1,9 +1,8 @@
 //! Episodes in which actors talk to each other by broadcast, request, and
 //! reply.
 //!
-//! The crate-level documentation is the project README, included below so the
-//! two cannot drift apart and so any example in it is compiled with the
-//! doctests.
+//! The crate-level documentation is the project README, included below so
+//! the two stay one document.
 
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]

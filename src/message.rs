@@ -1,18 +1,35 @@
+//! What actors say to one another: the [`Message`] trait and the request
+//! and reply envelopes that carry a message and its answer.
+
 use anyhow::{Context, Result};
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::oneshot;
 
-/// A message is cloned for every recipient of a broadcast or a request, and
-/// travels between actors on a multi-threaded runtime.
+/// What one episode's actors say to one another.
+///
+/// An episode carries one message type, and every actor in it sends and
+/// receives that type. A message is cloned for every recipient of a
+/// broadcast or a request, and travels between actors on a multi-threaded
+/// runtime, which is what the bounds say. Implementing it takes one empty
+/// line:
+///
+/// ```
+/// # use free_agent::Message;
+/// #[derive(Debug, Clone)]
+/// struct Note(String);
+/// impl Message for Note {}
+/// ```
 pub trait Message: Debug + Clone + Send + Sync + 'static {}
 
+/// Tells a reply from the others arriving on the same channel.
 type RequestId = u64;
 
-/// Request ids are unique across the process, which is more than an episode
-/// needs but costs nothing to arrange.
+/// Request ids are unique across the process.
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(0);
 
+/// A message whose sender is waiting for an answer, and the channel the
+/// answer goes back on.
 #[derive(Debug)]
 pub(crate) struct Request<M: Message> {
     id: RequestId,
@@ -32,6 +49,12 @@ impl<M: Message> Request<M> {
         (request, reply)
     }
 
+    /// Answer this request with `messages`, consuming it: a request is
+    /// answered once.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the asker has stopped waiting.
     pub(crate) fn reply(self, messages: Vec<M>) -> Result<()> {
         self.reply_to
             .send(Reply {
@@ -42,15 +65,18 @@ impl<M: Message> Request<M> {
             .context("the asker stopped waiting")
     }
 
+    /// What is being asked.
     pub(crate) fn message(&self) -> &M {
         &self.message
     }
 }
 
+/// The answer to a [`Request`].
 #[derive(Debug)]
 pub(crate) struct Reply<M: Message> {
-    /// Kept so a reply can be matched to its request once anything checks.
+    /// The request this answers.
     #[allow(dead_code)]
     id: RequestId,
+    /// What the recipient answered. An empty answer is an acknowledgment.
     pub(crate) messages: Vec<M>,
 }

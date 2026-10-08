@@ -1,3 +1,7 @@
+//! An episode brings a set of actors into being together, wires them to
+//! one another as their inits allow, and runs them until every one has
+//! stopped.
+
 use crate::actor::{
     Actor, ActorId, ActorInit, Behavior, Context, Lifecycle, Observation, Outbox, Shutdown,
 };
@@ -24,6 +28,11 @@ pub struct Episode<L: Lifecycle, B: Behavior> {
 impl<L: Lifecycle, B: Behavior> Episode<L, B> {
     /// The actors described by `init`, wired to one another as it allows.
     /// Those with `has_logger` get a copy of `logger`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when an init's `can_send_to` or `can_shut_down` names an actor
+    /// missing from `init`. An episode's wiring is checked when it is built.
     pub fn new(init: HashMap<ActorId, ActorInit<L, B>>, logger: Logger<B::Payload>) -> Self {
         // First pass: give every actor a channel and a shutdown token. The
         // init and the receiver are unique, so they stay together in one
@@ -84,11 +93,11 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
 
     /// Spawn every actor, wait until all of them are initialized and running
     /// their message loops, then tell each one to start, and wait for all of
-    /// them to finish. If they have not finished within `patience`, shut
-    /// them all down and fail.
+    /// them to finish. Once `patience` runs out, shut down every actor still
+    /// running and fail.
     ///
-    /// No actor starts until every actor is ready, so an opening move never
-    /// lands on an actor that is still initializing.
+    /// Every actor is ready before any actor starts, so an opening move
+    /// always lands on an actor that is running.
     ///
     /// # Errors
     ///
@@ -154,8 +163,8 @@ type Staged<L, B> = HashMap<
     ),
 >;
 
-/// Wait for every actor to report that it is ready. False if one of them
-/// dropped its signal instead, which means it failed to initialize.
+/// Wait for every actor to report that it is ready. False once one of them
+/// drops its signal, which it does when it fails to initialize.
 async fn all_ready(readies: HashMap<ActorId, oneshot::Receiver<()>>) -> bool {
     for ready in readies.into_values() {
         if ready.await.is_err() {
@@ -166,8 +175,7 @@ async fn all_ready(readies: HashMap<ActorId, oneshot::Receiver<()>>) -> bool {
 }
 
 /// Wait for every task to finish. The first failure shuts the remaining
-/// actors down, since an episode with a broken actor in it cannot be trusted
-/// to finish on its own, and is the error returned.
+/// actors down, so the episode ends as a whole, and is the error returned.
 async fn wait_for_all(
     tasks: &mut JoinSet<anyhow::Result<()>>,
     stops: &[CancellationToken],
@@ -185,8 +193,9 @@ async fn wait_for_all(
     first_failure.map_or(Ok(()), Err)
 }
 
-/// The entries of `directory` named in `allowed`. Naming an actor that does
-/// not exist is a mistake in the episode's init, so it panics.
+/// The entries of `directory` named in `allowed`. Panics when `allowed`
+/// names an actor missing from `directory`, since the episode's wiring is
+/// checked when it is built.
 fn pick<V: Clone>(
     directory: &HashMap<ActorId, V>,
     allowed: &HashSet<ActorId>,
@@ -216,8 +225,8 @@ mod tests {
     struct Note;
     impl Message for Note {}
 
-    /// A lifecycle whose initialization can be held up or broken. With no
-    /// gate and not broken, it has nothing to set up or tear down.
+    /// A lifecycle whose initialization can be held up or broken. Left as
+    /// default, it initializes at once.
     #[derive(Default)]
     struct Gated {
         /// Initialization waits for a permit from here, if present.
@@ -239,8 +248,7 @@ mod tests {
     }
 
     /// A behavior that reports when it is started, both to the test and to
-    /// the log, fails to start if told to, and otherwise never says
-    /// anything.
+    /// the log, fails to start if told to, and is otherwise silent.
     struct Reporter {
         context: Context<Note, ActorId>,
         started: UnboundedSender<ActorId>,
@@ -278,8 +286,7 @@ mod tests {
 
     /// An episode of [`Reporter`]s named `ids`, those in `failing` set to
     /// refuse to start and those in `logging` holding the episode's logger.
-    /// None of the actors may send to or shut down any other, and each has
-    /// `lifecycle(id)`.
+    /// Each actor is wired to itself alone and has `lifecycle(id)`.
     fn episode_with(
         ids: &[&str],
         failing: &[&str],
@@ -314,8 +321,8 @@ mod tests {
         }
     }
 
-    /// [`episode_with`] where every actor initializes at once and none
-    /// holds the logger.
+    /// [`episode_with`] where every actor initializes at once and the logger
+    /// stays with the test.
     fn episode_of(ids: &[&str], failing: &[&str]) -> Stage {
         episode_with(ids, failing, &[], |_| Gated::default())
     }
