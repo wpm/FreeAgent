@@ -1,5 +1,5 @@
 //! Logging is out of band. The episode is given one logger channel, each
-//! actor that wants to log holds a copy of it, and a behavior logs through
+//! actor that wants to log holds a copy of it, and a strategy logs through
 //! [`Context::log`](crate::Context::log). The other end of the
 //! channel is drained by [`console_log`] or [`drain`].
 
@@ -12,16 +12,16 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 /// The payload is whatever the episode's actors log, most often their
 /// message type.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Event<P> {
+pub struct Event<L> {
     /// When the event was logged.
     pub at: SystemTime,
     /// What the actor logged.
-    pub payload: P,
+    pub payload: L,
 }
 
-impl<P> Event<P> {
+impl<L> Event<L> {
     /// An event with `payload`, stamped now.
-    pub fn now(payload: P) -> Self {
+    pub fn now(payload: L) -> Self {
         Self {
             at: SystemTime::now(),
             payload,
@@ -30,7 +30,7 @@ impl<P> Event<P> {
 }
 
 /// The sending end of an episode's log.
-pub type Logger<P> = UnboundedSender<Event<P>>;
+pub type Logger<L> = UnboundedSender<Event<L>>;
 
 /// Write every event from `events` to `sink`, one per line, until every
 /// logger is gone. A line is the time the event was logged, in seconds since
@@ -39,8 +39,8 @@ pub type Logger<P> = UnboundedSender<Event<P>>;
 /// # Errors
 ///
 /// Fails when writing to `sink` fails.
-pub async fn drain<P: Display, W: Write>(
-    mut events: UnboundedReceiver<Event<P>>,
+pub async fn drain<L: Display, W: Write>(
+    mut events: UnboundedReceiver<Event<L>>,
     mut sink: W,
 ) -> io::Result<()> {
     while let Some(event) = events.recv().await {
@@ -54,7 +54,7 @@ pub async fn drain<P: Display, W: Write>(
 /// Spawn this beside the episode, then await it once the episode is over.
 /// It finishes when the last actor lets go of its logger, so every event
 /// logged is written.
-pub async fn console_log<P: Display>(events: UnboundedReceiver<Event<P>>) -> io::Result<()> {
+pub async fn console_log<L: Display>(events: UnboundedReceiver<Event<L>>) -> io::Result<()> {
     drain(events, io::stderr()).await
 }
 

@@ -1,5 +1,5 @@
-//! An actor is a [`Behavior`] driven by an inbox, with a [`Lifecycle`]
-//! around it. The behavior reaches the rest of the episode through its
+//! An actor is a [`Strategy`] driven by an inbox, with a [`Lifecycle`]
+//! around it. The strategy reaches the rest of the episode through its
 //! [`Context`], which an [`Episode`](crate::Episode) builds from the
 //! actor's [`ActorInit`].
 
@@ -15,18 +15,18 @@ use tokio_util::sync::CancellationToken;
 /// An actor's name, unique within an episode.
 pub type ActorId = String;
 
-/// Builds a [`Behavior`] from the [`Context`] it will own.
-pub type Builder<B> =
-    Box<dyn FnOnce(Context<<B as Behavior>::Message, <B as Behavior>::Payload>) -> B + Send>;
+/// Builds a [`Strategy`] from the [`Context`] it will own.
+pub type Builder<S> =
+    Box<dyn FnOnce(Context<<S as Strategy>::Message, <S as Strategy>::Log>) -> S + Send>;
 
 /// Everything an [`Episode`](crate::Episode) needs to build one actor: how
 /// it lives, how it behaves, and whom it may reach.
-pub struct ActorInit<L: Lifecycle, B: Behavior> {
+pub struct ActorInit<L: Lifecycle, S: Strategy> {
     /// How this actor sets up and tears down.
     pub lifecycle: L,
-    /// Builds the behavior once its [`Context`] exists, which is when the
+    /// Builds the strategy once its [`Context`] exists, which is when the
     /// episode has opened every actor's channels.
-    pub behavior: Builder<B>,
+    pub strategy: Builder<S>,
     /// The actors this one may send to and request from.
     pub can_send_to: HashSet<ActorId>,
     /// The actors this one may stop.
@@ -35,24 +35,24 @@ pub struct ActorInit<L: Lifecycle, B: Behavior> {
     pub has_logger: bool,
 }
 
-/// A running actor: its lifecycle, its behavior, its inbox, and the two
+/// A running actor: its lifecycle, its strategy, its inbox, and the two
 /// one-time signals it exchanges with the episode on the way up.
-pub(crate) struct Actor<L: Lifecycle, B: Behavior> {
+pub(crate) struct Actor<L: Lifecycle, S: Strategy> {
     /// How this Actor handles startup and shutdown.
     pub(crate) lifecycle: L,
     /// How this Actor handles incoming Messages. It owns the [`Context`]
     /// through which it reaches other actors.
-    pub(crate) behavior: B,
+    pub(crate) strategy: S,
     /// This Actor's one-time signal to the episode that it is initialized
     /// and running its message loop.
     pub(crate) ready: oneshot::Sender<()>,
     /// The episode's one-time signal that every actor is running.
     pub(crate) start: oneshot::Receiver<()>,
     /// The channel on which this Actor receives incoming Messages.
-    pub(crate) inbox: UnboundedReceiver<Observation<B::Message>>,
+    pub(crate) inbox: UnboundedReceiver<Observation<S::Message>>,
 }
 
-impl<L: Lifecycle, B: Behavior> Actor<L, B> {
+impl<L: Lifecycle, S: Strategy> Actor<L, S> {
     /// Initialize, then handle the start signal and observations until shut
     /// down or until every sender to this actor's inbox is gone, then clean
     /// up.
@@ -62,7 +62,7 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
     /// shut down while still initializing stops right there; cleanup follows
     /// a finished initialization.
     pub(crate) async fn run(mut self) -> anyhow::Result<()> {
-        let shutdown = self.behavior.context().shutdown.mine.clone();
+        let shutdown = self.strategy.context().shutdown.mine.clone();
         let Some(initialized) = unless_stopped(&shutdown, self.lifecycle.initialize()).await else {
             return Ok(());
         };
@@ -82,7 +82,7 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
                     start = None;
                     match started {
                         Ok(()) => {
-                            let Some(opened) = unless_stopped(&shutdown, self.behavior.start()).await else {
+                            let Some(opened) = unless_stopped(&shutdown, self.strategy.start()).await else {
                                 break;
                             };
                             opened?;
@@ -93,14 +93,14 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
                 observation = self.inbox.recv() => match observation {
                     None => break, // Every sender is gone.
                     Some(Observation::Broadcast(message)) => {
-                        let step = self.behavior.policy(&message);
+                        let step = self.strategy.policy(&message);
                         let Some(acted) = unless_stopped(&shutdown, step).await else {
                             break;
                         };
                         acted?;
                     }
                     Some(Observation::Request(request)) => {
-                        let step = self.behavior.policy(request.message());
+                        let step = self.strategy.policy(request.message());
                         let Some(acted) = unless_stopped(&shutdown, step).await else {
                             break;
                         };
@@ -128,14 +128,14 @@ async fn unless_stopped<T>(
     }
 }
 
-/// The ways out of an actor: what a [`Behavior`] may do besides answer.
+/// The ways out of an actor: what a [`Strategy`] may do besides answer.
 ///
-/// A behavior owns one of these, and the actor keeps the inbox, so messages
-/// reach the behavior one step at a time.
+/// A strategy owns one of these, and the actor keeps the inbox, so messages
+/// reach the strategy one step at a time.
 ///
-/// `P` is what this actor logs. It defaults to the message type, which is
+/// `L` is what this actor logs. It defaults to the message type, which is
 /// what most actors log.
-pub struct Context<M: Message, P = M> {
+pub struct Context<M: Message, L = M> {
     /// This actor's name, as the other actors know it.
     pub id: ActorId,
     /// The channels on which this Actor sends Messages.
@@ -143,14 +143,14 @@ pub struct Context<M: Message, P = M> {
     /// Tokens on which this Actor is shut down, and shuts down others.
     pub(crate) shutdown: Shutdown,
     /// Where this Actor's events go, when it has a logger.
-    pub(crate) log: Option<Logger<P>>,
+    pub(crate) log: Option<Logger<L>>,
 }
 
-impl<M: Message, P> Context<M, P> {
+impl<M: Message, L> Context<M, L> {
     /// Log `payload` as an event stamped now. The event reaches the log when
     /// this actor holds a logger and the log is listening; otherwise it is
     /// dropped, and the actor carries on either way.
-    pub fn log(&self, payload: P) {
+    pub fn log(&self, payload: L) {
         if let Some(log) = &self.log {
             let _ = log.send(Event::now(payload));
         }
@@ -244,7 +244,7 @@ impl<M: Message, P> Context<M, P> {
     }
 
     /// Shut this actor down. The step that calls this is abandoned at its
-    /// next await, so a behavior with last words says them first. The actor
+    /// next await, so a strategy with last words says them first. The actor
     /// then stops, leaving whatever is in its inbox there.
     pub fn shutdown(&self) {
         self.shutdown.mine.cancel();
@@ -252,20 +252,20 @@ impl<M: Message, P> Context<M, P> {
 }
 
 /// How an actor maps what it observes to what it does. The signature of
-/// [`policy`](Behavior::policy) is the reinforcement-learning one: an
-/// observation in, actions out. Anything else the behavior wants to say,
+/// [`policy`](Strategy::policy) is the reinforcement-learning one: an
+/// observation in, actions out. Anything else the strategy wants to say,
 /// such as who it is, goes inside its messages.
 ///
-/// Actors run on a multi-threaded runtime, so a behavior has to be shareable
+/// Actors run on a multi-threaded runtime, so a strategy has to be shareable
 /// across threads.
 #[async_trait]
-pub trait Behavior: Send + Sync {
-    /// What this behavior sends and receives.
+pub trait Strategy: Send + Sync {
+    /// What this strategy sends and receives.
     type Message: Message;
-    /// What this behavior logs. Most often the message type.
-    type Payload: Send + 'static;
-    /// The ways out of this actor, handed to the behavior when it was built.
-    fn context(&self) -> &Context<Self::Message, Self::Payload>;
+    /// What this strategy logs. Most often the message type.
+    type Log: Send + 'static;
+    /// The ways out of this actor, handed to the strategy when it was built.
+    fn context(&self) -> &Context<Self::Message, Self::Log>;
     /// Handle `observation`. The result is the reply to a request, and is
     /// dropped after a broadcast.
     async fn policy(&self, observation: &Self::Message) -> anyhow::Result<Vec<Self::Message>>;
@@ -337,7 +337,7 @@ mod tests {
     #[async_trait]
     impl Lifecycle for Idle {}
 
-    /// A behavior that answers every request with the message it was sent,
+    /// A strategy that answers every request with the message it was sent,
     /// after waiting for a permit from its gate if it has one. Slow to
     /// start, it waits for a permit in `start` too. Broken, it fails every
     /// step.
@@ -348,9 +348,9 @@ mod tests {
         broken: bool,
     }
     #[async_trait]
-    impl Behavior for Echo {
+    impl Strategy for Echo {
         type Message = Note;
-        type Payload = Note;
+        type Log = Note;
         fn context(&self) -> &Context<Note> {
             &self.context
         }
@@ -373,12 +373,12 @@ mod tests {
         }
     }
 
-    /// A behavior with the default opening move, which answers nothing.
+    /// A strategy with the default opening move, which answers nothing.
     struct Mute(Context<Note>);
     #[async_trait]
-    impl Behavior for Mute {
+    impl Strategy for Mute {
         type Message = Note;
-        type Payload = Note;
+        type Log = Note;
         fn context(&self) -> &Context<Note> {
             &self.0
         }
@@ -389,16 +389,16 @@ mod tests {
 
     /// An actor, along with what a test needs to feed it, start it, and stop
     /// it from the outside.
-    struct Rig<B: Behavior = Echo> {
-        actor: Actor<Idle, B>,
+    struct Rig<S: Strategy = Echo> {
+        actor: Actor<Idle, S>,
         sender: UnboundedSender<Observation<Note>>,
         start: oneshot::Sender<()>,
         stop: CancellationToken,
     }
 
-    impl<B: Behavior<Message = Note, Payload = Note>> Rig<B> {
+    impl<S: Strategy<Message = Note, Log = Note>> Rig<S> {
         fn context(&self) -> &Context<Note> {
-            self.actor.behavior.context()
+            self.actor.strategy.context()
         }
     }
 
@@ -416,13 +416,13 @@ mod tests {
         })
     }
 
-    /// A rig around the behavior `build` makes from its context.
-    fn rig_with<B: Behavior<Message = Note, Payload = Note>>(
+    /// A rig around the strategy `build` makes from its context.
+    fn rig_with<S: Strategy<Message = Note, Log = Note>>(
         name: &str,
         others: HashMap<ActorId, UnboundedSender<Observation<Note>>>,
         can_stop: HashMap<ActorId, CancellationToken>,
-        build: impl FnOnce(Context<Note>) -> B,
-    ) -> Rig<B> {
+        build: impl FnOnce(Context<Note>) -> S,
+    ) -> Rig<S> {
         let (sender, inbox) = unbounded_channel();
         let (ready, _) = oneshot::channel();
         let (start, started) = oneshot::channel();
@@ -441,7 +441,7 @@ mod tests {
         };
         let actor = Actor {
             lifecycle: Idle,
-            behavior: build(context),
+            strategy: build(context),
             ready,
             start: started,
             inbox,
@@ -589,7 +589,7 @@ mod tests {
     async fn log_sends_a_stamped_event_down_the_logger_if_there_is_one() {
         let (logger, mut events) = unbounded_channel();
         let mut ann = rig("ann", HashMap::new(), HashMap::new());
-        ann.actor.behavior.context.log = Some(logger);
+        ann.actor.strategy.context.log = Some(logger);
 
         ann.context().log(Note("for the record"));
 
@@ -617,7 +617,7 @@ mod tests {
     fn gated_rig(name: &str) -> (Rig, Arc<Semaphore>) {
         let gate = Arc::new(Semaphore::new(0));
         let mut rig = rig(name, HashMap::new(), HashMap::new());
-        rig.actor.behavior.gate = Some(Arc::clone(&gate));
+        rig.actor.strategy.gate = Some(Arc::clone(&gate));
         (rig, gate)
     }
 
@@ -641,7 +641,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_kill_stops_an_actor_in_the_middle_of_starting() {
         let (mut bob, _gate) = gated_rig("bob");
-        bob.actor.behavior.slow_start = true;
+        bob.actor.strategy.slow_start = true;
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
         // Let Bob take the start signal and block in its opening move.
@@ -654,7 +654,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_behavior_with_no_opening_move_starts_and_waits() {
+    async fn a_strategy_with_no_opening_move_starts_and_waits() {
         let bob = rig_with("bob", HashMap::new(), HashMap::new(), Mute);
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
@@ -679,7 +679,7 @@ mod tests {
     #[tokio::test]
     async fn a_policy_that_fails_on_a_broadcast_fails_the_actor() {
         let mut bob = rig("bob", HashMap::new(), HashMap::new());
-        bob.actor.behavior.broken = true;
+        bob.actor.strategy.broken = true;
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
 
@@ -694,7 +694,7 @@ mod tests {
     #[tokio::test]
     async fn a_policy_that_fails_on_a_request_fails_the_actor() {
         let mut bob = rig("bob", HashMap::new(), HashMap::new());
-        bob.actor.behavior.broken = true;
+        bob.actor.strategy.broken = true;
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
         let (request, _reply) = Request::new(Note("well?"));

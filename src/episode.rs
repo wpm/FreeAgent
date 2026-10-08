@@ -3,7 +3,7 @@
 //! stopped.
 
 use crate::actor::{
-    Actor, ActorId, ActorInit, Behavior, Context, Lifecycle, Observation, Outbox, Shutdown,
+    Actor, ActorId, ActorInit, Context, Lifecycle, Observation, Outbox, Shutdown, Strategy,
 };
 use crate::log::Logger;
 use anyhow::{Context as _, bail};
@@ -17,15 +17,15 @@ use tokio_util::sync::CancellationToken;
 
 /// A set of actors brought into being together, wired to one another as
 /// their inits allow, and run until every one of them has stopped.
-pub struct Episode<L: Lifecycle, B: Behavior> {
-    actors: HashMap<ActorId, Actor<L, B>>,
+pub struct Episode<L: Lifecycle, S: Strategy> {
+    actors: HashMap<ActorId, Actor<L, S>>,
     /// One-time signals from each actor that it is running its message loop.
     readies: HashMap<ActorId, oneshot::Receiver<()>>,
     /// One-time signals telling each actor that every actor is running.
     starts: HashMap<ActorId, oneshot::Sender<()>>,
 }
 
-impl<L: Lifecycle, B: Behavior> Episode<L, B> {
+impl<L: Lifecycle, S: Strategy> Episode<L, S> {
     /// The actors described by `init`, wired to one another as it allows.
     /// Those with `has_logger` get a copy of `logger`.
     ///
@@ -33,14 +33,14 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
     ///
     /// Panics when an init's `can_send_to` or `can_shut_down` names an actor
     /// missing from `init`. An episode's wiring is checked when it is built.
-    pub fn new(init: HashMap<ActorId, ActorInit<L, B>>, logger: Logger<B::Payload>) -> Self {
+    pub fn new(init: HashMap<ActorId, ActorInit<L, S>>, logger: Logger<S::Log>) -> Self {
         // First pass: give every actor a channel and a shutdown token. The
         // init and the receiver are unique, so they stay together in one
         // map. The senders and tokens are clonable, so they go into lookup
         // tables that each actor copies the permitted entries from.
         let mut senders = HashMap::new();
         let mut shutdowns = HashMap::new();
-        let staged: Staged<L, B> = init
+        let staged: Staged<L, S> = init
             .into_iter()
             .map(|(id, init)| {
                 let (tx, rx) = unbounded_channel();
@@ -76,7 +76,7 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
                     id,
                     Actor {
                         lifecycle: init.lifecycle,
-                        behavior: (init.behavior)(context),
+                        strategy: (init.strategy)(context),
                         ready,
                         start: started,
                         inbox,
@@ -107,12 +107,12 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
     pub async fn run(self, patience: Duration) -> anyhow::Result<()>
     where
         L: 'static,
-        B: 'static,
+        S: 'static,
     {
         let stops: Vec<_> = self
             .actors
             .values()
-            .map(|actor| actor.behavior.context().shutdown.mine.clone())
+            .map(|actor| actor.strategy.context().shutdown.mine.clone())
             .collect();
         let mut tasks = JoinSet::new();
         for (id, actor) in self.actors {
@@ -155,11 +155,11 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
 
 /// Each actor's init, together with the receiving end of its inbox, between
 /// the two passes of [`Episode::new`].
-type Staged<L, B> = HashMap<
+type Staged<L, S> = HashMap<
     ActorId,
     (
-        ActorInit<L, B>,
-        UnboundedReceiver<Observation<<B as Behavior>::Message>>,
+        ActorInit<L, S>,
+        UnboundedReceiver<Observation<<S as Strategy>::Message>>,
     ),
 >;
 
@@ -247,7 +247,7 @@ mod tests {
         }
     }
 
-    /// A behavior that reports when it is started, both to the test and to
+    /// A strategy that reports when it is started, both to the test and to
     /// the log, fails to start if told to, and is otherwise silent.
     struct Reporter {
         context: Context<Note, ActorId>,
@@ -255,10 +255,10 @@ mod tests {
         fails: bool,
     }
     #[async_trait]
-    impl Behavior for Reporter {
+    impl Strategy for Reporter {
         type Message = Note;
         /// A reporter logs its own name.
-        type Payload = ActorId;
+        type Log = ActorId;
         fn context(&self) -> &Context<Note, ActorId> {
             &self.context
         }
@@ -302,7 +302,7 @@ mod tests {
                 let fails = failing.contains(id);
                 let init = ActorInit {
                     lifecycle: lifecycle(id),
-                    behavior: Box::new(move |context| Reporter {
+                    strategy: Box::new(move |context| Reporter {
                         context,
                         started,
                         fails,
@@ -363,7 +363,7 @@ mod tests {
                 let others: HashSet<ActorId> = others.iter().map(|o| o.to_string()).collect();
                 let init = ActorInit {
                     lifecycle: Gated::default(),
-                    behavior: Box::new(move |context| Reporter {
+                    strategy: Box::new(move |context| Reporter {
                         context,
                         started,
                         fails: false,
@@ -378,11 +378,11 @@ mod tests {
         Episode::new(init, logger)
     }
 
-    fn stops<L: Lifecycle, B: Behavior>(episode: &Episode<L, B>) -> Vec<CancellationToken> {
+    fn stops<L: Lifecycle, S: Strategy>(episode: &Episode<L, S>) -> Vec<CancellationToken> {
         episode
             .actors
             .values()
-            .map(|actor| actor.behavior.context().shutdown.mine.clone())
+            .map(|actor| actor.strategy.context().shutdown.mine.clone())
             .collect()
     }
 
@@ -390,12 +390,12 @@ mod tests {
     fn new_wires_each_actor_to_the_actors_its_init_names() {
         let episode = wired(&[("ann", &["bob"]), ("bob", &[])]);
 
-        let ann = episode.actors["ann"].behavior.context();
+        let ann = episode.actors["ann"].strategy.context();
         let reaches: Vec<_> = ann.outbox.others.keys().cloned().collect();
         let stops: Vec<_> = ann.shutdown.others.keys().cloned().collect();
         assert_eq!(reaches, ["bob"]);
         assert_eq!(stops, ["bob"]);
-        let bob = episode.actors["bob"].behavior.context();
+        let bob = episode.actors["bob"].strategy.context();
         assert!(bob.outbox.others.is_empty());
         assert!(bob.shutdown.others.is_empty());
     }
