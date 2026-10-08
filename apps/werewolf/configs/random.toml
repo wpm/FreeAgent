@@ -1,8 +1,0 @@
-# Werewolf played at random, as in Braverman, Etesami, and Mossel.
-# Run many of these with different seeds to reproduce the paper.
-
-players = 16
-werewolves = 4
-
-[policy]
-kind = "random"
