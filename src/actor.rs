@@ -54,14 +54,23 @@ pub(crate) struct Actor<L: Lifecycle, S: Strategy> {
 }
 
 impl<L: Lifecycle, S: Strategy> Actor<L, S> {
-    /// Initialize, then handle the start signal and envelopes until shut
-    /// down or until every sender to this actor's mailbox is gone, then clean
-    /// up.
+    /// An actor's whole life, in four phases.
     ///
-    /// Shutdown takes effect at once: a step in progress is abandoned at its
-    /// next await, and whatever is waiting in the mailbox stays there. An actor
-    /// shut down while still initializing stops right there; cleanup follows
-    /// a finished initialization.
+    /// 1. Initialize, through the lifecycle, and tell the episode this actor
+    ///    is ready.
+    /// 2. Wait for the episode's start signal, which comes once every actor
+    ///    is ready, and make the strategy's opening move.
+    /// 3. Deliver each envelope in the mailbox to the strategy, one at a
+    ///    time, until every sender is gone.
+    /// 4. Clean up, through the lifecycle.
+    ///
+    /// Phases 2 and 3 overlap: mail that arrives before the start signal is
+    /// delivered as it comes. An error from the lifecycle or the strategy
+    /// ends the actor with that error.
+    ///
+    /// Shutdown cuts any phase short. A step in progress is dropped at its
+    /// next await, mail still in the mailbox stays there, and cleanup runs
+    /// only after a finished initialization.
     pub(crate) async fn run(mut self) -> anyhow::Result<()> {
         let shutdown = self.strategy.context().shutdown.mine.clone();
         let Some(initialized) = run_unless_stopped(&shutdown, self.lifecycle.initialize()).await
@@ -73,10 +82,14 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
         if let Some(ready) = self.ready.take() {
             let _ = ready.send(());
         }
-        // A oneshot receiver panics if polled after it completes, so the
-        // start arm leaves the select once it has fired.
         let mut started = false;
         loop {
+            // Wait for whichever happens first: shutdown, the start signal,
+            // or the next envelope. Each arm is `pattern = future => body`;
+            // the body runs with the future's output bound to the pattern.
+            // `biased` tries the arms in order, so shutdown wins a tie. The
+            // start arm drops out once it has fired, because a oneshot
+            // receiver panics if polled again.
             let flow = tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => Break(()),
