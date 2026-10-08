@@ -2,10 +2,9 @@
 //! takes messages from a mailbox one at a time, and reaches other actors
 //! only by sending them messages.
 //!
-//! Here an actor is a [`Behavior`] driven by a mailbox, with a [`Lifecycle`]
-//! around it. The behavior reaches the rest of the episode through its
-//! [`Context`], which an [`Episode`](crate::Episode) builds from the
-//! actor's [`ActorInit`].
+//! Here an actor is a [`Behavior`] driven by a mailbox. The behavior
+//! reaches the rest of the episode through its [`Context`], which an
+//! [`Episode`](crate::Episode) builds from the actor's [`ActorInit`].
 //!
 //! [actor model]: https://en.wikipedia.org/wiki/Actor_model
 
@@ -27,10 +26,8 @@ pub type Builder<B> =
     Box<dyn FnOnce(Context<<B as Behavior>::Message, <B as Behavior>::Log>) -> B + Send>;
 
 /// Everything an [`Episode`](crate::Episode) needs to build one actor: how
-/// it lives, how it behaves, and whom it may reach.
-pub struct ActorInit<L: Lifecycle, B: Behavior> {
-    /// How this actor sets up and tears down.
-    pub lifecycle: L,
+/// it behaves and whom it may reach.
+pub struct ActorInit<B: Behavior> {
     /// Builds the behavior once its [`Context`] exists, which is when the
     /// episode has opened every actor's channels.
     pub behavior: Builder<B>,
@@ -42,13 +39,11 @@ pub struct ActorInit<L: Lifecycle, B: Behavior> {
     pub has_logger: bool,
 }
 
-/// A running actor: its lifecycle, its behavior, its mailbox, and the two
-/// one-time signals it exchanges with the episode on the way up.
-pub(crate) struct Actor<L: Lifecycle, B: Behavior> {
-    /// How this Actor handles startup and shutdown.
-    pub(crate) lifecycle: L,
-    /// How this Actor handles incoming Messages. It owns the [`Context`]
-    /// through which it reaches other actors.
+/// A running actor: its behavior, its mailbox, and the two one-time signals
+/// it exchanges with the episode on the way up.
+pub(crate) struct Actor<B: Behavior> {
+    /// What this Actor does at each point in its life. It owns the
+    /// [`Context`] through which it reaches other actors.
     pub(crate) behavior: B,
     /// This Actor's one-time signal to the episode that it is initialized
     /// and running its message loop. Taken when it is sent.
@@ -59,27 +54,26 @@ pub(crate) struct Actor<L: Lifecycle, B: Behavior> {
     pub(crate) mailbox: UnboundedReceiver<Envelope<B::Message>>,
 }
 
-impl<L: Lifecycle, B: Behavior> Actor<L, B> {
+impl<B: Behavior> Actor<B> {
     /// An actor's whole life, in four phases.
     ///
-    /// 1. Initialize, through the lifecycle, and tell the episode this actor
-    ///    is ready.
+    /// 1. Initialize, and tell the episode this actor is ready.
     /// 2. Wait for the episode's start signal, which comes once every actor
-    ///    is ready, and make the behavior's opening move.
+    ///    is ready, and make the opening move.
     /// 3. Deliver each envelope in the mailbox to the behavior, one at a
     ///    time, until shut down.
-    /// 4. Clean up, through the lifecycle.
+    /// 4. Clean up.
     ///
     /// Phases 2 and 3 overlap: mail that arrives before the start signal is
-    /// delivered as it comes. An error from the lifecycle or the behavior
-    /// ends the actor with that error.
+    /// delivered as it comes. An error from the behavior at any phase ends
+    /// the actor with that error.
     ///
     /// Shutdown cuts any phase short. A step in progress is dropped at its
     /// next await, mail still in the mailbox stays there, and cleanup runs
     /// only after a finished initialization.
     pub(crate) async fn run(mut self) -> anyhow::Result<()> {
         let shutdown = self.behavior.context().shutdown.mine.clone();
-        let Some(initialized) = run_unless_stopped(&shutdown, self.lifecycle.initialize()).await
+        let Some(initialized) = run_unless_stopped(&shutdown, self.behavior.initialize()).await
         else {
             return Ok(());
         };
@@ -113,7 +107,7 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
                 break;
             }
         }
-        self.lifecycle.clean_up().await?;
+        self.behavior.clean_up().await?;
         Ok(())
     }
 
@@ -310,10 +304,14 @@ impl<M: Message, L> Context<M, L> {
     }
 }
 
-/// How an actor maps what it receives to what it does: a statement goes to
-/// [`receive`](Behavior::receive) and a request to [`answer`](Behavior::answer),
-/// whose result is the reply. Anything else the behavior wants to say, such
-/// as who it is, goes inside its messages.
+/// What an actor does at each point in its life. It initializes, makes an
+/// opening move once every actor is running, then maps what it receives to
+/// what it does: a statement goes to [`receive`](Behavior::receive) and a
+/// request to [`answer`](Behavior::answer), whose result is the reply. On
+/// the way out it cleans up. Every method but [`context`](Behavior::context)
+/// has an empty default, so the simplest behavior is a context and nothing
+/// else. Anything else the behavior wants to say, such as who it is, goes
+/// inside its messages.
 ///
 /// A behavior's state is its own: the mailbox hands it one message at a
 /// time, so each step may change that state freely. Actors run on a
@@ -326,6 +324,11 @@ pub trait Behavior: Send {
     type Log: Send + 'static;
     /// The ways out of this actor, handed to the behavior when it was built.
     fn context(&self) -> &Context<Self::Message, Self::Log>;
+    /// Called before anything else: open a connection, say. No actor starts
+    /// until every actor has initialized.
+    async fn initialize(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
     /// Handle the statement `message`. By default it is ignored.
     async fn receive(&mut self, _message: &Self::Message) -> anyhow::Result<()> {
         Ok(())
@@ -340,22 +343,9 @@ pub trait Behavior: Send {
     async fn start(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-}
-
-/// What an actor does before its first step and after its last: open a
-/// connection, say, and close it again. Both methods have empty defaults,
-/// so the simplest lifecycle is an empty impl.
-///
-/// Actors run on a multi-threaded runtime, so a lifecycle has to be
-/// shareable across threads.
-#[async_trait]
-pub trait Lifecycle: Send + Sync {
-    /// Called just before the message handling loop begins.
-    async fn initialize(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-    /// Called just before the message handling loop exits.
-    async fn clean_up(&self) -> anyhow::Result<()> {
+    /// Called last, after the actor has stopped taking mail: close what
+    /// `initialize` opened.
+    async fn clean_up(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -390,10 +380,6 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     struct Note(&'static str);
     impl Message for Note {}
-
-    struct Idle;
-    #[async_trait]
-    impl Lifecycle for Idle {}
 
     /// A behavior that answers every request with the message it was sent,
     /// after waiting for a permit from its gate if it has one, and waits at
@@ -479,7 +465,7 @@ mod tests {
     /// An actor, along with what a test needs to feed it, start it, and stop
     /// it from the outside.
     struct Rig<B: Behavior = Echo> {
-        actor: Actor<Idle, B>,
+        actor: Actor<B>,
         sender: UnboundedSender<Envelope<Note>>,
         start: oneshot::Sender<()>,
         stop: CancellationToken,
@@ -529,7 +515,6 @@ mod tests {
             log: None,
         };
         let actor = Actor {
-            lifecycle: Idle,
             behavior: build(context),
             ready: Some(ready),
             start: started,

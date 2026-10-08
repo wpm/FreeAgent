@@ -2,7 +2,7 @@
 //! one another as their inits allow, and runs them until every one has
 //! stopped.
 
-use crate::actor::{Actor, ActorId, ActorInit, Behavior, Context, Envelope, Lifecycle, Shutdown};
+use crate::actor::{Actor, ActorId, ActorInit, Behavior, Context, Envelope, Shutdown};
 use crate::log::Logger;
 use anyhow::{Context as _, bail};
 use std::collections::{HashMap, HashSet};
@@ -15,15 +15,15 @@ use tokio_util::sync::CancellationToken;
 
 /// A set of actors brought into being together, wired to one another as
 /// their inits allow, and run until every one of them has stopped.
-pub struct Episode<L: Lifecycle, B: Behavior> {
-    actors: HashMap<ActorId, Actor<L, B>>,
+pub struct Episode<B: Behavior> {
+    actors: HashMap<ActorId, Actor<B>>,
     /// One-time signals from each actor that it is running its message loop.
     readies: HashMap<ActorId, oneshot::Receiver<()>>,
     /// One-time signals telling each actor that every actor is running.
     starts: HashMap<ActorId, oneshot::Sender<()>>,
 }
 
-impl<L: Lifecycle, B: Behavior> Episode<L, B> {
+impl<B: Behavior> Episode<B> {
     /// The actors described by `init`, wired to one another as it allows.
     /// Those with `has_logger` get a copy of `logger`.
     ///
@@ -31,14 +31,14 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
     ///
     /// Panics when an init's `can_send_to` or `can_shut_down` names an actor
     /// missing from `init`. An episode's wiring is checked when it is built.
-    pub fn new(init: HashMap<ActorId, ActorInit<L, B>>, logger: Logger<B::Log>) -> Self {
+    pub fn new(init: HashMap<ActorId, ActorInit<B>>, logger: Logger<B::Log>) -> Self {
         // First pass: give every actor a channel and a shutdown token. The
         // init and the receiver are unique, so they stay together in one
         // map. The senders and tokens are clonable, so they go into lookup
         // tables that each actor copies the permitted entries from.
         let mut senders = HashMap::new();
         let mut shutdowns = HashMap::new();
-        let staged: Staged<L, B> = init
+        let staged: Staged<B> = init
             .into_iter()
             .map(|(id, init)| {
                 let (tx, rx) = unbounded_channel();
@@ -73,7 +73,6 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
                 (
                     id,
                     Actor {
-                        lifecycle: init.lifecycle,
                         behavior: (init.behavior)(context),
                         ready: Some(ready),
                         start: started,
@@ -104,7 +103,6 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
     /// any actor starts. Running out of patience is an error too.
     pub async fn run(self, patience: Duration) -> anyhow::Result<()>
     where
-        L: 'static,
         B: 'static,
     {
         let stops: Vec<_> = self
@@ -153,10 +151,10 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
 
 /// Each actor's init, together with the receiving end of its mailbox, between
 /// the two passes of [`Episode::new`].
-type Staged<L, B> = HashMap<
+type Staged<B> = HashMap<
     ActorId,
     (
-        ActorInit<L, B>,
+        ActorInit<B>,
         UnboundedReceiver<Envelope<<B as Behavior>::Message>>,
     ),
 >;
@@ -223,32 +221,21 @@ mod tests {
     struct Note;
     impl Message for Note {}
 
-    /// A lifecycle whose initialization can be held up or broken. Left as
-    /// default, it initializes at once.
+    /// How a [`Reporter`] initializes. Left as default, it initializes at
+    /// once.
     #[derive(Default)]
-    struct Gated {
+    struct Initialization {
         /// Initialization waits for a permit from here, if present.
         gate: Option<Arc<Semaphore>>,
         /// Initialization fails.
         broken: bool,
-    }
-    #[async_trait]
-    impl Lifecycle for Gated {
-        async fn initialize(&self) -> anyhow::Result<()> {
-            if self.broken {
-                bail!("cannot initialize");
-            }
-            if let Some(gate) = &self.gate {
-                gate.acquire().await?.forget();
-            }
-            Ok(())
-        }
     }
 
     /// A behavior that reports when it is started, both to the test and to
     /// the log, fails to start if told to, and is otherwise silent.
     struct Reporter {
         context: Context<Note, ActorId>,
+        initialization: Initialization,
         started: UnboundedSender<ActorId>,
         fails: bool,
     }
@@ -259,6 +246,15 @@ mod tests {
         type Log = ActorId;
         fn context(&self) -> &Context<Note, ActorId> {
             &self.context
+        }
+        async fn initialize(&mut self) -> anyhow::Result<()> {
+            if self.initialization.broken {
+                bail!("cannot initialize");
+            }
+            if let Some(gate) = &self.initialization.gate {
+                gate.acquire().await?.forget();
+            }
+            Ok(())
         }
         async fn start(&mut self) -> anyhow::Result<()> {
             if self.fails {
@@ -272,7 +268,7 @@ mod tests {
 
     /// An episode under test, with the channels the test watches it through.
     struct Stage {
-        episode: Episode<Gated, Reporter>,
+        episode: Episode<Reporter>,
         /// Every reporter announces here that it was started.
         starts: UnboundedReceiver<ActorId>,
         /// The episode's log.
@@ -281,12 +277,13 @@ mod tests {
 
     /// An episode of [`Reporter`]s named `ids`, those in `failing` set to
     /// refuse to start and those in `logging` holding the episode's logger.
-    /// Each actor is wired to itself alone and has `lifecycle(id)`.
+    /// Each actor is wired to itself alone and initializes as
+    /// `initialization(id)` says.
     fn episode_with(
         ids: &[&str],
         failing: &[&str],
         logging: &[&str],
-        lifecycle: impl Fn(&str) -> Gated,
+        initialization: impl Fn(&str) -> Initialization,
     ) -> Stage {
         let (started, starts) = unbounded_channel();
         let (logger, log) = unbounded_channel();
@@ -295,10 +292,11 @@ mod tests {
             .map(|id| {
                 let started = started.clone();
                 let fails = failing.contains(id);
+                let initialization = initialization(id);
                 let init = ActorInit {
-                    lifecycle: lifecycle(id),
                     behavior: Box::new(move |context| Reporter {
                         context,
+                        initialization,
                         started,
                         fails,
                     }),
@@ -319,7 +317,7 @@ mod tests {
     /// [`episode_with`] where every actor initializes at once and the logger
     /// stays with the test.
     fn episode_of(ids: &[&str], failing: &[&str]) -> Stage {
-        episode_with(ids, failing, &[], |_| Gated::default())
+        episode_with(ids, failing, &[], |_| Initialization::default())
     }
 
     /// An episode of Ann and Bob in which Bob's initialization waits for a
@@ -327,7 +325,7 @@ mod tests {
     fn episode_with_bob_held_up() -> (Stage, Arc<Semaphore>) {
         let gate = Arc::new(Semaphore::new(0));
         let slow = Arc::clone(&gate);
-        let stage = episode_with(&["ann", "bob"], &[], &[], move |id| Gated {
+        let stage = episode_with(&["ann", "bob"], &[], &[], move |id| Initialization {
             gate: (id == "bob").then(|| Arc::clone(&slow)),
             broken: false,
         });
@@ -348,7 +346,7 @@ mod tests {
 
     /// An episode of reporters in which each actor may send to and shut
     /// down the actors listed beside its name.
-    fn wired(links: &[(&str, &[&str])]) -> Episode<Gated, Reporter> {
+    fn wired(links: &[(&str, &[&str])]) -> Episode<Reporter> {
         let (started, _) = unbounded_channel();
         let (logger, _) = unbounded_channel();
         let init = links
@@ -357,9 +355,9 @@ mod tests {
                 let started = started.clone();
                 let others: HashSet<ActorId> = others.iter().map(|o| o.to_string()).collect();
                 let init = ActorInit {
-                    lifecycle: Gated::default(),
                     behavior: Box::new(move |context| Reporter {
                         context,
+                        initialization: Initialization::default(),
                         started,
                         fails: false,
                     }),
@@ -373,7 +371,7 @@ mod tests {
         Episode::new(init, logger)
     }
 
-    fn stops<L: Lifecycle, B: Behavior>(episode: &Episode<L, B>) -> Vec<CancellationToken> {
+    fn stops<B: Behavior>(episode: &Episode<B>) -> Vec<CancellationToken> {
         episode
             .actors
             .values()
@@ -480,7 +478,7 @@ mod tests {
             episode,
             mut starts,
             ..
-        } = episode_with(&["ann", "bob"], &[], &[], |id| Gated {
+        } = episode_with(&["ann", "bob"], &[], &[], |id| Initialization {
             gate: None,
             broken: id == "bob",
         });
@@ -516,7 +514,9 @@ mod tests {
             episode,
             mut starts,
             mut log,
-        } = episode_with(&["ann", "bob"], &[], &["ann"], |_| Gated::default());
+        } = episode_with(&["ann", "bob"], &[], &["ann"], |_| {
+            Initialization::default()
+        });
         let stops = stops(&episode);
         let running = tokio::spawn(episode.run(Duration::from_secs(60)));
         starts.recv().await.unwrap();
