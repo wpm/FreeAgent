@@ -1,4 +1,4 @@
-use crate::rl::werewolf::{Action, Observation, Policy};
+use crate::{Action, Observation, Policy};
 use async_trait::async_trait;
 
 struct Werewolf {}

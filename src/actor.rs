@@ -1,5 +1,5 @@
-use crate::rl::log::{Event, Logger};
-use crate::rl::message::{Message, Request};
+use crate::log::{Event, Logger};
+use crate::message::{Message, Request};
 use anyhow::{Context as _, bail};
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
@@ -7,32 +7,42 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-pub(super) type ActorId = String;
+/// An actor's name, unique within an episode.
+pub type ActorId = String;
 
-pub(super) struct ActorInit<L: Lifecycle, B: Behavior> {
-    pub(super) lifecycle: L,
+/// Builds a [`Behavior`] from the [`Context`] it will own.
+pub type Builder<B> =
+    Box<dyn FnOnce(Context<<B as Behavior>::Message, <B as Behavior>::Payload>) -> B + Send>;
+
+/// Everything an [`Episode`](crate::Episode) needs to build one actor: how
+/// it lives, how it behaves, and whom it may reach.
+pub struct ActorInit<L: Lifecycle, B: Behavior> {
+    /// How this actor sets up and tears down.
+    pub lifecycle: L,
     /// Builds the behavior once its [`Context`] exists, which is not until
     /// the episode has opened every actor's channels.
-    pub(super) behavior: Box<dyn FnOnce(Context<B::Message, B::Payload>) -> B + Send>,
-    pub(super) can_send_to: HashSet<ActorId>,
-    pub(super) can_shut_down: HashSet<ActorId>,
+    pub behavior: Builder<B>,
+    /// The actors this one may send to and request from.
+    pub can_send_to: HashSet<ActorId>,
+    /// The actors this one may stop.
+    pub can_shut_down: HashSet<ActorId>,
     /// Whether this actor gets a copy of the episode's logger.
-    pub(super) has_logger: bool,
+    pub has_logger: bool,
 }
 
-pub(super) struct Actor<L: Lifecycle, B: Behavior> {
+pub(crate) struct Actor<L: Lifecycle, B: Behavior> {
     /// How this Actor handles startup and shutdown.
-    pub(super) lifecycle: L,
+    pub(crate) lifecycle: L,
     /// How this Actor handles incoming Messages. It owns the [`Context`]
     /// through which it reaches other actors.
-    pub(super) behavior: B,
+    pub(crate) behavior: B,
     /// This Actor's one-time signal to the episode that it is initialized
     /// and running its message loop.
-    pub(super) ready: oneshot::Sender<()>,
+    pub(crate) ready: oneshot::Sender<()>,
     /// The episode's one-time signal that every actor is running.
-    pub(super) start: oneshot::Receiver<()>,
+    pub(crate) start: oneshot::Receiver<()>,
     /// The channel on which this Actor receives incoming Messages.
-    pub(super) inbox: UnboundedReceiver<Observation<B::Message>>,
+    pub(crate) inbox: UnboundedReceiver<Observation<B::Message>>,
 }
 
 impl<L: Lifecycle, B: Behavior> Actor<L, B> {
@@ -44,7 +54,7 @@ impl<L: Lifecycle, B: Behavior> Actor<L, B> {
     /// next await, and nothing else waiting in the inbox is taken in. An
     /// actor shut down while still initializing stops without cleaning up,
     /// since there is no telling how far initialization got.
-    pub(super) async fn run(mut self) -> anyhow::Result<()> {
+    pub(crate) async fn run(mut self) -> anyhow::Result<()> {
         let shutdown = self.behavior.context().shutdown.mine.clone();
         let Some(initialized) = unless_stopped(&shutdown, self.lifecycle.initialize()).await else {
             return Ok(());
@@ -111,7 +121,7 @@ async fn unless_stopped<T>(
     }
 }
 
-/// The ways out of an [`Actor`]: what a [`Behavior`] may do besides answer.
+/// The ways out of an actor: what a [`Behavior`] may do besides answer.
 ///
 /// A behavior owns one of these and nothing else of the actor. In particular
 /// it cannot reach the inbox, so it cannot take the next message out of
@@ -119,22 +129,22 @@ async fn unless_stopped<T>(
 ///
 /// `P` is what this actor logs. It defaults to the message type, which is
 /// what most actors log.
-pub(super) struct Context<M: Message, P = M> {
+pub struct Context<M: Message, P = M> {
     /// This actor's name, as the other actors know it.
-    pub(super) id: ActorId,
+    pub id: ActorId,
     /// The channels on which this Actor sends Messages.
-    pub(super) outbox: Outbox<M>,
+    pub(crate) outbox: Outbox<M>,
     /// Tokens on which this Actor is shut down, and shuts down others.
-    pub(super) shutdown: Shutdown,
+    pub(crate) shutdown: Shutdown,
     /// Where this Actor's events go, if it has a logger at all.
-    pub(super) log: Option<Logger<P>>,
+    pub(crate) log: Option<Logger<P>>,
 }
 
 impl<M: Message, P> Context<M, P> {
     /// Log `payload` as an event stamped now. Nothing happens if this actor
     /// has no logger, or if the log has stopped listening. Logging never
     /// fails an actor.
-    pub(super) fn log(&self, payload: P) {
+    pub fn log(&self, payload: P) {
         if let Some(log) = &self.log {
             let _ = log.send(Event::now(payload));
         }
@@ -142,7 +152,7 @@ impl<M: Message, P> Context<M, P> {
 
     /// Broadcast `message` to every actor this one may send to. An actor
     /// that has already stopped is skipped.
-    pub(super) fn send(&self, message: M) -> anyhow::Result<()> {
+    pub fn send(&self, message: M) -> anyhow::Result<()> {
         for sender in self.outbox.others.values() {
             // A failed send means the recipient's inbox is gone.
             let _ = sender.send(Observation::Broadcast(message.clone()));
@@ -154,7 +164,7 @@ impl<M: Message, P> Context<M, P> {
     /// step. This is fire and forget: the only way an actor may message
     /// itself, since it cannot take a step while it is waiting for one to
     /// finish.
-    pub(super) fn note(&self, message: M) -> anyhow::Result<()> {
+    pub fn note(&self, message: M) -> anyhow::Result<()> {
         self.outbox
             .loopback
             .send(Observation::Broadcast(message))
@@ -170,7 +180,7 @@ impl<M: Message, P> Context<M, P> {
     ///
     /// Fails, sending nothing, if any recipient is not an actor this one
     /// may send to, or is this actor itself, which could never answer.
-    pub(super) async fn request(
+    pub async fn request(
         &self,
         message: M,
         to: HashSet<ActorId>,
@@ -214,7 +224,7 @@ impl<M: Message, P> Context<M, P> {
     /// # Errors
     ///
     /// Fails if `who` is not an actor this one may shut down.
-    pub(super) fn stop(&self, who: &ActorId) -> anyhow::Result<()> {
+    pub fn stop(&self, who: &ActorId) -> anyhow::Result<()> {
         match self.shutdown.others.get(who) {
             Some(token) => {
                 token.cancel();
@@ -230,7 +240,7 @@ impl<M: Message, P> Context<M, P> {
     /// Shut this actor down. The step that calls this is abandoned at its
     /// next await, so a behavior with last words says them first. The actor
     /// then stops without taking anything else from its inbox.
-    pub(super) fn shutdown(&self) {
+    pub fn shutdown(&self) {
         self.shutdown.mine.cancel();
     }
 }
@@ -243,7 +253,8 @@ impl<M: Message, P> Context<M, P> {
 /// Actors run on a multi-threaded runtime, so a behavior has to be shareable
 /// across threads.
 #[async_trait]
-pub(super) trait Behavior: Send + Sync {
+pub trait Behavior: Send + Sync {
+    /// What this behavior sends and receives.
     type Message: Message;
     /// What this behavior logs. Most often the message type.
     type Payload: Send + 'static;
@@ -262,7 +273,7 @@ pub(super) trait Behavior: Send + Sync {
 /// Actors run on a multi-threaded runtime, so a lifecycle has to be
 /// shareable across threads.
 #[async_trait]
-pub(super) trait Lifecycle: Send + Sync {
+pub trait Lifecycle: Send + Sync {
     /// Called just before the message handling loop begins.
     async fn initialize(&self) -> anyhow::Result<()> {
         Ok(())
@@ -273,23 +284,23 @@ pub(super) trait Lifecycle: Send + Sync {
     }
 }
 
-pub(super) struct Outbox<M: Message> {
+pub(crate) struct Outbox<M: Message> {
     /// Channel on which an Actor sends a Message to itself.
-    pub(super) loopback: UnboundedSender<Observation<M>>,
+    pub(crate) loopback: UnboundedSender<Observation<M>>,
     /// Channels on which an Actor sends Messages to other Actors.
-    pub(super) others: HashMap<ActorId, UnboundedSender<Observation<M>>>,
+    pub(crate) others: HashMap<ActorId, UnboundedSender<Observation<M>>>,
 }
 
-pub(super) struct Shutdown {
+pub(crate) struct Shutdown {
     /// Token other Actors cancel to shut this Actor down.
-    pub(super) mine: CancellationToken,
+    pub(crate) mine: CancellationToken,
     /// Tokens this Actor cancels to shut down other Actors.
-    pub(super) others: HashMap<ActorId, CancellationToken>,
+    pub(crate) others: HashMap<ActorId, CancellationToken>,
 }
 
 /// Messages an [`Actor`](Actor) receives.
 #[derive(Debug)]
-pub(super) enum Observation<M: Message> {
+pub(crate) enum Observation<M: Message> {
     Broadcast(M),
     Request(Request<M>),
 }

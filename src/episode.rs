@@ -1,7 +1,7 @@
-use crate::rl::actor::{
+use crate::actor::{
     Actor, ActorId, ActorInit, Behavior, Context, Lifecycle, Observation, Outbox, Shutdown,
 };
-use crate::rl::log::Logger;
+use crate::log::Logger;
 use anyhow::{Context as _, bail};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -11,7 +11,9 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-struct Episode<L: Lifecycle, B: Behavior> {
+/// A set of actors brought into being together, wired to one another as
+/// their inits allow, and run until every one of them has stopped.
+pub struct Episode<L: Lifecycle, B: Behavior> {
     actors: HashMap<ActorId, Actor<L, B>>,
     /// One-time signals from each actor that it is running its message loop.
     readies: HashMap<ActorId, oneshot::Receiver<()>>,
@@ -22,17 +24,14 @@ struct Episode<L: Lifecycle, B: Behavior> {
 impl<L: Lifecycle, B: Behavior> Episode<L, B> {
     /// The actors described by `init`, wired to one another as it allows.
     /// Those with `has_logger` get a copy of `logger`.
-    fn new(init: HashMap<ActorId, ActorInit<L, B>>, logger: Logger<B::Payload>) -> Self {
+    pub fn new(init: HashMap<ActorId, ActorInit<L, B>>, logger: Logger<B::Payload>) -> Self {
         // First pass: give every actor a channel and a shutdown token. The
         // init and the receiver are unique, so they stay together in one
         // map. The senders and tokens are clonable, so they go into lookup
         // tables that each actor copies the permitted entries from.
         let mut senders = HashMap::new();
         let mut shutdowns = HashMap::new();
-        let staged: HashMap<
-            ActorId,
-            (ActorInit<L, B>, UnboundedReceiver<Observation<B::Message>>),
-        > = init
+        let staged: Staged<L, B> = init
             .into_iter()
             .map(|(id, init)| {
                 let (tx, rx) = unbounded_channel();
@@ -96,7 +95,7 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
     /// The first actor to fail shuts the others down, and its error is the
     /// episode's. An actor that fails to initialize fails the episode before
     /// any actor starts. Running out of patience is an error too.
-    async fn run(self, patience: Duration) -> anyhow::Result<()>
+    pub async fn run(self, patience: Duration) -> anyhow::Result<()>
     where
         L: 'static,
         B: 'static,
@@ -144,6 +143,16 @@ impl<L: Lifecycle, B: Behavior> Episode<L, B> {
         }
     }
 }
+
+/// Each actor's init, together with the receiving end of its inbox, between
+/// the two passes of [`Episode::new`].
+type Staged<L, B> = HashMap<
+    ActorId,
+    (
+        ActorInit<L, B>,
+        UnboundedReceiver<Observation<<B as Behavior>::Message>>,
+    ),
+>;
 
 /// Wait for every actor to report that it is ready. False if one of them
 /// dropped its signal instead, which means it failed to initialize.
@@ -196,8 +205,8 @@ fn pick<V: Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rl::log::Event;
-    use crate::rl::message::Message;
+    use crate::log::Event;
+    use crate::message::Message;
     use async_trait::async_trait;
     use std::sync::Arc;
     use tokio::sync::Semaphore;

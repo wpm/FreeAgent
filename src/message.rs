@@ -5,7 +5,7 @@ use tokio::sync::oneshot;
 
 /// A message is cloned for every recipient of a broadcast or a request, and
 /// travels between actors on a multi-threaded runtime.
-pub(super) trait Message: Debug + Clone + Send + Sync + 'static {}
+pub trait Message: Debug + Clone + Send + Sync + 'static {}
 
 type RequestId = u64;
 
@@ -14,7 +14,7 @@ type RequestId = u64;
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
-pub(super) struct Request<M: Message> {
+pub(crate) struct Request<M: Message> {
     id: RequestId,
     message: M,
     reply_to: oneshot::Sender<Reply<M>>,
@@ -22,7 +22,7 @@ pub(super) struct Request<M: Message> {
 
 impl<M: Message> Request<M> {
     /// A request carrying `message`, and the channel its reply arrives on.
-    pub(super) fn new(message: M) -> (Self, oneshot::Receiver<Reply<M>>) {
+    pub(crate) fn new(message: M) -> (Self, oneshot::Receiver<Reply<M>>) {
         let (reply_to, reply) = oneshot::channel();
         let request = Self {
             id: NEXT_REQUEST.fetch_add(1, Ordering::Relaxed),
@@ -32,7 +32,7 @@ impl<M: Message> Request<M> {
         (request, reply)
     }
 
-    pub(super) fn reply(self, messages: Vec<M>) -> Result<()> {
+    pub(crate) fn reply(self, messages: Vec<M>) -> Result<()> {
         self.reply_to
             .send(Reply {
                 id: self.id,
@@ -42,13 +42,15 @@ impl<M: Message> Request<M> {
             .context("the asker stopped waiting")
     }
 
-    pub(super) fn message(&self) -> &M {
+    pub(crate) fn message(&self) -> &M {
         &self.message
     }
 }
 
 #[derive(Debug)]
-pub(super) struct Reply<M: Message> {
+pub(crate) struct Reply<M: Message> {
+    /// Kept so a reply can be matched to its request once anything checks.
+    #[allow(dead_code)]
     id: RequestId,
-    pub(super) messages: Vec<M>,
+    pub(crate) messages: Vec<M>,
 }
