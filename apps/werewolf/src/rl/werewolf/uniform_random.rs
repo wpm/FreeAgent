@@ -9,25 +9,25 @@ struct Seer {}
 
 #[async_trait]
 impl Policy for Werewolf {
-    async fn policy(&self, observation: Observation) -> Option<Action> {
+    async fn policy(&self, _observation: Observation) -> Option<Action> {
         todo!()
     }
 }
 #[async_trait]
 impl Policy for Villager {
-    async fn policy(&self, observation: Observation) -> Option<Action> {
+    async fn policy(&self, _observation: Observation) -> Option<Action> {
         todo!()
     }
 }
 #[async_trait]
 impl Policy for Doctor {
-    async fn policy(&self, observation: Observation) -> Option<Action> {
+    async fn policy(&self, _observation: Observation) -> Option<Action> {
         todo!()
     }
 }
 #[async_trait]
 impl Policy for Seer {
-    async fn policy(&self, observation: Observation) -> Option<Action> {
+    async fn policy(&self, _observation: Observation) -> Option<Action> {
         todo!()
     }
 }
