@@ -8,6 +8,7 @@ use crate::message::{Message, Request};
 use anyhow::{Context as _, bail};
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow::{self, Break, Continue};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -44,8 +45,8 @@ pub(crate) struct Actor<L: Lifecycle, S: Strategy> {
     /// through which it reaches other actors.
     pub(crate) strategy: S,
     /// This Actor's one-time signal to the episode that it is initialized
-    /// and running its message loop.
-    pub(crate) ready: oneshot::Sender<()>,
+    /// and running its message loop. Taken when it is sent.
+    pub(crate) ready: Option<oneshot::Sender<()>>,
     /// The episode's one-time signal that every actor is running.
     pub(crate) start: oneshot::Receiver<()>,
     /// The channel on which this Actor receives incoming Messages.
@@ -69,58 +70,82 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
         };
         initialized?;
         // The episode may already be gone, in which case no one is waiting.
-        let _ = self.ready.send(());
-        // A oneshot receiver panics if polled after it completes, so it is
-        // taken out of the select once it has fired.
-        let mut start = Some(self.start);
+        if let Some(ready) = self.ready.take() {
+            let _ = ready.send(());
+        }
+        // A oneshot receiver panics if polled after it completes, so the
+        // start arm leaves the select once it has fired.
+        let mut started = false;
         loop {
-            tokio::select! {
+            let flow = tokio::select! {
                 biased;
-                _ = shutdown.cancelled() => break,
-                started = async { start.as_mut().expect("guarded by the branch condition").await },
-                    if start.is_some() =>
-                {
-                    start = None;
-                    match started {
-                        Ok(()) => {
-                            let Some(opened) =
-                                run_unless_stopped(&shutdown, self.strategy.start()).await
-                            else {
-                                break;
-                            };
-                            opened?;
-                        }
-                        Err(_) => break, // The episode is gone.
-                    }
+                _ = shutdown.cancelled() => Break(()),
+                signal = &mut self.start, if !started => {
+                    started = true;
+                    self.open(signal).await?
                 }
-                // This select watches for shutdown only between envelopes,
-                // so each step races shutdown on its own.
-                envelope = self.mailbox.recv() => match envelope {
-                    None => break, // Every sender is gone.
-                    Some(Envelope::Statement(message)) => {
-                        let Some(received) =
-                            run_unless_stopped(&shutdown, self.strategy.receive(&message)).await
-                        else {
-                            break;
-                        };
-                        received?;
-                    }
-                    Some(Envelope::Request(request)) => {
-                        let Some(answered) =
-                            run_unless_stopped(&shutdown, self.strategy.answer(request.message()))
-                                .await
-                        else {
-                            break;
-                        };
-                        // The asker may have stopped waiting, which is no
-                        // fault of this actor.
-                        let _ = request.reply(answered?);
-                    }
-                },
+                envelope = self.mailbox.recv() => self.deliver(envelope).await?,
+            };
+            if flow.is_break() {
+                break;
             }
         }
         self.lifecycle.clean_up().await?;
         Ok(())
+    }
+
+    /// Make the opening move, now that the episode has signaled that every
+    /// actor is running. An error in place of the signal means the episode
+    /// is gone, and there is nothing to open.
+    async fn open(
+        &self,
+        signal: Result<(), oneshot::error::RecvError>,
+    ) -> anyhow::Result<ControlFlow<()>> {
+        if signal.is_err() {
+            return Ok(Break(()));
+        }
+        let shutdown = &self.strategy.context().shutdown.mine;
+        let Some(opened) = run_unless_stopped(shutdown, self.strategy.start()).await else {
+            return Ok(Break(()));
+        };
+        opened?;
+        Ok(Continue(()))
+    }
+
+    /// Hand `envelope` to the strategy: a statement to receive, a request to
+    /// answer and reply to. No envelope means every sender is gone.
+    ///
+    /// The message loop watches for shutdown only between envelopes, so each
+    /// step races shutdown on its own here.
+    async fn deliver(
+        &self,
+        envelope: Option<Envelope<S::Message>>,
+    ) -> anyhow::Result<ControlFlow<()>> {
+        let Some(envelope) = envelope else {
+            return Ok(Break(()));
+        };
+        let shutdown = &self.strategy.context().shutdown.mine;
+        match envelope {
+            Envelope::Statement(message) => {
+                let Some(received) =
+                    run_unless_stopped(shutdown, self.strategy.receive(&message)).await
+                else {
+                    return Ok(Break(()));
+                };
+                received?;
+            }
+            Envelope::Request(request) => {
+                let Some(answered) =
+                    run_unless_stopped(shutdown, self.strategy.answer(request.message())).await
+                else {
+                    return Ok(Break(()));
+                };
+                // The asker may have stopped waiting, which is no fault of
+                // this actor.
+                let _ = request.reply(answered?);
+            }
+        }
+        Ok(Continue(()))
     }
 }
 
@@ -467,7 +492,7 @@ mod tests {
         let actor = Actor {
             lifecycle: Idle,
             strategy: build(context),
-            ready,
+            ready: Some(ready),
             start: started,
             mailbox,
         };

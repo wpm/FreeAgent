@@ -77,7 +77,7 @@ impl<L: Lifecycle, S: Strategy> Episode<L, S> {
                     Actor {
                         lifecycle: init.lifecycle,
                         strategy: (init.strategy)(context),
-                        ready,
+                        ready: Some(ready),
                         start: started,
                         mailbox,
                     },
