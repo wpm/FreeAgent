@@ -67,7 +67,7 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
     /// 2. Wait for the episode's start signal, which comes once every actor
     ///    is ready, and make the strategy's opening move.
     /// 3. Deliver each envelope in the mailbox to the strategy, one at a
-    ///    time, until every sender is gone.
+    ///    time, until shut down.
     /// 4. Clean up, through the lifecycle.
     ///
     /// Phases 2 and 3 overlap: mail that arrives before the start signal is
@@ -103,7 +103,11 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
                     start_consumed = true;
                     self.open(signal).await?
                 }
-                envelope = self.mailbox.recv() => self.deliver(envelope).await?,
+                envelope = self.mailbox.recv() => {
+                    // This actor holds a sender to its own mailbox, so the
+                    // mailbox outlives the loop.
+                    self.deliver(envelope.expect("mailbox closed")).await?
+                }
             };
             if flow.is_break() {
                 break;
@@ -132,18 +136,11 @@ impl<L: Lifecycle, S: Strategy> Actor<L, S> {
     }
 
     /// Hand `envelope` to the strategy: either a statement to receive or a
-    /// request to answer and reply to. No envelope means every sender is
-    /// gone.
+    /// request to answer and reply to.
     ///
     /// The message loop watches for shutdown only between envelopes, so each
     /// step races shutdown on its own here.
-    async fn deliver(
-        &mut self,
-        envelope: Option<Envelope<S::Message>>,
-    ) -> anyhow::Result<ControlFlow<()>> {
-        let Some(envelope) = envelope else {
-            return Ok(Break(()));
-        };
+    async fn deliver(&mut self, envelope: Envelope<S::Message>) -> anyhow::Result<ControlFlow<()>> {
         let shutdown = self.strategy.context().shutdown.mine.clone();
         match envelope {
             Envelope::Statement(message) => {
