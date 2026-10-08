@@ -326,8 +326,10 @@ pub trait Strategy: Send {
     type Log: Send + 'static;
     /// The ways out of this actor, handed to the strategy when it was built.
     fn context(&self) -> &Context<Self::Message, Self::Log>;
-    /// Handle the statement `message`.
-    async fn receive(&mut self, message: &Self::Message) -> anyhow::Result<()>;
+    /// Handle the statement `message`. By default it is ignored.
+    async fn receive(&mut self, _message: &Self::Message) -> anyhow::Result<()> {
+        Ok(())
+    }
     /// Answer the request `message`. The result is the reply, which by
     /// default is nothing.
     async fn answer(&mut self, _message: &Self::Message) -> anyhow::Result<Vec<Self::Message>> {
@@ -440,8 +442,8 @@ mod tests {
         }
     }
 
-    /// A strategy with the default opening move, which is none, and the
-    /// default answer, which is nothing.
+    /// A strategy with every default: no opening move, statements ignored,
+    /// and requests answered with nothing.
     struct Mute(Context<Note>);
     #[async_trait]
     impl Strategy for Mute {
@@ -449,9 +451,6 @@ mod tests {
         type Log = Note;
         fn context(&self) -> &Context<Note> {
             &self.0
-        }
-        async fn receive(&mut self, _message: &Note) -> anyhow::Result<()> {
-            Ok(())
         }
     }
 
@@ -663,6 +662,32 @@ mod tests {
 
         let expected = HashMap::from([(id("bob"), vec![Note("seen"), Note("seen")])]);
         assert_eq!(replies, expected);
+        bob.stop.cancel();
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_default_receive_ignores_the_statement() {
+        let bob = rig_with("bob", HashMap::new(), HashMap::new(), Mute);
+        let ann = rig(
+            "ann",
+            HashMap::from([(id("bob"), bob.sender.clone())]),
+            HashMap::new(),
+        );
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+
+        ann.context()
+            .send(Note("whatever"), HashSet::from([id("bob")]))
+            .unwrap();
+
+        // Bob is still running and answering afterward.
+        let replies = ann
+            .context()
+            .request(Note("still there?"), HashSet::from([id("bob")]))
+            .await
+            .unwrap();
+        assert_eq!(replies, HashMap::from([(id("bob"), vec![])]));
         bob.stop.cancel();
         running.await.unwrap().unwrap();
     }
