@@ -2,9 +2,7 @@
 //! one another as their inits allow, and runs them until every one has
 //! stopped.
 
-use crate::actor::{
-    Actor, ActorId, ActorInit, Context, Envelope, Lifecycle, Outbox, Shutdown, Strategy,
-};
+use crate::actor::{Actor, ActorId, ActorInit, Context, Envelope, Lifecycle, Shutdown, Strategy};
 use crate::log::Logger;
 use anyhow::{Context as _, bail};
 use std::collections::{HashMap, HashSet};
@@ -50,7 +48,8 @@ impl<L: Lifecycle, S: Strategy> Episode<L, S> {
             })
             .collect();
         // Second pass: now that the directories are complete, build each
-        // actor with only the senders and tokens its init allows.
+        // actor with only the senders and tokens its init allows, plus the
+        // sender for its own mailbox.
         let mut readies = HashMap::new();
         let mut starts = HashMap::new();
         let actors = staged
@@ -60,12 +59,11 @@ impl<L: Lifecycle, S: Strategy> Episode<L, S> {
                 readies.insert(id.clone(), is_ready);
                 let (start, started) = oneshot::channel();
                 starts.insert(id.clone(), start);
+                let mut mailboxes = pick(&senders, &init.can_send_to);
+                mailboxes.insert(id.clone(), senders[&id].clone());
                 let context = Context {
                     id: id.clone(),
-                    outbox: Outbox {
-                        loopback: senders[&id].clone(),
-                        others: pick(&senders, &init.can_send_to),
-                    },
+                    mailboxes,
                     shutdown: Shutdown {
                         mine: shutdowns[&id].clone(),
                         others: pick(&shutdowns, &init.can_shut_down),
@@ -387,16 +385,18 @@ mod tests {
     }
 
     #[test]
-    fn new_wires_each_actor_to_the_actors_its_init_names() {
+    fn new_wires_each_actor_to_itself_and_the_actors_its_init_names() {
         let episode = wired(&[("ann", &["bob"]), ("bob", &[])]);
 
         let ann = episode.actors["ann"].strategy.context();
-        let reaches: Vec<_> = ann.outbox.others.keys().cloned().collect();
+        let mut reaches: Vec<_> = ann.mailboxes.keys().cloned().collect();
+        reaches.sort();
         let stops: Vec<_> = ann.shutdown.others.keys().cloned().collect();
-        assert_eq!(reaches, ["bob"]);
+        assert_eq!(reaches, ["ann", "bob"]);
         assert_eq!(stops, ["bob"]);
         let bob = episode.actors["bob"].strategy.context();
-        assert!(bob.outbox.others.is_empty());
+        let reaches: Vec<_> = bob.mailboxes.keys().cloned().collect();
+        assert_eq!(reaches, ["bob"]);
         assert!(bob.shutdown.others.is_empty());
     }
 

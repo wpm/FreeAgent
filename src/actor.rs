@@ -192,8 +192,9 @@ async fn run_unless_stopped<T>(
 pub struct Context<M: Message, L = M> {
     /// This actor's name, as the other actors know it.
     pub id: ActorId,
-    /// The channels on which this Actor sends Messages.
-    pub(crate) outbox: Outbox<M>,
+    /// The sending ends of the mailboxes this actor may put something in,
+    /// its own among them.
+    pub(crate) mailboxes: HashMap<ActorId, UnboundedSender<Envelope<M>>>,
     /// Tokens on which this Actor is shut down, and shuts down others.
     pub(crate) shutdown: Shutdown,
     /// Where this Actor's events go, when it has a logger.
@@ -278,10 +279,7 @@ impl<M: Message, L> Context<M, L> {
     ///
     /// Fails when `id` is not an actor this one may send to.
     fn mailbox_of(&self, id: &ActorId) -> anyhow::Result<&UnboundedSender<Envelope<M>>> {
-        if *id == self.id {
-            return Ok(&self.outbox.loopback);
-        }
-        self.outbox.others.get(id).with_context(|| {
+        self.mailboxes.get(id).with_context(|| {
             format!(
                 "{} cannot send to {id}: not an actor it may send to",
                 self.id
@@ -361,14 +359,6 @@ pub trait Lifecycle: Send + Sync {
     async fn clean_up(&self) -> anyhow::Result<()> {
         Ok(())
     }
-}
-
-/// The sending ends of the mailboxes an actor may put something in.
-pub(crate) struct Outbox<M: Message> {
-    /// Channel on which an Actor sends a Message to itself.
-    pub(crate) loopback: UnboundedSender<Envelope<M>>,
-    /// Channels on which an Actor sends Messages to other Actors.
-    pub(crate) others: HashMap<ActorId, UnboundedSender<Envelope<M>>>,
 }
 
 /// The cancellation tokens an actor is stopped through and stops others
@@ -519,7 +509,8 @@ mod tests {
         })
     }
 
-    /// A rig around the strategy `build` makes from its context.
+    /// A rig around the strategy `build` makes from its context, which may
+    /// send to itself and to `others`.
     fn rig_with<S: Strategy<Message = Note, Log = Note>>(
         name: &str,
         others: HashMap<ActorId, UnboundedSender<Envelope<Note>>>,
@@ -530,12 +521,11 @@ mod tests {
         let (ready, _) = oneshot::channel();
         let (start, started) = oneshot::channel();
         let stop = CancellationToken::new();
+        let mut mailboxes = others;
+        mailboxes.insert(id(name), sender.clone());
         let context = Context {
             id: id(name),
-            outbox: Outbox {
-                loopback: sender.clone(),
-                others,
-            },
+            mailboxes,
             shutdown: Shutdown {
                 mine: stop.clone(),
                 others: can_stop,
