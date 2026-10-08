@@ -1,25 +1,30 @@
-//! Werewolf as an episode in the [`free_agent`] framework, in the shape
-//! of reinforcement learning.
+//! Werewolf as an episode of [free agents](free_agent): the rules in one
+//! actor, the environment, and a player in each of the others.
 //!
-//! An environment has the whole `State` and runs the game on it. Each
-//! player sees the game through the observations it is sent, each of
-//! what that player is allowed to see, and answers with an action through
-//! a `Policy`. Which policy a player has depends on its [`Role`]; the
-//! `uniform_random` policies choose at random, as in Braverman, Etesami,
-//! and Mossel's study of the game.
+//! The environment alone holds the state of the game: the round and whether
+//! it is night or day, every player's [`Role`], who is alive, and what the
+//! seer has learned. A player sees the game only through the `Observation`
+//! the environment sends it, which carries the round, the phase, who is
+//! alive, and the roles that player may know. A werewolf knows every
+//! werewolf, the seer knows itself and whoever it has discovered, and
+//! everyone else knows only itself. Holding no state, a player can only
+//! talk.
+//!
+//! Play alternates between night and day, starting with night, until one
+//! [`Team`] has won.
 
 #![warn(missing_docs)]
 // The game is still being rebuilt on the framework, so much of it is not
 // yet reached from anywhere.
 #![allow(dead_code)]
 
-mod uniform_random;
-
-use async_trait::async_trait;
 use free_agent::ActorId;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
+
+// use async_trait::async_trait;
+// #[async_trait]
 
 /// A player is an actor, named as the episode names it.
 type PlayerId = ActorId;
@@ -66,11 +71,7 @@ enum Phase {
     Day,
 }
 
-/// The part of the game a player may be shown. The environment's own copy
-/// has every role in it; the one sent to a player has the roles that
-/// player knows.
-#[derive(Debug, Clone)]
-struct ObservableState {
+struct Environment {
     /// Rounds count from one. A round is a night and then a day.
     round: NonZero<u8>,
     /// Which half of the round it is.
@@ -79,29 +80,18 @@ struct ObservableState {
     roles: HashMap<PlayerId, Role>,
     /// Everyone still in the game.
     alive: HashSet<PlayerId>,
-}
-
-/// The whole game, as the environment holds it.
-struct State {
-    /// Everything about the game that some player might be shown.
-    observable: ObservableState,
     /// The players whose team the seer has learned.
     seer_discovered: HashSet<PlayerId>,
 }
 
-impl State {
-    /// A game about to begin its first night, with everyone in `roles`
-    /// alive and the seer's discoveries still to come.
+impl Environment {
     fn new(roles: HashMap<PlayerId, Role>) -> Self {
         let alive: HashSet<PlayerId> = roles.keys().cloned().collect();
-        let phase_round_players = ObservableState {
+        Self {
             round: NonZero::new(1).unwrap(),
             phase: Phase::Night,
             roles,
             alive,
-        };
-        Self {
-            observable: phase_round_players,
             seer_discovered: HashSet::new(),
         }
     }
@@ -111,12 +101,11 @@ impl State {
     /// seer knows itself and whoever it has discovered, and everyone else
     /// knows only itself.
     fn observation(&self, player_id: PlayerId) -> anyhow::Result<Observation> {
-        let role = self.observable.roles[&player_id];
+        let role = self.roles[&player_id];
         let roles = match role {
             Role::Werewolf => {
                 // Werewolves know who all the other werewolves are.
-                self.observable
-                    .roles
+                self.roles
                     .iter()
                     .filter(|(_, role)| **role == Role::Werewolf)
                     .map(|(id, role)| (id.clone(), *role))
@@ -128,7 +117,7 @@ impl State {
                 roles.extend(
                     self.seer_discovered
                         .iter()
-                        .map(|id| (id.clone(), self.observable.roles[id])),
+                        .map(|id| (id.clone(), self.roles[id])),
                 );
                 roles
             }
@@ -137,20 +126,19 @@ impl State {
                 HashMap::from([(player_id, role)])
             }
         };
-        Ok(ObservableState {
-            round: self.observable.round,
-            phase: self.observable.phase.clone(),
+        Ok(Observation {
+            round: self.round,
+            phase: self.phase.clone(),
             roles,
-            alive: self.observable.alive.clone(),
+            alive: self.alive.clone(),
         })
     }
 
     /// How many of `team` are alive.
     fn surviving(&self, team: Team) -> usize {
-        self.observable
-            .alive
+        self.alive
             .iter()
-            .filter(|player_id| self.observable.roles[*player_id].team() == team)
+            .filter(|player_id| self.roles[*player_id].team() == team)
             .count()
     }
 
@@ -170,72 +158,24 @@ impl State {
     }
 }
 
-/// How a player maps what it sees to what it does. The signature is the
-/// reinforcement-learning one: an observation in, an action out, or none
-/// for a phase the player sits out.
-///
-/// Policies run on a multi-threaded runtime, so they have to be shareable
-/// across threads.
-#[async_trait]
-trait Policy: Send + Sync {
-    /// Decide what to do about `observation`.
-    async fn policy(&self, observation: Observation) -> Option<Action>;
+#[derive(Debug, Clone)]
+struct Observation {
+    /// Rounds count from one. A round is a night and then a day.
+    round: NonZero<u8>,
+    /// Which half of the round it is.
+    phase: Phase,
+    /// The roles known to whoever holds this state.
+    roles: HashMap<PlayerId, Role>,
+    /// Everyone still in the game.
+    alive: HashSet<PlayerId>,
 }
-
-/// What a player is sent: the game as it is allowed to see it.
-type Observation = ObservableState;
-
-/// What a player does: select another player. What selecting someone
-/// means depends on the role and the phase. A werewolf by night selects
-/// a victim, the doctor someone to save, the seer someone to learn
-/// about, and anyone by day someone to vote out.
-struct Action {
-    /// The player selected.
-    selection: ActorId,
-}
-
-/// The actor that runs the game. It holds the [`State`], shows each
-/// player its observation, asks the players for their actions, and
-/// applies the rules to what comes back.
-#[async_trait]
-trait Environment {
-    /// The whole game.
-    fn state(&self) -> State;
-    /// Show `observation` to `players` and carry on.
-    fn send(&self, observation: Observation, players: HashSet<PlayerId>) -> anyhow::Result<()>;
-    /// Ask the players for their actions and collect what they answer.
-    async fn request() -> anyhow::Result<HashMap<ActorId, Vec<Action>>>;
-
-    /// The players whose team the seer has learned.
-    fn seer_knows() -> HashSet<PlayerId>;
-    /// Play one night: show everyone what they may see, then ask the
-    /// doctor whom to save, the werewolves whom to kill, and the seer whom
-    /// to learn about.
-    async fn night(&mut self) -> anyhow::Result<()> {
-        // Send out observations.
-        // Request doctor selection.
-        // Request werewolves selection.
-        // Request seer selection.
-        todo!()
-    }
-    /// Play one day: show everyone what they may see, then collect the
-    /// village's votes.
-    async fn day(&mut self) -> anyhow::Result<()> {
-        // Send out observations.
-        // Accumulate villager decisions.
-        todo!()
-    }
-}
-/// Set up a game of `players`, each with a role and the policy that plays
-/// it, run by `environment`.
-fn create<E: Environment>(_environment: E, _players: HashMap<PlayerId, (Role, Box<dyn Policy>)>) {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn village() -> State {
-        State::new(HashMap::from([
+    fn village() -> Environment {
+        Environment::new(HashMap::from([
             ("wolf1".to_string(), Role::Werewolf),
             ("wolf2".to_string(), Role::Werewolf),
             ("seer".to_string(), Role::Seer),
@@ -277,24 +217,24 @@ mod tests {
     fn observation_keeps_the_rest_of_the_state() {
         let state = village();
         let observation = state.observation("villager".to_string()).unwrap();
-        assert_eq!(observation.round, state.observable.round);
-        assert_eq!(observation.alive, state.observable.alive);
+        assert_eq!(observation.round, state.round);
+        assert_eq!(observation.alive, state.alive);
     }
 
     #[test]
     fn werewolves_win_at_parity_and_villagers_when_the_wolves_are_gone() {
-        let mut state = State::new(HashMap::from([
+        let mut state = Environment::new(HashMap::from([
             ("wolf".to_string(), Role::Werewolf),
             ("ann".to_string(), Role::Villager),
             ("bob".to_string(), Role::Villager),
         ]));
         assert_eq!(state.winner(), None);
-        state.observable.alive.remove("ann");
+        state.alive.remove("ann");
         assert_eq!(state.winner(), Some(Team::Werewolves));
 
         let mut state = village();
-        state.observable.alive.remove("wolf1");
-        state.observable.alive.remove("wolf2");
+        state.alive.remove("wolf1");
+        state.alive.remove("wolf2");
         assert_eq!(state.winner(), Some(Team::Villagers));
     }
 }
