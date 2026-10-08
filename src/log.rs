@@ -102,4 +102,31 @@ mod tests {
         let written = String::from_utf8(sink).unwrap();
         assert_eq!(written, "1700000000.123 one\n1700000001.123 two\n");
     }
+
+    #[tokio::test]
+    async fn a_time_before_the_epoch_is_stamped_with_a_question_mark() {
+        let (logger, events) = unbounded_channel();
+        let at = UNIX_EPOCH - Duration::from_secs(1);
+        logger
+            .send(Event {
+                at,
+                payload: "long ago",
+            })
+            .unwrap();
+        drop(logger);
+
+        let mut sink = Vec::new();
+        drain(events, &mut sink).await.unwrap();
+
+        assert_eq!(String::from_utf8(sink).unwrap(), "? long ago\n");
+    }
+
+    #[tokio::test]
+    async fn console_log_writes_to_standard_error_until_every_logger_is_gone() {
+        let (logger, events) = unbounded_channel();
+        logger.send(Event::now("to standard error")).unwrap();
+        drop(logger);
+
+        console_log(events).await.unwrap();
+    }
 }

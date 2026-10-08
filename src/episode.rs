@@ -351,12 +351,59 @@ mod tests {
         HashSet::from(["ann".to_string(), "bob".to_string()])
     }
 
+    /// An episode of reporters in which each actor may send to and shut
+    /// down the actors listed beside its name.
+    fn wired(links: &[(&str, &[&str])]) -> Episode<Gated, Reporter> {
+        let (started, _) = unbounded_channel();
+        let (logger, _) = unbounded_channel();
+        let init = links
+            .iter()
+            .map(|(id, others)| {
+                let started = started.clone();
+                let others: HashSet<ActorId> = others.iter().map(|o| o.to_string()).collect();
+                let init = ActorInit {
+                    lifecycle: Gated::default(),
+                    behavior: Box::new(move |context| Reporter {
+                        context,
+                        started,
+                        fails: false,
+                    }),
+                    can_send_to: others.clone(),
+                    can_shut_down: others,
+                    has_logger: false,
+                };
+                (id.to_string(), init)
+            })
+            .collect();
+        Episode::new(init, logger)
+    }
+
     fn stops<L: Lifecycle, B: Behavior>(episode: &Episode<L, B>) -> Vec<CancellationToken> {
         episode
             .actors
             .values()
             .map(|actor| actor.behavior.context().shutdown.mine.clone())
             .collect()
+    }
+
+    #[test]
+    fn new_wires_each_actor_to_the_actors_its_init_names() {
+        let episode = wired(&[("ann", &["bob"]), ("bob", &[])]);
+
+        let ann = episode.actors["ann"].behavior.context();
+        let reaches: Vec<_> = ann.outbox.others.keys().cloned().collect();
+        let stops: Vec<_> = ann.shutdown.others.keys().cloned().collect();
+        assert_eq!(reaches, ["bob"]);
+        assert_eq!(stops, ["bob"]);
+        let bob = episode.actors["bob"].behavior.context();
+        assert!(bob.outbox.others.is_empty());
+        assert!(bob.shutdown.others.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown actor \"zed\"")]
+    fn new_panics_when_an_init_names_an_unknown_actor() {
+        wired(&[("ann", &["zed"])]);
     }
 
     #[tokio::test]

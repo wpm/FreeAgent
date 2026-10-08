@@ -338,10 +338,14 @@ mod tests {
     impl Lifecycle for Idle {}
 
     /// A behavior that answers every request with the message it was sent,
-    /// after waiting for a permit from its gate if it has one.
+    /// after waiting for a permit from its gate if it has one. Slow to
+    /// start, it waits for a permit in `start` too. Broken, it fails every
+    /// step.
     struct Echo {
         context: Context<Note>,
         gate: Option<Arc<Semaphore>>,
+        slow_start: bool,
+        broken: bool,
     }
     #[async_trait]
     impl Behavior for Echo {
@@ -351,33 +355,74 @@ mod tests {
             &self.context
         }
         async fn policy(&self, observation: &Note) -> anyhow::Result<Vec<Note>> {
+            if self.broken {
+                bail!("echo is broken");
+            }
             if let Some(gate) = &self.gate {
                 gate.acquire().await?.forget();
             }
             Ok(vec![observation.clone()])
         }
+        async fn start(&self) -> anyhow::Result<()> {
+            if self.slow_start
+                && let Some(gate) = &self.gate
+            {
+                gate.acquire().await?.forget();
+            }
+            Ok(())
+        }
+    }
+
+    /// A behavior with the default opening move, which answers nothing.
+    struct Mute(Context<Note>);
+    #[async_trait]
+    impl Behavior for Mute {
+        type Message = Note;
+        type Payload = Note;
+        fn context(&self) -> &Context<Note> {
+            &self.0
+        }
+        async fn policy(&self, _observation: &Note) -> anyhow::Result<Vec<Note>> {
+            Ok(vec![])
+        }
     }
 
     /// An actor, along with what a test needs to feed it, start it, and stop
     /// it from the outside.
-    struct Rig {
-        actor: Actor<Idle, Echo>,
+    struct Rig<B: Behavior = Echo> {
+        actor: Actor<Idle, B>,
         sender: UnboundedSender<Observation<Note>>,
         start: oneshot::Sender<()>,
         stop: CancellationToken,
     }
 
-    impl Rig {
+    impl<B: Behavior<Message = Note, Payload = Note>> Rig<B> {
         fn context(&self) -> &Context<Note> {
             self.actor.behavior.context()
         }
     }
 
+    /// A rig around an [`Echo`] with no gate.
     fn rig(
         name: &str,
         others: HashMap<ActorId, UnboundedSender<Observation<Note>>>,
         can_stop: HashMap<ActorId, CancellationToken>,
     ) -> Rig {
+        rig_with(name, others, can_stop, |context| Echo {
+            context,
+            gate: None,
+            slow_start: false,
+            broken: false,
+        })
+    }
+
+    /// A rig around the behavior `build` makes from its context.
+    fn rig_with<B: Behavior<Message = Note, Payload = Note>>(
+        name: &str,
+        others: HashMap<ActorId, UnboundedSender<Observation<Note>>>,
+        can_stop: HashMap<ActorId, CancellationToken>,
+        build: impl FnOnce(Context<Note>) -> B,
+    ) -> Rig<B> {
         let (sender, inbox) = unbounded_channel();
         let (ready, _) = oneshot::channel();
         let (start, started) = oneshot::channel();
@@ -396,10 +441,7 @@ mod tests {
         };
         let actor = Actor {
             lifecycle: Idle,
-            behavior: Echo {
-                context,
-                gate: None,
-            },
+            behavior: build(context),
             ready,
             start: started,
             inbox,
@@ -594,6 +636,73 @@ mod tests {
 
         let stopped = timeout(Duration::from_secs(5), running).await;
         stopped.expect("bob should stop").unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_kill_stops_an_actor_in_the_middle_of_starting() {
+        let (mut bob, _gate) = gated_rig("bob");
+        bob.actor.behavior.slow_start = true;
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        // Let Bob take the start signal and block in its opening move.
+        sleep(Duration::from_secs(1)).await;
+
+        bob.stop.cancel();
+
+        let stopped = timeout(Duration::from_secs(5), running).await;
+        stopped.expect("bob should stop").unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_behavior_with_no_opening_move_starts_and_waits() {
+        let bob = rig_with("bob", HashMap::new(), HashMap::new(), Mute);
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        // Let Bob take the start signal and settle into waiting.
+        sleep(Duration::from_secs(1)).await;
+
+        bob.stop.cancel();
+
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_actor_stops_when_the_episode_is_gone_before_it_starts() {
+        let bob = rig("bob", HashMap::new(), HashMap::new());
+        let running = tokio::spawn(bob.actor.run());
+
+        drop(bob.start);
+
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_policy_that_fails_on_a_broadcast_fails_the_actor() {
+        let mut bob = rig("bob", HashMap::new(), HashMap::new());
+        bob.actor.behavior.broken = true;
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+
+        bob.sender
+            .send(Observation::Broadcast(Note("hello")))
+            .unwrap();
+
+        let error = running.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("broken"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_policy_that_fails_on_a_request_fails_the_actor() {
+        let mut bob = rig("bob", HashMap::new(), HashMap::new());
+        bob.actor.behavior.broken = true;
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        let (request, _reply) = Request::new(Note("well?"));
+
+        bob.sender.send(Observation::Request(request)).unwrap();
+
+        let error = running.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("broken"), "{error}");
     }
 
     #[tokio::test(start_paused = true)]
