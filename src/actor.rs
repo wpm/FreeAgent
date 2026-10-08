@@ -17,7 +17,7 @@ pub type ActorId = String;
 
 /// Builds a [`Strategy`] from the [`Context`] it will own.
 pub type Builder<S> =
-    Box<dyn FnOnce(Context<<S as Strategy>::Message, <S as Strategy>::Payload>) -> S + Send>;
+    Box<dyn FnOnce(Context<<S as Strategy>::Message, <S as Strategy>::Log>) -> S + Send>;
 
 /// Everything an [`Episode`](crate::Episode) needs to build one actor: how
 /// it lives, how it behaves, and whom it may reach.
@@ -133,9 +133,9 @@ async fn unless_stopped<T>(
 /// A strategy owns one of these, and the actor keeps the inbox, so messages
 /// reach the strategy one step at a time.
 ///
-/// `P` is what this actor logs. It defaults to the message type, which is
+/// `L` is what this actor logs. It defaults to the message type, which is
 /// what most actors log.
-pub struct Context<M: Message, P = M> {
+pub struct Context<M: Message, L = M> {
     /// This actor's name, as the other actors know it.
     pub id: ActorId,
     /// The channels on which this Actor sends Messages.
@@ -143,14 +143,14 @@ pub struct Context<M: Message, P = M> {
     /// Tokens on which this Actor is shut down, and shuts down others.
     pub(crate) shutdown: Shutdown,
     /// Where this Actor's events go, when it has a logger.
-    pub(crate) log: Option<Logger<P>>,
+    pub(crate) log: Option<Logger<L>>,
 }
 
-impl<M: Message, P> Context<M, P> {
+impl<M: Message, L> Context<M, L> {
     /// Log `payload` as an event stamped now. The event reaches the log when
     /// this actor holds a logger and the log is listening; otherwise it is
     /// dropped, and the actor carries on either way.
-    pub fn log(&self, payload: P) {
+    pub fn log(&self, payload: L) {
         if let Some(log) = &self.log {
             let _ = log.send(Event::now(payload));
         }
@@ -263,9 +263,9 @@ pub trait Strategy: Send + Sync {
     /// What this strategy sends and receives.
     type Message: Message;
     /// What this strategy logs. Most often the message type.
-    type Payload: Send + 'static;
+    type Log: Send + 'static;
     /// The ways out of this actor, handed to the strategy when it was built.
-    fn context(&self) -> &Context<Self::Message, Self::Payload>;
+    fn context(&self) -> &Context<Self::Message, Self::Log>;
     /// Handle `observation`. The result is the reply to a request, and is
     /// dropped after a broadcast.
     async fn policy(&self, observation: &Self::Message) -> anyhow::Result<Vec<Self::Message>>;
@@ -350,7 +350,7 @@ mod tests {
     #[async_trait]
     impl Strategy for Echo {
         type Message = Note;
-        type Payload = Note;
+        type Log = Note;
         fn context(&self) -> &Context<Note> {
             &self.context
         }
@@ -378,7 +378,7 @@ mod tests {
     #[async_trait]
     impl Strategy for Mute {
         type Message = Note;
-        type Payload = Note;
+        type Log = Note;
         fn context(&self) -> &Context<Note> {
             &self.0
         }
@@ -396,7 +396,7 @@ mod tests {
         stop: CancellationToken,
     }
 
-    impl<S: Strategy<Message = Note, Payload = Note>> Rig<S> {
+    impl<S: Strategy<Message = Note, Log = Note>> Rig<S> {
         fn context(&self) -> &Context<Note> {
             self.actor.strategy.context()
         }
@@ -417,7 +417,7 @@ mod tests {
     }
 
     /// A rig around the strategy `build` makes from its context.
-    fn rig_with<S: Strategy<Message = Note, Payload = Note>>(
+    fn rig_with<S: Strategy<Message = Note, Log = Note>>(
         name: &str,
         others: HashMap<ActorId, UnboundedSender<Observation<Note>>>,
         can_stop: HashMap<ActorId, CancellationToken>,

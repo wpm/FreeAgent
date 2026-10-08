@@ -33,7 +33,7 @@ impl<L: Lifecycle, S: Strategy> Episode<L, S> {
     ///
     /// Panics when an init's `can_send_to` or `can_shut_down` names an actor
     /// missing from `init`. An episode's wiring is checked when it is built.
-    pub fn new(init: HashMap<ActorId, ActorInit<L, S>>, logger: Logger<S::Payload>) -> Self {
+    pub fn new(init: HashMap<ActorId, ActorInit<L, S>>, logger: Logger<S::Log>) -> Self {
         // First pass: give every actor a channel and a shutdown token. The
         // init and the receiver are unique, so they stay together in one
         // map. The senders and tokens are clonable, so they go into lookup
@@ -258,7 +258,7 @@ mod tests {
     impl Strategy for Reporter {
         type Message = Note;
         /// A reporter logs its own name.
-        type Payload = ActorId;
+        type Log = ActorId;
         fn context(&self) -> &Context<Note, ActorId> {
             &self.context
         }
