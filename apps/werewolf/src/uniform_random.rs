@@ -2,13 +2,13 @@
 
 use crate::{Observation, PlayerId, Role, State};
 use async_trait::async_trait;
-use free_agent::{Behavior, Builder, Context, Message};
+use free_agent::{Behavior, Builder, Context};
 use rand::seq::IndexedRandom;
 use std::collections::HashMap;
 
 /// The actor that holds the game and tells each player what it may see.
 pub(crate) struct Environment {
-    context: Context<WerewolfMessage>,
+    context: Context<Message>,
     state: State,
 }
 
@@ -25,10 +25,10 @@ impl Environment {
 
 #[async_trait]
 impl Behavior for Environment {
-    type Message = WerewolfMessage;
-    type Log = WerewolfMessage;
+    type Message = Message;
+    type Log = Message;
 
-    fn context(&self) -> &Context<WerewolfMessage> {
+    fn context(&self) -> &Context<Message> {
         &self.context
     }
 }
@@ -37,7 +37,7 @@ impl Behavior for Environment {
 /// role it does not know. That keeps a werewolf from choosing a werewolf and
 /// the seer from asking about anyone twice.
 pub(crate) struct Player {
-    context: Context<WerewolfMessage>,
+    context: Context<Message>,
 }
 
 impl Player {
@@ -49,22 +49,22 @@ impl Player {
 
 #[async_trait]
 impl Behavior for Player {
-    type Message = WerewolfMessage;
-    type Log = WerewolfMessage;
+    type Message = Message;
+    type Log = Message;
 
-    fn context(&self) -> &Context<WerewolfMessage> {
+    fn context(&self) -> &Context<Message> {
         &self.context
     }
 
     /// Asked with an observation, choose from it. Asked anything else, say
     /// nothing.
-    async fn answer(&mut self, message: &WerewolfMessage) -> anyhow::Result<Vec<WerewolfMessage>> {
-        let WerewolfMessage::Observation(observation) = message else {
+    async fn answer(&mut self, message: &Message) -> anyhow::Result<Vec<Message>> {
+        let Message::Observation(observation) = message else {
             return Ok(vec![]);
         };
         Ok(choose(&self.context.id, observation)
             .into_iter()
-            .map(WerewolfMessage::Action)
+            .map(Message::Action)
             .collect())
     }
 }
@@ -87,13 +87,13 @@ fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum WerewolfMessage {
+pub(crate) enum Message {
     /// What a player may see, from the environment.
     Observation(Observation),
     /// A player's choice of another player, to the environment.
     Action(PlayerId),
 }
-impl Message for WerewolfMessage {}
+impl free_agent::Message for Message {}
 
 #[cfg(test)]
 mod tests {

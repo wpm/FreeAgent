@@ -83,20 +83,25 @@ struct State {
     roles: HashMap<PlayerId, Role>,
     /// Everyone still in the game.
     alive: HashSet<PlayerId>,
-    /// The players whose team the seer has learned.
-    seer_discovered: HashSet<PlayerId>,
+    /// The players whose team a seer has learned.
+    seers_discovered: HashMap<PlayerId, HashSet<PlayerId>>,
 }
 
 impl State {
     /// A game of `roles`, at the first night with everyone alive.
     fn new(roles: HashMap<PlayerId, Role>) -> Self {
         let alive: HashSet<PlayerId> = roles.keys().cloned().collect();
+        let seers_discovered = roles
+            .iter()
+            .filter(|(_, role)| **role == Role::Seer)
+            .map(|(player_id, _)| (player_id.clone(), HashSet::from([player_id.clone()])))
+            .collect();
         Self {
             round: NonZero::new(1).unwrap(),
             phase: Phase::Night,
             roles,
             alive,
-            seer_discovered: HashSet::new(),
+            seers_discovered,
         }
     }
 
@@ -117,9 +122,9 @@ impl State {
             }
             Role::Seer => {
                 // Seers know their own role and that of anyone they have discovered.
-                let mut roles = HashMap::from([(player_id, role)]);
+                let mut roles = HashMap::from([(player_id.clone(), role)]);
                 roles.extend(
-                    self.seer_discovered
+                    self.seers_discovered[&player_id]
                         .iter()
                         .map(|id| (id.clone(), self.roles[id])),
                 );
@@ -207,9 +212,12 @@ mod tests {
     #[test]
     fn the_seer_sees_only_itself_until_it_has_discovered_someone() {
         assert_eq!(seen_by("seer"), ["seer"]);
-
         let mut state = village();
-        state.seer_discovered.insert("wolf1".to_string());
+        state
+            .seers_discovered
+            .get_mut("seer")
+            .unwrap()
+            .insert("wolf1".to_string());
         let observation = state.observation("seer".to_string()).unwrap();
         let mut seen: Vec<_> = observation.roles.keys().cloned().collect();
         seen.sort();
