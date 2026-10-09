@@ -3,6 +3,23 @@
 Social deduction games, played by [free agents](../../README.md), either at
 random or by a language model. The first of them is Werewolf.
 
+## Installing
+
+Each [release](https://github.com/wpm/FreeAgent/releases) carries a built
+`social-deduction` binary for macOS, Linux, and Windows, and an installer
+that picks the right one:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-installer.sh | sh
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-installer.ps1 | iex"
+```
+
+With a Rust toolchain, `cargo install --git https://github.com/wpm/FreeAgent social-deduction`
+builds it from source.
+
 ## Werewolf
 
 A few of the players are secretly werewolves; the rest are villagers, among

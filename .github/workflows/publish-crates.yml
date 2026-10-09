@@ -1,0 +1,38 @@
+name: Publish to crates.io
+
+# The release workflow calls this once the binaries have built and uploaded,
+# so a release that fails to build publishes nothing. The token comes from
+# crates.io's trusted publishing, which trusts this workflow file by name;
+# no secret is stored here. The first publish of a crate has to be done by
+# hand with a token, since a trusted publisher is configured on a crate that
+# exists; see RELEASING.md.
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  publish:
+    name: cargo publish
+    runs-on: ubuntu-latest
+    environment: release
+    # Only what the release workflow grants a publish job: the OIDC token
+    # that crates.io exchanges for a publish token. Checking out a public
+    # repository needs nothing more.
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      # Publishing is in dependency order, which here is the library alone:
+      # the applications are publish = false in their manifests, so cargo
+      # skips them.
+      - run: cargo publish --workspace --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

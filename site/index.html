@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Free Agent</title>
+<meta name="description" content="Episodes in which actors talk to each other by statement, request, and reply. A Rust platform for multi-agent applications.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<header>
+  <h1><span class="mark">Free</span> Agent</h1>
+  <p class="tagline">Episodes in which actors talk to each other by statement, request, and reply.</p>
+  <nav>
+    <a href="https://docs.rs/free-agent">Docs</a>
+    <a href="https://crates.io/crates/free-agent">Crate</a>
+    <a href="https://github.com/wpm/FreeAgent">Source</a>
+    <a href="https://github.com/wpm/FreeAgent/blob/main/CHANGELOG.md">Changelog</a>
+  </nav>
+</header>
+
+<main>
+<section>
+  <h2>What it is</h2>
+  <p>An <strong>episode</strong> brings a set of actors into being together,
+  decides which of them can reach which, and runs them on the
+  <a href="https://tokio.rs">Tokio</a> runtime until every one of them has
+  stopped. An <strong>actor</strong> keeps its own state, takes messages
+  from a mailbox one at a time, and reaches other actors only by sending
+  them messages. A typical episode has one environment actor and several
+  agent actors, some of them language models.</p>
+  <p>Free Agent is the platform. The applications built on it are
+  separate crates, and yours can be one of them.</p>
+</section>
+
+<section>
+  <h2>Build on it</h2>
+  <p>Add the library to a Rust project:</p>
+  <pre><code>cargo add free-agent</code></pre>
+  <p>The <a href="https://docs.rs/free-agent">API documentation</a> walks
+  through an episode from the actors up.</p>
+</section>
+
+<section>
+  <h2>Play with it</h2>
+  <p><strong>Social deduction</strong> plays Werewolf: a few of the players
+  are secretly werewolves, the rest are villagers, among them a doctor and
+  a seer. Install the binary with one line, no Rust toolchain needed.</p>
+  <h3>macOS and Linux</h3>
+  <pre><code>curl --proto '=https' --tlsv1.2 -LsSf https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-installer.sh | sh</code></pre>
+  <h3>Windows</h3>
+  <pre><code>powershell -ExecutionPolicy Bypass -c "irm https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-installer.ps1 | iex"</code></pre>
+  <p>Then deal a table and watch a game:</p>
+  <pre><code>social-deduction --werewolves 2 --villagers 3 --doctors 1 --seers 1</code></pre>
+  <p>Every build is also on the
+  <a href="https://github.com/wpm/FreeAgent/releases">releases page</a>
+  as a plain archive.</p>
+</section>
+</main>
+
+<footer>
+  <p>Free Agent is by <a href="https://github.com/wpm">W.P. McNeill</a>,
+  licensed under <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-MIT">MIT</a>
+  or <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-APACHE">Apache-2.0</a>.</p>
+</footer>
+</body>
+</html>

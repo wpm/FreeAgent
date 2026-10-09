@@ -3,8 +3,16 @@
 name = "free-agent"
 version.workspace = true
 edition.workspace = true
-description = "Episodes in which actors talk to each other by request and reply"
+description = "Episodes in which actors talk to each other by statement, request, and reply"
 readme = "README.md"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/free-agent"
+keywords = ["actor", "agent", "multi-agent", "episode", "tokio"]
+categories = ["asynchronous", "simulation"]
+# What goes to crates.io: the library, not the website or the workflows.
+include = ["src/**", "README.md", "CHANGELOG.md", "LICENSE-*"]
 
 [dependencies]
 anyhow.workspace = true
@@ -38,8 +46,17 @@ tokio = { version = "1.53.2", features = ["macros", "rt", "sync", "time"] }
 tokio-util = "0.7.20"
 rand = "0.10.3"
 uuid = { version = "1.27.0", features = ["v4", "serde"] }
-free-agent = { path = "." }
+# The version lets a crate that depends on the library be published too.
+free-agent = { path = ".", version = "0.1.0" }
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/wpm/FreeAgent"
+homepage = "https://wpm.github.io/FreeAgent/"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

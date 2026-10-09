@@ -1,0 +1,31 @@
+# Configuration for dist, which builds the applications' binaries and
+# installers and publishes a GitHub Release when a version tag is pushed.
+# See RELEASING.md. Regenerate the release workflow with 'dist init' after
+# editing this file.
+[workspace]
+members = ["cargo:."]
+
+[dist]
+# The dist version CI installs, so that it matches the one that generated
+# the workflow.
+cargo-dist-version = "0.32.0"
+ci = "github"
+hosting = "github"
+# A curl | sh script and a PowerShell one, each of which picks the archive
+# for the machine it runs on.
+installers = ["shell", "powershell"]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+# Where the installers put the binaries: alongside cargo's, falling back to
+# ~/.cargo/bin for someone without a Rust toolchain.
+install-path = "CARGO_HOME"
+install-updater = false
+# Once the binaries are built and hosted, publish the library to crates.io.
+publish-jobs = ["./publish-crates"]
+# On a pull request, only plan the release; building it is the tag's job.
+pr-run-mode = "plan"
