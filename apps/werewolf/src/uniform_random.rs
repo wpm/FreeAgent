@@ -1,4 +1,4 @@
-use crate::{Game, Observation, PlayerId, Role};
+use crate::{State, Observation, PlayerId, Role};
 use async_trait::async_trait;
 use free_agent::{Behavior, Builder, Context, Message};
 use std::collections::HashMap;
@@ -6,7 +6,7 @@ use std::collections::HashMap;
 /// The actor that holds the game and tells each player what it may see.
 pub(crate) struct Environment {
     context: Context<WerewolfMessage>,
-    game: Game,
+    state: State,
 }
 
 impl Environment {
@@ -15,7 +15,7 @@ impl Environment {
     pub(crate) fn builder(roles: HashMap<PlayerId, Role>) -> Builder<Self> {
         Box::new(move |context| Environment {
             context,
-            game: Game::new(roles),
+            state: State::new(roles),
         })
     }
 }
