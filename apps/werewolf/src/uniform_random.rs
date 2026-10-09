@@ -3,8 +3,9 @@
 use crate::{Observation, PlayerId, Role, State};
 use async_trait::async_trait;
 use free_agent::{Behavior, Builder, Context};
+use futures_util::future::try_join_all;
 use rand::seq::IndexedRandom;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The actor that holds the game and tells each player what it may see.
 pub(crate) struct Environment {
@@ -20,6 +21,30 @@ impl Environment {
             context,
             state: State::new(roles),
         })
+    }
+
+    /// Ask everyone awake what they choose, all at once, and gather their
+    /// replies by player.
+    async fn night(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
+        let asked = self
+            .state
+            .awake()
+            .into_iter()
+            .map(|player| self.ask(player));
+        let replies = try_join_all(asked).await?;
+        Ok(replies.into_iter().flatten().collect())
+    }
+
+    async fn day(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Show `player` what it may see and wait for what it says back.
+    async fn ask(&self, player: PlayerId) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
+        let observation = self.state.observation(player.clone())?;
+        self.context
+            .request(Message::Observation(observation), HashSet::from([player]))
+            .await
     }
 }
 

@@ -143,8 +143,31 @@ impl State {
         })
     }
 
-    /// How many of `team` are alive.
-    fn surviving(&self, team: Team) -> usize {
+    /// Which players of `role` are alive?
+    /// The players who act in the current phase: by night the werewolves,
+    /// the doctor, and the seer; by day everyone alive.
+    fn awake(&self) -> HashSet<PlayerId> {
+        let acts = |role: Role| match self.phase {
+            Phase::Night => matches!(role, Role::Werewolf | Role::Doctor | Role::Seer),
+            Phase::Day => true,
+        };
+        self.alive
+            .iter()
+            .filter(|player_id| acts(self.roles[*player_id]))
+            .cloned()
+            .collect()
+    }
+
+    fn surviving(&self, role: Role) -> HashSet<PlayerId> {
+        self.alive
+            .iter()
+            .filter(|player_id| self.roles[*player_id] == role)
+            .cloned()
+            .collect()
+    }
+
+    /// How many of `team` are alive?
+    fn num_surviving_on(&self, team: Team) -> usize {
         self.alive
             .iter()
             .filter(|player_id| self.roles[*player_id].team() == team)
@@ -155,8 +178,8 @@ impl State {
     /// dead, the werewolves when they are at least as many as the
     /// villagers.
     fn winner(&self) -> Option<Team> {
-        let werewolves = self.surviving(Team::Werewolves);
-        let villagers = self.surviving(Team::Villagers);
+        let werewolves = self.num_surviving_on(Team::Werewolves);
+        let villagers = self.num_surviving_on(Team::Villagers);
         if werewolves == 0 {
             Some(Team::Villagers)
         } else if werewolves >= villagers {
@@ -231,6 +254,33 @@ mod tests {
         let observation = state.observation("villager".to_string()).unwrap();
         assert_eq!(observation.round, state.round);
         assert_eq!(observation.alive, state.alive);
+    }
+
+    fn sorted(players: HashSet<PlayerId>) -> Vec<PlayerId> {
+        let mut players: Vec<_> = players.into_iter().collect();
+        players.sort();
+        players
+    }
+
+    #[test]
+    fn by_night_the_werewolves_doctor_and_seer_are_awake() {
+        let mut state = State::new(HashMap::from([
+            ("wolf".to_string(), Role::Werewolf),
+            ("doctor".to_string(), Role::Doctor),
+            ("seer".to_string(), Role::Seer),
+            ("ann".to_string(), Role::Villager),
+            ("bob".to_string(), Role::Villager),
+        ]));
+        state.alive.remove("bob");
+        assert_eq!(sorted(state.awake()), ["doctor", "seer", "wolf"]);
+    }
+
+    #[test]
+    fn by_day_everyone_alive_is_awake() {
+        let mut state = village();
+        state.phase = Phase::Day;
+        state.alive.remove("wolf2");
+        assert_eq!(sorted(state.awake()), ["seer", "villager", "wolf1"]);
     }
 
     #[test]

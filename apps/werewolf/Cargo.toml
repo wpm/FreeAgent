@@ -8,6 +8,7 @@ readme = "README.md"
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+futures-util.workspace = true
 clap.workspace = true
 free-agent.workspace = true
 rand.workspace = true
