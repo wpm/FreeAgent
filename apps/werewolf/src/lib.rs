@@ -27,7 +27,9 @@ use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
+use std::time::Duration;
 use tokio::sync::oneshot;
+use tokio::time::timeout;
 
 /// A player is an actor, named as the episode names it.
 type PlayerId = ActorId;
@@ -247,35 +249,63 @@ impl State {
     }
 }
 
+/// How a game is played: the vote each phase is decided by and how long
+/// each phase waits for the players.
+pub struct Rules {
+    /// How the werewolves' choices become a victim.
+    pub night_vote: Box<dyn Vote>,
+    /// How the village's choices become a victim.
+    pub day_vote: Box<dyn Vote>,
+    /// How long the night waits for a player. A choice that comes later
+    /// is ignored.
+    pub night_limit: Duration,
+    /// How long the day waits for a player. A choice that comes later is
+    /// ignored.
+    pub day_limit: Duration,
+}
+
+impl Default for Rules {
+    /// The werewolves break ties at random, the village does not, and
+    /// each phase waits a minute.
+    fn default() -> Self {
+        Self {
+            night_vote: Box::new(RandomTieBreak),
+            day_vote: Box::new(NoTieBreak),
+            night_limit: Duration::from_secs(60),
+            day_limit: Duration::from_secs(60),
+        }
+    }
+}
+
 /// What an actor in the game does: run it, or play in it. An episode holds
 /// one kind of actor, so the two sides meet here and each method goes to
 /// whichever side this is.
 pub enum Actor {
     /// The side that holds the game.
-    Environment(Environment),
+    Environment(Box<Environment>),
     /// A side that sees only what it is shown.
     Player(uniform_random::Player),
+    /// A player who never answers.
+    #[cfg(test)]
+    Mute(tests::Mute),
 }
 
 impl Actor {
-    /// Builds the environment for a game of `roles` once the episode has
-    /// made its context. The werewolves vote under `night_vote` and the
-    /// village under `day_vote`, and the winning team is sent on `winner`
+    /// Builds the environment for a game of `roles` under `rules` once the
+    /// episode has made its context. The winning team is sent on `winner`
     /// when the game ends.
     pub fn environment(
         roles: HashMap<PlayerId, Role>,
-        night_vote: Box<dyn Vote>,
-        day_vote: Box<dyn Vote>,
+        rules: Rules,
         winner: oneshot::Sender<Team>,
     ) -> Builder<Self> {
         Box::new(move |context| {
-            Actor::Environment(Environment {
+            Actor::Environment(Box::new(Environment {
                 context,
                 state: State::new(roles),
-                night_vote,
-                day_vote,
+                rules,
                 winner: Some(winner),
-            })
+            }))
         })
     }
 
@@ -294,6 +324,8 @@ impl Behavior for Actor {
         match self {
             Actor::Environment(environment) => environment.context(),
             Actor::Player(player) => player.context(),
+            #[cfg(test)]
+            Actor::Mute(mute) => mute.context(),
         }
     }
 
@@ -301,6 +333,8 @@ impl Behavior for Actor {
         match self {
             Actor::Environment(environment) => environment.initialize().await,
             Actor::Player(player) => player.initialize().await,
+            #[cfg(test)]
+            Actor::Mute(mute) => mute.initialize().await,
         }
     }
 
@@ -308,6 +342,8 @@ impl Behavior for Actor {
         match self {
             Actor::Environment(environment) => environment.receive(message).await,
             Actor::Player(player) => player.receive(message).await,
+            #[cfg(test)]
+            Actor::Mute(mute) => mute.receive(message).await,
         }
     }
 
@@ -315,6 +351,8 @@ impl Behavior for Actor {
         match self {
             Actor::Environment(environment) => environment.answer(message).await,
             Actor::Player(player) => player.answer(message).await,
+            #[cfg(test)]
+            Actor::Mute(mute) => mute.answer(message).await,
         }
     }
 
@@ -322,6 +360,8 @@ impl Behavior for Actor {
         match self {
             Actor::Environment(environment) => environment.start().await,
             Actor::Player(player) => player.start().await,
+            #[cfg(test)]
+            Actor::Mute(mute) => mute.start().await,
         }
     }
 
@@ -329,6 +369,8 @@ impl Behavior for Actor {
         match self {
             Actor::Environment(environment) => environment.clean_up().await,
             Actor::Player(player) => player.clean_up().await,
+            #[cfg(test)]
+            Actor::Mute(mute) => mute.clean_up().await,
         }
     }
 }
@@ -337,10 +379,7 @@ impl Behavior for Actor {
 pub struct Environment {
     context: Context<Message>,
     state: State,
-    /// How the werewolves' choices become a victim.
-    night_vote: Box<dyn Vote>,
-    /// How the village's choices become a victim.
-    day_vote: Box<dyn Vote>,
+    rules: Rules,
     /// Where the winning team goes when the game ends. Taken when sent.
     winner: Option<oneshot::Sender<Team>>,
 }
@@ -349,26 +388,31 @@ impl Environment {
     /// The werewolves, the doctor, and the seer each choose, and the night
     /// is resolved from what they chose.
     async fn night(&mut self) -> anyhow::Result<()> {
-        let choices = self.gather().await?;
-        let dead = self.state.resolve_night(&choices, self.night_vote.as_ref());
+        let choices = self.gather(self.rules.night_limit).await?;
+        let dead = self
+            .state
+            .resolve_night(&choices, self.rules.night_vote.as_ref());
         self.bury(dead)
     }
 
     /// Everyone alive chooses, and the day is resolved from what they chose.
     async fn day(&mut self) -> anyhow::Result<()> {
-        let choices = self.gather().await?;
-        let dead = self.state.resolve_day(&choices, self.day_vote.as_ref());
+        let choices = self.gather(self.rules.day_limit).await?;
+        let dead = self
+            .state
+            .resolve_day(&choices, self.rules.day_vote.as_ref());
         self.bury(dead)
     }
 
     /// Ask everyone awake what they choose, all at once, and gather their
-    /// choices by player, writing each one down.
-    async fn gather(&self) -> anyhow::Result<Choices> {
+    /// choices by player, writing each one down. A player who has not
+    /// answered within `limit` is left out.
+    async fn gather(&self, limit: Duration) -> anyhow::Result<Choices> {
         let asked = self
             .state
             .awake()
             .into_iter()
-            .map(|player| self.ask(player));
+            .map(|player| self.ask(player, limit));
         let replies = try_join_all(asked).await?;
         let mut choices = Choices::new();
         for (player, said) in replies.into_iter().flatten() {
@@ -382,12 +426,21 @@ impl Environment {
         Ok(choices)
     }
 
-    /// Show `player` what it may see and wait for what it says back.
-    async fn ask(&self, player: PlayerId) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
+    /// Show `player` what it may see and wait up to `limit` for what it
+    /// says back. Past the limit it is taken to have said nothing.
+    async fn ask(
+        &self,
+        player: PlayerId,
+        limit: Duration,
+    ) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
         let observation = self.state.observation(player.clone())?;
-        self.context
-            .request(Message::Observation(observation), HashSet::from([player]))
-            .await
+        let asked = self
+            .context
+            .request(Message::Observation(observation), HashSet::from([player]));
+        match timeout(limit, asked).await {
+            Ok(replied) => replied,
+            Err(_) => Ok(HashMap::new()),
+        }
     }
 
     /// Stop the actor of a player the state has just killed, so a death
@@ -512,6 +565,141 @@ pub struct Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use free_agent::{ActorInit, Episode};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    /// A player who never answers, for a game with a time limit to wait
+    /// out.
+    pub struct Mute {
+        context: Context<Message>,
+    }
+
+    #[async_trait]
+    impl Behavior for Mute {
+        type Message = Message;
+        type Log = Message;
+
+        fn context(&self) -> &Context<Message> {
+            &self.context
+        }
+
+        async fn answer(&mut self, _: &Message) -> anyhow::Result<Vec<Message>> {
+            std::future::pending().await
+        }
+    }
+
+    impl Actor {
+        fn mute() -> Builder<Self> {
+            Box::new(|context| Actor::Mute(Mute { context }))
+        }
+    }
+
+    /// Run a game of `roles` under `rules`, each player choosing at random
+    /// except those in `mute`, who never answer. Returns the winner and
+    /// everything the environment logged.
+    async fn play(
+        roles: HashMap<PlayerId, Role>,
+        rules: Rules,
+        mute: &[&str],
+    ) -> anyhow::Result<(Team, Vec<Message>)> {
+        let players: HashSet<PlayerId> = roles.keys().cloned().collect();
+        let (winner, won) = oneshot::channel();
+        let mut init = HashMap::from([(
+            "environment".to_string(),
+            ActorInit {
+                behavior: Actor::environment(roles, rules, winner),
+                can_send_to: players.clone(),
+                can_shut_down: players.clone(),
+                has_logger: true,
+            },
+        )]);
+        for player in players {
+            let behavior = if mute.contains(&player.as_str()) {
+                Actor::mute()
+            } else {
+                Actor::player()
+            };
+            init.insert(
+                player,
+                ActorInit {
+                    behavior,
+                    can_send_to: HashSet::new(),
+                    can_shut_down: HashSet::new(),
+                    has_logger: false,
+                },
+            );
+        }
+        let (logger, mut log) = unbounded_channel();
+
+        Episode::new(init, logger)
+            .run(Duration::from_secs(60))
+            .await?;
+
+        let mut logged = Vec::new();
+        while let Some(event) = log.recv().await {
+            logged.push(event.payload);
+        }
+        Ok((won.await?, logged))
+    }
+
+    #[tokio::test]
+    async fn a_game_runs_until_a_team_has_won() {
+        let roles = village().roles;
+        let (winner, logged) = play(roles.clone(), Rules::default(), &[]).await.unwrap();
+
+        assert!(matches!(winner, Team::Werewolves | Team::Villagers));
+        // By the first night three players choose, so there is at least
+        // that much on the record, and every choice names a player.
+        assert!(logged.len() >= 3, "{logged:?}");
+        for choice in &logged {
+            let Message::Action(chosen) = choice else {
+                panic!("the environment logs choices, not {choice:?}");
+            };
+            assert!(roles.contains_key(chosen), "{chosen}");
+        }
+    }
+
+    fn one_wolf_against(villagers: &[&str]) -> HashMap<PlayerId, Role> {
+        let mut roles = HashMap::from([("wolf".to_string(), Role::Werewolf)]);
+        for villager in villagers {
+            roles.insert(villager.to_string(), Role::Villager);
+        }
+        roles
+    }
+
+    #[tokio::test]
+    async fn the_werewolves_win_on_reaching_parity() {
+        // One werewolf against two: whoever it kills the first night, the
+        // werewolf then equals the village.
+        let roles = one_wolf_against(&["ann", "bob"]);
+        let (winner, _) = play(roles, Rules::default(), &[]).await.unwrap();
+        assert_eq!(winner, Team::Werewolves);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_player_who_misses_the_time_limit_is_left_out() {
+        // The werewolf never answers, so no night kills anyone, and the
+        // villagers vote by day until the game ends one way or the other.
+        let roles = one_wolf_against(&["ann", "bob", "cat"]);
+        let rules = Rules {
+            night_limit: Duration::from_secs(1),
+            day_limit: Duration::from_secs(1),
+            ..Rules::default()
+        };
+        let (winner, _) = play(roles, rules, &["wolf"]).await.unwrap();
+        assert!(matches!(winner, Team::Werewolves | Team::Villagers));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_a_time_limit_a_silent_player_holds_up_the_game() {
+        let roles = one_wolf_against(&["ann", "bob", "cat"]);
+        let rules = Rules {
+            night_limit: Duration::from_secs(120),
+            ..Rules::default()
+        };
+        let error = play(roles, rules, &["wolf"]).await.unwrap_err();
+        assert!(error.to_string().contains("patience"), "{error}");
+    }
 
     fn village() -> State {
         State::new(HashMap::from([

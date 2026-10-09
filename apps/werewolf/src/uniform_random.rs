@@ -61,14 +61,9 @@ fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Actor, NoTieBreak, Phase, RandomTieBreak, Role, Team};
-    use free_agent::{ActorInit, Episode};
-    use std::collections::HashMap;
-    use std::collections::HashSet;
+    use crate::{Phase, Role};
+    use std::collections::{HashMap, HashSet};
     use std::num::NonZero;
-    use std::time::Duration;
-    use tokio::sync::mpsc::unbounded_channel;
-    use tokio::sync::oneshot;
 
     fn id(name: &str) -> PlayerId {
         name.to_string()
@@ -83,80 +78,6 @@ mod tests {
             (id("seer"), Role::Seer),
             (id("villager"), Role::Villager),
         ])
-    }
-
-    /// Run a game of `roles`, each played at random, to its end. Returns
-    /// the winner and everything the environment logged.
-    async fn play(roles: HashMap<PlayerId, Role>) -> (Team, Vec<Message>) {
-        let players: HashSet<PlayerId> = roles.keys().cloned().collect();
-        let (winner, won) = oneshot::channel();
-        let mut init = HashMap::from([(
-            id("environment"),
-            ActorInit {
-                behavior: Actor::environment(
-                    roles,
-                    Box::new(RandomTieBreak),
-                    Box::new(NoTieBreak),
-                    winner,
-                ),
-                can_send_to: players.clone(),
-                can_shut_down: players.clone(),
-                has_logger: true,
-            },
-        )]);
-        for player in players {
-            init.insert(
-                player,
-                ActorInit {
-                    behavior: Actor::player(),
-                    can_send_to: HashSet::new(),
-                    can_shut_down: HashSet::new(),
-                    has_logger: false,
-                },
-            );
-        }
-        let (logger, mut log) = unbounded_channel();
-
-        Episode::new(init, logger)
-            .run(Duration::from_secs(60))
-            .await
-            .unwrap();
-
-        let mut logged = Vec::new();
-        while let Some(event) = log.recv().await {
-            logged.push(event.payload);
-        }
-        (won.await.unwrap(), logged)
-    }
-
-    #[tokio::test]
-    async fn a_game_runs_until_a_team_has_won() {
-        let roles = village();
-        let (winner, logged) = play(roles.clone()).await;
-
-        assert!(matches!(winner, Team::Werewolves | Team::Villagers));
-        // By the first night three players choose, so there is at least
-        // that much on the record, and every choice names a player.
-        assert!(logged.len() >= 3, "{logged:?}");
-        for choice in &logged {
-            let Message::Action(chosen) = choice else {
-                panic!("the environment logs choices, not {choice:?}");
-            };
-            assert!(roles.contains_key(chosen), "{chosen}");
-        }
-    }
-
-    #[tokio::test]
-    async fn the_werewolves_win_on_reaching_parity() {
-        // One werewolf against two: whoever it kills the first night, the
-        // werewolf then equals the village.
-        let roles = HashMap::from([
-            (id("wolf"), Role::Werewolf),
-            (id("ann"), Role::Villager),
-            (id("bob"), Role::Villager),
-        ]);
-        let (winner, _) = play(roles).await;
-        assert_eq!(winner, Team::Werewolves);
     }
 
     /// What `me` sees of a village where everyone in `alive` lives and
