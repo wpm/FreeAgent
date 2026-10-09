@@ -62,7 +62,7 @@ impl Behavior for Player {
         let WerewolfMessage::Observation(observation) = message else {
             return Ok(vec![]);
         };
-        Ok(choose(observation, &self.context.id)
+        Ok(choose(&self.context.id, observation)
             .into_iter()
             .map(WerewolfMessage::Action)
             .collect())
@@ -72,7 +72,7 @@ impl Behavior for Player {
 /// A living player chosen uniformly at random by `me` from `observation`,
 /// among those whose role `me` does not know. None when there is nobody
 /// to choose.
-fn choose(observation: &Observation, me: &PlayerId) -> Option<PlayerId> {
+fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
     let mut candidates: Vec<&PlayerId> = observation
         .alive
         .iter()
@@ -126,7 +126,7 @@ mod tests {
         let allowed = HashSet::from([id("ann"), id("bob")]);
 
         for _ in 0..50 {
-            let chosen = choose(&observation, &id("wolf1")).unwrap();
+            let chosen = choose(&id("wolf1"), &observation).unwrap();
             assert!(allowed.contains(&chosen), "{chosen}");
         }
     }
@@ -136,7 +136,7 @@ mod tests {
         let observation = seen(&["ann", "bob"], &[("ann", Role::Villager)]);
 
         for _ in 0..50 {
-            assert_eq!(choose(&observation, &id("ann")), Some(id("bob")));
+            assert_eq!(choose(&id("ann"), &observation), Some(id("bob")));
         }
     }
 
@@ -147,13 +147,13 @@ mod tests {
             &[("seer", Role::Seer), ("wolf", Role::Werewolf)],
         );
 
-        assert_eq!(choose(&observation, &id("seer")), None);
+        assert_eq!(choose(&id("seer"), &observation), None);
     }
 
     #[test]
     fn a_player_does_not_choose_the_dead() {
         let observation = seen(&["ann"], &[("ann", Role::Villager)]);
 
-        assert_eq!(choose(&observation, &id("ann")), None);
+        assert_eq!(choose(&id("ann"), &observation), None);
     }
 }
