@@ -144,6 +144,18 @@ impl State {
     }
 
     /// Which players of `role` are alive?
+    /// Move to the other half of the round: night turns to day, and day to
+    /// the next round's night.
+    fn next(&mut self) {
+        self.phase = match self.phase {
+            Phase::Night => Phase::Day,
+            Phase::Day => {
+                self.round = self.round.checked_add(1).expect("fewer than 255 rounds");
+                Phase::Night
+            }
+        };
+    }
+
     /// The players who act in the current phase: by night the werewolves,
     /// the doctor, and the seer; by day everyone alive.
     fn awake(&self) -> HashSet<PlayerId> {
@@ -281,6 +293,19 @@ mod tests {
         state.phase = Phase::Day;
         state.alive.remove("wolf2");
         assert_eq!(sorted(state.awake()), ["seer", "villager", "wolf1"]);
+    }
+
+    #[test]
+    fn night_turns_to_day_and_day_to_the_next_nights() {
+        let mut state = village();
+        assert_eq!(state.round.get(), 1);
+        assert!(matches!(state.phase, Phase::Night));
+        state.next();
+        assert_eq!(state.round.get(), 1);
+        assert!(matches!(state.phase, Phase::Day));
+        state.next();
+        assert_eq!(state.round.get(), 2);
+        assert!(matches!(state.phase, Phase::Night));
     }
 
     #[test]

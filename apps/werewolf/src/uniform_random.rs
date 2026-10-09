@@ -90,9 +90,19 @@ pub(crate) struct Environment {
 }
 
 impl Environment {
+    /// The werewolves, the doctor, and the seer each choose.
+    async fn night(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
+        self.gather().await
+    }
+
+    /// Everyone alive chooses.
+    async fn day(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
+        self.gather().await
+    }
+
     /// Ask everyone awake what they choose, all at once, and gather their
     /// replies by player.
-    async fn night(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
+    async fn gather(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
         let asked = self
             .state
             .awake()
@@ -102,8 +112,11 @@ impl Environment {
         Ok(replies.into_iter().flatten().collect())
     }
 
-    async fn day(&self) -> anyhow::Result<()> {
-        Ok(())
+    /// Write down what each player chose.
+    fn log_choices(&self, replies: HashMap<PlayerId, Vec<Message>>) {
+        for choice in replies.into_values().flatten() {
+            self.context.log(choice);
+        }
     }
 
     /// Show `player` what it may see and wait for what it says back.
@@ -124,13 +137,14 @@ impl Behavior for Environment {
         &self.context
     }
 
-    /// For now a game is one night: ask everyone awake, write down what
-    /// they chose, and end the episode.
+    /// For now a game is one round: a night and a day, each asking everyone
+    /// awake and writing down what they chose, and then the episode ends.
     async fn start(&mut self) -> anyhow::Result<()> {
         let replies = self.night().await?;
-        for choice in replies.into_values().flatten() {
-            self.context.log(choice);
-        }
+        self.log_choices(replies);
+        self.state.next();
+        let replies = self.day().await?;
+        self.log_choices(replies);
         for player in self.state.roles.keys() {
             self.context.stop(player)?;
         }
@@ -220,7 +234,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_night_gathers_one_choice_from_each_awake_player() {
+    async fn a_night_and_a_day_each_gather_one_choice_from_everyone_awake() {
         let roles = village();
         let players: HashSet<PlayerId> = roles.keys().cloned().collect();
         let mut init = HashMap::from([(
@@ -257,8 +271,9 @@ mod tests {
             };
             choices.push(chosen);
         }
-        // The two werewolves and the seer each choose; the villager sleeps.
-        assert_eq!(choices.len(), 3, "{choices:?}");
+        // By night the two werewolves and the seer choose while the villager
+        // sleeps; by day all four choose.
+        assert_eq!(choices.len(), 3 + 4, "{choices:?}");
         assert!(choices.iter().all(|chosen| roles.contains_key(chosen)));
     }
 
