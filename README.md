@@ -18,7 +18,7 @@ replies, to stop other actors, and to log. A typical episode has one
 environment actor and several agent actors.
 
 The library lives at the root of the repository and the applications built on
-it under `apps/`. For a game built on this, see [`werewolf`](apps/werewolf).
+it under `apps/`. For games built on this, see [`social-deduction`](apps/social-deduction).
 
 ## Development
 

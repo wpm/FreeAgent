@@ -1,8 +1,8 @@
 [package]
-name = "werewolf"
+name = "social-deduction"
 version.workspace = true
 edition.workspace = true
-description = "The social deception game, played at random or by language model"
+description = "Social deduction games, played at random or by language model"
 readme = "README.md"
 
 [dependencies]

@@ -955,6 +955,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 
 [[package]]
+name = "social-deduction"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "free-agent",
+ "futures-util",
+ "rand",
+ "reqwest",
+ "sealed",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "toml",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1341,26 +1361,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
 dependencies = [
  "rustls-pki-types",
-]
-
-[[package]]
-name = "werewolf"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "free-agent",
- "futures-util",
- "rand",
- "reqwest",
- "sealed",
- "secrecy",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
- "toml",
 ]
 
 [[package]]

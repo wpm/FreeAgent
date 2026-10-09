@@ -2,11 +2,11 @@
 
 use clap::Parser;
 use rand::seq::SliceRandom;
+use social_deduction::{Actor, PlayerId, Role, Rules, game};
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::oneshot;
-use werewolf::{Actor, PlayerId, Role, Rules, game};
 
 /// How many of each role sit at the table.
 #[derive(Parser, Debug)]
