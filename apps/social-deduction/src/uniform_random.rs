@@ -1,6 +1,6 @@
 //! Players who choose at random.
 
-use crate::{Message, Observation, PlayerId};
+use crate::{Entry, Message, Observation, PlayerId};
 use async_trait::async_trait;
 use free_agent::{Behavior, Context};
 use rand::seq::IndexedRandom;
@@ -9,12 +9,12 @@ use rand::seq::IndexedRandom;
 /// role it does not know. That keeps a werewolf from choosing a werewolf and
 /// the seer from asking about anyone twice.
 pub struct Player {
-    context: Context<Message>,
+    context: Context<Message, Entry>,
 }
 
 impl Player {
     /// A player holding `context`, built once the episode has made it.
-    pub(crate) fn new(context: Context<Message>) -> Self {
+    pub(crate) fn new(context: Context<Message, Entry>) -> Self {
         Player { context }
     }
 }
@@ -22,9 +22,9 @@ impl Player {
 #[async_trait]
 impl Behavior for Player {
     type Message = Message;
-    type Log = Message;
+    type Log = Entry;
 
-    fn context(&self) -> &Context<Message> {
+    fn context(&self) -> &Context<Message, Entry> {
         &self.context
     }
 
@@ -62,22 +62,11 @@ fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
 mod tests {
     use super::*;
     use crate::{Phase, Role};
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
     use std::num::NonZero;
 
     fn id(name: &str) -> PlayerId {
         name.to_string()
-    }
-
-    /// Two werewolves, a seer, and a villager, each played at random, and
-    /// the environment that runs them.
-    fn village() -> HashMap<PlayerId, Role> {
-        HashMap::from([
-            (id("wolf1"), Role::Werewolf),
-            (id("wolf2"), Role::Werewolf),
-            (id("seer"), Role::Seer),
-            (id("villager"), Role::Villager),
-        ])
     }
 
     /// What `me` sees of a village where everyone in `alive` lives and

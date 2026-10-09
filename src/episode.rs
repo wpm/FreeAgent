@@ -12,6 +12,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 /// A set of actors brought into being together, wired to one another as
 /// their inits allow, and run until every one of them has stopped.
@@ -36,6 +37,7 @@ impl<B: Behavior> Episode<B> {
         // init and the receiver are unique, so they stay together in one
         // map. The senders and tokens are clonable, so they go into lookup
         // tables that each actor copies the permitted entries from.
+        let episode = Uuid::new_v4();
         let mut senders = HashMap::new();
         let mut shutdowns = HashMap::new();
         let staged: Staged<B> = init
@@ -63,6 +65,7 @@ impl<B: Behavior> Episode<B> {
                 mailboxes.insert(id.clone(), senders[&id].clone());
                 let context = Context {
                     id: id.clone(),
+                    episode,
                     mailboxes,
                     shutdown: Shutdown {
                         mine: shutdowns[&id].clone(),
@@ -213,11 +216,12 @@ mod tests {
     use crate::log::Event;
     use crate::message::Message;
     use async_trait::async_trait;
+    use serde::{Deserialize, Serialize};
     use std::sync::Arc;
     use tokio::sync::Semaphore;
     use tokio::sync::mpsc::UnboundedSender;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     struct Note;
     impl Message for Note {}
 

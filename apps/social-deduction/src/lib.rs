@@ -11,7 +11,8 @@
 //! talk.
 //!
 //! Play alternates between night and day, starting with night, until one
-//! [`Team`] has won.
+//! [`Team`] has won. The environment logs the deal, every message to or
+//! from a player as it was, and the result, as an [`Entry`] each.
 
 #![warn(missing_docs)]
 // The game is still being rebuilt on the framework, so much of it is not
@@ -80,7 +81,7 @@ impl Role {
 }
 
 /// The two halves of a round. A game begins with night.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 enum Phase {
     /// The werewolves choose a victim, the doctor someone to save, and the
     /// seer someone to learn about.
@@ -201,6 +202,15 @@ impl State {
         self.alive.remove(player);
     }
 
+    /// How many days have been played through. A day counts once it is
+    /// over, so the night of round `n` has seen `n - 1` and its day `n`.
+    fn days(&self) -> u8 {
+        match self.phase {
+            Phase::Night => self.round.get() - 1,
+            Phase::Day => self.round.get(),
+        }
+    }
+
     /// Move to the other half of the round: night turns to day, and day to
     /// the next round's night.
     fn next(&mut self) {
@@ -223,14 +233,6 @@ impl State {
         self.alive
             .iter()
             .filter(|player_id| acts(self.roles[*player_id]))
-            .cloned()
-            .collect()
-    }
-
-    fn surviving(&self, role: Role) -> HashSet<PlayerId> {
-        self.alive
-            .iter()
-            .filter(|player_id| self.roles[*player_id] == role)
             .cloned()
             .collect()
     }
@@ -262,6 +264,8 @@ impl State {
 /// How a game is played: the vote each phase is decided by and how long
 /// each phase waits for the players.
 pub struct Rules {
+    /// The name of the variation played, for the log.
+    pub variation: String,
     /// How the werewolves' choices become a victim.
     pub night_vote: Box<dyn Vote>,
     /// How the village's choices become a victim.
@@ -275,10 +279,11 @@ pub struct Rules {
 }
 
 impl Default for Rules {
-    /// The werewolves break ties at random, the village does not, and
-    /// each phase waits a minute.
+    /// Uniform Random: the werewolves break ties at random, the village
+    /// does not, and each phase waits a minute.
     fn default() -> Self {
         Self {
+            variation: "Uniform Random".to_string(),
             night_vote: Box::new(RandomTieBreak),
             day_vote: Box::new(NoTieBreak),
             night_limit: Duration::from_secs(60),
@@ -295,7 +300,7 @@ pub fn game(
     roles: HashMap<PlayerId, Role>,
     rules: Rules,
     winner: oneshot::Sender<Team>,
-    logger: Logger<Message>,
+    logger: Logger<Entry>,
     mut player: impl FnMut(&PlayerId) -> Builder<Actor>,
 ) -> Episode<Actor> {
     let players: HashSet<PlayerId> = roles.keys().cloned().collect();
@@ -364,9 +369,9 @@ impl Actor {
 #[async_trait]
 impl Behavior for Actor {
     type Message = Message;
-    type Log = Message;
+    type Log = Entry;
 
-    fn context(&self) -> &Context<Message> {
+    fn context(&self) -> &Context<Message, Entry> {
         match self {
             Actor::Environment(environment) => environment.context(),
             Actor::Player(player) => player.context(),
@@ -423,7 +428,7 @@ impl Behavior for Actor {
 
 /// The actor that holds the game and tells each player what it may see.
 pub struct Environment {
-    context: Context<Message>,
+    context: Context<Message, Entry>,
     state: State,
     rules: Rules,
     /// Where the winning team goes when the game ends. Taken when sent.
@@ -466,7 +471,10 @@ impl Environment {
                 if let Message::Action(chosen) = &message {
                     choices.insert(player.clone(), chosen.clone());
                 }
-                self.context.log(message);
+                self.context.log(Entry::Replied {
+                    from: player.clone(),
+                    message,
+                });
             }
         }
         Ok(choices)
@@ -479,10 +487,12 @@ impl Environment {
         player: PlayerId,
         limit: Duration,
     ) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
-        let observation = self.state.observation(player.clone())?;
-        let asked = self
-            .context
-            .request(Message::Observation(observation), HashSet::from([player]));
+        let message = Message::Observation(self.state.observation(player.clone())?);
+        self.context.log(Entry::Sent {
+            to: player.clone(),
+            message: message.clone(),
+        });
+        let asked = self.context.request(message, HashSet::from([player]));
         match timeout(limit, asked).await {
             Ok(replied) => replied,
             Err(_) => Ok(HashMap::new()),
@@ -502,15 +512,20 @@ impl Environment {
 #[async_trait]
 impl Behavior for Environment {
     type Message = Message;
-    type Log = Message;
+    type Log = Entry;
 
-    fn context(&self) -> &Context<Message> {
+    fn context(&self) -> &Context<Message, Entry> {
         &self.context
     }
 
-    /// Play night and day in turn until a team has won, then stop the
-    /// survivors, report the winner, and end the episode.
+    /// Log the deal, play night and day in turn until a team has won, log
+    /// the result, then stop the survivors, report the winner, and end the
+    /// episode.
     async fn start(&mut self) -> anyhow::Result<()> {
+        self.context.log(Entry::Start {
+            variation: self.rules.variation.clone(),
+            roles: self.state.roles.clone(),
+        });
         let winner = loop {
             self.night().await?;
             if let Some(team) = self.state.winner() {
@@ -523,6 +538,11 @@ impl Behavior for Environment {
             }
             self.state.next();
         };
+        self.context.log(Entry::End {
+            winner,
+            days: self.state.days(),
+            survivors: self.state.alive.clone(),
+        });
         for player in &self.state.alive {
             self.context.stop(player)?;
         }
@@ -536,7 +556,7 @@ impl Behavior for Environment {
 }
 
 /// What the environment and the players say to one another.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Message {
     /// What a player may see, from the environment.
     Observation(Observation),
@@ -544,6 +564,43 @@ pub enum Message {
     Action(PlayerId),
 }
 impl free_agent::Message for Message {}
+
+/// What the environment writes to the log: the deal, every message to or
+/// from a player as it was, and the result. Only the result summarizes
+/// anything; the rest is kept whole for whatever reads the log later.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Entry {
+    /// The game begins: who plays what, under which variation.
+    Start {
+        /// The name of the variation played, such as "Uniform Random".
+        variation: String,
+        /// Every player's role.
+        roles: HashMap<PlayerId, Role>,
+    },
+    /// The environment sent `message` to `to`.
+    Sent {
+        /// Who was sent to.
+        to: PlayerId,
+        /// What was sent.
+        message: Message,
+    },
+    /// `from` replied with `message`.
+    Replied {
+        /// Who replied.
+        from: PlayerId,
+        /// What they said.
+        message: Message,
+    },
+    /// The game is over.
+    End {
+        /// Who won.
+        winner: Team,
+        /// How many days were played through.
+        days: u8,
+        /// Who was still alive.
+        survivors: HashSet<PlayerId>,
+    },
+}
 
 /// How a phase's ballots, each voter's choice of a player, become one
 /// player or nobody. The werewolves and the village each vote under a rule
@@ -596,7 +653,7 @@ impl Vote for NoTieBreak {
 
 /// What a player is shown of the game: everything in the state that it
 /// may know.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Observation {
     /// Rounds count from one. A round is a night and then a day.
     round: NonZero<u8>,
@@ -616,16 +673,27 @@ mod tests {
     /// A player who never answers, for a game with a time limit to wait
     /// out.
     pub struct Mute {
-        context: Context<Message>,
+        context: Context<Message, Entry>,
     }
 
     #[async_trait]
     impl Behavior for Mute {
         type Message = Message;
-        type Log = Message;
+        type Log = Entry;
 
-        fn context(&self) -> &Context<Message> {
+        fn context(&self) -> &Context<Message, Entry> {
             &self.context
+        }
+
+        /// Clears its throat to itself, the one statement in a game of
+        /// players who otherwise only answer, so a statement goes through
+        /// [`Actor`] too. It does so while initializing, before anyone can
+        /// ask it anything, so the statement is delivered before the
+        /// request it never answers.
+        async fn initialize(&mut self) -> anyhow::Result<()> {
+            let me = self.context.id.clone();
+            self.context
+                .send(Message::Action(me.clone()), HashSet::from([me]))
         }
 
         async fn answer(&mut self, _: &Message) -> anyhow::Result<Vec<Message>> {
@@ -646,7 +714,7 @@ mod tests {
         roles: HashMap<PlayerId, Role>,
         rules: Rules,
         mute: &[&str],
-    ) -> anyhow::Result<(Team, Vec<Message>)> {
+    ) -> anyhow::Result<(Team, Vec<Entry>)> {
         let (winner, won) = oneshot::channel();
         let (logger, mut log) = unbounded_channel();
         let episode = game(roles, rules, winner, logger, |player| {
@@ -667,20 +735,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_game_runs_until_a_team_has_won() {
+    async fn a_game_is_logged_from_the_deal_to_the_end() {
         let roles = village().roles;
         let (winner, logged) = play(roles.clone(), Rules::default(), &[]).await.unwrap();
 
-        assert!(matches!(winner, Team::Werewolves | Team::Villagers));
-        // By the first night three players choose, so there is at least
-        // that much on the record, and every choice names a player.
-        assert!(logged.len() >= 3, "{logged:?}");
-        for choice in &logged {
-            let Message::Action(chosen) = choice else {
-                panic!("the environment logs choices, not {choice:?}");
-            };
-            assert!(roles.contains_key(chosen), "{chosen}");
+        assert_eq!(
+            logged.first(),
+            Some(&Entry::Start {
+                variation: "Uniform Random".to_string(),
+                roles: roles.clone(),
+            })
+        );
+
+        let last = logged.last();
+        assert!(
+            matches!(
+                last,
+                Some(Entry::End { winner: won, survivors, .. })
+                    if *won == winner
+                        && !survivors.is_empty()
+                        && survivors.iter().all(|player| roles.contains_key(player))
+            ),
+            "{last:?}"
+        );
+
+        // Everything between is a message to or from a player, as it was.
+        let mut shown = 0;
+        for entry in &logged[1..logged.len() - 1] {
+            match entry {
+                Entry::Sent {
+                    to,
+                    message: Message::Observation(_),
+                } => {
+                    assert!(roles.contains_key(to), "{to}");
+                    shown += 1;
+                }
+                Entry::Replied {
+                    from,
+                    message: Message::Action(chosen),
+                } => {
+                    assert!(roles.contains_key(from), "{from}");
+                    assert!(roles.contains_key(chosen), "{chosen}");
+                }
+                other => panic!("not a message to or from a player: {other:?}"),
+            }
         }
+        // By the first night three players are shown the game.
+        assert!(shown >= 3, "{logged:?}");
+    }
+
+    #[test]
+    fn an_entry_survives_a_trip_through_json() {
+        let state = village();
+        let entry = Entry::Sent {
+            to: "seer".to_string(),
+            message: Message::Observation(state.observation("seer".to_string()).unwrap()),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: Entry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn days_are_counted_as_they_are_completed() {
+        let mut state = village();
+        assert_eq!(state.days(), 0);
+        state.next();
+        assert_eq!(state.days(), 1);
+        state.next();
+        assert_eq!(state.days(), 1);
+        state.next();
+        assert_eq!(state.days(), 2);
     }
 
     fn one_wolf_against(villagers: &[&str]) -> HashMap<PlayerId, Role> {

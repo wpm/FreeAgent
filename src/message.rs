@@ -2,6 +2,7 @@
 //! and reply envelopes that carry a message and its answer.
 
 use anyhow::{Context, Result};
+use serde::{Serialize, de::DeserializeOwned};
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::oneshot;
@@ -10,17 +11,19 @@ use tokio::sync::oneshot;
 ///
 /// An episode carries one message type, and every actor in it sends and
 /// receives that type. A message is cloned for every recipient of a
-/// statement or a request, and travels between actors on a multi-threaded
-/// runtime, which is what the bounds say. Implementing it takes one empty
+/// statement or a request, travels between actors on a multi-threaded
+/// runtime, and is written to the log and read back from it, which is what
+/// the bounds say. Implementing it takes one empty
 /// line:
 ///
 /// ```
 /// # use free_agent::Message;
-/// #[derive(Debug, Clone)]
+/// # use serde::{Deserialize, Serialize};
+/// #[derive(Debug, Clone, Serialize, Deserialize)]
 /// struct Note(String);
 /// impl Message for Note {}
 /// ```
-pub trait Message: Debug + Clone + Send + Sync + 'static {}
+pub trait Message: Debug + Clone + Serialize + DeserializeOwned + Send + Sync + 'static {}
 
 /// Tells a reply from the others arriving on the same channel.
 type RequestId = u64;

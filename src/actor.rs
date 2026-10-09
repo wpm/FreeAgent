@@ -12,11 +12,13 @@ use crate::log::{Event, Logger};
 use crate::message::{Message, Request};
 use anyhow::{Context as _, bail};
 use async_trait::async_trait;
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow::{self, Break, Continue};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 /// An actor's name, unique within an episode.
 pub type ActorId = String;
@@ -183,6 +185,8 @@ async fn run_unless_stopped<T>(
 pub struct Context<M: Message, L = M> {
     /// This actor's name, as the other actors know it.
     pub id: ActorId,
+    /// The episode this actor is in, stamped on everything it logs.
+    pub episode: Uuid,
     /// The sending ends of the mailboxes this actor may put something in,
     /// its own among them.
     pub(crate) mailboxes: HashMap<ActorId, UnboundedSender<Envelope<M>>>,
@@ -198,7 +202,7 @@ impl<M: Message, L> Context<M, L> {
     /// dropped, and the actor carries on either way.
     pub fn log(&self, payload: L) {
         if let Some(log) = &self.log {
-            let _ = log.send(Event::now(payload));
+            let _ = log.send(Event::now(self.episode, payload));
         }
     }
 
@@ -325,7 +329,8 @@ impl<M: Message, L> Context<M, L> {
 /// # use async_trait::async_trait;
 /// # use free_agent::{ActorInit, Behavior, Context, Message};
 /// # use std::collections::HashSet;
-/// #[derive(Debug, Clone)]
+/// # use serde::{Deserialize, Serialize};
+/// #[derive(Debug, Clone, Serialize, Deserialize)]
 /// struct Note(String);
 /// impl Message for Note {}
 ///
@@ -359,7 +364,7 @@ pub trait Behavior: Send {
     /// What this behavior sends and receives.
     type Message: Message;
     /// What this behavior logs. Most often the message type.
-    type Log: Send + 'static;
+    type Log: Serialize + DeserializeOwned + Send + 'static;
     /// The ways out of this actor, handed to the behavior when it was built.
     fn context(&self) -> &Context<Self::Message, Self::Log>;
     /// Called before anything else: open a connection, say. No actor starts
@@ -409,15 +414,20 @@ pub(crate) enum Envelope<M: Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::{Deserialize, Serialize};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::Semaphore;
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::time::{sleep, timeout};
 
-    #[derive(Debug, Clone, PartialEq)]
-    struct Note(&'static str);
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct Note(String);
     impl Message for Note {}
+
+    fn note(text: &str) -> Note {
+        Note(text.to_string())
+    }
 
     /// A behavior that answers every request with the message it was sent,
     /// after waiting for a permit from its gate if it has one, and waits at
@@ -496,7 +506,7 @@ mod tests {
             Ok(())
         }
         async fn answer(&mut self, _message: &Note) -> anyhow::Result<Vec<Note>> {
-            Ok(vec![Note("seen"); self.seen])
+            Ok(vec![note("seen"); self.seen])
         }
     }
 
@@ -545,6 +555,7 @@ mod tests {
         mailboxes.insert(id(name), sender.clone());
         let context = Context {
             id: id(name),
+            episode: Uuid::new_v4(),
             mailboxes,
             shutdown: Shutdown {
                 mine: stop.clone(),
@@ -582,13 +593,13 @@ mod tests {
         );
 
         ann.context()
-            .send(Note("hello"), HashSet::from([id("bob"), id("cat")]))
+            .send(note("hello"), HashSet::from([id("bob"), id("cat")]))
             .unwrap();
 
         for mailbox in [&mut bob_mailbox, &mut cat_mailbox] {
             let heard = mailbox.recv().await.unwrap();
             assert!(
-                matches!(heard, Envelope::Statement(Note("hello"))),
+                matches!(&heard, Envelope::Statement(Note(text)) if text == "hello"),
                 "{heard:?}"
             );
         }
@@ -602,7 +613,7 @@ mod tests {
 
         let error = ann
             .context()
-            .send(Note("psst"), HashSet::from([id("bob"), id("zed")]))
+            .send(note("psst"), HashSet::from([id("bob"), id("zed")]))
             .unwrap_err();
 
         assert!(error.to_string().contains("zed"), "{error}");
@@ -614,12 +625,12 @@ mod tests {
         let mut ann = rig("ann", HashMap::new(), HashMap::new());
 
         ann.context()
-            .send(Note("remember this"), HashSet::from([id("ann")]))
+            .send(note("remember this"), HashSet::from([id("ann")]))
             .unwrap();
 
         let heard = ann.actor.mailbox.recv().await.unwrap();
         assert!(
-            matches!(heard, Envelope::Statement(Note("remember this"))),
+            matches!(&heard, Envelope::Statement(Note(text)) if text == "remember this"),
             "{heard:?}"
         );
     }
@@ -643,13 +654,13 @@ mod tests {
 
         let replies = ann
             .context()
-            .request(Note("who's there?"), HashSet::from([id("bob"), id("cat")]))
+            .request(note("who's there?"), HashSet::from([id("bob"), id("cat")]))
             .await
             .unwrap();
 
         let expected = HashMap::from([
-            (id("bob"), vec![Note("who's there?")]),
-            (id("cat"), vec![Note("who's there?")]),
+            (id("bob"), vec![note("who's there?")]),
+            (id("cat"), vec![note("who's there?")]),
         ]);
         assert_eq!(replies, expected);
         bob.stop.cancel();
@@ -673,17 +684,17 @@ mod tests {
         bob.start.send(()).unwrap();
         for _ in 0..2 {
             ann.context()
-                .send(Note("one more"), HashSet::from([id("bob")]))
+                .send(note("one more"), HashSet::from([id("bob")]))
                 .unwrap();
         }
 
         let replies = ann
             .context()
-            .request(Note("how many?"), HashSet::from([id("bob")]))
+            .request(note("how many?"), HashSet::from([id("bob")]))
             .await
             .unwrap();
 
-        let expected = HashMap::from([(id("bob"), vec![Note("seen"), Note("seen")])]);
+        let expected = HashMap::from([(id("bob"), vec![note("seen"), note("seen")])]);
         assert_eq!(replies, expected);
         bob.stop.cancel();
         running.await.unwrap().unwrap();
@@ -701,13 +712,13 @@ mod tests {
         bob.start.send(()).unwrap();
 
         ann.context()
-            .send(Note("whatever"), HashSet::from([id("bob")]))
+            .send(note("whatever"), HashSet::from([id("bob")]))
             .unwrap();
 
         // Bob is still running and answering afterward.
         let replies = ann
             .context()
-            .request(Note("still there?"), HashSet::from([id("bob")]))
+            .request(note("still there?"), HashSet::from([id("bob")]))
             .await
             .unwrap();
         assert_eq!(replies, HashMap::from([(id("bob"), vec![])]));
@@ -728,7 +739,7 @@ mod tests {
 
         let replies = ann
             .context()
-            .request(Note("anything?"), HashSet::from([id("bob")]))
+            .request(note("anything?"), HashSet::from([id("bob")]))
             .await
             .unwrap();
 
@@ -744,7 +755,7 @@ mod tests {
 
         let error = ann
             .context()
-            .request(Note("psst"), HashSet::from([id("bob"), id("zed")]))
+            .request(note("psst"), HashSet::from([id("bob"), id("zed")]))
             .await
             .unwrap_err();
 
@@ -758,7 +769,7 @@ mod tests {
 
         let error = ann
             .context()
-            .request(Note("hello me"), HashSet::from([id("ann")]))
+            .request(note("hello me"), HashSet::from([id("ann")]))
             .await
             .unwrap_err();
 
@@ -773,7 +784,7 @@ mod tests {
 
         let replies = ann
             .context()
-            .request(Note("anyone?"), HashSet::from([id("bob")]))
+            .request(note("anyone?"), HashSet::from([id("bob")]))
             .await
             .unwrap();
 
@@ -802,17 +813,17 @@ mod tests {
         let mut ann = rig("ann", HashMap::new(), HashMap::new());
         ann.actor.behavior.context.log = Some(logger);
 
-        ann.context().log(Note("for the record"));
+        ann.context().log(note("for the record"));
 
         let event = events.recv().await.unwrap();
-        assert_eq!(event.payload, Note("for the record"));
+        assert_eq!(event.payload, note("for the record"));
     }
 
     #[tokio::test]
     async fn log_does_nothing_without_a_logger() {
         let ann = rig("ann", HashMap::new(), HashMap::new());
 
-        ann.context().log(Note("into the void"));
+        ann.context().log(note("into the void"));
     }
 
     #[tokio::test]
@@ -838,7 +849,7 @@ mod tests {
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
         bob.sender
-            .send(Envelope::Statement(Note("take your time")))
+            .send(Envelope::Statement(note("take your time")))
             .unwrap();
         // Let Bob take the message and block in `receive`.
         sleep(Duration::from_secs(1)).await;
@@ -894,7 +905,7 @@ mod tests {
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
 
-        bob.sender.send(Envelope::Statement(Note("hello"))).unwrap();
+        bob.sender.send(Envelope::Statement(note("hello"))).unwrap();
 
         let error = running.await.unwrap().unwrap_err();
         assert!(error.to_string().contains("broken"), "{error}");
@@ -906,7 +917,7 @@ mod tests {
         bob.actor.behavior.broken = true;
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
-        let (request, _reply) = Request::new(Note("well?"));
+        let (request, _reply) = Request::new(note("well?"));
 
         bob.sender.send(Envelope::Request(request)).unwrap();
 
@@ -926,7 +937,7 @@ mod tests {
         bob.start.send(()).unwrap();
         let asking = tokio::spawn(async move {
             ann.context()
-                .request(Note("well?"), HashSet::from([id("bob")]))
+                .request(note("well?"), HashSet::from([id("bob")]))
                 .await
         });
         sleep(Duration::from_secs(1)).await;
@@ -948,15 +959,14 @@ mod tests {
         );
         let bob_running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
-        let asking = tokio::spawn(async move {
-            ann.context()
-                .request(Note("well?"), HashSet::from([id("bob")]))
-                .await
-        });
-        sleep(Duration::from_secs(1)).await;
 
-        // Ann gives up, dropping her reply channel, and then Bob answers.
-        asking.abort();
+        // Ann gives up after a second, dropping her reply channel, and then
+        // Bob answers.
+        let asking = ann
+            .context()
+            .request(note("well?"), HashSet::from([id("bob")]));
+        let gave_up = tokio::time::timeout(Duration::from_secs(1), asking).await;
+        assert!(gave_up.is_err(), "{gave_up:?}");
         gate.add_permits(1);
         sleep(Duration::from_secs(1)).await;
 

@@ -1,6 +1,8 @@
-//! Play Werewolf: deal the roles, run one game, and say who won.
+//! Play Werewolf: deal the roles, run one game, log it to standard error
+//! as JSON lines, and say who won.
 
 use clap::Parser;
+use free_agent::console_log;
 use rand::seq::SliceRandom;
 use social_deduction::{Actor, PlayerId, Role, Rules, game};
 use std::collections::HashMap;
@@ -56,12 +58,14 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 async fn main() -> anyhow::Result<()> {
     let table = Table::parse();
     let (winner, won) = oneshot::channel();
-    // Nobody reads the log yet, so its events are dropped as they come.
-    let (logger, _log) = unbounded_channel();
+    let (logger, log) = unbounded_channel();
     let episode = game(table.deal(), Rules::default(), winner, logger, |_| {
         Actor::player()
     });
+    let writing = tokio::spawn(console_log(log));
     episode.run(PATIENCE).await?;
+    // The log is written once the last actor has let go of its logger.
+    writing.await??;
     println!("The {} win.", won.await?);
     Ok(())
 }
