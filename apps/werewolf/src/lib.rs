@@ -32,6 +32,9 @@ use std::num::NonZero;
 /// A player is an actor, named as the episode names it.
 type PlayerId = ActorId;
 
+/// What the awake players chose in a phase: each player's choice of another.
+type Choices = HashMap<PlayerId, PlayerId>;
+
 /// The two sides. A game ends when one of them has won.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Team {
@@ -144,7 +147,48 @@ impl State {
         })
     }
 
-    /// Which players of `role` are alive?
+    /// Resolve the night from what the awake players chose. The werewolves'
+    /// choices are ballots under `vote`, and whoever they elect dies unless
+    /// a doctor chose to protect them. Each seer learns the role of whom it
+    /// chose. Returns who died.
+    fn resolve_night(&mut self, choices: &Choices, vote: &dyn Vote) -> Option<PlayerId> {
+        for (seer, seen) in self.chosen_by(choices, Role::Seer) {
+            self.seers_discovered.entry(seer).or_default().insert(seen);
+        }
+        let protected: HashSet<PlayerId> = self
+            .chosen_by(choices, Role::Doctor)
+            .into_values()
+            .collect();
+        let victim = vote.elect(&self.chosen_by(choices, Role::Werewolf))?;
+        if protected.contains(&victim) {
+            return None;
+        }
+        self.kill(&victim);
+        Some(victim)
+    }
+
+    /// Resolve the day from what the awake players chose. Every choice is
+    /// a ballot under `vote`, and whoever they elect dies. Returns who died.
+    fn resolve_day(&mut self, choices: &Choices, vote: &dyn Vote) -> Option<PlayerId> {
+        let victim = vote.elect(choices)?;
+        self.kill(&victim);
+        Some(victim)
+    }
+
+    /// The choices made by players of `role`.
+    fn chosen_by(&self, choices: &Choices, role: Role) -> Choices {
+        choices
+            .iter()
+            .filter(|(player, _)| self.roles.get(*player) == Some(&role))
+            .map(|(player, chosen)| (player.clone(), chosen.clone()))
+            .collect()
+    }
+
+    /// Remove `player` from the living.
+    fn kill(&mut self, player: &PlayerId) {
+        self.alive.remove(player);
+    }
+
     /// Move to the other half of the round: night turns to day, and day to
     /// the next round's night.
     fn next(&mut self) {
@@ -401,6 +445,88 @@ mod tests {
             elected,
             HashSet::from(["ann".to_string(), "bob".to_string()])
         );
+    }
+
+    /// A village with a doctor, for the night to have everyone in it.
+    fn full_village() -> State {
+        State::new(HashMap::from([
+            ("wolf1".to_string(), Role::Werewolf),
+            ("wolf2".to_string(), Role::Werewolf),
+            ("seer".to_string(), Role::Seer),
+            ("doctor".to_string(), Role::Doctor),
+            ("villager".to_string(), Role::Villager),
+        ]))
+    }
+
+    #[test]
+    fn by_night_the_werewolves_kill_whom_they_elect() {
+        let mut state = full_village();
+        let choices = ballots(&[
+            ("wolf1", "villager"),
+            ("wolf2", "villager"),
+            ("doctor", "seer"),
+        ]);
+        assert_eq!(
+            state.resolve_night(&choices, &RandomTieBreak),
+            Some("villager".to_string())
+        );
+        assert!(!state.alive.contains("villager"));
+    }
+
+    #[test]
+    fn the_doctor_saves_whom_it_chooses() {
+        let mut state = full_village();
+        let choices = ballots(&[
+            ("wolf1", "villager"),
+            ("wolf2", "villager"),
+            ("doctor", "villager"),
+        ]);
+        assert_eq!(state.resolve_night(&choices, &RandomTieBreak), None);
+        assert!(state.alive.contains("villager"));
+    }
+
+    #[test]
+    fn the_seer_learns_the_role_of_whom_it_chooses() {
+        let mut state = full_village();
+        let choices = ballots(&[("wolf1", "villager"), ("seer", "wolf1")]);
+        state.resolve_night(&choices, &RandomTieBreak);
+        let observation = state.observation("seer".to_string()).unwrap();
+        assert_eq!(observation.roles["wolf1"], Role::Werewolf);
+    }
+
+    #[test]
+    fn a_night_without_a_werewolf_choice_kills_nobody() {
+        let mut state = full_village();
+        let choices = ballots(&[("seer", "wolf1"), ("doctor", "seer")]);
+        assert_eq!(state.resolve_night(&choices, &RandomTieBreak), None);
+        assert_eq!(state.alive.len(), 5);
+    }
+
+    #[test]
+    fn by_day_the_village_kills_whom_it_elects() {
+        let mut state = full_village();
+        state.next();
+        let choices = ballots(&[
+            ("wolf1", "seer"),
+            ("wolf2", "seer"),
+            ("seer", "wolf1"),
+            ("doctor", "wolf1"),
+            ("villager", "wolf1"),
+        ]);
+        assert_eq!(
+            state.resolve_day(&choices, &NoTieBreak),
+            Some("wolf1".to_string())
+        );
+        assert!(!state.alive.contains("wolf1"));
+    }
+
+    #[test]
+    fn a_day_that_ties_kills_nobody() {
+        let mut state = full_village();
+        state.next();
+        let choices = ballots(&[("wolf1", "seer"), ("seer", "wolf1")]);
+        assert_eq!(state.resolve_day(&choices, &NoTieBreak), None);
+        assert_eq!(state.alive.len(), 5);
     }
 
     #[test]
