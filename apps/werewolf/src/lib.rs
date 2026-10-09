@@ -20,14 +20,13 @@
 
 mod uniform_random;
 
-use free_agent::ActorId;
+use async_trait::async_trait;
+use free_agent::{ActorId, Behavior, Builder, Context};
+use futures_util::future::try_join_all;
 use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
-
-// use async_trait::async_trait;
-// #[async_trait]
 
 /// A player is an actor, named as the episode names it.
 type PlayerId = ActorId;
@@ -247,6 +246,162 @@ impl State {
     }
 }
 
+/// What an actor in the game does: run it, or play in it. An episode holds
+/// one kind of actor, so the two sides meet here and each method goes to
+/// whichever side this is.
+pub enum Actor {
+    /// The side that holds the game.
+    Environment(Environment),
+    /// A side that sees only what it is shown.
+    Player(uniform_random::Player),
+}
+
+impl Actor {
+    /// Builds the environment for a game of `roles` once the episode has
+    /// made its context.
+    pub fn environment(roles: HashMap<PlayerId, Role>) -> Builder<Self> {
+        Box::new(move |context| {
+            Actor::Environment(Environment {
+                context,
+                state: State::new(roles),
+            })
+        })
+    }
+
+    /// Builds a player once the episode has made its context.
+    pub fn player() -> Builder<Self> {
+        Box::new(|context| Actor::Player(uniform_random::Player::new(context)))
+    }
+}
+
+#[async_trait]
+impl Behavior for Actor {
+    type Message = Message;
+    type Log = Message;
+
+    fn context(&self) -> &Context<Message> {
+        match self {
+            Actor::Environment(environment) => environment.context(),
+            Actor::Player(player) => player.context(),
+        }
+    }
+
+    async fn initialize(&mut self) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.initialize().await,
+            Actor::Player(player) => player.initialize().await,
+        }
+    }
+
+    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.receive(message).await,
+            Actor::Player(player) => player.receive(message).await,
+        }
+    }
+
+    async fn answer(&mut self, message: &Message) -> anyhow::Result<Vec<Message>> {
+        match self {
+            Actor::Environment(environment) => environment.answer(message).await,
+            Actor::Player(player) => player.answer(message).await,
+        }
+    }
+
+    async fn start(&mut self) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.start().await,
+            Actor::Player(player) => player.start().await,
+        }
+    }
+
+    async fn clean_up(&mut self) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.clean_up().await,
+            Actor::Player(player) => player.clean_up().await,
+        }
+    }
+}
+
+/// The actor that holds the game and tells each player what it may see.
+pub struct Environment {
+    context: Context<Message>,
+    state: State,
+}
+
+impl Environment {
+    /// The werewolves, the doctor, and the seer each choose.
+    async fn night(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
+        self.gather().await
+    }
+
+    /// Everyone alive chooses.
+    async fn day(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
+        self.gather().await
+    }
+
+    /// Ask everyone awake what they choose, all at once, and gather their
+    /// replies by player.
+    async fn gather(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
+        let asked = self
+            .state
+            .awake()
+            .into_iter()
+            .map(|player| self.ask(player));
+        let replies = try_join_all(asked).await?;
+        Ok(replies.into_iter().flatten().collect())
+    }
+
+    /// Write down what each player chose.
+    fn log_choices(&self, replies: HashMap<PlayerId, Vec<Message>>) {
+        for choice in replies.into_values().flatten() {
+            self.context.log(choice);
+        }
+    }
+
+    /// Show `player` what it may see and wait for what it says back.
+    async fn ask(&self, player: PlayerId) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
+        let observation = self.state.observation(player.clone())?;
+        self.context
+            .request(Message::Observation(observation), HashSet::from([player]))
+            .await
+    }
+}
+
+#[async_trait]
+impl Behavior for Environment {
+    type Message = Message;
+    type Log = Message;
+
+    fn context(&self) -> &Context<Message> {
+        &self.context
+    }
+
+    /// For now a game is one round: a night and a day, each asking everyone
+    /// awake and writing down what they chose, and then the episode ends.
+    async fn start(&mut self) -> anyhow::Result<()> {
+        let replies = self.night().await?;
+        self.log_choices(replies);
+        self.state.next();
+        let replies = self.day().await?;
+        self.log_choices(replies);
+        for player in self.state.roles.keys() {
+            self.context.stop(player)?;
+        }
+        self.context.shutdown();
+        Ok(())
+    }
+}
+
+/// What the environment and the players say to one another.
+#[derive(Debug, Clone)]
+pub enum Message {
+    /// What a player may see, from the environment.
+    Observation(Observation),
+    /// A player's choice of another player, to the environment.
+    Action(PlayerId),
+}
+impl free_agent::Message for Message {}
+
 /// How a phase's ballots, each voter's choice of a player, become one
 /// player or nobody. The werewolves and the village each vote under a rule
 /// of their own, and a game may bring a rule of its own.
@@ -296,8 +451,10 @@ impl Vote for NoTieBreak {
     }
 }
 
+/// What a player is shown of the game: everything in the state that it
+/// may know.
 #[derive(Debug, Clone)]
-struct Observation {
+pub struct Observation {
     /// Rounds count from one. A round is a night and then a day.
     round: NonZero<u8>,
     /// Which half of the round it is.

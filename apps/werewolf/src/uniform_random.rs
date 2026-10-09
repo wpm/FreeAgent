@@ -1,163 +1,22 @@
-//! Players who choose at random, and the environment that runs their game.
+//! Players who choose at random.
 
-use crate::{Observation, PlayerId, Role, State};
+use crate::{Message, Observation, PlayerId};
 use async_trait::async_trait;
-use free_agent::{Behavior, Builder, Context};
-use futures_util::future::try_join_all;
+use free_agent::{Behavior, Context};
 use rand::seq::IndexedRandom;
-use std::collections::{HashMap, HashSet};
-
-/// What an actor in the game does: run it, or play in it. An episode holds
-/// one kind of actor, so the two sides meet here and each method goes to
-/// whichever side this is.
-pub(crate) enum Actor {
-    /// The side that holds the game.
-    Environment(Environment),
-    /// A side that sees only what it is shown.
-    Player(Player),
-}
-
-impl Actor {
-    /// Builds the environment for a game of `roles` once the episode has
-    /// made its context.
-    pub(crate) fn environment(roles: HashMap<PlayerId, Role>) -> Builder<Self> {
-        Box::new(move |context| {
-            Actor::Environment(Environment {
-                context,
-                state: State::new(roles),
-            })
-        })
-    }
-
-    /// Builds a player once the episode has made its context.
-    pub(crate) fn player() -> Builder<Self> {
-        Box::new(|context| Actor::Player(Player { context }))
-    }
-}
-
-#[async_trait]
-impl Behavior for Actor {
-    type Message = Message;
-    type Log = Message;
-
-    fn context(&self) -> &Context<Message> {
-        match self {
-            Actor::Environment(environment) => environment.context(),
-            Actor::Player(player) => player.context(),
-        }
-    }
-
-    async fn initialize(&mut self) -> anyhow::Result<()> {
-        match self {
-            Actor::Environment(environment) => environment.initialize().await,
-            Actor::Player(player) => player.initialize().await,
-        }
-    }
-
-    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        match self {
-            Actor::Environment(environment) => environment.receive(message).await,
-            Actor::Player(player) => player.receive(message).await,
-        }
-    }
-
-    async fn answer(&mut self, message: &Message) -> anyhow::Result<Vec<Message>> {
-        match self {
-            Actor::Environment(environment) => environment.answer(message).await,
-            Actor::Player(player) => player.answer(message).await,
-        }
-    }
-
-    async fn start(&mut self) -> anyhow::Result<()> {
-        match self {
-            Actor::Environment(environment) => environment.start().await,
-            Actor::Player(player) => player.start().await,
-        }
-    }
-
-    async fn clean_up(&mut self) -> anyhow::Result<()> {
-        match self {
-            Actor::Environment(environment) => environment.clean_up().await,
-            Actor::Player(player) => player.clean_up().await,
-        }
-    }
-}
-
-/// The actor that holds the game and tells each player what it may see.
-pub(crate) struct Environment {
-    context: Context<Message>,
-    state: State,
-}
-
-impl Environment {
-    /// The werewolves, the doctor, and the seer each choose.
-    async fn night(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
-        self.gather().await
-    }
-
-    /// Everyone alive chooses.
-    async fn day(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
-        self.gather().await
-    }
-
-    /// Ask everyone awake what they choose, all at once, and gather their
-    /// replies by player.
-    async fn gather(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
-        let asked = self
-            .state
-            .awake()
-            .into_iter()
-            .map(|player| self.ask(player));
-        let replies = try_join_all(asked).await?;
-        Ok(replies.into_iter().flatten().collect())
-    }
-
-    /// Write down what each player chose.
-    fn log_choices(&self, replies: HashMap<PlayerId, Vec<Message>>) {
-        for choice in replies.into_values().flatten() {
-            self.context.log(choice);
-        }
-    }
-
-    /// Show `player` what it may see and wait for what it says back.
-    async fn ask(&self, player: PlayerId) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
-        let observation = self.state.observation(player.clone())?;
-        self.context
-            .request(Message::Observation(observation), HashSet::from([player]))
-            .await
-    }
-}
-
-#[async_trait]
-impl Behavior for Environment {
-    type Message = Message;
-    type Log = Message;
-
-    fn context(&self) -> &Context<Message> {
-        &self.context
-    }
-
-    /// For now a game is one round: a night and a day, each asking everyone
-    /// awake and writing down what they chose, and then the episode ends.
-    async fn start(&mut self) -> anyhow::Result<()> {
-        let replies = self.night().await?;
-        self.log_choices(replies);
-        self.state.next();
-        let replies = self.day().await?;
-        self.log_choices(replies);
-        for player in self.state.roles.keys() {
-            self.context.stop(player)?;
-        }
-        self.context.shutdown();
-        Ok(())
-    }
-}
 
 /// A player who, asked to choose, picks at random among the living whose
 /// role it does not know. That keeps a werewolf from choosing a werewolf and
 /// the seer from asking about anyone twice.
-pub(crate) struct Player {
+pub struct Player {
     context: Context<Message>,
+}
+
+impl Player {
+    /// A player holding `context`, built once the episode has made it.
+    pub(crate) fn new(context: Context<Message>) -> Self {
+        Player { context }
+    }
 }
 
 #[async_trait]
@@ -199,20 +58,12 @@ fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
         .map(|player| (*player).clone())
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum Message {
-    /// What a player may see, from the environment.
-    Observation(Observation),
-    /// A player's choice of another player, to the environment.
-    Action(PlayerId),
-}
-impl free_agent::Message for Message {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Phase;
+    use crate::{Actor, Phase, Role};
     use free_agent::{ActorInit, Episode};
+    use std::collections::HashMap;
     use std::collections::HashSet;
     use std::num::NonZero;
     use std::time::Duration;
