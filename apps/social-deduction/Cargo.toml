@@ -4,6 +4,16 @@ version.workspace = true
 edition.workspace = true
 description = "Social deduction games, played at random or by language model"
 readme = "README.md"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# The applications ship as binaries from GitHub Releases; the library is what
+# goes to crates.io. Drop this line to publish the application there too.
+publish = false
+
+# Which is not to say dist should skip it: it is the binary dist ships.
+[package.metadata.dist]
+dist = true
 
 [dependencies]
 anyhow.workspace = true

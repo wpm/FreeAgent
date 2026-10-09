@@ -1,0 +1,123 @@
+/* Black text on white, with one red. */
+:root {
+  --ink: #000;
+  --paper: #fff;
+  --red: #d2001f;
+  --rule: #e6e6e6;
+  --code: #f4f4f4;
+}
+
+* { box-sizing: border-box; }
+
+html { font-size: 112.5%; }
+
+body {
+  margin: 0;
+  padding: 0 1.5rem 4rem;
+  color: var(--ink);
+  background: var(--paper);
+  font-family: Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  line-height: 1.55;
+  max-width: 44rem;
+  margin-inline: auto;
+}
+
+header {
+  padding-top: 4rem;
+  border-bottom: 3px solid var(--ink);
+  margin-bottom: 2.5rem;
+}
+
+h1 {
+  font-size: 3.6rem;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  margin: 0 0 0.5rem;
+  font-weight: 700;
+}
+
+.mark { color: var(--red); }
+
+.tagline {
+  font-size: 1.3rem;
+  margin: 0 0 1.5rem;
+}
+
+nav {
+  display: flex;
+  gap: 1.5rem;
+  padding-bottom: 0.75rem;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--red);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.15em;
+}
+
+a:hover, a:focus-visible { color: var(--red); }
+
+nav a { text-decoration: none; }
+nav a:hover, nav a:focus-visible { color: var(--red); }
+
+section { margin-bottom: 2.5rem; }
+
+h2 {
+  font-size: 1.1rem;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0 0 0.75rem;
+}
+
+h2::before {
+  content: "";
+  display: inline-block;
+  width: 0.6em;
+  height: 0.6em;
+  background: var(--red);
+  margin-right: 0.6em;
+  vertical-align: baseline;
+}
+
+h3 {
+  font-size: 0.85rem;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 1.25rem 0 0.25rem;
+}
+
+p { margin: 0 0 1rem; }
+
+pre {
+  background: var(--code);
+  border-left: 3px solid var(--red);
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  margin: 0 0 1rem;
+}
+
+code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+}
+
+footer {
+  border-top: 1px solid var(--rule);
+  padding-top: 1rem;
+  font-size: 0.85rem;
+  color: #444;
+}
+
+@media (max-width: 40rem) {
+  html { font-size: 100%; }
+  h1 { font-size: 2.6rem; }
+  header { padding-top: 2.5rem; }
+}

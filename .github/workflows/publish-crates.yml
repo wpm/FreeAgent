@@ -1,0 +1,54 @@
+name: Publish to crates.io
+
+# The release workflow calls this once the binaries have built and uploaded,
+# so a release that fails to build publishes nothing. The token comes from
+# crates.io's trusted publishing, which trusts this workflow file by name;
+# no secret is stored here. The first publish of a crate has to be done by
+# hand with a token, since a trusted publisher is configured on a crate that
+# exists; see RELEASING.md.
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  publish:
+    name: cargo publish
+    runs-on: ubuntu-latest
+    environment: release
+    # Only what the release workflow grants a publish job: the OIDC token
+    # that crates.io exchanges for a publish token. Checking out a public
+    # repository needs nothing more.
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # A version crates.io already has, published by hand or by an earlier
+      # run of this workflow, is left alone: a re-run of a release and a tag
+      # that follows a manual publish both pass.
+      - name: Look for the version on crates.io
+        id: look
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "free-agent") | .version')
+          if curl --fail --silent --show-error --output /dev/null \
+               --user-agent "wpm/FreeAgent release workflow" \
+               "https://crates.io/api/v1/crates/free-agent/$version"; then
+            echo "free-agent $version is already on crates.io"
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: rust-lang/crates-io-auth-action@v1
+        if: steps.look.outputs.published != 'true'
+        id: auth
+      # Publishing is in dependency order, which here is the library alone:
+      # the applications are publish = false in their manifests, so cargo
+      # skips them.
+      - if: steps.look.outputs.published != 'true'
+        run: cargo publish --workspace --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
