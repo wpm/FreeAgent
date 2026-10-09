@@ -18,6 +18,8 @@
 // yet reached from anywhere.
 #![allow(dead_code)]
 
+mod uniform_random;
+
 use free_agent::ActorId;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
