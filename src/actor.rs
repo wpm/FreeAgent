@@ -1,32 +1,38 @@
-//! An actor is a [`Strategy`] driven by an inbox, with a [`Lifecycle`]
-//! around it. The strategy reaches the rest of the episode through its
-//! [`Context`], which an [`Episode`](crate::Episode) builds from the
-//! actor's [`ActorInit`].
+//! Actors in the sense of the [actor model]: each one keeps its own state,
+//! takes messages from a mailbox one at a time, and reaches other actors
+//! only by sending them messages.
+//!
+//! Here an actor is a [`Behavior`] driven by a mailbox. The behavior
+//! reaches the rest of the episode through its [`Context`], which an
+//! [`Episode`](crate::Episode) builds from the actor's [`ActorInit`].
+//!
+//! [actor model]: https://en.wikipedia.org/wiki/Actor_model
 
 use crate::log::{Event, Logger};
 use crate::message::{Message, Request};
 use anyhow::{Context as _, bail};
 use async_trait::async_trait;
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow::{self, Break, Continue};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 /// An actor's name, unique within an episode.
 pub type ActorId = String;
 
-/// Builds a [`Strategy`] from the [`Context`] it will own.
-pub type Builder<S> =
-    Box<dyn FnOnce(Context<<S as Strategy>::Message, <S as Strategy>::Log>) -> S + Send>;
+/// Builds a [`Behavior`] from the [`Context`] it will own.
+pub type Builder<B> =
+    Box<dyn FnOnce(Context<<B as Behavior>::Message, <B as Behavior>::Log>) -> B + Send>;
 
 /// Everything an [`Episode`](crate::Episode) needs to build one actor: how
-/// it lives, how it behaves, and whom it may reach.
-pub struct ActorInit<L: Lifecycle, S: Strategy> {
-    /// How this actor sets up and tears down.
-    pub lifecycle: L,
-    /// Builds the strategy once its [`Context`] exists, which is when the
+/// it behaves and whom it may reach.
+pub struct ActorInit<B: Behavior> {
+    /// Builds the behavior once its [`Context`] exists, which is when the
     /// episode has opened every actor's channels.
-    pub strategy: Builder<S>,
+    pub behavior: Builder<B>,
     /// The actors this one may send to and request from.
     pub can_send_to: HashSet<ActorId>,
     /// The actors this one may stop.
@@ -35,89 +41,130 @@ pub struct ActorInit<L: Lifecycle, S: Strategy> {
     pub has_logger: bool,
 }
 
-/// A running actor: its lifecycle, its strategy, its inbox, and the two
-/// one-time signals it exchanges with the episode on the way up.
-pub(crate) struct Actor<L: Lifecycle, S: Strategy> {
-    /// How this Actor handles startup and shutdown.
-    pub(crate) lifecycle: L,
-    /// How this Actor handles incoming Messages. It owns the [`Context`]
-    /// through which it reaches other actors.
-    pub(crate) strategy: S,
+/// A running actor: its behavior, its mailbox, and the two one-time signals
+/// it exchanges with the episode on the way up.
+pub(crate) struct Actor<B: Behavior> {
+    /// What this Actor does at each point in its life. It owns the
+    /// [`Context`] through which it reaches other actors.
+    pub(crate) behavior: B,
     /// This Actor's one-time signal to the episode that it is initialized
-    /// and running its message loop.
-    pub(crate) ready: oneshot::Sender<()>,
+    /// and running its message loop. Taken when it is sent.
+    pub(crate) ready: Option<oneshot::Sender<()>>,
     /// The episode's one-time signal that every actor is running.
     pub(crate) start: oneshot::Receiver<()>,
     /// The channel on which this Actor receives incoming Messages.
-    pub(crate) inbox: UnboundedReceiver<Observation<S::Message>>,
+    pub(crate) mailbox: UnboundedReceiver<Envelope<B::Message>>,
 }
 
-impl<L: Lifecycle, S: Strategy> Actor<L, S> {
-    /// Initialize, then handle the start signal and observations until shut
-    /// down or until every sender to this actor's inbox is gone, then clean
-    /// up.
+impl<B: Behavior> Actor<B> {
+    /// An actor's whole life, in four phases.
     ///
-    /// Shutdown takes effect at once: a step in progress is abandoned at its
-    /// next await, and whatever is waiting in the inbox stays there. An actor
-    /// shut down while still initializing stops right there; cleanup follows
-    /// a finished initialization.
+    /// 1. Initialize, and tell the episode this actor is ready.
+    /// 2. Wait for the episode's start signal, which comes once every actor
+    ///    is ready, and make the opening move.
+    /// 3. Deliver each envelope in the mailbox to the behavior, one at a
+    ///    time, until shut down.
+    /// 4. Clean up.
+    ///
+    /// Phases 2 and 3 overlap: mail that arrives before the start signal is
+    /// delivered as it comes. An error from the behavior at any phase ends
+    /// the actor with that error.
+    ///
+    /// Shutdown cuts any phase short. A step in progress is dropped at its
+    /// next await, mail still in the mailbox stays there, and cleanup runs
+    /// only after a finished initialization.
     pub(crate) async fn run(mut self) -> anyhow::Result<()> {
-        let shutdown = self.strategy.context().shutdown.mine.clone();
-        let Some(initialized) = unless_stopped(&shutdown, self.lifecycle.initialize()).await else {
+        let shutdown = self.behavior.context().shutdown.mine.clone();
+        let Some(initialized) = run_unless_stopped(&shutdown, self.behavior.initialize()).await
+        else {
             return Ok(());
         };
         initialized?;
         // The episode may already be gone, in which case no one is waiting.
-        let _ = self.ready.send(());
-        // A oneshot receiver panics if polled after it completes, so it is
-        // taken out of the select once it has fired.
-        let mut start = Some(self.start);
+        if let Some(ready) = self.ready.take() {
+            let _ = ready.send(());
+        }
+        let mut start_consumed = false;
         loop {
-            tokio::select! {
+            // Wait for whichever happens first: shutdown, the start signal,
+            // or the next envelope. Each arm is `pattern = future => body`;
+            // the body runs with the future's output bound to the pattern.
+            // `biased` tries the arms in order, so shutdown wins a tie. The
+            // start arm drops out once it has fired, because a oneshot
+            // receiver panics if polled again.
+            let flow = tokio::select! {
                 biased;
-                _ = shutdown.cancelled() => break,
-                started = async { start.as_mut().expect("guarded by the branch condition").await },
-                    if start.is_some() =>
-                {
-                    start = None;
-                    match started {
-                        Ok(()) => {
-                            let Some(opened) = unless_stopped(&shutdown, self.strategy.start()).await else {
-                                break;
-                            };
-                            opened?;
-                        }
-                        Err(_) => break, // The episode is gone.
-                    }
+                _ = shutdown.cancelled() => Break(()),
+                signal = &mut self.start, if !start_consumed => {
+                    start_consumed = true;
+                    self.open(signal).await?
                 }
-                observation = self.inbox.recv() => match observation {
-                    None => break, // Every sender is gone.
-                    Some(Observation::Broadcast(message)) => {
-                        let step = self.strategy.policy(&message);
-                        let Some(acted) = unless_stopped(&shutdown, step).await else {
-                            break;
-                        };
-                        acted?;
-                    }
-                    Some(Observation::Request(request)) => {
-                        let step = self.strategy.policy(request.message());
-                        let Some(acted) = unless_stopped(&shutdown, step).await else {
-                            break;
-                        };
-                        // The asker may have stopped waiting, which is no
-                        // fault of this actor.
-                        let _ = request.reply(acted?);
-                    }
-                },
+                envelope = self.mailbox.recv() => {
+                    // This actor holds a sender to its own mailbox, so the
+                    // mailbox outlives the loop.
+                    self.deliver(envelope.expect("mailbox closed")).await?
+                }
+            };
+            if flow.is_break() {
+                break;
             }
         }
-        self.lifecycle.clean_up().await?;
+        self.behavior.clean_up().await?;
         Ok(())
+    }
+
+    /// Make the opening move, now that the episode has signaled that every
+    /// actor is running. An error in place of the signal means the episode
+    /// is gone, and there is nothing to open.
+    async fn open(
+        &mut self,
+        signal: Result<(), oneshot::error::RecvError>,
+    ) -> anyhow::Result<ControlFlow<()>> {
+        if signal.is_err() {
+            return Ok(Break(()));
+        }
+        let shutdown = self.behavior.context().shutdown.mine.clone();
+        let Some(opened) = run_unless_stopped(&shutdown, self.behavior.start()).await else {
+            return Ok(Break(()));
+        };
+        opened?;
+        Ok(Continue(()))
+    }
+
+    /// Hand `envelope` to the behavior: either a statement to receive or a
+    /// request to answer and reply to.
+    ///
+    /// The message loop watches for shutdown only between envelopes, so each
+    /// step races shutdown on its own here.
+    async fn deliver(&mut self, envelope: Envelope<B::Message>) -> anyhow::Result<ControlFlow<()>> {
+        let shutdown = self.behavior.context().shutdown.mine.clone();
+        match envelope {
+            Envelope::Statement(message) => {
+                let Some(received) =
+                    run_unless_stopped(&shutdown, self.behavior.receive(&message)).await
+                else {
+                    return Ok(Break(()));
+                };
+                received?;
+            }
+            Envelope::Request(request) => {
+                let Some(answered) =
+                    run_unless_stopped(&shutdown, self.behavior.answer(request.message())).await
+                else {
+                    return Ok(Break(()));
+                };
+                // The asker may have stopped waiting, which is no fault of
+                // this actor.
+                let _ = request.reply(answered?);
+            }
+        }
+        Ok(Continue(()))
     }
 }
 
-/// Run `step`, unless `shutdown` fires first.
-async fn unless_stopped<T>(
+/// Run `step` to completion, unless `shutdown` fires first, in which case
+/// the step is dropped where it stands.
+async fn run_unless_stopped<T>(
     shutdown: &CancellationToken,
     step: impl Future<Output = T>,
 ) -> Option<T> {
@@ -128,18 +175,21 @@ async fn unless_stopped<T>(
     }
 }
 
-/// The ways out of an actor: what a [`Strategy`] may do besides answer.
+/// The ways out of an actor: what a [`Behavior`] may do besides answer.
 ///
-/// A strategy owns one of these, and the actor keeps the inbox, so messages
-/// reach the strategy one step at a time.
+/// A behavior owns one of these, and the actor keeps the mailbox, so messages
+/// reach the behavior one step at a time.
 ///
 /// `L` is what this actor logs. It defaults to the message type, which is
 /// what most actors log.
 pub struct Context<M: Message, L = M> {
     /// This actor's name, as the other actors know it.
     pub id: ActorId,
-    /// The channels on which this Actor sends Messages.
-    pub(crate) outbox: Outbox<M>,
+    /// The episode this actor is in, stamped on everything it logs.
+    pub episode: Uuid,
+    /// The sending ends of the mailboxes this actor may put something in,
+    /// its own among them.
+    pub(crate) mailboxes: HashMap<ActorId, UnboundedSender<Envelope<M>>>,
     /// Tokens on which this Actor is shut down, and shuts down others.
     pub(crate) shutdown: Shutdown,
     /// Where this Actor's events go, when it has a logger.
@@ -152,29 +202,28 @@ impl<M: Message, L> Context<M, L> {
     /// dropped, and the actor carries on either way.
     pub fn log(&self, payload: L) {
         if let Some(log) = &self.log {
-            let _ = log.send(Event::now(payload));
+            let _ = log.send(Event::now(self.episode, payload));
         }
     }
 
-    /// Broadcast `message` to every actor this one may send to. An actor
-    /// that has already stopped is skipped.
-    pub fn send(&self, message: M) -> anyhow::Result<()> {
-        for sender in self.outbox.others.values() {
-            // A failed send means the recipient's inbox is gone.
-            let _ = sender.send(Observation::Broadcast(message.clone()));
+    /// Send the statement `message` to every actor in `to`. An actor that
+    /// has already stopped is skipped. An actor may send to itself: the
+    /// message waits in its own mailbox for the current step to finish.
+    ///
+    /// # Errors
+    ///
+    /// Fails before anything is sent when `to` names an actor outside those
+    /// this one may send to.
+    pub fn send(&self, message: M, to: HashSet<ActorId>) -> anyhow::Result<()> {
+        let senders = to
+            .iter()
+            .map(|id| self.mailbox_of(id))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        for sender in senders {
+            // A failed send means the recipient's mailbox is gone.
+            let _ = sender.send(Envelope::Statement(message.clone()));
         }
         Ok(())
-    }
-
-    /// Leave `message` in this actor's own inbox, to be handled in a later
-    /// step. This is how an actor messages itself: it takes one step at a
-    /// time, so the message waits for the current step to finish.
-    pub fn note(&self, message: M) -> anyhow::Result<()> {
-        self.outbox
-            .loopback
-            .send(Observation::Broadcast(message))
-            .ok()
-            .context("this actor's own inbox is gone")
     }
 
     /// Ask every actor in `to` the same thing and collect their replies. A
@@ -199,19 +248,12 @@ impl<M: Message, L> Context<M, L> {
         }
         let senders = to
             .iter()
-            .map(|id| {
-                self.outbox.others.get_key_value(id).with_context(|| {
-                    format!(
-                        "{} cannot request from {id}: not an actor it may send to",
-                        self.id
-                    )
-                })
-            })
+            .map(|id| self.mailbox_of(id).map(|sender| (id, sender)))
             .collect::<anyhow::Result<Vec<_>>>()?;
         let mut pending = Vec::new();
         for (id, sender) in senders {
             let (request, reply) = Request::new(message.clone());
-            if sender.send(Observation::Request(request)).is_ok() {
+            if sender.send(Envelope::Request(request)).is_ok() {
                 pending.push((id.clone(), reply));
             }
         }
@@ -223,6 +265,21 @@ impl<M: Message, L> Context<M, L> {
             }
         }
         Ok(replies)
+    }
+
+    /// The sending end of the mailbox of `id`, which is this actor's own
+    /// when `id` is its own name.
+    ///
+    /// # Errors
+    ///
+    /// Fails when `id` is not an actor this one may send to.
+    fn mailbox_of(&self, id: &ActorId) -> anyhow::Result<&UnboundedSender<Envelope<M>>> {
+        self.mailboxes.get(id).with_context(|| {
+            format!(
+                "{} cannot send to {id}: not an actor it may send to",
+                self.id
+            )
+        })
     }
 
     /// Stop another actor at once, wherever it is in its step.
@@ -244,62 +301,96 @@ impl<M: Message, L> Context<M, L> {
     }
 
     /// Shut this actor down. The step that calls this is abandoned at its
-    /// next await, so a strategy with last words says them first. The actor
-    /// then stops, leaving whatever is in its inbox there.
+    /// next await, so a behavior with last words says them first. The actor
+    /// then stops, leaving whatever is in its mailbox there.
     pub fn shutdown(&self) {
         self.shutdown.mine.cancel();
     }
 }
 
-/// How an actor maps what it observes to what it does. The signature of
-/// [`policy`](Strategy::policy) is the reinforcement-learning one: an
-/// observation in, actions out. Anything else the strategy wants to say,
-/// such as who it is, goes inside its messages.
+/// What an actor does at each point in its life. It initializes, makes an
+/// opening move once every actor is running, then maps what it receives to
+/// what it does: a statement goes to [`receive`](Behavior::receive) and a
+/// request to [`answer`](Behavior::answer), whose result is the reply. On
+/// the way out it cleans up. Every method but [`context`](Behavior::context)
+/// has an empty default, so the simplest behavior is a context and nothing
+/// else. Anything else the behavior wants to say, such as who it is, goes
+/// inside its messages.
 ///
-/// Actors run on a multi-threaded runtime, so a strategy has to be shareable
-/// across threads.
+/// A behavior's state is its own: the mailbox hands it one message at a
+/// time, so each step may change that state freely. Actors run on a
+/// multi-threaded runtime, so a behavior has to be sendable between threads.
+///
+/// A behavior keeps the [`Context`] it is built with and returns it from
+/// [`context`](Behavior::context). The episode makes the context, and the
+/// [`Builder`] in the actor's [`ActorInit`] wraps the behavior around it:
+///
+/// ```
+/// # use async_trait::async_trait;
+/// # use free_agent::{ActorInit, Behavior, Context, Message};
+/// # use std::collections::HashSet;
+/// # use serde::{Deserialize, Serialize};
+/// #[derive(Debug, Clone, Serialize, Deserialize)]
+/// struct Note(String);
+/// impl Message for Note {}
+///
+/// /// Writes down everything it hears.
+/// struct Scribe {
+///     context: Context<Note>,
+/// }
+/// #[async_trait]
+/// impl Behavior for Scribe {
+///     type Message = Note;
+///     type Log = Note;
+///     fn context(&self) -> &Context<Note> {
+///         &self.context
+///     }
+///     async fn receive(&mut self, message: &Note) -> anyhow::Result<()> {
+///         self.context.log(message.clone());
+///         Ok(())
+///     }
+/// }
+///
+/// let init = ActorInit {
+///     behavior: Box::new(|context| Scribe { context }),
+///     can_send_to: HashSet::new(),
+///     can_shut_down: HashSet::new(),
+///     has_logger: true,
+/// };
+/// # let _: ActorInit<Scribe> = init;
+/// ```
 #[async_trait]
-pub trait Strategy: Send + Sync {
-    /// What this strategy sends and receives.
+pub trait Behavior: Send {
+    /// What this behavior sends and receives.
     type Message: Message;
-    /// What this strategy logs. Most often the message type.
-    type Log: Send + 'static;
-    /// The ways out of this actor, handed to the strategy when it was built.
+    /// What this behavior logs. Most often the message type.
+    type Log: Serialize + DeserializeOwned + Send + 'static;
+    /// The ways out of this actor, handed to the behavior when it was built.
     fn context(&self) -> &Context<Self::Message, Self::Log>;
-    /// Handle `observation`. The result is the reply to a request, and is
-    /// dropped after a broadcast.
-    async fn policy(&self, observation: &Self::Message) -> anyhow::Result<Vec<Self::Message>>;
+    /// Called before anything else: open a connection, say. No actor starts
+    /// until every actor has initialized.
+    async fn initialize(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// Handle the statement `message`. By default it is ignored.
+    async fn receive(&mut self, _message: &Self::Message) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// Answer the request `message`. The result is the reply, which by
+    /// default is nothing.
+    async fn answer(&mut self, _message: &Self::Message) -> anyhow::Result<Vec<Self::Message>> {
+        Ok(vec![])
+    }
     /// Called once every actor in the episode is running. This is where an
     /// actor with an opening move makes it.
-    async fn start(&self) -> anyhow::Result<()> {
+    async fn start(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-}
-
-/// What an actor does before its first step and after its last: open a
-/// connection, say, and close it again. Both methods have empty defaults,
-/// so the simplest lifecycle is an empty impl.
-///
-/// Actors run on a multi-threaded runtime, so a lifecycle has to be
-/// shareable across threads.
-#[async_trait]
-pub trait Lifecycle: Send + Sync {
-    /// Called just before the message handling loop begins.
-    async fn initialize(&self) -> anyhow::Result<()> {
+    /// Called last, after the actor has stopped taking mail: close what
+    /// `initialize` opened.
+    async fn clean_up(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    /// Called just before the message handling loop exits.
-    async fn clean_up(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-/// The sending ends of the inboxes an actor may put something in.
-pub(crate) struct Outbox<M: Message> {
-    /// Channel on which an Actor sends a Message to itself.
-    pub(crate) loopback: UnboundedSender<Observation<M>>,
-    /// Channels on which an Actor sends Messages to other Actors.
-    pub(crate) others: HashMap<ActorId, UnboundedSender<Observation<M>>>,
 }
 
 /// The cancellation tokens an actor is stopped through and stops others
@@ -311,36 +402,37 @@ pub(crate) struct Shutdown {
     pub(crate) others: HashMap<ActorId, CancellationToken>,
 }
 
-/// What arrives in an actor's inbox.
+/// A message and what its recipient owes for it.
 #[derive(Debug)]
-pub(crate) enum Observation<M: Message> {
-    /// A message sent and forgotten.
-    Broadcast(M),
-    /// A message whose sender is waiting for an answer.
+pub(crate) enum Envelope<M: Message> {
+    /// A message that does not require a reply.
+    Statement(M),
+    /// A message whose sender is waiting for reply.
     Request(Request<M>),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::{Deserialize, Serialize};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::Semaphore;
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::time::{sleep, timeout};
 
-    #[derive(Debug, Clone, PartialEq)]
-    struct Note(&'static str);
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct Note(String);
     impl Message for Note {}
 
-    struct Idle;
-    #[async_trait]
-    impl Lifecycle for Idle {}
+    fn note(text: &str) -> Note {
+        Note(text.to_string())
+    }
 
-    /// A strategy that answers every request with the message it was sent,
-    /// after waiting for a permit from its gate if it has one. Slow to
-    /// start, it waits for a permit in `start` too. Broken, it fails every
-    /// step.
+    /// A behavior that answers every request with the message it was sent,
+    /// after waiting for a permit from its gate if it has one, and waits at
+    /// the gate on statements too. Slow to start, it waits for a permit in
+    /// `start` as well. Broken, it fails every step.
     struct Echo {
         context: Context<Note>,
         gate: Option<Arc<Semaphore>>,
@@ -348,22 +440,20 @@ mod tests {
         broken: bool,
     }
     #[async_trait]
-    impl Strategy for Echo {
+    impl Behavior for Echo {
         type Message = Note;
         type Log = Note;
         fn context(&self) -> &Context<Note> {
             &self.context
         }
-        async fn policy(&self, observation: &Note) -> anyhow::Result<Vec<Note>> {
-            if self.broken {
-                bail!("echo is broken");
-            }
-            if let Some(gate) = &self.gate {
-                gate.acquire().await?.forget();
-            }
-            Ok(vec![observation.clone()])
+        async fn receive(&mut self, _message: &Note) -> anyhow::Result<()> {
+            self.step().await
         }
-        async fn start(&self) -> anyhow::Result<()> {
+        async fn answer(&mut self, message: &Note) -> anyhow::Result<Vec<Note>> {
+            self.step().await?;
+            Ok(vec![message.clone()])
+        }
+        async fn start(&mut self) -> anyhow::Result<()> {
             if self.slow_start
                 && let Some(gate) = &self.gate
             {
@@ -373,39 +463,72 @@ mod tests {
         }
     }
 
-    /// A strategy with the default opening move, which answers nothing.
+    impl Echo {
+        /// Fail if broken, otherwise wait at the gate if there is one.
+        async fn step(&self) -> anyhow::Result<()> {
+            if self.broken {
+                bail!("echo is broken");
+            }
+            if let Some(gate) = &self.gate {
+                gate.acquire().await?.forget();
+            }
+            Ok(())
+        }
+    }
+
+    /// A behavior with every default: no opening move, statements ignored,
+    /// and requests answered with nothing.
     struct Mute(Context<Note>);
     #[async_trait]
-    impl Strategy for Mute {
+    impl Behavior for Mute {
         type Message = Note;
         type Log = Note;
         fn context(&self) -> &Context<Note> {
             &self.0
         }
-        async fn policy(&self, _observation: &Note) -> anyhow::Result<Vec<Note>> {
-            Ok(vec![])
+    }
+
+    /// A behavior that counts the statements it has received and answers
+    /// every request with that many notes.
+    struct Tally {
+        context: Context<Note>,
+        seen: usize,
+    }
+    #[async_trait]
+    impl Behavior for Tally {
+        type Message = Note;
+        type Log = Note;
+        fn context(&self) -> &Context<Note> {
+            &self.context
+        }
+        async fn receive(&mut self, _message: &Note) -> anyhow::Result<()> {
+            self.seen += 1;
+            Ok(())
+        }
+        async fn answer(&mut self, _message: &Note) -> anyhow::Result<Vec<Note>> {
+            Ok(vec![note("seen"); self.seen])
         }
     }
 
     /// An actor, along with what a test needs to feed it, start it, and stop
     /// it from the outside.
-    struct Rig<S: Strategy = Echo> {
-        actor: Actor<Idle, S>,
-        sender: UnboundedSender<Observation<Note>>,
+    struct Rig<B: Behavior = Echo> {
+        actor: Actor<B>,
+        sender: UnboundedSender<Envelope<Note>>,
         start: oneshot::Sender<()>,
         stop: CancellationToken,
     }
 
-    impl<S: Strategy<Message = Note, Log = Note>> Rig<S> {
+    impl<B: Behavior<Message = Note, Log = Note>> Rig<B> {
         fn context(&self) -> &Context<Note> {
-            self.actor.strategy.context()
+            self.actor.behavior.context()
         }
     }
 
     /// A rig around an [`Echo`] with no gate.
     fn rig(
         name: &str,
-        others: HashMap<ActorId, UnboundedSender<Observation<Note>>>,
+        others: HashMap<ActorId, UnboundedSender<Envelope<Note>>>,
         can_stop: HashMap<ActorId, CancellationToken>,
     ) -> Rig {
         rig_with(name, others, can_stop, |context| Echo {
@@ -416,23 +539,24 @@ mod tests {
         })
     }
 
-    /// A rig around the strategy `build` makes from its context.
-    fn rig_with<S: Strategy<Message = Note, Log = Note>>(
+    /// A rig around the behavior `build` makes from its context, which may
+    /// send to itself and to `others`.
+    fn rig_with<B: Behavior<Message = Note, Log = Note>>(
         name: &str,
-        others: HashMap<ActorId, UnboundedSender<Observation<Note>>>,
+        others: HashMap<ActorId, UnboundedSender<Envelope<Note>>>,
         can_stop: HashMap<ActorId, CancellationToken>,
-        build: impl FnOnce(Context<Note>) -> S,
-    ) -> Rig<S> {
-        let (sender, inbox) = unbounded_channel();
+        build: impl FnOnce(Context<Note>) -> B,
+    ) -> Rig<B> {
+        let (sender, mailbox) = unbounded_channel();
         let (ready, _) = oneshot::channel();
         let (start, started) = oneshot::channel();
         let stop = CancellationToken::new();
+        let mut mailboxes = others;
+        mailboxes.insert(id(name), sender.clone());
         let context = Context {
             id: id(name),
-            outbox: Outbox {
-                loopback: sender.clone(),
-                others,
-            },
+            episode: Uuid::new_v4(),
+            mailboxes,
             shutdown: Shutdown {
                 mine: stop.clone(),
                 others: can_stop,
@@ -440,11 +564,10 @@ mod tests {
             log: None,
         };
         let actor = Actor {
-            lifecycle: Idle,
-            strategy: build(context),
-            ready,
+            behavior: build(context),
+            ready: Some(ready),
             start: started,
-            inbox,
+            mailbox,
         };
         Rig {
             actor,
@@ -459,35 +582,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_broadcasts_to_every_actor_it_may_send_to() {
-        let (bob, mut bob_inbox) = unbounded_channel();
-        let (cat, mut cat_inbox) = unbounded_channel();
+    async fn send_reaches_each_actor_it_is_addressed_to() {
+        let (bob, mut bob_mailbox) = unbounded_channel();
+        let (cat, mut cat_mailbox) = unbounded_channel();
+        let (dan, mut dan_mailbox) = unbounded_channel();
         let ann = rig(
             "ann",
-            HashMap::from([(id("bob"), bob), (id("cat"), cat)]),
+            HashMap::from([(id("bob"), bob), (id("cat"), cat), (id("dan"), dan)]),
             HashMap::new(),
         );
 
-        ann.context().send(Note("hello")).unwrap();
+        ann.context()
+            .send(note("hello"), HashSet::from([id("bob"), id("cat")]))
+            .unwrap();
 
-        for inbox in [&mut bob_inbox, &mut cat_inbox] {
-            let heard = inbox.recv().await.unwrap();
+        for mailbox in [&mut bob_mailbox, &mut cat_mailbox] {
+            let heard = mailbox.recv().await.unwrap();
             assert!(
-                matches!(heard, Observation::Broadcast(Note("hello"))),
+                matches!(&heard, Envelope::Statement(Note(text)) if text == "hello"),
                 "{heard:?}"
             );
         }
+        assert!(dan_mailbox.try_recv().is_err(), "nothing should reach dan");
     }
 
     #[tokio::test]
-    async fn note_lands_in_the_actors_own_inbox() {
+    async fn send_fails_without_sending_if_a_recipient_may_not_be_addressed() {
+        let (bob, mut bob_mailbox) = unbounded_channel();
+        let ann = rig("ann", HashMap::from([(id("bob"), bob)]), HashMap::new());
+
+        let error = ann
+            .context()
+            .send(note("psst"), HashSet::from([id("bob"), id("zed")]))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("zed"), "{error}");
+        assert!(bob_mailbox.try_recv().is_err(), "nothing should reach bob");
+    }
+
+    #[tokio::test]
+    async fn send_to_itself_lands_in_the_actors_own_mailbox() {
         let mut ann = rig("ann", HashMap::new(), HashMap::new());
 
-        ann.context().note(Note("remember this")).unwrap();
+        ann.context()
+            .send(note("remember this"), HashSet::from([id("ann")]))
+            .unwrap();
 
-        let heard = ann.actor.inbox.recv().await.unwrap();
+        let heard = ann.actor.mailbox.recv().await.unwrap();
         assert!(
-            matches!(heard, Observation::Broadcast(Note("remember this"))),
+            matches!(&heard, Envelope::Statement(Note(text)) if text == "remember this"),
             "{heard:?}"
         );
     }
@@ -511,13 +654,13 @@ mod tests {
 
         let replies = ann
             .context()
-            .request(Note("who's there?"), HashSet::from([id("bob"), id("cat")]))
+            .request(note("who's there?"), HashSet::from([id("bob"), id("cat")]))
             .await
             .unwrap();
 
         let expected = HashMap::from([
-            (id("bob"), vec![Note("who's there?")]),
-            (id("cat"), vec![Note("who's there?")]),
+            (id("bob"), vec![note("who's there?")]),
+            (id("cat"), vec![note("who's there?")]),
         ]);
         assert_eq!(replies, expected);
         bob.stop.cancel();
@@ -527,18 +670,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_behavior_keeps_its_state_between_steps() {
+        let bob = rig_with("bob", HashMap::new(), HashMap::new(), |context| Tally {
+            context,
+            seen: 0,
+        });
+        let ann = rig(
+            "ann",
+            HashMap::from([(id("bob"), bob.sender.clone())]),
+            HashMap::new(),
+        );
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        for _ in 0..2 {
+            ann.context()
+                .send(note("one more"), HashSet::from([id("bob")]))
+                .unwrap();
+        }
+
+        let replies = ann
+            .context()
+            .request(note("how many?"), HashSet::from([id("bob")]))
+            .await
+            .unwrap();
+
+        let expected = HashMap::from([(id("bob"), vec![note("seen"), note("seen")])]);
+        assert_eq!(replies, expected);
+        bob.stop.cancel();
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_default_receive_ignores_the_statement() {
+        let bob = rig_with("bob", HashMap::new(), HashMap::new(), Mute);
+        let ann = rig(
+            "ann",
+            HashMap::from([(id("bob"), bob.sender.clone())]),
+            HashMap::new(),
+        );
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+
+        ann.context()
+            .send(note("whatever"), HashSet::from([id("bob")]))
+            .unwrap();
+
+        // Bob is still running and answering afterward.
+        let replies = ann
+            .context()
+            .request(note("still there?"), HashSet::from([id("bob")]))
+            .await
+            .unwrap();
+        assert_eq!(replies, HashMap::from([(id("bob"), vec![])]));
+        bob.stop.cancel();
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_default_answer_is_nothing() {
+        let bob = rig_with("bob", HashMap::new(), HashMap::new(), Mute);
+        let ann = rig(
+            "ann",
+            HashMap::from([(id("bob"), bob.sender.clone())]),
+            HashMap::new(),
+        );
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+
+        let replies = ann
+            .context()
+            .request(note("anything?"), HashSet::from([id("bob")]))
+            .await
+            .unwrap();
+
+        assert_eq!(replies, HashMap::from([(id("bob"), vec![])]));
+        bob.stop.cancel();
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn request_fails_without_sending_if_a_recipient_may_not_be_addressed() {
-        let (bob, mut bob_inbox) = unbounded_channel();
+        let (bob, mut bob_mailbox) = unbounded_channel();
         let ann = rig("ann", HashMap::from([(id("bob"), bob)]), HashMap::new());
 
         let error = ann
             .context()
-            .request(Note("psst"), HashSet::from([id("bob"), id("zed")]))
+            .request(note("psst"), HashSet::from([id("bob"), id("zed")]))
             .await
             .unwrap_err();
 
         assert!(error.to_string().contains("zed"), "{error}");
-        assert!(bob_inbox.try_recv().is_err(), "nothing should reach bob");
+        assert!(bob_mailbox.try_recv().is_err(), "nothing should reach bob");
     }
 
     #[tokio::test]
@@ -547,7 +769,7 @@ mod tests {
 
         let error = ann
             .context()
-            .request(Note("hello me"), HashSet::from([id("ann")]))
+            .request(note("hello me"), HashSet::from([id("ann")]))
             .await
             .unwrap_err();
 
@@ -556,13 +778,13 @@ mod tests {
 
     #[tokio::test]
     async fn request_leaves_out_a_recipient_that_has_stopped() {
-        let (bob, bob_inbox) = unbounded_channel();
+        let (bob, bob_mailbox) = unbounded_channel();
         let ann = rig("ann", HashMap::from([(id("bob"), bob)]), HashMap::new());
-        drop(bob_inbox);
+        drop(bob_mailbox);
 
         let replies = ann
             .context()
-            .request(Note("anyone?"), HashSet::from([id("bob")]))
+            .request(note("anyone?"), HashSet::from([id("bob")]))
             .await
             .unwrap();
 
@@ -589,19 +811,19 @@ mod tests {
     async fn log_sends_a_stamped_event_down_the_logger_if_there_is_one() {
         let (logger, mut events) = unbounded_channel();
         let mut ann = rig("ann", HashMap::new(), HashMap::new());
-        ann.actor.strategy.context.log = Some(logger);
+        ann.actor.behavior.context.log = Some(logger);
 
-        ann.context().log(Note("for the record"));
+        ann.context().log(note("for the record"));
 
         let event = events.recv().await.unwrap();
-        assert_eq!(event.payload, Note("for the record"));
+        assert_eq!(event.payload, note("for the record"));
     }
 
     #[tokio::test]
     async fn log_does_nothing_without_a_logger() {
         let ann = rig("ann", HashMap::new(), HashMap::new());
 
-        ann.context().log(Note("into the void"));
+        ann.context().log(note("into the void"));
     }
 
     #[tokio::test]
@@ -617,7 +839,7 @@ mod tests {
     fn gated_rig(name: &str) -> (Rig, Arc<Semaphore>) {
         let gate = Arc::new(Semaphore::new(0));
         let mut rig = rig(name, HashMap::new(), HashMap::new());
-        rig.actor.strategy.gate = Some(Arc::clone(&gate));
+        rig.actor.behavior.gate = Some(Arc::clone(&gate));
         (rig, gate)
     }
 
@@ -627,9 +849,9 @@ mod tests {
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
         bob.sender
-            .send(Observation::Broadcast(Note("take your time")))
+            .send(Envelope::Statement(note("take your time")))
             .unwrap();
-        // Let Bob take the message and block in its policy.
+        // Let Bob take the message and block in `receive`.
         sleep(Duration::from_secs(1)).await;
 
         bob.stop.cancel();
@@ -641,7 +863,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_kill_stops_an_actor_in_the_middle_of_starting() {
         let (mut bob, _gate) = gated_rig("bob");
-        bob.actor.strategy.slow_start = true;
+        bob.actor.behavior.slow_start = true;
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
         // Let Bob take the start signal and block in its opening move.
@@ -654,7 +876,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_strategy_with_no_opening_move_starts_and_waits() {
+    async fn a_behavior_with_no_opening_move_starts_and_waits() {
         let bob = rig_with("bob", HashMap::new(), HashMap::new(), Mute);
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
@@ -677,29 +899,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_policy_that_fails_on_a_broadcast_fails_the_actor() {
+    async fn a_behavior_that_fails_to_receive_a_statement_fails_the_actor() {
         let mut bob = rig("bob", HashMap::new(), HashMap::new());
-        bob.actor.strategy.broken = true;
+        bob.actor.behavior.broken = true;
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
 
-        bob.sender
-            .send(Observation::Broadcast(Note("hello")))
-            .unwrap();
+        bob.sender.send(Envelope::Statement(note("hello"))).unwrap();
 
         let error = running.await.unwrap().unwrap_err();
         assert!(error.to_string().contains("broken"), "{error}");
     }
 
     #[tokio::test]
-    async fn a_policy_that_fails_on_a_request_fails_the_actor() {
+    async fn a_behavior_that_fails_to_answer_a_request_fails_the_actor() {
         let mut bob = rig("bob", HashMap::new(), HashMap::new());
-        bob.actor.strategy.broken = true;
+        bob.actor.behavior.broken = true;
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
-        let (request, _reply) = Request::new(Note("well?"));
+        let (request, _reply) = Request::new(note("well?"));
 
-        bob.sender.send(Observation::Request(request)).unwrap();
+        bob.sender.send(Envelope::Request(request)).unwrap();
 
         let error = running.await.unwrap().unwrap_err();
         assert!(error.to_string().contains("broken"), "{error}");
@@ -717,7 +937,7 @@ mod tests {
         bob.start.send(()).unwrap();
         let asking = tokio::spawn(async move {
             ann.context()
-                .request(Note("well?"), HashSet::from([id("bob")]))
+                .request(note("well?"), HashSet::from([id("bob")]))
                 .await
         });
         sleep(Duration::from_secs(1)).await;
@@ -739,15 +959,14 @@ mod tests {
         );
         let bob_running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
-        let asking = tokio::spawn(async move {
-            ann.context()
-                .request(Note("well?"), HashSet::from([id("bob")]))
-                .await
-        });
-        sleep(Duration::from_secs(1)).await;
 
-        // Ann gives up, dropping her reply channel, and then Bob answers.
-        asking.abort();
+        // Ann gives up after a second, dropping her reply channel, and then
+        // Bob answers.
+        let asking = ann
+            .context()
+            .request(note("well?"), HashSet::from([id("bob")]));
+        let gave_up = tokio::time::timeout(Duration::from_secs(1), asking).await;
+        assert!(gave_up.is_err(), "{gave_up:?}");
         gate.add_permits(1);
         sleep(Duration::from_secs(1)).await;
 

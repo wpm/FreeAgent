@@ -1,9 +1,9 @@
-# Werewolf
+# Social deduction
 
-The social deception game, played by [free agents](../../README.md), either at
-random or by a language model.
+Social deduction games, played by [free agents](../../README.md), either at
+random or by a language model. The first of them is Werewolf.
 
-## The game
+## Werewolf
 
 A few of the players are secretly werewolves; the rest are villagers, among
 them a doctor and a seer. Play alternates between night and day, starting

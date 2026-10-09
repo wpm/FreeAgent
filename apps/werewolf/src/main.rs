@@ -1,3 +1,0 @@
-//! Play Werewolf.
-
-fn main() {}

@@ -1,4 +1,4 @@
-//! Episodes in which actors talk to each other by broadcast, request, and
+//! Episodes in which actors talk to each other by statement, request, and
 //! reply.
 //!
 //! The crate-level documentation is the project README, included below so
@@ -12,7 +12,7 @@ mod episode;
 mod log;
 mod message;
 
-pub use actor::{ActorId, ActorInit, Builder, Context, Lifecycle, Strategy};
+pub use actor::{ActorId, ActorInit, Behavior, Builder, Context};
 pub use episode::Episode;
 pub use log::{Event, Logger, console_log, drain};
 pub use message::Message;
