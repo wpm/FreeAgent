@@ -316,6 +316,44 @@ impl<M: Message, L> Context<M, L> {
 /// A behavior's state is its own: the mailbox hands it one message at a
 /// time, so each step may change that state freely. Actors run on a
 /// multi-threaded runtime, so a behavior has to be sendable between threads.
+///
+/// A behavior keeps the [`Context`] it is built with and returns it from
+/// [`context`](Behavior::context). The episode makes the context, and the
+/// [`Builder`] in the actor's [`ActorInit`] wraps the behavior around it:
+///
+/// ```
+/// # use async_trait::async_trait;
+/// # use free_agent::{ActorInit, Behavior, Context, Message};
+/// # use std::collections::HashSet;
+/// #[derive(Debug, Clone)]
+/// struct Note(String);
+/// impl Message for Note {}
+///
+/// /// Writes down everything it hears.
+/// struct Scribe {
+///     context: Context<Note>,
+/// }
+/// #[async_trait]
+/// impl Behavior for Scribe {
+///     type Message = Note;
+///     type Log = Note;
+///     fn context(&self) -> &Context<Note> {
+///         &self.context
+///     }
+///     async fn receive(&mut self, message: &Note) -> anyhow::Result<()> {
+///         self.context.log(message.clone());
+///         Ok(())
+///     }
+/// }
+///
+/// let init = ActorInit {
+///     behavior: Box::new(|context| Scribe { context }),
+///     can_send_to: HashSet::new(),
+///     can_shut_down: HashSet::new(),
+///     has_logger: true,
+/// };
+/// # let _: ActorInit<Scribe> = init;
+/// ```
 #[async_trait]
 pub trait Behavior: Send {
     /// What this behavior sends and receives.

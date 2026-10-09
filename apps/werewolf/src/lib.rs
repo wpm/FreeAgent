@@ -73,7 +73,8 @@ enum Phase {
     Day,
 }
 
-struct Environment {
+/// The state of a game, held by the environment alone.
+struct Game {
     /// Rounds count from one. A round is a night and then a day.
     round: NonZero<u8>,
     /// Which half of the round it is.
@@ -86,7 +87,8 @@ struct Environment {
     seer_discovered: HashSet<PlayerId>,
 }
 
-impl Environment {
+impl Game {
+    /// A game of `roles`, at the first night with everyone alive.
     fn new(roles: HashMap<PlayerId, Role>) -> Self {
         let alive: HashSet<PlayerId> = roles.keys().cloned().collect();
         Self {
@@ -176,8 +178,8 @@ struct Observation {
 mod tests {
     use super::*;
 
-    fn village() -> Environment {
-        Environment::new(HashMap::from([
+    fn village() -> Game {
+        Game::new(HashMap::from([
             ("wolf1".to_string(), Role::Werewolf),
             ("wolf2".to_string(), Role::Werewolf),
             ("seer".to_string(), Role::Seer),
@@ -225,7 +227,7 @@ mod tests {
 
     #[test]
     fn werewolves_win_at_parity_and_villagers_when_the_wolves_are_gone() {
-        let mut state = Environment::new(HashMap::from([
+        let mut state = Game::new(HashMap::from([
             ("wolf".to_string(), Role::Werewolf),
             ("ann".to_string(), Role::Villager),
             ("bob".to_string(), Role::Villager),
