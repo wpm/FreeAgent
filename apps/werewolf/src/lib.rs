@@ -21,6 +21,7 @@
 mod uniform_random;
 
 use free_agent::ActorId;
+use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
@@ -202,6 +203,55 @@ impl State {
     }
 }
 
+/// How a phase's ballots, each voter's choice of a player, become one
+/// player or nobody. The werewolves and the village each vote under a rule
+/// of their own, and a game may bring a rule of its own.
+pub trait Vote: Send + Sync {
+    /// Who the ballots elect, if anyone.
+    fn elect(&self, ballots: &HashMap<PlayerId, PlayerId>) -> Option<PlayerId>;
+}
+
+/// The players with the most votes, in name order so a tie-break depends
+/// on the random number alone. Empty when there are no ballots.
+fn leaders(ballots: &HashMap<PlayerId, PlayerId>) -> Vec<PlayerId> {
+    let mut votes: HashMap<&PlayerId, usize> = HashMap::new();
+    for chosen in ballots.values() {
+        *votes.entry(chosen).or_default() += 1;
+    }
+    let Some(most) = votes.values().copied().max() else {
+        return vec![];
+    };
+    let mut leaders: Vec<PlayerId> = votes
+        .into_iter()
+        .filter(|(_, count)| *count == most)
+        .map(|(player, _)| player.clone())
+        .collect();
+    leaders.sort();
+    leaders
+}
+
+/// A plurality wins, and a tie is broken at random. How the werewolves
+/// vote.
+pub struct RandomTieBreak;
+
+impl Vote for RandomTieBreak {
+    fn elect(&self, ballots: &HashMap<PlayerId, PlayerId>) -> Option<PlayerId> {
+        leaders(ballots).choose(&mut rand::rng()).cloned()
+    }
+}
+
+/// A plurality wins, and a tie elects nobody. How the village votes.
+pub struct NoTieBreak;
+
+impl Vote for NoTieBreak {
+    fn elect(&self, ballots: &HashMap<PlayerId, PlayerId>) -> Option<PlayerId> {
+        match leaders(ballots).as_slice() {
+            [leader] => Some(leader.clone()),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Observation {
     /// Rounds count from one. A round is a night and then a day.
@@ -306,6 +356,51 @@ mod tests {
         state.next();
         assert_eq!(state.round.get(), 2);
         assert!(matches!(state.phase, Phase::Night));
+    }
+
+    /// Ballots in which each voter chooses the player beside its name.
+    fn ballots(votes: &[(&str, &str)]) -> HashMap<PlayerId, PlayerId> {
+        votes
+            .iter()
+            .map(|(voter, chosen)| (voter.to_string(), chosen.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_plurality_is_elected_under_either_rule() {
+        let votes = ballots(&[("ann", "bob"), ("bob", "cat"), ("cat", "bob")]);
+        assert_eq!(RandomTieBreak.elect(&votes), Some("bob".to_string()));
+        assert_eq!(NoTieBreak.elect(&votes), Some("bob".to_string()));
+    }
+
+    #[test]
+    fn nobody_is_elected_without_ballots() {
+        assert_eq!(RandomTieBreak.elect(&HashMap::new()), None);
+        assert_eq!(NoTieBreak.elect(&HashMap::new()), None);
+    }
+
+    #[test]
+    fn a_tie_elects_nobody_without_a_tie_break() {
+        let votes = ballots(&[("ann", "bob"), ("bob", "ann"), ("cat", "dan")]);
+        assert_eq!(NoTieBreak.elect(&votes), None);
+    }
+
+    #[test]
+    fn a_tie_is_broken_at_random_among_the_tied() {
+        let votes = ballots(&[
+            ("ann", "bob"),
+            ("bob", "ann"),
+            ("cat", "ann"),
+            ("dan", "bob"),
+        ]);
+        let mut elected = HashSet::new();
+        for _ in 0..50 {
+            elected.insert(RandomTieBreak.elect(&votes).unwrap());
+        }
+        assert_eq!(
+            elected,
+            HashSet::from(["ann".to_string(), "bob".to_string()])
+        );
     }
 
     #[test]
