@@ -7,6 +7,82 @@ use futures_util::future::try_join_all;
 use rand::seq::IndexedRandom;
 use std::collections::{HashMap, HashSet};
 
+/// What an actor in the game does: run it, or play in it. An episode holds
+/// one kind of actor, so the two sides meet here and each method goes to
+/// whichever side this is.
+pub(crate) enum Actor {
+    /// The side that holds the game.
+    Environment(Environment),
+    /// A side that sees only what it is shown.
+    Player(Player),
+}
+
+impl Actor {
+    /// Builds the environment for a game of `roles` once the episode has
+    /// made its context.
+    pub(crate) fn environment(roles: HashMap<PlayerId, Role>) -> Builder<Self> {
+        Box::new(move |context| {
+            Actor::Environment(Environment {
+                context,
+                state: State::new(roles),
+            })
+        })
+    }
+
+    /// Builds a player once the episode has made its context.
+    pub(crate) fn player() -> Builder<Self> {
+        Box::new(|context| Actor::Player(Player { context }))
+    }
+}
+
+#[async_trait]
+impl Behavior for Actor {
+    type Message = Message;
+    type Log = Message;
+
+    fn context(&self) -> &Context<Message> {
+        match self {
+            Actor::Environment(environment) => environment.context(),
+            Actor::Player(player) => player.context(),
+        }
+    }
+
+    async fn initialize(&mut self) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.initialize().await,
+            Actor::Player(player) => player.initialize().await,
+        }
+    }
+
+    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.receive(message).await,
+            Actor::Player(player) => player.receive(message).await,
+        }
+    }
+
+    async fn answer(&mut self, message: &Message) -> anyhow::Result<Vec<Message>> {
+        match self {
+            Actor::Environment(environment) => environment.answer(message).await,
+            Actor::Player(player) => player.answer(message).await,
+        }
+    }
+
+    async fn start(&mut self) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.start().await,
+            Actor::Player(player) => player.start().await,
+        }
+    }
+
+    async fn clean_up(&mut self) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.clean_up().await,
+            Actor::Player(player) => player.clean_up().await,
+        }
+    }
+}
+
 /// The actor that holds the game and tells each player what it may see.
 pub(crate) struct Environment {
     context: Context<Message>,
@@ -14,15 +90,6 @@ pub(crate) struct Environment {
 }
 
 impl Environment {
-    /// Builds the environment for a game of `roles` once the episode has
-    /// made its context.
-    pub(crate) fn builder(roles: HashMap<PlayerId, Role>) -> Builder<Self> {
-        Box::new(move |context| Environment {
-            context,
-            state: State::new(roles),
-        })
-    }
-
     /// Ask everyone awake what they choose, all at once, and gather their
     /// replies by player.
     async fn night(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
@@ -56,6 +123,20 @@ impl Behavior for Environment {
     fn context(&self) -> &Context<Message> {
         &self.context
     }
+
+    /// For now a game is one night: ask everyone awake, write down what
+    /// they chose, and end the episode.
+    async fn start(&mut self) -> anyhow::Result<()> {
+        let replies = self.night().await?;
+        for choice in replies.into_values().flatten() {
+            self.context.log(choice);
+        }
+        for player in self.state.roles.keys() {
+            self.context.stop(player)?;
+        }
+        self.context.shutdown();
+        Ok(())
+    }
 }
 
 /// A player who, asked to choose, picks at random among the living whose
@@ -63,13 +144,6 @@ impl Behavior for Environment {
 /// the seer from asking about anyone twice.
 pub(crate) struct Player {
     context: Context<Message>,
-}
-
-impl Player {
-    /// Builds a player once the episode has made its context.
-    pub(crate) fn builder() -> Builder<Self> {
-        Box::new(|context| Player { context })
-    }
 }
 
 #[async_trait]
@@ -124,11 +198,68 @@ impl free_agent::Message for Message {}
 mod tests {
     use super::*;
     use crate::Phase;
+    use free_agent::{ActorInit, Episode};
     use std::collections::HashSet;
     use std::num::NonZero;
+    use std::time::Duration;
+    use tokio::sync::mpsc::unbounded_channel;
 
     fn id(name: &str) -> PlayerId {
         name.to_string()
+    }
+
+    /// Two werewolves, a seer, and a villager, each played at random, and
+    /// the environment that runs them.
+    fn village() -> HashMap<PlayerId, Role> {
+        HashMap::from([
+            (id("wolf1"), Role::Werewolf),
+            (id("wolf2"), Role::Werewolf),
+            (id("seer"), Role::Seer),
+            (id("villager"), Role::Villager),
+        ])
+    }
+
+    #[tokio::test]
+    async fn a_night_gathers_one_choice_from_each_awake_player() {
+        let roles = village();
+        let players: HashSet<PlayerId> = roles.keys().cloned().collect();
+        let mut init = HashMap::from([(
+            id("environment"),
+            ActorInit {
+                behavior: Actor::environment(roles.clone()),
+                can_send_to: players.clone(),
+                can_shut_down: players.clone(),
+                has_logger: true,
+            },
+        )]);
+        for player in players {
+            init.insert(
+                player,
+                ActorInit {
+                    behavior: Actor::player(),
+                    can_send_to: HashSet::new(),
+                    can_shut_down: HashSet::new(),
+                    has_logger: false,
+                },
+            );
+        }
+        let (logger, mut log) = unbounded_channel();
+
+        Episode::new(init, logger)
+            .run(Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let mut choices = Vec::new();
+        while let Some(event) = log.recv().await {
+            let Message::Action(chosen) = event.payload else {
+                panic!("the environment logs choices, not {:?}", event.payload);
+            };
+            choices.push(chosen);
+        }
+        // The two werewolves and the seer each choose; the villager sleeps.
+        assert_eq!(choices.len(), 3, "{choices:?}");
+        assert!(choices.iter().all(|chosen| roles.contains_key(chosen)));
     }
 
     /// What `me` sees of a village where everyone in `alive` lives and
