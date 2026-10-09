@@ -27,6 +27,7 @@ use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
+use tokio::sync::oneshot;
 
 /// A player is an actor, named as the episode names it.
 type PlayerId = ActorId;
@@ -258,12 +259,22 @@ pub enum Actor {
 
 impl Actor {
     /// Builds the environment for a game of `roles` once the episode has
-    /// made its context.
-    pub fn environment(roles: HashMap<PlayerId, Role>) -> Builder<Self> {
+    /// made its context. The werewolves vote under `night_vote` and the
+    /// village under `day_vote`, and the winning team is sent on `winner`
+    /// when the game ends.
+    pub fn environment(
+        roles: HashMap<PlayerId, Role>,
+        night_vote: Box<dyn Vote>,
+        day_vote: Box<dyn Vote>,
+        winner: oneshot::Sender<Team>,
+    ) -> Builder<Self> {
         Box::new(move |context| {
             Actor::Environment(Environment {
                 context,
                 state: State::new(roles),
+                night_vote,
+                day_vote,
+                winner: Some(winner),
             })
         })
     }
@@ -326,36 +337,49 @@ impl Behavior for Actor {
 pub struct Environment {
     context: Context<Message>,
     state: State,
+    /// How the werewolves' choices become a victim.
+    night_vote: Box<dyn Vote>,
+    /// How the village's choices become a victim.
+    day_vote: Box<dyn Vote>,
+    /// Where the winning team goes when the game ends. Taken when sent.
+    winner: Option<oneshot::Sender<Team>>,
 }
 
 impl Environment {
-    /// The werewolves, the doctor, and the seer each choose.
-    async fn night(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
-        self.gather().await
+    /// The werewolves, the doctor, and the seer each choose, and the night
+    /// is resolved from what they chose.
+    async fn night(&mut self) -> anyhow::Result<()> {
+        let choices = self.gather().await?;
+        let dead = self.state.resolve_night(&choices, self.night_vote.as_ref());
+        self.bury(dead)
     }
 
-    /// Everyone alive chooses.
-    async fn day(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
-        self.gather().await
+    /// Everyone alive chooses, and the day is resolved from what they chose.
+    async fn day(&mut self) -> anyhow::Result<()> {
+        let choices = self.gather().await?;
+        let dead = self.state.resolve_day(&choices, self.day_vote.as_ref());
+        self.bury(dead)
     }
 
     /// Ask everyone awake what they choose, all at once, and gather their
-    /// replies by player.
-    async fn gather(&self) -> anyhow::Result<HashMap<PlayerId, Vec<Message>>> {
+    /// choices by player, writing each one down.
+    async fn gather(&self) -> anyhow::Result<Choices> {
         let asked = self
             .state
             .awake()
             .into_iter()
             .map(|player| self.ask(player));
         let replies = try_join_all(asked).await?;
-        Ok(replies.into_iter().flatten().collect())
-    }
-
-    /// Write down what each player chose.
-    fn log_choices(&self, replies: HashMap<PlayerId, Vec<Message>>) {
-        for choice in replies.into_values().flatten() {
-            self.context.log(choice);
+        let mut choices = Choices::new();
+        for (player, said) in replies.into_iter().flatten() {
+            for message in said {
+                if let Message::Action(chosen) = &message {
+                    choices.insert(player.clone(), chosen.clone());
+                }
+                self.context.log(message);
+            }
         }
+        Ok(choices)
     }
 
     /// Show `player` what it may see and wait for what it says back.
@@ -364,6 +388,15 @@ impl Environment {
         self.context
             .request(Message::Observation(observation), HashSet::from([player]))
             .await
+    }
+
+    /// Stop the actor of a player the state has just killed, so a death
+    /// in the state and the end of the actor go together.
+    fn bury(&self, dead: Option<PlayerId>) -> anyhow::Result<()> {
+        match dead {
+            Some(player) => self.context.stop(&player),
+            None => Ok(()),
+        }
     }
 }
 
@@ -376,16 +409,27 @@ impl Behavior for Environment {
         &self.context
     }
 
-    /// For now a game is one round: a night and a day, each asking everyone
-    /// awake and writing down what they chose, and then the episode ends.
+    /// Play night and day in turn until a team has won, then stop the
+    /// survivors, report the winner, and end the episode.
     async fn start(&mut self) -> anyhow::Result<()> {
-        let replies = self.night().await?;
-        self.log_choices(replies);
-        self.state.next();
-        let replies = self.day().await?;
-        self.log_choices(replies);
-        for player in self.state.roles.keys() {
+        let winner = loop {
+            self.night().await?;
+            if let Some(team) = self.state.winner() {
+                break team;
+            }
+            self.state.next();
+            self.day().await?;
+            if let Some(team) = self.state.winner() {
+                break team;
+            }
+            self.state.next();
+        };
+        for player in &self.state.alive {
             self.context.stop(player)?;
+        }
+        if let Some(report) = self.winner.take() {
+            // The owner of the episode may have stopped listening.
+            let _ = report.send(winner);
         }
         self.context.shutdown();
         Ok(())

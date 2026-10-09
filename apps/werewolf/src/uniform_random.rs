@@ -61,13 +61,14 @@ fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Actor, Phase, Role};
+    use crate::{Actor, NoTieBreak, Phase, RandomTieBreak, Role, Team};
     use free_agent::{ActorInit, Episode};
     use std::collections::HashMap;
     use std::collections::HashSet;
     use std::num::NonZero;
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
+    use tokio::sync::oneshot;
 
     fn id(name: &str) -> PlayerId {
         name.to_string()
@@ -84,14 +85,20 @@ mod tests {
         ])
     }
 
-    #[tokio::test]
-    async fn a_night_and_a_day_each_gather_one_choice_from_everyone_awake() {
-        let roles = village();
+    /// Run a game of `roles`, each played at random, to its end. Returns
+    /// the winner and everything the environment logged.
+    async fn play(roles: HashMap<PlayerId, Role>) -> (Team, Vec<Message>) {
         let players: HashSet<PlayerId> = roles.keys().cloned().collect();
+        let (winner, won) = oneshot::channel();
         let mut init = HashMap::from([(
             id("environment"),
             ActorInit {
-                behavior: Actor::environment(roles.clone()),
+                behavior: Actor::environment(
+                    roles,
+                    Box::new(RandomTieBreak),
+                    Box::new(NoTieBreak),
+                    winner,
+                ),
                 can_send_to: players.clone(),
                 can_shut_down: players.clone(),
                 has_logger: true,
@@ -115,17 +122,41 @@ mod tests {
             .await
             .unwrap();
 
-        let mut choices = Vec::new();
+        let mut logged = Vec::new();
         while let Some(event) = log.recv().await {
-            let Message::Action(chosen) = event.payload else {
-                panic!("the environment logs choices, not {:?}", event.payload);
-            };
-            choices.push(chosen);
+            logged.push(event.payload);
         }
-        // By night the two werewolves and the seer choose while the villager
-        // sleeps; by day all four choose.
-        assert_eq!(choices.len(), 3 + 4, "{choices:?}");
-        assert!(choices.iter().all(|chosen| roles.contains_key(chosen)));
+        (won.await.unwrap(), logged)
+    }
+
+    #[tokio::test]
+    async fn a_game_runs_until_a_team_has_won() {
+        let roles = village();
+        let (winner, logged) = play(roles.clone()).await;
+
+        assert!(matches!(winner, Team::Werewolves | Team::Villagers));
+        // By the first night three players choose, so there is at least
+        // that much on the record, and every choice names a player.
+        assert!(logged.len() >= 3, "{logged:?}");
+        for choice in &logged {
+            let Message::Action(chosen) = choice else {
+                panic!("the environment logs choices, not {choice:?}");
+            };
+            assert!(roles.contains_key(chosen), "{chosen}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_werewolves_win_on_reaching_parity() {
+        // One werewolf against two: whoever it kills the first night, the
+        // werewolf then equals the village.
+        let roles = HashMap::from([
+            (id("wolf"), Role::Werewolf),
+            (id("ann"), Role::Villager),
+            (id("bob"), Role::Villager),
+        ]);
+        let (winner, _) = play(roles).await;
+        assert_eq!(winner, Team::Werewolves);
     }
 
     /// What `me` sees of a village where everyone in `alive` lives and
