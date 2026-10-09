@@ -28,11 +28,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      # A version crates.io already has, published by hand or by an earlier
+      # run of this workflow, is left alone: a re-run of a release and a tag
+      # that follows a manual publish both pass.
+      - name: Look for the version on crates.io
+        id: look
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "free-agent") | .version')
+          if curl --fail --silent --show-error --output /dev/null \
+               --user-agent "wpm/FreeAgent release workflow" \
+               "https://crates.io/api/v1/crates/free-agent/$version"; then
+            echo "free-agent $version is already on crates.io"
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: rust-lang/crates-io-auth-action@v1
+        if: steps.look.outputs.published != 'true'
         id: auth
       # Publishing is in dependency order, which here is the library alone:
       # the applications are publish = false in their manifests, so cargo
       # skips them.
-      - run: cargo publish --workspace --locked
+      - if: steps.look.outputs.published != 'true'
+        run: cargo publish --workspace --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

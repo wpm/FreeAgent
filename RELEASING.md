@@ -47,7 +47,9 @@ like this:
    add a trusted publisher: owner `wpm`, repository `FreeAgent`, workflow
    `publish-crates.yml`, environment `release`.
 
-From the second release on, the tag does everything.
+From the second release on, the tag does everything. The first tag still
+builds the binaries and the GitHub Release; its crates.io job sees the
+version already published and skips it.
 
 ## Tooling
 
