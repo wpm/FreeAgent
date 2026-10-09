@@ -21,18 +21,19 @@
 mod uniform_random;
 
 use async_trait::async_trait;
-use free_agent::{ActorId, Behavior, Builder, Context};
+use free_agent::{ActorId, ActorInit, Behavior, Builder, Context, Episode, Logger};
 use futures_util::future::try_join_all;
 use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::num::NonZero;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 /// A player is an actor, named as the episode names it.
-type PlayerId = ActorId;
+pub type PlayerId = ActorId;
 
 /// What the awake players chose in a phase: each player's choice of another.
 type Choices = HashMap<PlayerId, PlayerId>;
@@ -44,6 +45,15 @@ pub enum Team {
     Werewolves,
     /// Vote by day and win when the last werewolf is gone.
     Villagers,
+}
+
+impl fmt::Display for Team {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Team::Werewolves => "werewolves",
+            Team::Villagers => "villagers",
+        })
+    }
 }
 
 /// What a player is.
@@ -275,6 +285,42 @@ impl Default for Rules {
             day_limit: Duration::from_secs(60),
         }
     }
+}
+
+/// An episode of a game of `roles` under `rules`: the environment, which
+/// may reach and stop every player and holds `logger`, and a player for
+/// each role built by `player`. The winning team is sent on `winner` when
+/// the game ends.
+pub fn game(
+    roles: HashMap<PlayerId, Role>,
+    rules: Rules,
+    winner: oneshot::Sender<Team>,
+    logger: Logger<Message>,
+    mut player: impl FnMut(&PlayerId) -> Builder<Actor>,
+) -> Episode<Actor> {
+    let players: HashSet<PlayerId> = roles.keys().cloned().collect();
+    let mut init = HashMap::from([(
+        "environment".to_string(),
+        ActorInit {
+            behavior: Actor::environment(roles, rules, winner),
+            can_send_to: players.clone(),
+            can_shut_down: players.clone(),
+            has_logger: true,
+        },
+    )]);
+    for id in players {
+        let behavior = player(&id);
+        init.insert(
+            id,
+            ActorInit {
+                behavior,
+                can_send_to: HashSet::new(),
+                can_shut_down: HashSet::new(),
+                has_logger: false,
+            },
+        );
+    }
+    Episode::new(init, logger)
 }
 
 /// What an actor in the game does: run it, or play in it. An episode holds
@@ -565,7 +611,6 @@ pub struct Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use free_agent::{ActorInit, Episode};
     use tokio::sync::mpsc::unbounded_channel;
 
     /// A player who never answers, for a game with a time limit to wait
@@ -602,38 +647,17 @@ mod tests {
         rules: Rules,
         mute: &[&str],
     ) -> anyhow::Result<(Team, Vec<Message>)> {
-        let players: HashSet<PlayerId> = roles.keys().cloned().collect();
         let (winner, won) = oneshot::channel();
-        let mut init = HashMap::from([(
-            "environment".to_string(),
-            ActorInit {
-                behavior: Actor::environment(roles, rules, winner),
-                can_send_to: players.clone(),
-                can_shut_down: players.clone(),
-                has_logger: true,
-            },
-        )]);
-        for player in players {
-            let behavior = if mute.contains(&player.as_str()) {
+        let (logger, mut log) = unbounded_channel();
+        let episode = game(roles, rules, winner, logger, |player| {
+            if mute.contains(&player.as_str()) {
                 Actor::mute()
             } else {
                 Actor::player()
-            };
-            init.insert(
-                player,
-                ActorInit {
-                    behavior,
-                    can_send_to: HashSet::new(),
-                    can_shut_down: HashSet::new(),
-                    has_logger: false,
-                },
-            );
-        }
-        let (logger, mut log) = unbounded_channel();
+            }
+        });
 
-        Episode::new(init, logger)
-            .run(Duration::from_secs(60))
-            .await?;
+        episode.run(Duration::from_secs(60)).await?;
 
         let mut logged = Vec::new();
         while let Some(event) = log.recv().await {
@@ -916,6 +940,12 @@ mod tests {
         let choices = ballots(&[("wolf1", "seer"), ("seer", "wolf1")]);
         assert_eq!(state.resolve_day(&choices, &NoTieBreak), None);
         assert_eq!(state.alive.len(), 5);
+    }
+
+    #[test]
+    fn a_team_is_named_in_prose() {
+        assert_eq!(Team::Werewolves.to_string(), "werewolves");
+        assert_eq!(Team::Villagers.to_string(), "villagers");
     }
 
     #[test]
