@@ -19,6 +19,7 @@
 // yet reached from anywhere.
 #![allow(dead_code)]
 
+pub mod report;
 mod uniform_random;
 
 use async_trait::async_trait;
@@ -68,6 +69,17 @@ pub enum Role {
     Doctor,
     /// Learns one player's team each night.
     Seer,
+}
+
+impl fmt::Display for Role {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Role::Werewolf => "werewolf",
+            Role::Villager => "villager",
+            Role::Doctor => "doctor",
+            Role::Seer => "seer",
+        })
+    }
 }
 
 impl Role {
@@ -1065,6 +1077,14 @@ mod tests {
         let choices = ballots(&[("wolf1", "seer"), ("seer", "wolf1")]);
         assert_eq!(state.resolve_day(&choices, &NoTieBreak), None);
         assert_eq!(state.alive.len(), 5);
+    }
+
+    #[test]
+    fn a_role_is_named_in_prose() {
+        assert_eq!(Role::Werewolf.to_string(), "werewolf");
+        assert_eq!(Role::Villager.to_string(), "villager");
+        assert_eq!(Role::Doctor.to_string(), "doctor");
+        assert_eq!(Role::Seer.to_string(), "seer");
     }
 
     #[test]

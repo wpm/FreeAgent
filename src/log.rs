@@ -34,25 +34,37 @@ impl<L> Event<L> {
     }
 }
 
+impl<L: Serialize> Event<L> {
+    /// Write this event to `sink` as one line of JSON. Nothing is
+    /// summarized: the line carries the whole event, with its time as
+    /// seconds and nanoseconds since the Unix epoch.
+    ///
+    /// # Errors
+    ///
+    /// Fails when writing to `sink` fails, or when the event cannot be
+    /// serialized, as one stamped before the epoch cannot.
+    pub fn write<W: Write>(&self, mut sink: W) -> io::Result<()> {
+        serde_json::to_writer(&mut sink, self)?;
+        sink.write_all(b"\n")
+    }
+}
+
 /// The sending end of an episode's log.
 pub type Logger<L> = UnboundedSender<Event<L>>;
 
-/// Write every event from `events` to `sink` as one line of JSON each,
-/// until every logger is gone. Nothing is summarized: a line carries the
-/// whole event, with its time as seconds and nanoseconds since the Unix
-/// epoch.
+/// Write every event from `events` to `sink`, each as [`Event::write`]
+/// does, until every logger is gone.
 ///
 /// # Errors
 ///
 /// Fails when writing to `sink` fails, or when an event cannot be
-/// serialized, as one stamped before the epoch cannot.
+/// serialized.
 pub async fn drain<L: Serialize, W: Write>(
     mut events: UnboundedReceiver<Event<L>>,
     mut sink: W,
 ) -> io::Result<()> {
     while let Some(event) = events.recv().await {
-        serde_json::to_writer(&mut sink, &event)?;
-        sink.write_all(b"\n")?;
+        event.write(&mut sink)?;
     }
     sink.flush()
 }

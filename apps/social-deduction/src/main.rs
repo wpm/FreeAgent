@@ -1,11 +1,12 @@
 //! Play Werewolf: deal the roles, run one game, log it to standard error
-//! as JSON lines, and say who won.
+//! as JSON lines, and tell it on standard output as it happens.
 
 use clap::Parser;
-use free_agent::console_log;
 use rand::seq::SliceRandom;
+use social_deduction::report::Narrator;
 use social_deduction::{Actor, PlayerId, Role, Rules, game};
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::oneshot;
@@ -57,16 +58,26 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let table = Table::parse();
-    let (winner, won) = oneshot::channel();
-    let (logger, log) = unbounded_channel();
+    // The winner reaches the log too, which is where it is read from here.
+    let (winner, _won) = oneshot::channel();
+    let (logger, mut log) = unbounded_channel();
     let episode = game(table.deal(), Rules::default(), winner, logger, |_| {
         Actor::player()
     });
-    let writing = tokio::spawn(console_log(log));
+    let telling = tokio::spawn(async move {
+        let mut narrator = Narrator::default();
+        let mut stdout = io::stdout();
+        while let Some(event) = log.recv().await {
+            event.write(io::stderr())?;
+            for line in narrator.narrate(&event.payload) {
+                writeln!(stdout, "{line}")?;
+            }
+        }
+        stdout.flush()
+    });
     episode.run(PATIENCE).await?;
-    // The log is written once the last actor has let go of its logger.
-    writing.await??;
-    println!("The {} win.", won.await?);
+    // Everything is told once the last actor has let go of its logger.
+    telling.await??;
     Ok(())
 }
 

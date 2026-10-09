@@ -1,4 +1,4 @@
-//! The binary plays one game, prints the winner, and logs the game to
+//! The binary plays one game, tells it on standard output, and logs it to
 //! standard error as JSON lines.
 
 use free_agent::Event;
@@ -39,7 +39,21 @@ fn the_log_runs_from_the_deal_to_the_result_under_one_episode_id() {
     let Some(Entry::End { winner, .. }) = events.last().map(|event| &event.payload) else {
         panic!("{events:?}");
     };
-    assert_eq!(printed, format!("The {winner} win.\n"));
+    // The account opens with the table, goes through the first night, and
+    // closes with the winner.
+    let lines: Vec<&str> = printed.lines().collect();
+    assert!(
+        lines[0].starts_with("Uniform Random with 7 players: "),
+        "{printed}"
+    );
+    assert_eq!(lines[1], "Night 1.", "{printed}");
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .starts_with(&format!("The {winner} win after ")),
+        "{printed}"
+    );
 }
 
 #[test]
