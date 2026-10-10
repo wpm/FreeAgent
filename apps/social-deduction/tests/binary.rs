@@ -2,7 +2,7 @@
 //! standard error as JSON lines.
 
 use free_agent::Event;
-use social_deduction::Entry;
+use social_deduction::werewolf::Entry;
 use std::process::{Command, Output};
 
 fn play(args: &[&str]) -> Output {

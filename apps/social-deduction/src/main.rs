@@ -3,8 +3,9 @@
 
 use clap::Parser;
 use rand::seq::SliceRandom;
-use social_deduction::report::Narrator;
-use social_deduction::{Actor, PlayerId, Role, Rules, game};
+use social_deduction::werewolf::report::Narrator;
+use social_deduction::werewolf::uniform_random::{Actor, game};
+use social_deduction::werewolf::{PlayerId, Role, Rules};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::time::Duration;
