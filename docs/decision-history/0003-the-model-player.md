@@ -114,10 +114,13 @@ messages:
 2. **user:** the narrated history, followed by where the game stands now:
    the phase and round, and what is being asked of the player.
 
-The history only ever grows at the end, so each request begins with the
-previous one. Providers that cache prompt prefixes, OpenAI automatically and
-LM Studio locally, cache all but the newest part of every request without
-anything being done for it.
+The history grows at the end, so each request begins with the previous one.
+Providers that cache prompt prefixes, OpenAI automatically and LM Studio
+locally, cache all but the newest part of every request without anything
+being done for it. The one exception is a selection made after a later phase
+was announced: the environment has dropped it, but it was made in its own
+phase, so it is filed right after the announcement it answers rather than
+told as a deed of the phase that followed.
 
 ### Selecting is a forced tool call
 
@@ -131,13 +134,16 @@ Each request offers one tool:
 and sets `tool_choice` to require it, so the model cannot answer with prose
 instead.
 
-**The candidates are the random player's.** The living, other than the
-player itself, whose roles it does not know. The filter that the
-uniform-random player uses today is moved into the shared Werewolf module as
-`candidates(me, observation)`, and both players choose from it, so a model
-player and a random player in the same seat face exactly the same choice.
-This keeps the two variants comparable. It also means a doctor cannot protect
-itself, as the random doctor cannot.
+**The candidates are the random player's.** By night, the living other
+than the player itself whose roles it does not know, so that a werewolf does
+not kill a werewolf, the seer does not ask about anyone twice, and the
+doctor does not protect itself. By day, everyone living other than the
+player itself: the vote is about who the werewolves are, and a seer that has
+found one is the player with the most reason to vote. The filter that the
+uniform-random player uses today, with the day opened up this way, is moved
+into the shared Werewolf module as `candidates(me, observation)`, and both
+players choose from it, so a model player and a random player in the same
+seat face exactly the same choice. This keeps the two variants comparable.
 
 If there are no candidates, the player makes no call and no selection.
 
