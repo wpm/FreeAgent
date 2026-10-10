@@ -318,6 +318,7 @@ fn the_models_command_lists_the_provider_s_models_sorted_and_marks_those_that_ma
             "  llama-3.1-8b-instruct",
             "* qwen2.5-7b-instruct",
             "  zephyr-7b",
+            "",
             "* marks a model known to make tool calls.",
         ],
         "{printed}"
@@ -330,6 +331,8 @@ fn the_models_command_needs_a_base_url_and_names_a_provider_it_cannot_reach() {
     let help = printed(&["models", "--help"]);
     assert!(help.contains("BASE_URL"), "{help}");
     assert!(help.contains("--api-key-env"), "{help}");
+    assert!(help.contains("https://api.openai.com"), "{help}");
+    assert!(help.contains("OPENAI_API_KEY"), "{help}");
     let base_url = unreachable();
     let stderr = refused(&["models", &base_url]);
     assert!(stderr.contains(&base_url), "{stderr}");

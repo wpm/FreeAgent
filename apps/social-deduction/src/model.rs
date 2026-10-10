@@ -15,6 +15,7 @@ pub mod canned;
 
 use anyhow::{Context, anyhow, bail};
 use reqwest::StatusCode;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::ffi::OsString;
@@ -53,6 +54,82 @@ pub fn check_makes_tool_calls(id: &str) -> anyhow::Result<()> {
     }
 }
 
+/// The providers the client knows, compiled in: on each line the root of
+/// a provider's API, the environment variable conventionally holding its
+/// key, and the headers its requests must carry, with blank lines and
+/// lines starting with `#` ignored. Adding a provider is an edit to the
+/// file and a rebuild.
+const MODEL_URLS: &str = include_str!("model_urls.txt");
+
+/// A provider `src/model_urls.txt` knows.
+#[derive(Debug, PartialEq)]
+struct Known {
+    /// The root of its API.
+    root: &'static str,
+    /// The environment variable conventionally holding its API key, for a
+    /// provider that wants one.
+    key_variable: Option<&'static str>,
+    /// The headers every request to it must carry.
+    headers: Vec<(&'static str, &'static str)>,
+}
+
+/// Every provider `src/model_urls.txt` knows, in the file's order.
+fn knowns() -> impl Iterator<Item = Known> {
+    MODEL_URLS
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            let mut columns = line.split_whitespace();
+            let root = columns.next().unwrap_or_default().trim_end_matches('/');
+            let key_variable = columns.next().filter(|variable| *variable != "-");
+            let headers = columns
+                .filter_map(|header| header.split_once(':'))
+                .collect();
+            Known {
+                root,
+                key_variable,
+                headers,
+            }
+        })
+}
+
+/// The provider `src/model_urls.txt` knows at `base_url`: the one whose
+/// root the base URL is at or under, if any.
+fn known(base_url: &str) -> Option<Known> {
+    let base_url = base_url.trim_end_matches('/');
+    knowns().find(|known| {
+        base_url == known.root
+            || base_url
+                .strip_prefix(known.root)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+/// The providers `src/model_urls.txt` knows, each as the root of its API
+/// and the environment variable conventionally holding its key, if any,
+/// in the file's order, for telling the user.
+pub fn known_providers() -> Vec<(&'static str, Option<&'static str>)> {
+    knowns()
+        .map(|known| (known.root, known.key_variable))
+        .collect()
+}
+
+/// The environment variable conventionally holding the API key for the
+/// provider at `base_url`, when `src/model_urls.txt` knows the provider and
+/// it wants one.
+pub fn known_key_variable(base_url: &str) -> Option<&'static str> {
+    known(base_url)?.key_variable
+}
+
+/// The environment variable holding the API key for the provider at
+/// `base_url`: the one `named`, if any, over the one known for the
+/// provider, if any. None means no key, which is what a local server
+/// expects.
+pub fn key_variable<'a>(base_url: &str, named: Option<&'a str>) -> Option<&'a str> {
+    named.or_else(|| known_key_variable(base_url))
+}
+
 /// The API key the environment variable `name` holds. A variable that is
 /// not set, or is set to something that is not UTF-8, is an error naming
 /// it.
@@ -62,10 +139,10 @@ pub fn api_key(name: &str) -> anyhow::Result<SecretString> {
 
 /// The key the environment variable `name` holds as `value`.
 fn key(name: &str, value: Option<OsString>) -> anyhow::Result<SecretString> {
-    let value = value.ok_or_else(|| anyhow!("api_key_env names {name}, which is not set"))?;
+    let value = value.ok_or_else(|| anyhow!("{name} is not set"))?;
     let value = value
         .into_string()
-        .map_err(|_| anyhow!("api_key_env names {name}, whose value is not UTF-8"))?;
+        .map_err(|_| anyhow!("{name} is set to something that is not UTF-8"))?;
     Ok(SecretString::from(value))
 }
 
@@ -148,17 +225,42 @@ struct Listed {
 
 impl Provider {
     /// The provider at `base_url`, sent `api_key` as a bearer token when
-    /// there is one, whose every request may take `request_timeout`.
+    /// there is one, whose every request may take `request_timeout` and
+    /// carries the headers `src/model_urls.txt` says the provider needs.
     pub fn new(
         base_url: impl Into<String>,
         api_key: Option<SecretString>,
         request_timeout: Duration,
     ) -> anyhow::Result<Self> {
+        let base_url = base_url.into();
+        let headers = known(&base_url)
+            .map(|known| known.headers)
+            .unwrap_or_default();
+        Self::with_headers(base_url, api_key, request_timeout, &headers)
+    }
+
+    /// [`Provider::new`], with `headers` on every request. A header the
+    /// file misspells is an error naming the file.
+    fn with_headers(
+        base_url: String,
+        api_key: Option<SecretString>,
+        request_timeout: Duration,
+        headers: &[(&str, &str)],
+    ) -> anyhow::Result<Self> {
+        let mut sent = HeaderMap::new();
+        for (name, value) in headers {
+            let name = HeaderName::from_bytes(name.as_bytes())
+                .with_context(|| format!("the header {name} in src/model_urls.txt"))?;
+            let value = HeaderValue::from_str(value)
+                .with_context(|| format!("the header {name} in src/model_urls.txt"))?;
+            sent.insert(name, value);
+        }
         let client = reqwest::Client::builder()
             .timeout(request_timeout)
+            .default_headers(sent)
             .build()?;
         Ok(Self {
-            base_url: base_url.into(),
+            base_url,
             api_key,
             client,
         })
@@ -225,6 +327,89 @@ mod tests {
         assert!(!makes_tool_calls("# Models known to make tool calls."));
         assert!(!makes_tool_calls(""));
         assert!(!makes_tool_calls("QWEN2.5-7B-INSTRUCT"));
+    }
+
+    #[test]
+    fn the_known_providers_are_told_in_the_file_s_order() {
+        let providers = known_providers();
+        assert!(providers.len() >= 2, "{providers:?}");
+        assert_eq!(
+            providers[0],
+            ("https://api.openai.com", Some("OPENAI_API_KEY"))
+        );
+        assert_eq!(
+            providers[1],
+            ("https://api.anthropic.com", Some("ANTHROPIC_API_KEY"))
+        );
+    }
+
+    #[test]
+    fn a_known_provider_s_headers_are_read_from_the_file() {
+        assert_eq!(
+            known("https://api.anthropic.com/v1").unwrap().headers,
+            [("anthropic-version", "2023-06-01")]
+        );
+        assert!(
+            known("https://api.openai.com/v1")
+                .unwrap()
+                .headers
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_listing_request_carries_the_provider_s_headers() {
+        let (base_url, served) = answering("200 OK", &listing(&[]));
+        let headers = [("anthropic-version", "2023-06-01"), ("x-extra", "yes")];
+        let provider = Provider::with_headers(base_url, None, TIMEOUT, &headers).unwrap();
+        provider.models().await.unwrap();
+        let head = lines(&served.join().unwrap());
+        assert!(
+            head.contains(&"anthropic-version: 2023-06-01".to_string()),
+            "{head:?}"
+        );
+        assert!(head.contains(&"x-extra: yes".to_string()), "{head:?}");
+    }
+
+    #[test]
+    fn a_header_the_file_misspells_is_an_error_naming_the_file() {
+        let bad = [("no spaces allowed", "x")];
+        let error =
+            Provider::with_headers("http://localhost/v1".into(), None, TIMEOUT, &bad).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("src/model_urls.txt"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn a_known_provider_s_key_variable_is_found_from_a_base_url_at_or_under_its_root() {
+        assert_eq!(
+            known_key_variable("https://api.openai.com/v1"),
+            Some("OPENAI_API_KEY")
+        );
+        assert_eq!(
+            known_key_variable("https://api.openai.com/v1/"),
+            Some("OPENAI_API_KEY")
+        );
+        assert_eq!(
+            known_key_variable("https://api.anthropic.com"),
+            Some("ANTHROPIC_API_KEY")
+        );
+        assert_eq!(known_key_variable("http://localhost:1234/v1"), None);
+        // Under the root, not merely starting with it.
+        assert_eq!(
+            known_key_variable("https://api.openai.com.example/v1"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_named_key_variable_is_used_over_the_known_one() {
+        let openai = "https://api.openai.com/v1";
+        assert_eq!(key_variable(openai, None), Some("OPENAI_API_KEY"));
+        assert_eq!(key_variable(openai, Some("MY_KEY")), Some("MY_KEY"));
+        assert_eq!(key_variable("http://localhost:1234/v1", None), None);
     }
 
     #[test]

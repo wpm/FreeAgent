@@ -6,7 +6,8 @@
 use clap::{Parser, Subcommand};
 use free_agent::{Behavior, Episode, Logger};
 use social_deduction::model::{
-    Provider, REQUEST_TIMEOUT, api_key, check_makes_tool_calls, makes_tool_calls,
+    Provider, REQUEST_TIMEOUT, api_key, check_makes_tool_calls, key_variable, known_providers,
+    makes_tool_calls,
 };
 use social_deduction::werewolf::llm::{self, Config};
 use social_deduction::werewolf::report::Narrator;
@@ -29,11 +30,12 @@ enum CommandLine {
     Werewolf(Werewolf),
     /// List the models a provider serves, marking those known to make tool
     /// calls.
+    #[command(after_help = known_providers_help())]
     Models {
         /// The root of the provider's OpenAI-compatible API, ending in /v1
         base_url: String,
-        /// The environment variable holding the API key, for a provider
-        /// that wants one
+        /// The environment variable holding the API key, over the one known
+        /// for the provider
         #[arg(long)]
         api_key_env: Option<String>,
     },
@@ -107,7 +109,8 @@ async fn main() -> anyhow::Result<()> {
             base_url,
             api_key_env,
         } => {
-            let api_key = api_key_env.as_deref().map(api_key).transpose()?;
+            let variable = key_variable(&base_url, api_key_env.as_deref());
+            let api_key = variable.map(api_key).transpose()?;
             let provider = Provider::new(base_url, api_key, REQUEST_TIMEOUT)?;
             print!("{}", marked(provider.models().await?));
             Ok(())
@@ -115,15 +118,38 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+/// What `models --help` ends with: a table of the providers known, the
+/// root of each one's API and the environment variable its key is read
+/// from unless --api-key-env names another.
+fn known_providers_help() -> String {
+    let providers = known_providers();
+    let width = providers
+        .iter()
+        .map(|(root, _)| root.len())
+        .max()
+        .unwrap_or_default();
+    let mut help = String::from(
+        "Providers known, with the environment variable their API key is read from:\n",
+    );
+    for (root, variable) in providers {
+        writeln!(help, "  {root:width$}  {}", variable.unwrap_or("-")).unwrap();
+    }
+    help
+}
+
 /// The listing the `models` command prints: one id per line in sorted
 /// order, those known to make tool calls marked `*` and the rest indented
-/// to line up, then a line saying what the mark means.
+/// to line up, then, set off by an empty line, a line saying what the
+/// mark means.
 fn marked(mut ids: Vec<String>) -> String {
     ids.sort();
     let mut listing = String::new();
     for id in &ids {
         let mark = if makes_tool_calls(id) { "*" } else { " " };
         writeln!(listing, "{mark} {id}").unwrap();
+    }
+    if !ids.is_empty() {
+        listing.push('\n');
     }
     writeln!(listing, "* marks a model known to make tool calls.").unwrap();
     listing
@@ -161,6 +187,7 @@ async fn play<A: Behavior<Log = Entry> + 'static>(
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    use std::collections::HashSet;
 
     /// The command line `args` parse to, after the binary's name.
     fn parsed(args: &[&str]) -> CommandLine {
@@ -296,11 +323,34 @@ mod tests {
     }
 
     #[test]
+    fn the_models_help_ends_with_the_providers_known_in_a_table() {
+        let help = CommandLine::command()
+            .find_subcommand_mut("models")
+            .unwrap()
+            .render_help()
+            .to_string();
+        assert!(help.ends_with(&known_providers_help()), "{help}");
+        let table = known_providers_help();
+        let rows: Vec<&str> = table.lines().skip(1).collect();
+        assert!(
+            rows.contains(&"  https://api.openai.com     OPENAI_API_KEY"),
+            "{table}"
+        );
+        assert!(
+            rows.contains(&"  https://api.anthropic.com  ANTHROPIC_API_KEY"),
+            "{table}"
+        );
+        // The variables line up, whatever the roots' lengths.
+        let columns: HashSet<Option<usize>> = rows.iter().map(|row| row.rfind("  ")).collect();
+        assert_eq!(columns.len(), 1, "{table}");
+    }
+
+    #[test]
     fn the_listing_is_sorted_marks_the_models_known_to_make_tool_calls_and_says_so() {
         let ids = ["qwen2.5-7b-instruct", "gpt-0"].map(String::from).to_vec();
         assert_eq!(
             marked(ids),
-            "  gpt-0\n* qwen2.5-7b-instruct\n* marks a model known to make tool calls.\n"
+            "  gpt-0\n* qwen2.5-7b-instruct\n\n* marks a model known to make tool calls.\n"
         );
         assert_eq!(
             marked(vec![]),

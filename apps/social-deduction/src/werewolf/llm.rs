@@ -18,7 +18,7 @@
 //! a [`SecretString`], which is redacted wherever it is shown.
 
 use super::{PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table};
-use crate::model::{Provider, REQUEST_TIMEOUT, api_key};
+use crate::model::{Provider, REQUEST_TIMEOUT, api_key, key_variable};
 use anyhow::{Context, anyhow, bail};
 use clap::Args;
 use minijinja::{Environment, UndefinedBehavior, Value, context};
@@ -75,8 +75,8 @@ pub struct Model {
     pub base_url: String,
     /// The model's id, exactly as the provider lists it.
     pub id: String,
-    /// The environment variable holding the API key, for a provider that
-    /// wants one.
+    /// The environment variable holding the API key, over the one known
+    /// for the provider.
     pub api_key_env: Option<String>,
     /// How long a request may take.
     #[serde(default = "request_timeout", with = "humantime_serde")]
@@ -84,11 +84,17 @@ pub struct Model {
 }
 
 impl Model {
-    /// The API key, read from the environment variable `api_key_env`
-    /// names. A variable that is named but not set is an error. When none
-    /// is named there is no key, which is what a local server expects.
+    /// The environment variable holding the API key: `api_key_env` when
+    /// the file names one, else the one known for the provider, if any.
+    pub fn key_variable(&self) -> Option<&str> {
+        key_variable(&self.base_url, self.api_key_env.as_deref())
+    }
+
+    /// The API key, read from the variable [`Model::key_variable`] names.
+    /// A variable that is named but not set is an error. When none is
+    /// named there is no key, which is what a local server expects.
     pub fn api_key(&self) -> anyhow::Result<Option<SecretString>> {
-        self.api_key_env.as_deref().map(api_key).transpose()
+        self.key_variable().map(api_key).transpose()
     }
 
     /// The provider the table is reached through, with its key read from
@@ -329,7 +335,7 @@ impl fmt::Display for Settings {
         let day = humantime::format_duration(self.day_limit);
         writeln!(f, "model: {} at {}", model.id, model.base_url)?;
         writeln!(f, "request timeout: {timeout}")?;
-        match &model.api_key_env {
+        match model.key_variable() {
             Some(name) => writeln!(f, "API key: from {name}")?,
             None => writeln!(f, "API key: none")?,
         }
@@ -826,5 +832,20 @@ day limit: 1m 30s
             settings.to_string().contains("API key: none\n"),
             "{settings}"
         );
+    }
+
+    #[test]
+    fn a_known_provider_s_key_variable_is_filled_in_unless_the_file_names_one() {
+        let openai = MODEL.replace("http://localhost:1234/v1", "https://api.openai.com/v1");
+        let settings = settle(&openai, Overrides::default());
+        assert_eq!(settings.config.model.key_variable(), Some("OPENAI_API_KEY"));
+        assert!(
+            settings
+                .to_string()
+                .contains("API key: from OPENAI_API_KEY\n")
+        );
+        let named = format!("{openai}api_key_env = \"MY_KEY\"\n");
+        let settings = settle(&named, Overrides::default());
+        assert_eq!(settings.config.model.key_variable(), Some("MY_KEY"));
     }
 }
