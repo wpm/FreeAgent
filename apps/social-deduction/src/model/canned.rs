@@ -15,7 +15,8 @@ pub fn bound() -> (TcpListener, String) {
 }
 
 /// A provider that answers one request with `status` and `body`, in a
-/// thread that gives back the head of the request it was sent.
+/// thread that gives back the request it was sent: its head, a blank
+/// line, and its body, if it has one.
 pub fn answering(status: &str, body: &str) -> (String, JoinHandle<String>) {
     let (listener, base_url) = bound();
     let response = format!(
@@ -24,17 +25,42 @@ pub fn answering(status: &str, body: &str) -> (String, JoinHandle<String>) {
     );
     let served = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        let mut head = Vec::new();
+        let mut request = Vec::new();
         let mut buffer = [0; 1024];
-        while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+        while !complete(&request) {
             let n = stream.read(&mut buffer).unwrap();
-            assert!(n > 0, "the request ended before its head did");
-            head.extend_from_slice(&buffer[..n]);
+            assert!(n > 0, "the request ended before it was complete");
+            request.extend_from_slice(&buffer[..n]);
         }
         stream.write_all(response.as_bytes()).unwrap();
-        String::from_utf8(head).unwrap()
+        String::from_utf8(request).unwrap()
     });
     (base_url, served)
+}
+
+/// Whether `request`, as much of one as has arrived, is all of it: its
+/// head has ended and as much body as its `Content-Length` says has
+/// followed.
+fn complete(request: &[u8]) -> bool {
+    let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return false;
+    };
+    let head = String::from_utf8_lossy(&request[..end]);
+    let length = head
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())?
+        })
+        .unwrap_or(0);
+    request.len() - (end + 4) >= length
+}
+
+/// The body of a `request` as [`answering`] gives it back, parsed as JSON.
+pub fn body(request: &str) -> serde_json::Value {
+    let (_, body) = request.split_once("\r\n\r\n").unwrap();
+    serde_json::from_str(body).unwrap()
 }
 
 /// A listing of `ids` in OpenAI's shape, with the fields a provider adds
@@ -64,4 +90,30 @@ pub fn unreachable() -> String {
         }
     });
     base_url
+}
+
+/// A completion in OpenAI's shape whose one choice calls the tool `name`
+/// with `arguments`, with the fields a provider adds that are not read.
+pub fn completion(name: &str, arguments: &serde_json::Value) -> String {
+    serde_json::json!({
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 1_700_000_000,
+        "model": "test",
+        "choices": [{
+            "index": 0,
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments.to_string()},
+                }],
+            },
+        }],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    })
+    .to_string()
 }

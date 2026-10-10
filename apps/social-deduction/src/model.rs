@@ -1,19 +1,32 @@
 //! Reaching a model provider: the OpenAI-compatible API every model is
-//! behind, and the whitelist of models known to make tool calls.
+//! behind, the whitelist of models known to make tool calls, and the
+//! [`Model`] a player asks for one decision.
 //!
 //! Nothing here is particular to Werewolf. The `models` command lists what
 //! a [`Provider`] serves, and a model-played game checks its model against
 //! the whitelist and the listing before it begins, since a model player
 //! makes its selection with a tool call, and a model that cannot make one
-//! would silently never select.
+//! would silently never select. Once the game begins, each decision is one
+//! [`Request`] to the provider, forcing a tool call, and the [`Response`]
+//! it is answered with. A player depends only on the [`Model`] trait, so a
+//! test gives it a [`fake::FakeModel`] and no test reaches a model.
 //!
 //! The API key is a [`SecretString`], exposed only where the
 //! `Authorization` header is built, so it never appears in an error.
 
 #[doc(hidden)]
 pub mod canned;
+mod completion;
+#[doc(hidden)]
+pub mod fake;
+
+pub use completion::{
+    Answer, Call, Choice, Function, Message, Named, Request, Response, Role, Tool, ToolCall,
+    ToolChoice,
+};
 
 use anyhow::{Context, anyhow, bail};
+use async_trait::async_trait;
 use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use secrecy::{ExposeSecret, SecretString};
@@ -25,6 +38,20 @@ use std::time::Duration;
 
 /// How long a request may take unless the configuration says otherwise.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How much of what a provider said about a failure an error repeats.
+const SAID_AT_MOST: usize = 500;
+
+/// A model asked for one decision at a time.
+///
+/// A call is one decision, not a turn in a conversation: each [`Request`]
+/// carries everything the model is shown. A [`Provider`] is a model over
+/// HTTP, and [`fake::FakeModel`] one for tests.
+#[async_trait]
+pub trait Model: Send + Sync {
+    /// One completion: send `request`, return the model's response.
+    async fn complete(&self, request: &Request) -> anyhow::Result<Response>;
+}
 
 /// What the client knows, compiled in from `src/models.toml`. Adding to
 /// it is an edit there and a rebuild.
@@ -162,7 +189,7 @@ fn explained(status: StatusCode, keyed: bool, said: &str) -> String {
     let meaning = match status {
         StatusCode::UNAUTHORIZED if keyed => Some("the API key was not accepted"),
         StatusCode::UNAUTHORIZED => Some("it wants an API key"),
-        StatusCode::FORBIDDEN => Some("the API key is not allowed to list models"),
+        StatusCode::FORBIDDEN => Some("the API key is not allowed to do that"),
         StatusCode::NOT_FOUND => Some(
             "nothing is served at that path; the base URL is the root of the API, ending in /v1",
         ),
@@ -187,8 +214,8 @@ fn explained(status: StatusCode, keyed: bool, said: &str) -> String {
 }
 
 /// What a provider said about a failure: the message of a JSON error
-/// in OpenAI's and Anthropic's shape, or else its text, trimmed, or
-/// nothing when it said nothing.
+/// in OpenAI's and Anthropic's shape, or else the start of its text,
+/// trimmed, or nothing when it said nothing.
 fn message(said: &str) -> Option<String> {
     #[derive(Deserialize)]
     struct Said {
@@ -204,8 +231,17 @@ fn message(said: &str) -> Option<String> {
     }
     Some(match serde_json::from_str::<Said>(said) {
         Ok(json) => json.error.message,
-        Err(_) => said.to_string(),
+        Err(_) => start(said),
     })
+}
+
+/// The start of `text`: all of it when it is short, else its first
+/// [`SAID_AT_MOST`] characters and an ellipsis.
+fn start(text: &str) -> String {
+    match text.char_indices().nth(SAID_AT_MOST) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_string(),
+    }
 }
 
 /// A model provider: the root of its OpenAI-compatible API, ending in
@@ -271,29 +307,48 @@ impl Provider {
         })
     }
 
+    /// The URL of `path` under the root of the API.
+    fn url(&self, path: &str) -> String {
+        format!("{}/{path}", self.base_url.trim_end_matches('/'))
+    }
+
+    /// What the provider answers `request`, described as `sent`, such as
+    /// `GET {url}`, carrying the key as a bearer token when there is one.
+    /// A request that fails is an error naming what was sent, and one
+    /// answered with anything but success an error naming what was sent,
+    /// the status, and whatever the provider said about it.
+    async fn answered(
+        &self,
+        mut request: reqwest::RequestBuilder,
+        sent: &str,
+    ) -> anyhow::Result<reqwest::Response> {
+        if let Some(key) = &self.api_key {
+            request = request.bearer_auth(key.expose_secret());
+        }
+        let response = request.send().await.with_context(|| sent.to_string())?;
+        let status = response.status();
+        if !status.is_success() {
+            let said = response.text().await.unwrap_or_default();
+            bail!(
+                "{sent} was answered {}",
+                explained(status, self.api_key.is_some(), &said)
+            );
+        }
+        Ok(response)
+    }
+
     /// The ids of the models the provider serves, as `GET {base_url}/models`
     /// lists them. A request that fails is an error naming the URL, and one
     /// answered with anything but success an error naming the URL, the
     /// status, and whatever the provider said about it.
     pub async fn models(&self) -> anyhow::Result<Vec<String>> {
-        let url = format!("{}/models", self.base_url.trim_end_matches('/'));
-        let mut request = self.client.get(&url);
-        if let Some(key) = &self.api_key {
-            request = request.bearer_auth(key.expose_secret());
-        }
-        let response = request.send().await.with_context(|| format!("GET {url}"))?;
-        let status = response.status();
-        if !status.is_success() {
-            let said = response.text().await.unwrap_or_default();
-            bail!(
-                "GET {url} was answered {}",
-                explained(status, self.api_key.is_some(), &said)
-            );
-        }
+        let url = self.url("models");
+        let sent = format!("GET {url}");
+        let response = self.answered(self.client.get(&url), &sent).await?;
         let listing: Listing = response
             .json()
             .await
-            .with_context(|| format!("reading the listing GET {url} answered"))?;
+            .with_context(|| format!("reading the listing {sent} answered"))?;
         Ok(listing.data.into_iter().map(|model| model.id).collect())
     }
 
@@ -308,10 +363,34 @@ impl Provider {
     }
 }
 
+/// The provider as a model: a completion is `POST {base_url}/chat/completions`.
+#[async_trait]
+impl Model for Provider {
+    /// A request that fails or is answered with anything but success is
+    /// an error as [`Provider::models`] gives one, and so is a response
+    /// with no choices.
+    async fn complete(&self, request: &Request) -> anyhow::Result<Response> {
+        let url = self.url("chat/completions");
+        let sent = format!("POST {url}");
+        let response = self
+            .answered(self.client.post(&url).json(request), &sent)
+            .await?;
+        let response: Response = response
+            .json()
+            .await
+            .with_context(|| format!("reading the response {sent} answered"))?;
+        if response.choices.is_empty() {
+            bail!("{sent} was answered with no choices");
+        }
+        Ok(response)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::canned::{answering, bound, listing, unreachable};
+    use super::canned::{answering, body, bound, completion, listing, unreachable};
     use super::*;
+    use serde_json::json;
 
     /// Long enough for a request to a listener in this process.
     const TIMEOUT: Duration = Duration::from_secs(5);
@@ -523,7 +602,7 @@ mod tests {
         );
         assert_eq!(
             explanation("403 Forbidden", true, ""),
-            "403 Forbidden: the API key is not allowed to list models"
+            "403 Forbidden: the API key is not allowed to do that"
         );
         assert_eq!(
             explanation("404 Not Found", false, ""),
@@ -570,6 +649,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn what_the_provider_said_at_length_is_repeated_only_at_its_start() {
+        let long = "x".repeat(SAID_AT_MOST + 1);
+        let shown = explanation("418 I'm a teapot", false, &long);
+        assert!(shown.ends_with("…"), "{shown}");
+        assert_eq!(shown.chars().filter(|c| *c == 'x').count(), SAID_AT_MOST);
+        let exact = "y".repeat(SAID_AT_MOST);
+        assert!(explanation("418 I'm a teapot", false, &exact).ends_with(&exact));
+    }
+
     #[tokio::test]
     async fn a_request_that_fails_is_an_error_naming_the_url() {
         let base_url = unreachable();
@@ -612,5 +701,144 @@ mod tests {
         let shown = format!("{error:#}");
         assert!(shown.contains(&base_url), "{shown}");
         assert!(shown.contains("qwen"), "{shown}");
+    }
+
+    /// A request to select one of `candidates`, as a Werewolf player's is.
+    fn selecting(candidates: &[&str]) -> Request {
+        Request::new(
+            "qwen2.5-7b-instruct",
+            vec![
+                Message::system("You are player1."),
+                Message::user("Select."),
+            ],
+            Tool::new(
+                "select",
+                "Select one.",
+                json!({
+                    "type": "object",
+                    "properties": {"target": {"type": "string", "enum": candidates}},
+                    "required": ["target"],
+                }),
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_completion_is_posted_to_the_chat_completions_path_as_json_without_a_key_when_none_is_configured()
+     {
+        let (base_url, served) = answering(
+            "200 OK",
+            &completion("select", &json!({"target": "player2"})),
+        );
+        let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
+        let request = selecting(&["player2", "player3"]);
+        let response = provider.complete(&request).await.unwrap();
+        assert_eq!(
+            response,
+            Response::tool_call("select", &json!({"target": "player2"}))
+        );
+        let sent = served.join().unwrap();
+        let head = lines(&sent);
+        assert_eq!(head[0], "post /v1/chat/completions http/1.1");
+        assert!(
+            head.contains(&"content-type: application/json".to_string()),
+            "{head:?}"
+        );
+        assert!(
+            !head.iter().any(|line| line.starts_with("authorization:")),
+            "{head:?}"
+        );
+        assert_eq!(body(&sent), serde_json::to_value(&request).unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_completion_request_carries_the_key_as_a_bearer_token() {
+        let (base_url, served) = answering(
+            "200 OK",
+            &completion("select", &json!({"target": "player2"})),
+        );
+        let key = SecretString::from("sk-secret");
+        let provider = Provider::new(base_url, Some(key), TIMEOUT).unwrap();
+        provider.complete(&selecting(&["player2"])).await.unwrap();
+        let head = lines(&served.join().unwrap());
+        assert!(
+            head.contains(&"authorization: bearer sk-secret".to_string()),
+            "{head:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_completion_answered_with_anything_but_success_is_an_error_naming_the_url_and_the_status_not_the_key()
+     {
+        let said = r#"{"error": {"message": "Rate limit reached", "type": "requests"}}"#;
+        let (base_url, _served) = answering("429 Too Many Requests", said);
+        let key = SecretString::from("sk-secret");
+        let provider = Provider::new(base_url.clone(), Some(key), TIMEOUT).unwrap();
+        let error = provider
+            .complete(&selecting(&["player2"]))
+            .await
+            .unwrap_err();
+        let shown = format!("{error:#}");
+        assert_eq!(
+            shown,
+            format!(
+                "POST {base_url}/chat/completions was answered 429 Too Many Requests: \
+                 it is limiting the rate of requests; try again shortly. \
+                 The provider said: Rate limit reached"
+            )
+        );
+        assert!(!shown.contains("sk-secret"), "{shown}");
+    }
+
+    #[tokio::test]
+    async fn a_completion_takes_no_longer_than_the_timeout() {
+        // A provider that accepts and never answers.
+        let (listener, base_url) = bound();
+        let _held = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            std::thread::park();
+            drop(stream);
+        });
+        let provider = Provider::new(base_url, None, Duration::from_millis(100)).unwrap();
+        let started = std::time::Instant::now();
+        let error = provider
+            .complete(&selecting(&["player2"]))
+            .await
+            .unwrap_err();
+        assert!(started.elapsed() < TIMEOUT, "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn a_completion_with_no_choices_is_an_error_naming_the_url() {
+        let (base_url, _served) = answering("200 OK", r#"{"choices": []}"#);
+        let provider = Provider::new(base_url.clone(), None, TIMEOUT).unwrap();
+        let error = provider
+            .complete(&selecting(&["player2"]))
+            .await
+            .unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(
+            shown.contains(&format!("{base_url}/chat/completions")),
+            "{shown}"
+        );
+        assert!(shown.contains("no choices"), "{shown}");
+    }
+
+    #[tokio::test]
+    async fn a_completion_that_is_not_the_shape_expected_is_an_error() {
+        let (base_url, _served) = answering("200 OK", r#"{"data": []}"#);
+        let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
+        assert!(provider.complete(&selecting(&["player2"])).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_model_is_called_through_the_trait() {
+        let (base_url, _served) = answering(
+            "200 OK",
+            &completion("select", &json!({"target": "player2"})),
+        );
+        let model: Box<dyn Model> = Box::new(Provider::new(base_url, None, TIMEOUT).unwrap());
+        let response = model.complete(&selecting(&["player2"])).await.unwrap();
+        assert_eq!(response.tool_calls()[0].function.name, "select");
     }
 }
