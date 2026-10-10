@@ -6,8 +6,8 @@
 use clap::{Parser, Subcommand};
 use free_agent::{Behavior, Episode, Logger};
 use social_deduction::model::{
-    Provider, REQUEST_TIMEOUT, api_key, check_makes_tool_calls, key_variable, known_providers,
-    makes_tool_calls,
+    Model, Provider, REQUEST_TIMEOUT, api_key, check_makes_tool_calls, key_variable,
+    known_providers, makes_tool_calls,
 };
 use social_deduction::werewolf::llm::{self, Config};
 use social_deduction::werewolf::report::Narrator;
@@ -16,6 +16,7 @@ use social_deduction::werewolf::{scripted, uniform_random};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::oneshot;
@@ -89,20 +90,20 @@ async fn main() -> anyhow::Result<()> {
         CommandLine::Werewolf(Werewolf::Llm { config, overrides }) => {
             let settings = Config::load(&config)?.settle(overrides);
             // The key is read, every prompt rendered, and the model checked
-            // now, so that a variable that is not set, a template that is
-            // broken, or a model that cannot play fails before anything
-            // else. The game that would use them comes later.
+            // before any actor is built, so that a variable that is not
+            // set, a template that is broken, or a model that cannot play
+            // fails before anything else.
             let model = &settings.config.model;
             let provider = model.provider()?;
             let prompts = settings.prompts()?;
             check_makes_tool_calls(&model.id)?;
             provider.check_serves(&model.id).await?;
-            print!("{settings}");
-            for prompt in &prompts {
-                print!("{prompt}");
-            }
-            println!("The model-played game is not playable yet.");
-            Ok(())
+            let roles = settings.table.deal();
+            let configuration = settings.configuration(&roles, &prompts)?;
+            let rules = settings.rules();
+            let model: Arc<dyn Model> = Arc::new(provider);
+            play(|winner, logger| llm::game(roles, rules, configuration, model, winner, logger))
+                .await
         }
         CommandLine::Models {
             base_url,

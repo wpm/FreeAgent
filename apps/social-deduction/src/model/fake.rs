@@ -69,7 +69,7 @@ pub fn choosing_first(request: &Request) -> anyhow::Result<Response> {
 
 /// The first property of the JSON schema `parameters` that is an `enum`,
 /// and the first value it allows.
-fn first_enumerated(parameters: &Value) -> Option<(&str, &Value)> {
+pub fn first_enumerated(parameters: &Value) -> Option<(&str, &Value)> {
     parameters
         .get("properties")?
         .as_object()?
