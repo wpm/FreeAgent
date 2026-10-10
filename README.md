@@ -14,8 +14,9 @@ only by sending them messages. Here it is a [`Behavior`] driven by a mailbox:
 the behavior handles statements with [`receive`](Behavior::receive)
 and requests with [`answer`](Behavior::answer), and its [`Context`] is how it
 reaches the rest of the episode, to send statements, to request and await
-replies, to stop other actors, and to log. A typical episode has one
-environment actor and several agent actors.
+replies, to stop other actors, and to log. Everything an actor sends goes to
+other actors, never to itself. A typical episode has one environment actor
+and several agent actors.
 
 The library lives at the root of the repository and the applications built on
 it under `apps/`. For games built on this, see [`social-deduction`](apps/social-deduction).

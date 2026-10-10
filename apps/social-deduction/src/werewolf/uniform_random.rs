@@ -13,8 +13,8 @@ use tokio::time::timeout;
 
 /// An episode of a game of `roles` under `rules`: the environment, which
 /// may reach and stop every player and holds `logger`, and a player for
-/// each role built by `player`. The winning team is sent on `winner` when
-/// the game ends.
+/// each role built by `player`, who may send to the environment. The
+/// winning team is sent on `winner` when the game ends.
 pub fn game(
     roles: HashMap<PlayerId, Role>,
     rules: Rules,
@@ -22,9 +22,10 @@ pub fn game(
     logger: Logger<Entry>,
     mut player: impl FnMut(&PlayerId) -> Builder<Actor>,
 ) -> Episode<Actor> {
+    let environment = "environment".to_string();
     let players: HashSet<PlayerId> = roles.keys().cloned().collect();
     let mut init = HashMap::from([(
-        "environment".to_string(),
+        environment.clone(),
         ActorInit {
             behavior: Actor::environment(roles, rules, winner),
             can_send_to: players.clone(),
@@ -38,7 +39,7 @@ pub fn game(
             id,
             ActorInit {
                 behavior,
-                can_send_to: HashSet::new(),
+                can_send_to: HashSet::from([environment.clone()]),
                 can_shut_down: HashSet::new(),
                 has_logger: false,
             },
@@ -349,15 +350,15 @@ mod tests {
             &self.context
         }
 
-        /// Clears its throat to itself, the one statement in a game of
-        /// players who otherwise only answer, so a statement goes through
-        /// [`Actor`] too. It does so while initializing, before anyone can
-        /// ask it anything, so the statement is delivered before the
-        /// request it never answers.
+        /// Clears its throat to the environment, the one statement in a
+        /// game of players who otherwise only answer, so a statement goes
+        /// through [`Actor`] too. The environment ignores it.
         async fn initialize(&mut self) -> anyhow::Result<()> {
             let me = self.context.id.clone();
-            self.context
-                .send(Message::Action(me.clone()), HashSet::from([me]))
+            self.context.send(
+                Message::Action(me),
+                HashSet::from(["environment".to_string()]),
+            )
         }
 
         async fn answer(&mut self, _: &Message) -> anyhow::Result<Vec<Message>> {
