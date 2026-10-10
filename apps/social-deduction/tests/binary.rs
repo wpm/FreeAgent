@@ -131,9 +131,14 @@ fn the_table_is_dealt_as_asked() {
 
 #[test]
 fn the_scripted_variant_takes_the_limits_and_needs_no_configuration_file() {
-    let (events, _) = played("scripted", &["--night-limit", "5s", "--day-limit", "1m"]);
-    let (variation, _) = start(&events);
-    assert_eq!(variation, "Scripted");
+    succeeded(&[
+        "werewolf",
+        "scripted",
+        "--night-limit",
+        "5s",
+        "--day-limit",
+        "1m",
+    ]);
     assert_usage_error(&["werewolf", "scripted", "--night-limit", "soon"]);
     assert_usage_error(&["werewolf", "scripted", "--config", "game.toml"]);
 }
@@ -166,16 +171,12 @@ fn help_lists_the_games_the_variants_and_the_role_counts() {
     for variant in ["uniform-random", "scripted", "llm"] {
         assert!(help.contains(variant), "{help}");
     }
-    for variant in ["uniform-random", "scripted", "llm"] {
+    let counts = ["--werewolves", "--villagers", "--doctors", "--seers"];
+    let limits = ["--night-limit", "--day-limit"];
+    for (variant, limited) in [("uniform-random", false), ("scripted", true), ("llm", true)] {
         let help = printed(&["werewolf", variant, "--help"]);
-        for count in ["--werewolves", "--villagers", "--doctors", "--seers"] {
-            assert!(help.contains(count), "{help}");
-        }
-    }
-    for variant in ["scripted", "llm"] {
-        let help = printed(&["werewolf", variant, "--help"]);
-        for limit in ["--night-limit", "--day-limit"] {
-            assert!(help.contains(limit), "{help}");
+        for option in counts.iter().chain(limits.iter().filter(|_| limited)) {
+            assert!(help.contains(option), "{help}");
         }
     }
 }

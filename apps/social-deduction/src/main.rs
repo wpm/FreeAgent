@@ -8,7 +8,7 @@ use free_agent::{Behavior, Episode, Logger};
 use social_deduction::model::{check_makes_tool_calls, makes_tool_calls};
 use social_deduction::werewolf::llm::{self, Config, Model};
 use social_deduction::werewolf::report::Narrator;
-use social_deduction::werewolf::{Entry, RoleCounts, Rules, Table, Team, how_long};
+use social_deduction::werewolf::{Entry, PhaseLimits, RoleCounts, Rules, Table, Team};
 use social_deduction::werewolf::{scripted, uniform_random};
 use std::fmt::Write as _;
 use std::io::{self, Write};
@@ -47,12 +47,8 @@ enum Werewolf {
     Scripted {
         #[command(flatten)]
         roles: RoleCounts,
-        /// How long the night waits for a player.
-        #[arg(long, value_parser = humantime::parse_duration, help = how_long("night", Rules::default().night_limit))]
-        night_limit: Option<Duration>,
-        /// How long the day waits for a player.
-        #[arg(long, value_parser = humantime::parse_duration, help = how_long("day", Rules::default().day_limit))]
-        day_limit: Option<Duration>,
+        #[command(flatten)]
+        limits: PhaseLimits,
     },
     /// Every player is a language model, set up by a configuration file.
     Llm {
@@ -79,18 +75,9 @@ async fn main() -> anyhow::Result<()> {
             })
             .await
         }
-        CommandLine::Werewolf(Werewolf::Scripted {
-            roles,
-            night_limit,
-            day_limit,
-        }) => {
+        CommandLine::Werewolf(Werewolf::Scripted { roles, limits }) => {
             let roles = roles.or(Table::default()).deal();
-            let defaults = scripted::rules();
-            let rules = Rules {
-                night_limit: night_limit.unwrap_or(defaults.night_limit),
-                day_limit: day_limit.unwrap_or(defaults.day_limit),
-                ..defaults
-            };
+            let rules = limits.or(scripted::rules());
             play(|winner, logger| scripted::game(roles, rules, winner, logger)).await
         }
         CommandLine::Werewolf(Werewolf::Llm { config, overrides }) => {
@@ -204,8 +191,10 @@ mod tests {
                         seers: Some(2),
                         ..RoleCounts::default()
                     },
-                    night_limit: Some(Duration::from_secs(30)),
-                    day_limit: None,
+                    limits: PhaseLimits {
+                        night_limit: Some(Duration::from_secs(30)),
+                        day_limit: None,
+                    },
                 },
             })
         );
@@ -228,8 +217,10 @@ mod tests {
                     villagers: Some(4),
                     ..RoleCounts::default()
                 },
-                night_limit: None,
-                day_limit: Some(Duration::from_secs(120)),
+                limits: PhaseLimits {
+                    night_limit: None,
+                    day_limit: Some(Duration::from_secs(120)),
+                },
             })
         );
     }

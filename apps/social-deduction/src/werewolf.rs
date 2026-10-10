@@ -122,14 +122,38 @@ fn how_many(what: &str, default: usize) -> String {
     format!("How many {what} [default: {default}]")
 }
 
+/// How long each phase waits for the players, for a variant to flatten into
+/// its command line arguments. A limit left unset has no `clap` default, so
+/// that a variant can tell it apart from a limit that was given, and fill it
+/// in from [`Rules::default`] or from somewhere else.
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+pub struct PhaseLimits {
+    /// How long the night waits for a player.
+    #[arg(long, value_parser = humantime::parse_duration, help = how_long("night", Rules::default().night_limit))]
+    pub night_limit: Option<Duration>,
+    /// How long the day waits for a player.
+    #[arg(long, value_parser = humantime::parse_duration, help = how_long("day", Rules::default().day_limit))]
+    pub day_limit: Option<Duration>,
+}
+
 /// The help for the limit of `phase`, naming the `default` the code fills
-/// in when the limit is left unset, for a variant whose command line takes
-/// the phase limits.
-pub fn how_long(phase: &str, default: Duration) -> String {
+/// in when the limit is left unset.
+fn how_long(phase: &str, default: Duration) -> String {
     format!(
         "How long the {phase} waits for a player [default: {}]",
         humantime::format_duration(default)
     )
+}
+
+impl PhaseLimits {
+    /// `rules`, with each limit given here in place of its own.
+    pub fn or(&self, rules: Rules) -> Rules {
+        Rules {
+            night_limit: self.night_limit.unwrap_or(rules.night_limit),
+            day_limit: self.day_limit.unwrap_or(rules.day_limit),
+            ..rules
+        }
+    }
 }
 
 impl RoleCounts {
@@ -567,6 +591,18 @@ pub struct Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_limit_given_replaces_the_rules_own_and_one_left_unset_keeps_it() {
+        let limits = PhaseLimits {
+            night_limit: Some(Duration::from_secs(5)),
+            day_limit: None,
+        };
+        let rules = limits.or(Rules::default());
+        assert_eq!(rules.night_limit, Duration::from_secs(5));
+        assert_eq!(rules.day_limit, Rules::default().day_limit);
+        assert_eq!(rules.variation, "Uniform Random");
+    }
 
     #[test]
     fn unset_counts_are_filled_from_the_defaults() {
