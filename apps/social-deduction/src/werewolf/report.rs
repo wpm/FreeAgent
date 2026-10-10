@@ -634,6 +634,15 @@ mod tests {
     }
 
     #[test]
+    fn a_player_shown_no_role_is_named_alone() {
+        let mut narrator = Narrator::for_player(id("ann"));
+        assert_eq!(
+            narrator.narrate(&shown("ann", 1, Phase::Day, &["wolf", "ann"])),
+            ["You are ann.", "Day 1."]
+        );
+    }
+
+    #[test]
     fn the_seer_asks_by_night_and_learns_by_morning() {
         let mut narrator = Narrator::for_player(id("seer"));
         let everyone = ["wolf", "seer", "doctor", "ann"];
