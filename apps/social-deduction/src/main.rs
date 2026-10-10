@@ -79,20 +79,20 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         CommandLine::Models { config } => {
-            let mut ids = Config::load(&config)?.model.provider()?.models().await?;
-            ids.sort();
-            print!("{}", marked(&ids));
+            let ids = Config::load(&config)?.model.provider()?.models().await?;
+            print!("{}", marked(ids));
             Ok(())
         }
     }
 }
 
-/// The listing the `models` command prints: one id per line, those known to
-/// make tool calls marked `*` and the rest indented to line up, then a line
-/// saying what the mark means.
-fn marked(ids: &[String]) -> String {
+/// The listing the `models` command prints: one id per line in sorted
+/// order, those known to make tool calls marked `*` and the rest indented
+/// to line up, then a line saying what the mark means.
+fn marked(mut ids: Vec<String>) -> String {
+    ids.sort();
     let mut listing = String::new();
-    for id in ids {
+    for id in &ids {
         let mark = if makes_tool_calls(id) { "*" } else { " " };
         writeln!(listing, "{mark} {id}").unwrap();
     }
@@ -210,12 +210,15 @@ mod tests {
     }
 
     #[test]
-    fn the_listing_marks_the_models_known_to_make_tool_calls_and_says_so() {
-        let ids = ["gpt-0", "qwen2.5-7b-instruct"].map(String::from);
+    fn the_listing_is_sorted_marks_the_models_known_to_make_tool_calls_and_says_so() {
+        let ids = ["qwen2.5-7b-instruct", "gpt-0"].map(String::from).to_vec();
         assert_eq!(
-            marked(&ids),
+            marked(ids),
             "  gpt-0\n* qwen2.5-7b-instruct\n* marks a model known to make tool calls.\n"
         );
-        assert_eq!(marked(&[]), "* marks a model known to make tool calls.\n");
+        assert_eq!(
+            marked(vec![]),
+            "* marks a model known to make tool calls.\n"
+        );
     }
 }

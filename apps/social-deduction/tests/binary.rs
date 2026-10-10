@@ -27,6 +27,15 @@ fn printed(args: &[&str]) -> String {
     String::from_utf8(succeeded(args).stdout).unwrap()
 }
 
+/// Run the command, which must fail before printing anything; what it said
+/// on standard error.
+fn refused(args: &[&str]) -> String {
+    let output = run(args);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    String::from_utf8(output.stderr).unwrap()
+}
+
 /// Play Werewolf at random with `args` after the game and its variant: the
 /// events on standard error, parsed, and what was printed.
 fn played(args: &[&str]) -> (Vec<Event<Entry>>, String) {
@@ -123,7 +132,11 @@ fn a_game_and_a_variant_must_be_named() {
 
 #[test]
 fn help_lists_the_games_the_variants_and_the_role_counts() {
-    assert!(printed(&["--help"]).contains("werewolf"));
+    let help = printed(&["--help"]);
+    assert!(
+        help.contains("werewolf") && help.contains("models"),
+        "{help}"
+    );
     let help = printed(&["werewolf", "--help"]);
     assert!(
         help.contains("uniform-random") && help.contains("llm"),
@@ -137,12 +150,18 @@ fn help_lists_the_games_the_variants_and_the_role_counts() {
     }
 }
 
-/// A provider that serves `ids`: a listener on a port of the OS's choosing
-/// that answers one request with the listing, in a thread of its own, and
-/// the root of its API. Nothing listens on the port the examples name.
-fn provider(ids: &[&str]) -> String {
+/// A listener on a port of the OS's choosing, and the root of the API it
+/// would serve.
+fn bound() -> (TcpListener, String) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    (listener, base_url)
+}
+
+/// A provider that serves `ids`: a listener that answers one request with
+/// the listing, in a thread of its own, and the root of its API.
+fn provider(ids: &[&str]) -> String {
+    let (listener, base_url) = bound();
     let data: Vec<_> = ids.iter().map(|id| serde_json::json!({"id": id})).collect();
     let body = serde_json::json!({"data": data}).to_string();
     std::thread::spawn(move || {
@@ -168,11 +187,13 @@ fn provider(ids: &[&str]) -> String {
 /// so no test asks it anything.
 const EXAMPLE_BASE_URL: &str = "http://localhost:1234/v1";
 
+/// The model the examples name, which is known to make tool calls.
+const EXAMPLE_MODEL: &str = "qwen2.5-7b-instruct";
+
 /// The root of an API nobody serves: a port that was listening and is no
 /// more.
 fn nobody() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    format!("http://{}/v1", listener.local_addr().unwrap())
+    bound().1
 }
 
 /// An example configuration file, by its name in the examples directory.
@@ -188,18 +209,21 @@ fn example(name: &str) -> String {
 /// target directory, at a path of its own so the tests do not collide.
 fn configured(test: &str, name: &str, base_url: &str, id: &str) -> String {
     let path = format!("{}/{test}.toml", env!("CARGO_TARGET_TMPDIR"));
-    let file = std::fs::read_to_string(example(name))
-        .unwrap()
+    let example = std::fs::read_to_string(example(name)).unwrap();
+    for named in [EXAMPLE_BASE_URL, EXAMPLE_MODEL] {
+        assert!(example.contains(named), "{name} no longer names {named}");
+    }
+    let file = example
         .replace(EXAMPLE_BASE_URL, base_url)
-        .replace("qwen2.5-7b-instruct", id);
+        .replace(EXAMPLE_MODEL, id);
     std::fs::write(&path, file).unwrap();
     path
 }
 
 #[test]
 fn the_llm_variant_prints_its_settings_then_every_prompt_and_is_not_playable_yet() {
-    let base_url = provider(&["qwen2.5-7b-instruct"]);
-    let config = configured("prints", "personas.toml", &base_url, "qwen2.5-7b-instruct");
+    let base_url = provider(&[EXAMPLE_MODEL]);
+    let config = configured("prints", "personas.toml", &base_url, EXAMPLE_MODEL);
     let printed = printed(&["werewolf", "llm", "--config", &config]);
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
@@ -233,10 +257,7 @@ fn a_template_that_cannot_render_is_an_error_before_anything_is_printed() {
         "[model]\nbase_url = \"http://localhost:1234/v1\"\nid = \"m\"\n[prompt]\nsystem = \"{{ rulez }}\"\n",
     )
     .unwrap();
-    let output = run(&["werewolf", "llm", "--config", &path]);
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty(), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).unwrap();
+    let stderr = refused(&["werewolf", "llm", "--config", &path]);
     for expected in ["player1", "werewolf", "rulez"] {
         assert!(stderr.contains(expected), "{stderr}");
     }
@@ -244,8 +265,8 @@ fn a_template_that_cannot_render_is_an_error_before_anything_is_printed() {
 
 #[test]
 fn the_llm_variant_hears_the_command_line_over_the_file() {
-    let base_url = provider(&["qwen2.5-7b-instruct"]);
-    let config = configured("hears", "personas.toml", &base_url, "qwen2.5-7b-instruct");
+    let base_url = provider(&[EXAMPLE_MODEL]);
+    let config = configured("hears", "personas.toml", &base_url, EXAMPLE_MODEL);
     let printed = printed(&[
         "werewolf",
         "llm",
@@ -271,19 +292,8 @@ fn the_llm_variant_needs_a_configuration_file() {
 
 #[test]
 fn a_configuration_file_that_cannot_be_read_is_an_error_naming_it() {
-    let output = run(&["werewolf", "llm", "--config", "no-such-file.toml"]);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8(output.stderr).unwrap();
+    let stderr = refused(&["werewolf", "llm", "--config", "no-such-file.toml"]);
     assert!(stderr.contains("no-such-file.toml"), "{stderr}");
-}
-
-/// Run the command, which must fail before printing anything; what it said
-/// on standard error.
-fn refused(args: &[&str]) -> String {
-    let output = run(args);
-    assert!(!output.status.success(), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    String::from_utf8(output.stderr).unwrap()
 }
 
 #[test]
@@ -299,29 +309,16 @@ fn the_llm_variant_refuses_a_model_not_known_to_make_tool_calls_before_asking_an
 #[test]
 fn the_llm_variant_refuses_a_model_its_provider_does_not_serve() {
     let base_url = provider(&["llama-3.1-8b-instruct"]);
-    let config = configured("unserved", "minimal.toml", &base_url, "qwen2.5-7b-instruct");
+    let config = configured("unserved", "minimal.toml", &base_url, EXAMPLE_MODEL);
     let stderr = refused(&["werewolf", "llm", "--config", &config]);
     assert!(stderr.contains(&base_url), "{stderr}");
-    assert!(stderr.contains("qwen2.5-7b-instruct"), "{stderr}");
-}
-
-#[test]
-fn the_llm_variant_refuses_to_go_on_when_its_provider_cannot_be_reached() {
-    let base_url = nobody();
-    let config = configured(
-        "unreachable",
-        "minimal.toml",
-        &base_url,
-        "qwen2.5-7b-instruct",
-    );
-    let stderr = refused(&["werewolf", "llm", "--config", &config]);
-    assert!(stderr.contains(&base_url), "{stderr}");
+    assert!(stderr.contains(EXAMPLE_MODEL), "{stderr}");
 }
 
 #[test]
 fn the_models_command_lists_the_provider_s_models_sorted_and_marks_those_that_make_tool_calls() {
-    let base_url = provider(&["zephyr-7b", "qwen2.5-7b-instruct", "llama-3.1-8b-instruct"]);
-    let config = configured("models", "minimal.toml", &base_url, "qwen2.5-7b-instruct");
+    let base_url = provider(&["zephyr-7b", EXAMPLE_MODEL, "llama-3.1-8b-instruct"]);
+    let config = configured("models", "minimal.toml", &base_url, EXAMPLE_MODEL);
     let printed = printed(&["models", "--config", &config]);
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
@@ -339,15 +336,9 @@ fn the_models_command_lists_the_provider_s_models_sorted_and_marks_those_that_ma
 #[test]
 fn the_models_command_needs_a_configuration_file_and_names_a_provider_it_cannot_reach() {
     assert_usage_error(&["models"]);
+    assert!(printed(&["models", "--help"]).contains("--config"));
     let base_url = nobody();
-    let config = configured("nobody", "minimal.toml", &base_url, "qwen2.5-7b-instruct");
+    let config = configured("nobody", "minimal.toml", &base_url, EXAMPLE_MODEL);
     let stderr = refused(&["models", "--config", &config]);
     assert!(stderr.contains(&base_url), "{stderr}");
-}
-
-#[test]
-fn help_lists_the_models_command_beside_the_games() {
-    let help = printed(&["--help"]);
-    assert!(help.contains("models"), "{help}");
-    assert!(printed(&["models", "--help"]).contains("--config"));
 }

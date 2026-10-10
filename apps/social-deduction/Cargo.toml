@@ -33,6 +33,5 @@ toml.workspace = true
 
 [dev-dependencies]
 # A paused clock lets a test wait out a day's time limit without waiting.
-# The tests answer the model client from a local listener.
-tokio = { workspace = true, features = ["test-util", "net", "io-util"] }
+tokio = { workspace = true, features = ["test-util"] }
 serde_json.workspace = true

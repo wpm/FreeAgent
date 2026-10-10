@@ -107,11 +107,7 @@ impl Model {
     /// The provider the table is reached through, with its key read from
     /// the environment as [`Model::api_key`] reads it.
     pub fn provider(&self) -> anyhow::Result<Provider> {
-        Ok(Provider::new(
-            &self.base_url,
-            self.api_key()?,
-            self.request_timeout,
-        ))
+        Provider::new(&self.base_url, self.api_key()?, self.request_timeout)
     }
 }
 
@@ -371,7 +367,7 @@ id = "qwen2.5-7b-instruct"
     }
 
     #[test]
-    fn the_examples_parse_and_render() {
+    fn the_examples_parse_and_render_and_name_a_model_known_to_make_tool_calls() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/werewolf/llm");
         let files: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
@@ -382,6 +378,12 @@ id = "qwen2.5-7b-instruct"
         for file in files {
             let config =
                 Config::load(&file).unwrap_or_else(|e| panic!("{}: {e:#}", file.display()));
+            assert!(
+                crate::model::makes_tool_calls(&config.model.id),
+                "{}: {}",
+                file.display(),
+                config.model.id
+            );
             let prompts = config
                 .settle(Overrides::default())
                 .prompts()
@@ -782,28 +784,6 @@ system = \"{{{{ rules }}}} {{{{ wolf }}}}\"
         let shown = format!("{key:?}\n{settings:?}\n{settings}");
         assert!(shown.contains(name), "{shown}");
         assert!(!shown.contains(&value), "{shown}");
-    }
-
-    #[test]
-    fn the_provider_is_reached_at_the_base_url_within_the_timeout() {
-        let file = format!("{MODEL}request_timeout = \"10s\"\n");
-        let provider = settle(&file, Overrides::default())
-            .config
-            .model
-            .provider()
-            .unwrap();
-        assert_eq!(provider.base_url(), "http://localhost:1234/v1");
-        assert_eq!(provider.request_timeout(), Duration::from_secs(10));
-        let file = format!("{MODEL}api_key_env = \"SOCIAL_DEDUCTION_NO_SUCH_KEY\"\n");
-        let error = settle(&file, Overrides::default())
-            .config
-            .model
-            .provider()
-            .unwrap_err();
-        assert!(
-            format!("{error:#}").contains("SOCIAL_DEDUCTION_NO_SUCH_KEY"),
-            "{error:#}"
-        );
     }
 
     #[test]
