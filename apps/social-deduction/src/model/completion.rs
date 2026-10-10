@@ -6,41 +6,53 @@
 //! tool calls it carries. Unknown fields in a response are ignored, so a
 //! provider's additions do not break parsing.
 
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
 /// One request for a completion: the model asked, the messages it is
-/// shown, the tools it may call, and the one it must.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// shown, and the one tool it is offered and must call.
+///
+/// It serializes as the protocol has it: the tool in `tools`, and a
+/// `tool_choice` naming it.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Request {
     /// The model's id, exactly as the provider lists it.
     pub model: String,
     /// What the model is shown, in order.
     pub messages: Vec<Message>,
-    /// The tools the model may call.
-    pub tools: Vec<Tool>,
     /// The tool the model must call.
-    pub tool_choice: ToolChoice,
+    pub tool: Tool,
 }
 
 impl Request {
-    /// A request of `model` shown `messages` and made to call `tool`, the
-    /// only one it is offered.
+    /// A request of `model` shown `messages` and made to call `tool`.
     pub fn new(model: impl Into<String>, messages: Vec<Message>, tool: Tool) -> Self {
         Self {
             model: model.into(),
             messages,
-            tool_choice: ToolChoice::function(&tool.function.name),
-            tools: vec![tool],
+            tool,
         }
     }
+}
 
-    /// The tool the request forces, among those it offers; none when it
-    /// forces one it does not offer.
-    pub fn forced(&self) -> Option<&Tool> {
-        self.tools
-            .iter()
-            .find(|tool| tool.function.name == self.tool_choice.function.name)
+impl Serialize for Request {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Named<'a> {
+            name: &'a str,
+        }
+        let mut request = serializer.serialize_struct("Request", 4)?;
+        request.serialize_field("model", &self.model)?;
+        request.serialize_field("messages", &self.messages)?;
+        request.serialize_field("tools", &[&self.tool])?;
+        request.serialize_field(
+            "tool_choice",
+            &Function::new(Named {
+                name: &self.tool.name,
+            }),
+        )?;
+        request.end()
     }
 }
 
@@ -81,13 +93,16 @@ pub enum Role {
     User,
 }
 
-/// A tool the model may call: a function, in the protocol's words.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// A tool the model may call. It serializes as the protocol has it: a
+/// function with these fields.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Tool {
-    #[serde(rename = "type")]
-    kind: Kind,
-    /// The function the tool is.
-    pub function: Function,
+    /// Its name, which a call to it names.
+    pub name: String,
+    /// What it is for, as the model is told.
+    pub description: String,
+    /// The JSON schema of its arguments.
+    pub parameters: Value,
 }
 
 impl Tool {
@@ -95,58 +110,47 @@ impl Tool {
     /// the arguments the JSON schema `parameters` describes.
     pub fn new(name: impl Into<String>, description: impl Into<String>, parameters: Value) -> Self {
         Self {
-            kind: Kind::Function,
-            function: Function {
-                name: name.into(),
-                description: description.into(),
-                parameters,
-            },
+            name: name.into(),
+            description: description.into(),
+            parameters,
         }
     }
 }
 
-/// What a [`Tool`] does, as the model is told.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Function {
-    /// Its name, which a call to it names.
-    pub name: String,
-    /// What it is for.
-    pub description: String,
-    /// The JSON schema of its arguments.
-    pub parameters: Value,
+impl Serialize for Tool {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Described<'a> {
+            name: &'a str,
+            description: &'a str,
+            parameters: &'a Value,
+        }
+        Function::new(Described {
+            name: &self.name,
+            description: &self.description,
+            parameters: &self.parameters,
+        })
+        .serialize(serializer)
+    }
 }
 
-/// The one kind of tool there is.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-enum Kind {
-    Function,
-}
-
-/// The tool the model must call.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct ToolChoice {
+/// A function in the protocol's shape, `{"type": "function", "function":
+/// …}`: a [`Tool`] offered, when `function` describes one, or a
+/// `tool_choice`, when it only names one.
+#[derive(Serialize)]
+struct Function<F> {
     #[serde(rename = "type")]
-    kind: Kind,
-    /// Which one, by name.
-    pub function: Named,
+    kind: &'static str,
+    function: F,
 }
 
-impl ToolChoice {
-    /// The choice of the tool `name`.
-    pub fn function(name: impl Into<String>) -> Self {
+impl<F> Function<F> {
+    fn new(function: F) -> Self {
         Self {
-            kind: Kind::Function,
-            function: Named { name: name.into() },
+            kind: "function",
+            function,
         }
     }
-}
-
-/// A tool named in a [`ToolChoice`].
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Named {
-    /// Its name.
-    pub name: String,
 }
 
 /// What a model answered: its choices, of which the first is read.
@@ -220,38 +224,20 @@ pub struct Call {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::canned::completion;
+    use crate::model::fake::selecting;
     use serde_json::json;
-
-    /// A tool selecting one of `candidates`, as a Werewolf player's is.
-    fn select(candidates: &[&str]) -> Tool {
-        Tool::new(
-            "select",
-            "Knowing everything you know, select the best one.",
-            json!({
-                "type": "object",
-                "properties": {"target": {"type": "string", "enum": candidates}},
-                "required": ["target"],
-            }),
-        )
-    }
 
     #[test]
     fn a_request_serializes_to_the_protocol_s_json_with_the_tool_call_forced() {
-        let request = Request::new(
-            "qwen2.5-7b-instruct",
-            vec![
-                Message::system("You are player1."),
-                Message::user("Night 1. Select."),
-            ],
-            select(&["player2", "player3"]),
-        );
+        let request = selecting(&["player2", "player3"]);
         assert_eq!(
             serde_json::to_value(&request).unwrap(),
             json!({
                 "model": "qwen2.5-7b-instruct",
                 "messages": [
                     {"role": "system", "content": "You are player1."},
-                    {"role": "user", "content": "Night 1. Select."},
+                    {"role": "user", "content": "Select."},
                 ],
                 "tools": [{
                     "type": "function",
@@ -271,36 +257,9 @@ mod tests {
     }
 
     #[test]
-    fn the_forced_tool_is_the_one_offered() {
-        let tool = select(&["player2"]);
-        let request = Request::new("m", vec![], tool.clone());
-        assert_eq!(request.forced(), Some(&tool));
-    }
-
-    #[test]
     fn a_response_with_tool_calls_parses_and_its_extra_fields_are_ignored() {
-        let said = json!({
-            "id": "chatcmpl-123",
-            "object": "chat.completion",
-            "created": 1_700_000_000,
-            "model": "qwen2.5-7b-instruct",
-            "choices": [{
-                "index": 0,
-                "finish_reason": "tool_calls",
-                "logprobs": null,
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {"name": "select", "arguments": "{\"target\": \"player2\"}"},
-                    }],
-                },
-            }],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-        });
-        let response: Response = serde_json::from_value(said).unwrap();
+        let said = completion("select", &json!({"target": "player2"}));
+        let response: Response = serde_json::from_str(&said).unwrap();
         let calls = response.tool_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.name, "select");

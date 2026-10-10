@@ -3,7 +3,7 @@
 //! does with the answer is tested without a network. Nothing but tests
 //! uses this module.
 
-use super::{Model, Request, Response};
+use super::{Message, Model, Request, Response, Tool};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -20,7 +20,8 @@ pub struct FakeModel {
 }
 
 impl FakeModel {
-    /// A model answering every request with `answer` of it.
+    /// A model answering every request with `answer` of it, such as
+    /// [`choosing_first`].
     pub fn answering(
         answer: impl Fn(&Request) -> anyhow::Result<Response> + Send + Sync + 'static,
     ) -> Self {
@@ -41,28 +42,29 @@ impl FakeModel {
         Self::answering(move |_| Err(anyhow!("{message}")))
     }
 
-    /// A model that calls the forced tool with the first value its first
-    /// enumerated parameter allows, as a player's `select` tool asks for
-    /// a `target` from an `enum` of candidates. A request with no such
-    /// parameter is an error.
-    pub fn choosing_first() -> Self {
-        Self::answering(|request| {
-            let tool = request
-                .forced()
-                .ok_or_else(|| anyhow!("the request forces no tool it offers"))?;
-            let (parameter, first) = first_enumerated(&tool.function.parameters)
-                .ok_or_else(|| anyhow!("{} has no enumerated parameter", tool.function.name))?;
-            Ok(Response::tool_call(
-                &tool.function.name,
-                &json!({parameter: first}),
-            ))
-        })
-    }
-
     /// Every request the model has been sent, in order.
     pub fn requests(&self) -> Vec<Request> {
         self.requests.lock().unwrap().clone()
     }
+}
+
+#[async_trait]
+impl Model for FakeModel {
+    async fn complete(&self, request: &Request) -> anyhow::Result<Response> {
+        self.requests.lock().unwrap().push(request.clone());
+        (self.answer)(request)
+    }
+}
+
+/// The answer that calls the tool `request` forces with the first value
+/// its first enumerated parameter allows, as a player's `select` tool
+/// asks for a `target` from an `enum` of candidates. A tool with no such
+/// parameter is an error naming it.
+pub fn choosing_first(request: &Request) -> anyhow::Result<Response> {
+    let tool = &request.tool;
+    let (parameter, first) = first_enumerated(&tool.parameters)
+        .ok_or_else(|| anyhow!("{} has no enumerated parameter", tool.name))?;
+    Ok(Response::tool_call(&tool.name, &json!({parameter: first})))
 }
 
 /// The first property of the JSON schema `parameters` that is an `enum`,
@@ -78,38 +80,30 @@ fn first_enumerated(parameters: &Value) -> Option<(&str, &Value)> {
         })
 }
 
-#[async_trait]
-impl Model for FakeModel {
-    async fn complete(&self, request: &Request) -> anyhow::Result<Response> {
-        self.requests.lock().unwrap().push(request.clone());
-        (self.answer)(request)
-    }
+/// A request to select one of `candidates`, as a Werewolf player's is:
+/// its one tool, `select`, takes a `target` from an `enum` of them.
+pub fn selecting(candidates: &[&str]) -> Request {
+    Request::new(
+        "qwen2.5-7b-instruct",
+        vec![
+            Message::system("You are player1."),
+            Message::user("Select."),
+        ],
+        Tool::new(
+            "select",
+            "Knowing everything you know, select the best one.",
+            json!({
+                "type": "object",
+                "properties": {"target": {"type": "string", "enum": candidates}},
+                "required": ["target"],
+            }),
+        ),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Message, Tool};
-
-    /// A request to select one of `candidates`, as a Werewolf player's is.
-    fn selecting(candidates: &[&str]) -> Request {
-        Request::new(
-            "m",
-            vec![
-                Message::system("You are player1."),
-                Message::user("Select."),
-            ],
-            Tool::new(
-                "select",
-                "Select one.",
-                json!({
-                    "type": "object",
-                    "properties": {"target": {"type": "string", "enum": candidates}},
-                    "required": ["target"],
-                }),
-            ),
-        )
-    }
 
     #[tokio::test]
     async fn the_fake_answers_from_its_function_and_records_every_request() {
@@ -154,8 +148,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_fake_choosing_first_calls_the_forced_tool_with_the_first_enumerated_value() {
-        let model = FakeModel::choosing_first();
+    async fn choosing_first_calls_the_forced_tool_with_the_first_enumerated_value() {
+        let model = FakeModel::answering(choosing_first);
         let answer = model
             .complete(&selecting(&["player3", "player2"]))
             .await
@@ -166,13 +160,12 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn the_fake_choosing_first_fails_a_request_with_nothing_to_choose_from() {
-        let model = FakeModel::choosing_first();
-        let error = model.complete(&selecting(&[])).await.unwrap_err();
+    #[test]
+    fn choosing_first_fails_a_request_with_nothing_to_choose_from() {
+        let error = choosing_first(&selecting(&[])).unwrap_err();
         assert!(format!("{error:#}").contains("select"), "{error:#}");
         let mut request = selecting(&["player2"]);
-        request.tools[0].function.parameters = json!({"type": "object", "properties": {}});
-        assert!(model.complete(&request).await.is_err());
+        request.tool.parameters = json!({"type": "object", "properties": {}});
+        assert!(choosing_first(&request).is_err());
     }
 }
