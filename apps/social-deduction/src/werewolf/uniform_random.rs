@@ -317,8 +317,8 @@ impl Behavior for Player {
 
 /// A living player chosen uniformly at random by `me` from `observation`,
 /// among those whose role `me` does not know. None when there is nobody
-/// to choose.
-fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
+/// to choose. The scripted player chooses this way too.
+pub(super) fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
     let mut candidates: Vec<&PlayerId> = observation
         .alive
         .iter()

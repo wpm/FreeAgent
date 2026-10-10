@@ -20,8 +20,10 @@
 //! its players, the actor enum its episode holds, and the function that
 //! builds its episode.
 
+pub mod announced;
 pub mod llm;
 pub mod report;
+pub mod scripted;
 pub mod uniform_random;
 
 use clap::Args;
@@ -416,6 +418,29 @@ pub enum Message {
     Observation(Observation),
     /// A player's choice of another player, to the environment.
     Action(PlayerId),
+    /// The environment opens a phase for one awake player. Phases are
+    /// numbered from 1 for the first night, one up for each phase.
+    Announce {
+        /// The number of the phase.
+        seq: u64,
+        /// What the player may see of it.
+        observation: Observation,
+    },
+    /// A player's selection for the phase numbered `seq`.
+    Select {
+        /// The number of the phase.
+        seq: u64,
+        /// Who selected, since a statement does not carry its sender.
+        from: PlayerId,
+        /// Whom they selected.
+        target: PlayerId,
+    },
+    /// The environment's own message to itself that the phase numbered
+    /// `seq` is over.
+    EndPhase {
+        /// The number of the phase.
+        seq: u64,
+    },
 }
 impl free_agent::Message for Message {}
 
@@ -441,6 +466,13 @@ pub enum Entry {
     /// `from` replied with `message`.
     Replied {
         /// Who replied.
+        from: PlayerId,
+        /// What they said.
+        message: Message,
+    },
+    /// The environment received `message` from `from` as a statement.
+    Received {
+        /// Who sent it.
         from: PlayerId,
         /// What they said.
         message: Message,
