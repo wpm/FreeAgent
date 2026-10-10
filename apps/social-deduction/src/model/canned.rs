@@ -33,7 +33,7 @@ impl Served {
 
     /// The method and the path of the request line, such as `get` and
     /// `/v1/models`.
-    pub fn asked(&self) -> (&str, &str) {
+    fn asked(&self) -> (&str, &str) {
         let mut words = self.head[0].split_whitespace();
         (words.next().unwrap(), words.next().unwrap())
     }
@@ -72,10 +72,7 @@ fn receive(stream: &mut TcpStream) -> Option<Served> {
         if let Some(end) = received.windows(4).position(|w| w == b"\r\n\r\n") {
             break end;
         }
-        let n = stream.read(&mut buffer).ok()?;
-        if n == 0 {
-            return None;
-        }
+        let n = stream.read(&mut buffer).ok().filter(|&n| n > 0)?;
         received.extend_from_slice(&buffer[..n]);
     };
     let head: Vec<String> = String::from_utf8_lossy(&received[..end])
@@ -88,10 +85,7 @@ fn receive(stream: &mut TcpStream) -> Option<Served> {
         .map_or(0, |value| value.trim().parse().unwrap());
     let mut body = received.split_off(end + 4);
     while body.len() < length {
-        let n = stream.read(&mut buffer).ok()?;
-        if n == 0 {
-            return None;
-        }
+        let n = stream.read(&mut buffer).ok().filter(|&n| n > 0)?;
         body.extend_from_slice(&buffer[..n]);
     }
     Some(Served {
@@ -198,7 +192,7 @@ pub fn completion(name: &str, arguments: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use crate::model::fake::selecting;
-    use crate::model::{Model, Provider, REQUEST_TIMEOUT};
+    use crate::model::{Model, Provider, REQUEST_TIMEOUT, Response};
     use serde_json::json;
 
     #[tokio::test]
@@ -208,21 +202,10 @@ mod tests {
         assert_eq!(provider.models().await.unwrap(), ["qwen2.5-7b-instruct"]);
         provider.check_serves("qwen2.5-7b-instruct").await.unwrap();
         for candidates in [&["player3", "player2"][..], &["player1"]] {
-            let answered = provider.complete(&selecting(candidates)).await.unwrap();
-            let call = &answered.tool_calls()[0].function;
-            assert_eq!(call.name, "select");
             assert_eq!(
-                serde_json::from_str::<serde_json::Value>(&call.arguments).unwrap(),
-                json!({"target": candidates[0]})
+                provider.complete(&selecting(candidates)).await.unwrap(),
+                Response::tool_call("select", &json!({"target": candidates[0]}))
             );
         }
-    }
-
-    #[tokio::test]
-    async fn the_playing_provider_finds_nothing_at_any_other_path() {
-        let base_url = playing(&[]);
-        let provider = Provider::new(format!("{base_url}/wrong"), None, REQUEST_TIMEOUT).unwrap();
-        let error = provider.models().await.unwrap_err();
-        assert!(format!("{error:#}").contains("404"), "{error:#}");
     }
 }

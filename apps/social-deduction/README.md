@@ -100,10 +100,9 @@ is an error.
 - `[personas]`: what a seat, `player1` onward, is like, for the seats that
   are anyone in particular.
 
-The file names the environment variable that holds the provider's API key,
-never the key itself, and may leave it unnamed for a provider whose variable
-is known, such as OpenAI's `OPENAI_API_KEY` and Anthropic's
-`ANTHROPIC_API_KEY`. A local server wants no key.
+The key itself is never in the file. `api_key_env` may be left out for a
+provider whose variable is known, such as OpenAI's `OPENAI_API_KEY` and
+Anthropic's `ANTHROPIC_API_KEY`, and for a local server, which wants none.
 
 ### Prompts
 
@@ -114,25 +113,11 @@ the variables `name`, the player's seat; `role`, the role it was dealt;
 `persona`, its seat's persona, empty for a seat without one; and every block
 in `[text]` by its name. One template for everyone ignores `role`; prompts
 that differ by role are conditionals, text blocks or a role's own template;
-prompts that differ by player are personas.
-
-```toml
-[prompt]
-system = """
-{{ rules }}
-
-You are {{ name }}, a {{ role }}.
-{% if role == "werewolf" %}You know who the other werewolves are.{% endif %}
-{% if persona %}{{ persona }}{% endif %}
-"""
-```
-
-A persona belongs to a seat, and the roles are still dealt at random, so a
-persona's results are not confounded with the role it happens to hold. Every
-seat's prompt is rendered for every role at the table before the game
-begins, so a template that does not compile, a variable it does not have, a
-role at the table with no template, or a persona for a seat that is not
-there stops the program at once.
+prompts that differ by player are personas, which belong to a seat while
+the roles are still dealt at random. Every seat's prompt is rendered for
+every role at the table before the game begins, so a template that does not
+compile, a variable it does not have, a role at the table with no template,
+or a persona for a seat that is not there stops the program at once.
 
 ### Known models
 

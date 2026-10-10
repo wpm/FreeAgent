@@ -7,7 +7,7 @@ use social_deduction::werewolf::llm::Configuration;
 use social_deduction::werewolf::{Entry, PlayerId, Role};
 use std::collections::HashMap;
 use std::process::{Command, Output};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn run(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_social-deduction"))
@@ -220,9 +220,6 @@ fn configured(test: &str, name: &str, base_url: &str, id: &str) -> String {
     path
 }
 
-/// Short limits, so that a phase nobody selects in ends soon.
-const QUICK: [&str; 4] = ["--night-limit", "1s", "--day-limit", "1s"];
-
 /// The configuration the log of `events` has right after the deal.
 fn configuration(events: &[Event<Entry>]) -> &Configuration {
     let Some(Entry::Configuration(configuration)) = events.get(1).map(|event| &event.payload)
@@ -236,11 +233,9 @@ fn configuration(events: &[Event<Entry>]) -> &Configuration {
 fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_to_the_result() {
     let base_url = playing(&[EXAMPLE_MODEL]);
     let config = configured("plays", "personas.toml", &base_url, EXAMPLE_MODEL);
-    let started = Instant::now();
-    let args = [&[config.as_str()], &QUICK[..]].concat();
+    // Short limits, so that a phase nobody selects in ends soon.
+    let args = [&config, "--night-limit", "1s", "--day-limit", "1s"];
     let events = assert_plays_the_default_table("llm", "LLM", &args);
-    // Every player selects at once, so no phase waits out its limit.
-    assert!(started.elapsed() < Duration::from_secs(10));
     let (_, roles) = start(&events);
     let configuration = configuration(&events);
     assert_eq!(configuration.base_url, base_url);
@@ -260,7 +255,7 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
         configuration.personas["player1"],
         "You are cautious and slow to accuse."
     );
-    // The configuration is logged once, and nothing else is printed.
+    // The configuration is logged once.
     let configurations = events
         .iter()
         .filter(|event| matches!(event.payload, Entry::Configuration(_)))

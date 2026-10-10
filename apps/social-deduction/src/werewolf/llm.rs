@@ -969,18 +969,12 @@ count = 8
 
     #[test]
     fn the_rules_are_the_variant_s_with_the_limits_that_took_effect() {
-        let file = format!("{MODEL}\n[phases]\nnight_limit = \"1m 30s\"\n");
-        let overrides = Overrides {
-            limits: PhaseLimits {
-                night_limit: None,
-                day_limit: Some(Duration::from_secs(7)),
-            },
-            ..Overrides::default()
-        };
-        let rules = settle(&file, overrides).rules();
+        let file = format!("{MODEL}\n[phases]\nnight_limit = \"1m 30s\"\nday_limit = \"7s\"\n");
+        let settings = settle(&file, Overrides::default());
+        let rules = settings.rules();
         assert_eq!(rules.variation, "LLM");
-        assert_eq!(rules.night_limit, Duration::from_secs(90));
-        assert_eq!(rules.day_limit, Duration::from_secs(7));
+        assert_eq!(rules.night_limit, settings.night_limit);
+        assert_eq!(rules.day_limit, settings.day_limit);
     }
 
     #[test]

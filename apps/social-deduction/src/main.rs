@@ -6,8 +6,8 @@
 use clap::{Parser, Subcommand};
 use free_agent::{Behavior, Episode, Logger};
 use social_deduction::model::{
-    Model, Provider, REQUEST_TIMEOUT, api_key, check_makes_tool_calls, key_variable,
-    known_providers, makes_tool_calls,
+    Provider, REQUEST_TIMEOUT, api_key, check_makes_tool_calls, key_variable, known_providers,
+    makes_tool_calls,
 };
 use social_deduction::werewolf::llm::{self, Config};
 use social_deduction::werewolf::report::Narrator;
@@ -101,9 +101,17 @@ async fn main() -> anyhow::Result<()> {
             let roles = settings.table.deal();
             let configuration = settings.configuration(&roles, &prompts)?;
             let rules = settings.rules();
-            let model: Arc<dyn Model> = Arc::new(provider);
-            play(|winner, logger| llm::game(roles, rules, configuration, model, winner, logger))
-                .await
+            play(|winner, logger| {
+                llm::game(
+                    roles,
+                    rules,
+                    configuration,
+                    Arc::new(provider),
+                    winner,
+                    logger,
+                )
+            })
+            .await
         }
         CommandLine::Models {
             base_url,
