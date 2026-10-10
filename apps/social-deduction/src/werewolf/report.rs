@@ -2,7 +2,7 @@
 //! either of everything or of what one player saw.
 
 use super::{Entry, Message, Observation, Phase, PlayerId, Role};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::NonZero;
 
 /// Whose account a narrator gives.
@@ -21,7 +21,9 @@ enum Voice {
 /// tells the same nights and days from what that player was shown, in the
 /// second person, with no table. Both learn who died from who is shown as
 /// alive next, so a phase's result is told as the next one begins. A phase
-/// announced is told as one requested, and a selection as a reply.
+/// announced is told as one requested, and a selection as a reply, unless a
+/// later phase has been announced since: then it is told as too late to
+/// count, for the phase it was for.
 #[derive(Debug, Default)]
 pub struct Narrator {
     /// Whose account this is.
@@ -33,6 +35,8 @@ pub struct Narrator {
     alive: HashSet<PlayerId>,
     /// The phase being told, once one has begun.
     phase: Option<(NonZero<u8>, Phase)>,
+    /// Every phase announced so far, by its number.
+    announced: BTreeMap<u64, (NonZero<u8>, Phase)>,
 }
 
 impl Narrator {
@@ -59,20 +63,32 @@ impl Narrator {
             }
             Entry::Sent {
                 to,
-                message: Message::Observation(observation) | Message::Announce { observation, .. },
+                message: Message::Observation(observation),
+            } if self.concerns(to) => self.show(observation),
+            Entry::Sent {
+                to,
+                message: Message::Announce { seq, observation },
             } if self.concerns(to) => {
-                let mut lines = self.learn(&observation.roles);
-                lines.extend(self.begin(observation));
-                lines
+                self.announced
+                    .insert(*seq, (observation.round, observation.phase.clone()));
+                self.show(observation)
             }
             Entry::Replied {
                 from,
                 message: Message::Action(chosen),
-            }
-            | Entry::Received {
-                from,
-                message: Message::Select { target: chosen, .. },
             } if self.concerns(from) => vec![self.deed(from, chosen)],
+            Entry::Received {
+                from,
+                message:
+                    Message::Select {
+                        seq,
+                        target: chosen,
+                        ..
+                    },
+            } if self.concerns(from) => vec![match self.late(*seq) {
+                Some(phase) => self.lateness(from, chosen, phase),
+                None => self.deed(from, chosen),
+            }],
             Entry::End {
                 winner,
                 days,
@@ -144,6 +160,14 @@ impl Narrator {
             new.into_iter()
                 .map(|(player, role)| (player.clone(), *role)),
         );
+        lines
+    }
+
+    /// What a player being shown `observation` adds to the account: the
+    /// roles it learns, and the phase it begins.
+    fn show(&mut self, observation: &Observation) -> Vec<String> {
+        let mut lines = self.learn(&observation.roles);
+        lines.extend(self.begin(observation));
         lines
     }
 
@@ -222,6 +246,33 @@ impl Narrator {
             }
             (Voice::Omniscient, _, _) => format!("{player} votes against {chosen}."),
         }
+    }
+
+    /// The phase a selection numbered `seq` was for, if a later phase has
+    /// been announced since. The environment drops such a selection, so it
+    /// is no deed of the phase being told.
+    fn late(&self, seq: u64) -> Option<&(NonZero<u8>, Phase)> {
+        let later = self.announced.range(seq + 1..).next().is_some();
+        later.then(|| self.announced.get(&seq)).flatten()
+    }
+
+    /// What `player`'s choice of `chosen` for `phase` came to once a later
+    /// phase had begun: nothing.
+    fn lateness(
+        &self,
+        player: &PlayerId,
+        chosen: &PlayerId,
+        (round, phase): &(NonZero<u8>, Phase),
+    ) -> String {
+        let whose = match &self.voice {
+            Voice::Player(_) => "Your".to_string(),
+            Voice::Omniscient => format!("{player}'s"),
+        };
+        let when = match phase {
+            Phase::Night => format!("night {round}"),
+            Phase::Day => format!("day {round}"),
+        };
+        format!("{whose} choice of {chosen} for {when} comes too late to count.")
     }
 }
 
@@ -518,6 +569,44 @@ mod tests {
         assert_eq!(
             narrator.narrate(&selected("seer", 2, "wolf")),
             ["seer votes against wolf."]
+        );
+    }
+
+    #[test]
+    fn a_selection_for_a_phase_that_has_ended_is_told_as_too_late() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&announced("wolf", 1, 1, Phase::Night, &everyone));
+        narrator.narrate(&announced("seer", 1, 1, Phase::Night, &everyone));
+        narrator.narrate(&selected("wolf", 1, "ann"));
+        narrator.narrate(&announced(
+            "wolf",
+            2,
+            1,
+            Phase::Day,
+            &["wolf", "seer", "doctor"],
+        ));
+        assert_eq!(
+            narrator.narrate(&selected("seer", 1, "wolf")),
+            ["seer's choice of wolf for night 1 comes too late to count."]
+        );
+        assert_eq!(
+            narrator.narrate(&selected("seer", 2, "wolf")),
+            ["seer votes against wolf."]
+        );
+    }
+
+    #[test]
+    fn a_player_is_told_its_own_selection_came_too_late() {
+        let mut narrator = Narrator::for_player(id("doctor"));
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&announced("doctor", 1, 1, Phase::Night, &everyone));
+        narrator.narrate(&announced("doctor", 2, 1, Phase::Day, &everyone));
+        narrator.narrate(&announced("doctor", 3, 2, Phase::Night, &everyone));
+        assert_eq!(
+            narrator.narrate(&selected("doctor", 2, "ann")),
+            ["Your choice of ann for day 1 comes too late to count."]
         );
     }
 
