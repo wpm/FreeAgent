@@ -171,9 +171,12 @@ selection, like any other failed call. A model that is merely slow is not
 cut off by the phase limit; its late selection is dropped by sequence
 number.
 
-The client sits behind a small `Chat` trait with one method that takes a
-request and returns a response. The model player depends only on the trait.
-Tests use `FakeChat`, which returns scripted responses and records the
+The client sits behind a small `Model` trait with one method that takes a
+request and returns a response. The model player depends only on the trait. It is called `Model`, not
+`Chat`, although the protocol is OpenAI's chat completions: a call here is
+one decision, not a conversation, and "chat" is kept for when players
+talk.
+Tests use `FakeModel`, which returns scripted responses and records the
 requests it was sent, so `think` is tested without a network, and continuous
 integration never calls a model.
 
