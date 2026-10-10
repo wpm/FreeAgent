@@ -19,6 +19,10 @@ workflow takes a version's notes from here.
   the model and says the game is not playable yet.
 - `social-deduction models`, which lists the models a provider serves,
   marking those known to make tool calls.
+- An optional think loop for actors: `Think`, `ThinkBuilder` and
+  `ActorInit::think`, with `Context::think` to hand a message to it from
+  either loop. It runs in a task of its own, so an actor keeps perceiving
+  while it thinks.
 
 ### Changed
 

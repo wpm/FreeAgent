@@ -2,7 +2,7 @@
 //! one another as their inits allow, and runs them until every one has
 //! stopped.
 
-use crate::actor::{Actor, ActorId, ActorInit, Behavior, Context, Envelope, Shutdown};
+use crate::actor::{Actor, ActorId, ActorInit, Behavior, Context, Envelope, Shutdown, ThinkLoop};
 use crate::log::Logger;
 use anyhow::{Context as _, bail};
 use std::collections::{HashMap, HashSet};
@@ -26,7 +26,8 @@ pub struct Episode<B: Behavior> {
 
 impl<B: Behavior> Episode<B> {
     /// The actors described by `init`, wired to one another as it allows.
-    /// Those with `has_logger` get a copy of `logger`.
+    /// Those with `has_logger` get a copy of `logger`. An actor with a think
+    /// loop gets a second context for it, with everything the first has.
     ///
     /// # Panics
     ///
@@ -65,6 +66,7 @@ impl<B: Behavior> Episode<B> {
                     !init.can_send_to.contains(&id),
                     "init of {id:?} names itself"
                 );
+                let (thoughts, queue) = init.think.is_some().then(unbounded_channel).unzip();
                 let context = Context {
                     id: id.clone(),
                     episode,
@@ -74,11 +76,17 @@ impl<B: Behavior> Episode<B> {
                         others: pick(&shutdowns, &init.can_shut_down),
                     },
                     log: init.has_logger.then(|| logger.clone()),
+                    thoughts,
                 };
+                let think = init.think.zip(queue).map(|(build, queue)| ThinkLoop {
+                    think: build(context.twin()),
+                    queue,
+                });
                 (
                     id,
                     Actor {
                         behavior: (init.behavior)(context),
+                        think,
                         ready: Some(ready),
                         start: started,
                         mailbox,
@@ -215,11 +223,12 @@ fn pick<V: Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actor::{Think, ThinkBuilder};
     use crate::log::Event;
     use crate::message::Message;
     use async_trait::async_trait;
     use serde::{Deserialize, Serialize};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use tokio::sync::Semaphore;
     use tokio::sync::mpsc::UnboundedSender;
 
@@ -238,7 +247,8 @@ mod tests {
     }
 
     /// A behavior that reports when it is started, both to the test and to
-    /// the log, fails to start if told to, and is otherwise silent.
+    /// the log, hands a note to its think loop if it has one, fails to
+    /// start if told to, and is otherwise silent.
     struct Reporter {
         context: Context<Note, ActorId>,
         initialization: Initialization,
@@ -268,6 +278,9 @@ mod tests {
             }
             self.context.log(self.context.id.clone());
             self.started.send(self.context.id.clone())?;
+            if self.context.thoughts.is_some() {
+                self.context.think(Note)?;
+            }
             Ok(())
         }
     }
@@ -306,6 +319,7 @@ mod tests {
                         started,
                         fails,
                     }),
+                    think: None,
                     can_send_to: HashSet::new(),
                     can_shut_down: HashSet::new(),
                     has_logger: logging.contains(id),
@@ -367,6 +381,7 @@ mod tests {
                         started,
                         fails: false,
                     }),
+                    think: None,
                     can_send_to: others.clone(),
                     can_shut_down: others,
                     has_logger: false,
@@ -375,6 +390,82 @@ mod tests {
             })
             .collect();
         Episode::new(init, logger)
+    }
+
+    /// A think loop that ends the episode with its first thought, stopping
+    /// the one actor it may and then itself, and reports each thought on
+    /// `alive`, which closes when the loop is gone.
+    struct Closer {
+        context: Context<Note, ActorId>,
+        alive: UnboundedSender<()>,
+    }
+    #[async_trait]
+    impl Think for Closer {
+        type Message = Note;
+        async fn think(&mut self, _message: &Note) -> anyhow::Result<()> {
+            for other in self.context.shutdown.others.keys() {
+                self.context.stop(other)?;
+            }
+            self.context.shutdown();
+            self.alive.send(())?;
+            Ok(())
+        }
+    }
+
+    /// An episode in which Ann thinks, with what the test watches it through.
+    struct Thinking {
+        episode: Episode<Reporter>,
+        /// A twin of the context Ann's think loop was built from.
+        context: Arc<Mutex<Option<Context<Note, ActorId>>>>,
+        /// Ann's think loop reports each thought here, and the channel
+        /// closes when the loop is gone.
+        thoughts: UnboundedReceiver<()>,
+        /// Every reporter announces here that it was started.
+        _starts: UnboundedReceiver<ActorId>,
+    }
+
+    /// Ann and Bob wired to each other, Ann with a [`Closer`] think loop
+    /// and the logger.
+    fn with_ann_thinking() -> Thinking {
+        let (started, starts) = unbounded_channel();
+        let (logger, _) = unbounded_channel();
+        let (alive, ended) = unbounded_channel();
+        let seen = Arc::new(Mutex::new(None));
+        let stash = Arc::clone(&seen);
+        let init = [("ann", "bob"), ("bob", "ann")]
+            .into_iter()
+            .map(|(id, other)| {
+                let started = started.clone();
+                let think = (id == "ann").then(|| {
+                    let alive = alive.clone();
+                    let stash = Arc::clone(&stash);
+                    let build: ThinkBuilder<Note, ActorId> = Box::new(move |context| {
+                        *stash.lock().unwrap() = Some(context.twin());
+                        Box::new(Closer { context, alive })
+                    });
+                    build
+                });
+                let init = ActorInit {
+                    behavior: Box::new(move |context| Reporter {
+                        context,
+                        initialization: Initialization::default(),
+                        started,
+                        fails: false,
+                    }),
+                    think,
+                    can_send_to: HashSet::from([other.to_string()]),
+                    can_shut_down: HashSet::from([other.to_string()]),
+                    has_logger: id == "ann",
+                };
+                (id.to_string(), init)
+            })
+            .collect();
+        Thinking {
+            episode: Episode::new(init, logger),
+            context: seen,
+            thoughts: ended,
+            _starts: starts,
+        }
     }
 
     fn stops<B: Behavior>(episode: &Episode<B>) -> Vec<CancellationToken> {
@@ -397,6 +488,51 @@ mod tests {
         let bob = episode.actors["bob"].behavior.context();
         assert!(bob.mailboxes.is_empty());
         assert!(bob.shutdown.others.is_empty());
+    }
+
+    #[test]
+    fn new_gives_a_think_loop_a_context_like_its_perceive_loops() {
+        let Thinking {
+            episode, context, ..
+        } = with_ann_thinking();
+
+        let perceive = episode.actors["ann"].behavior.context();
+        let guard = context.lock().unwrap();
+        let think = guard.as_ref().unwrap();
+        assert_eq!(think.id, perceive.id);
+        assert_eq!(think.episode, perceive.episode);
+        let reaches: Vec<_> = think.mailboxes.keys().cloned().collect();
+        assert_eq!(reaches, ["bob"]);
+        let stops: Vec<_> = think.shutdown.others.keys().cloned().collect();
+        assert_eq!(stops, ["bob"]);
+        assert!(think.log.is_some(), "ann's think loop should log");
+        assert!(think.thoughts.is_some(), "ann's think loop should think");
+        assert!(perceive.thoughts.is_some(), "ann should think");
+        assert!(
+            episode.actors["bob"].behavior.context().thoughts.is_none(),
+            "bob has no think loop"
+        );
+        // One shutdown stops both loops.
+        perceive.shutdown.mine.cancel();
+        assert!(think.shutdown.mine.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn run_returns_only_after_every_think_loop_has_ended() {
+        // The reporters announce on `starts`, so it has to stay open.
+        let Thinking {
+            episode,
+            mut thoughts,
+            _starts,
+            ..
+        } = with_ann_thinking();
+
+        // Ann's think loop ends the episode with its first thought.
+        episode.run(Duration::from_secs(60)).await.unwrap();
+
+        assert_eq!(thoughts.recv().await, Some(()));
+        // The think loop, which held the other end, is gone.
+        assert_eq!(thoughts.recv().await, None);
     }
 
     #[test]

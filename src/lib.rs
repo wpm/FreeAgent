@@ -12,7 +12,7 @@ mod episode;
 mod log;
 mod message;
 
-pub use actor::{ActorId, ActorInit, Behavior, Builder, Context};
+pub use actor::{ActorId, ActorInit, Behavior, Builder, Context, Think, ThinkBuilder};
 pub use episode::Episode;
 pub use log::{Event, Logger, console_log, drain};
 pub use message::Message;

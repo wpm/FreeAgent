@@ -30,6 +30,7 @@ pub fn game(
         ENVIRONMENT.to_string(),
         ActorInit {
             behavior: Actor::environment(roles, rules, winner),
+            think: None,
             can_send_to: players.clone(),
             can_shut_down: players.clone(),
             has_logger: true,
@@ -41,6 +42,7 @@ pub fn game(
             id,
             ActorInit {
                 behavior,
+                think: None,
                 can_send_to: HashSet::from([ENVIRONMENT.to_string()]),
                 can_shut_down: HashSet::new(),
                 has_logger: false,
