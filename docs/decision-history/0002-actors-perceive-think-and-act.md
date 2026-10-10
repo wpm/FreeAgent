@@ -258,10 +258,11 @@ observation }`, `Select { seq, target }` and `EndPhase { seq }`.
 - **A model player perceives announcements and thinks about them.** Its
   `receive` hands each `Announce` to `think`, which calls the model and
   sends the `Select` to the environment itself.
-- **A fast scripted player that speaks statements** lives beside the model
-  player. It answers an `Announce` with a `Select` from `receive` and has no
-  think loop, so that the model-played environment can be tested end to end
-  without a model.
+- **A fast scripted player that speaks statements** answers an `Announce`
+  with a `Select` from `receive` and has no think loop, so that the
+  environment can be run end to end without a model. It is the player of the
+  scripted variant (ADR-0001), which shares the environment with the
+  model-played variant.
 - **The uniform-random variant does not change.** Its actors have no think
   loop, and it keeps request and reply.
 

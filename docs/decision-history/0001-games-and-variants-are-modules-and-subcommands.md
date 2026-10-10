@@ -71,6 +71,8 @@ apps/social-deduction/
     werewolf/
       report.rs           # the Narrator
       uniform_random.rs   # the uniform-random variant
+      announced.rs        # the environment that announces phases, shared by the two below
+      scripted.rs         # the scripted variant
       llm.rs              # the model-played variant
       llm/                # its submodules, if it grows any
 ```
@@ -105,6 +107,21 @@ Adding to the enum does not change the existing variants. The model-played
 variant's messages are new variants of the enum, and `Observation` and
 `Action`, which the uniform-random variant uses, stay exactly as they are.
 
+### The scripted variant
+
+A third variant, `scripted`, plays the model-played variant's game with fast
+scripted players in place of model players. It uses the same environment,
+the one that announces phases with statements and waits for selections
+([ADR-0002](0002-actors-perceive-think-and-act.md)), which lives in
+`werewolf/announced.rs` so that both variants can use it. Its players choose
+at random from the same candidates a random player would, answer at once,
+and have no think loop.
+
+It exists so that the announcing environment can be run and watched without
+a model, a provider or a configuration file, and it stays useful as a smoke
+test of that environment once model players exist. Its log names it as the
+"Scripted" variation.
+
 ### The uniform-random variant does not change
 
 The uniform-random variant keeps its request and reply protocol, its
@@ -121,6 +138,7 @@ behavior and tests are unchanged.
 
 ```sh
 social-deduction werewolf uniform-random [--werewolves N] [--villagers N] [--doctors N] [--seers N]
+social-deduction werewolf scripted [role counts] [--night-limit 30s] [--day-limit 2m]
 social-deduction werewolf llm --config game.toml [role counts] [--night-limit 30s] [--day-limit 2m]
 social-deduction models --config game.toml
 ```
@@ -138,6 +156,8 @@ change.
   role-count options as `uniform-random`, and `--night-limit` and
   `--day-limit`. The role counts are one shared `clap` argument group, so
   both variants spell them the same way.
+- `werewolf scripted` takes the role counts, `--night-limit` and
+  `--day-limit`, all with defaults in the code, and no configuration file.
 - `models` takes `--config`, asks the provider the file names for its
   `GET /v1/models` listing, and prints each model id, marking those on the
   tool-call whitelist. It plays no game.
