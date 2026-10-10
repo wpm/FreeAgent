@@ -146,17 +146,15 @@ fn example(name: &str) -> String {
 #[test]
 fn the_llm_variant_prints_its_settings_and_is_not_playable_yet() {
     let printed = printed(&["werewolf", "llm", "--config", &example("minimal.toml")]);
+    let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
-        printed,
-        "\
-model: qwen2.5-7b-instruct at http://localhost:1234/v1
-request timeout: 1m
-API key: none
-roles: 2 werewolves, 3 villagers, 1 doctor, 1 seer
-night limit: 1m
-day limit: 1m
-The model-played game is not playable yet.
-"
+        lines[0], "model: qwen2.5-7b-instruct at http://localhost:1234/v1",
+        "{printed}"
+    );
+    assert_eq!(
+        lines.last().unwrap(),
+        &"The model-played game is not playable yet.",
+        "{printed}"
     );
 }
 

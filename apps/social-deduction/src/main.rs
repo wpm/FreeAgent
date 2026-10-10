@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
             let settings = Config::load(&config)?.settle(overrides);
             // The key is read now so that a variable that is not set fails
             // before anything else. The game that would use it comes later.
-            let _api_key = settings.model.api_key()?;
+            let _api_key = settings.config.model.api_key()?;
             print!("{settings}");
             println!("The model-played game is not playable yet.");
             Ok(())
@@ -131,23 +131,20 @@ mod tests {
     #[test]
     fn the_help_names_the_defaults_the_code_fills_in() {
         let table = Table::default();
-        let defaults = [
+        let counts = vec![
             ("--werewolves", table.werewolves.to_string()),
             ("--villagers", table.villagers.to_string()),
             ("--doctors", table.doctors.to_string()),
             ("--seers", table.seers.to_string()),
         ];
-        for (variant, defaults) in [
-            ("uniform-random", &defaults[..]),
-            ("llm", &defaults[..]),
-            (
-                "llm",
-                &[
-                    ("--night-limit", "1m".to_string()),
-                    ("--day-limit", "1m".to_string()),
-                ][..],
-            ),
-        ] {
+        let rules = Rules::default();
+        let limits = [
+            ("--night-limit", rules.night_limit),
+            ("--day-limit", rules.day_limit),
+        ]
+        .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()));
+        let llm = [counts.clone(), limits.to_vec()].concat();
+        for (variant, defaults) in [("uniform-random", counts), ("llm", llm)] {
             let help = Game::command()
                 .find_subcommand_mut("werewolf")
                 .unwrap()

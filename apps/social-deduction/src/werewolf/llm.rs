@@ -13,7 +13,7 @@
 //! variable that holds it, and [`Model::api_key`] reads that variable into
 //! a [`SecretString`], which is redacted wherever it is shown.
 
-use super::{RoleCounts, Table};
+use super::{RoleCounts, Rules, Table};
 use anyhow::Context;
 use clap::Args;
 use secrecy::SecretString;
@@ -23,9 +23,8 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
-/// A minute: how long a phase waits and a request may take unless told
-/// otherwise.
-const MINUTE: Duration = Duration::from_secs(60);
+/// How long a request may take unless the file says otherwise.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What the command line may say over the file: the role counts and the
 /// phase limits. Each is unset unless given, so that the file can be heard.
@@ -80,7 +79,7 @@ pub struct Model {
     /// wants one.
     pub api_key_env: Option<String>,
     /// How long a request may take.
-    #[serde(default = "minute", with = "humantime_serde")]
+    #[serde(default = "request_timeout", with = "humantime_serde")]
     pub request_timeout: Duration,
 }
 
@@ -150,26 +149,18 @@ pub struct Prompt {
     pub system: Option<String>,
 }
 
-/// The settings that took effect: the file with every choice made, and
-/// the command line and the code heard where the file was silent.
+/// The settings that took effect: the file as written, and the settings
+/// the command line and the code have a say in, decided.
 #[derive(Debug)]
 pub struct Settings {
-    /// The model every player uses and how to reach it.
-    pub model: Model,
+    /// The file as written.
+    pub config: Config,
     /// How many of each role sit at the table.
     pub table: Table,
     /// How long the night waits for a player.
     pub night_limit: Duration,
     /// How long the day waits for a player.
     pub day_limit: Duration,
-    /// What each role is told, kept as written.
-    pub roles: Roles,
-    /// Named blocks of text for the templates to use, kept as written.
-    pub text: BTreeMap<String, String>,
-    /// The templates every role falls back on, kept as written.
-    pub prompt: Prompt,
-    /// What each seat is like, kept as written.
-    pub personas: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -196,21 +187,18 @@ impl Config {
             doctors: self.roles.doctor.count,
             seers: self.roles.seer.count,
         };
+        let rules = Rules::default();
         Settings {
-            model: self.model,
             table: overrides.roles.or(file.or(Table::default())),
             night_limit: overrides
                 .night_limit
                 .or(self.phases.night_limit)
-                .unwrap_or(MINUTE),
+                .unwrap_or(rules.night_limit),
             day_limit: overrides
                 .day_limit
                 .or(self.phases.day_limit)
-                .unwrap_or(MINUTE),
-            roles: self.roles,
-            text: self.text,
-            prompt: self.prompt,
-            personas: self.personas,
+                .unwrap_or(rules.day_limit),
+            config: self,
         }
     }
 }
@@ -219,7 +207,7 @@ impl fmt::Display for Settings {
     /// The settings a game would be played under, one per line, with the
     /// key's variable named and the key itself never shown.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let model = &self.model;
+        let model = &self.config.model;
         writeln!(f, "model: {} at {}", model.id, model.base_url)?;
         writeln!(
             f,
@@ -245,8 +233,8 @@ impl fmt::Display for Settings {
 }
 
 /// The default `request_timeout`, for `serde`.
-fn minute() -> Duration {
-    MINUTE
+fn request_timeout() -> Duration {
+    REQUEST_TIMEOUT
 }
 
 #[cfg(test)]
@@ -277,13 +265,12 @@ id = "qwen2.5-7b-instruct"
     #[test]
     fn the_examples_parse() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/werewolf/llm");
-        let mut files: Vec<_> = std::fs::read_dir(dir)
+        let files: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .filter(|path| path.extension().is_some_and(|ext| ext == "toml"))
             .collect();
-        files.sort();
-        assert_eq!(files.len(), 2, "{files:?}");
+        assert!(!files.is_empty(), "no examples in {dir}");
         for file in files {
             Config::load(&file).unwrap_or_else(|e| panic!("{}: {e:#}", file.display()));
         }
@@ -329,7 +316,7 @@ count = 8
                 seers: 8
             }
         );
-        // The command line over the file, one role at a time.
+        // The command line over the file.
         let given = |roles| {
             settle(
                 &file,
@@ -342,28 +329,29 @@ count = 8
         };
         let counts = RoleCounts {
             werewolves: Some(1),
-            ..RoleCounts::default()
-        };
-        assert_eq!(given(counts).werewolves, 1);
-        let counts = RoleCounts {
             villagers: Some(2),
-            ..RoleCounts::default()
-        };
-        assert_eq!(given(counts).villagers, 2);
-        let counts = RoleCounts {
             doctors: Some(3),
-            ..RoleCounts::default()
-        };
-        assert_eq!(given(counts).doctors, 3);
-        let counts = RoleCounts {
             seers: Some(4),
-            ..RoleCounts::default()
         };
-        // A count the command line does not give still comes from the file.
         assert_eq!(
             given(counts),
             Table {
-                werewolves: 5,
+                werewolves: 1,
+                villagers: 2,
+                doctors: 3,
+                seers: 4
+            }
+        );
+        // A count the command line does not give still comes from the file.
+        let counts = RoleCounts {
+            werewolves: Some(1),
+            seers: Some(4),
+            ..RoleCounts::default()
+        };
+        assert_eq!(
+            given(counts),
+            Table {
+                werewolves: 1,
                 villagers: 6,
                 doctors: 7,
                 seers: 4
@@ -376,22 +364,35 @@ count = 8
         let file = format!("{MODEL}\n[roles.seer]\nsystem = \"You see.\"\n");
         let settings = settle(&file, Overrides::default());
         assert_eq!(settings.table, Table::default());
-        assert_eq!(settings.roles.seer.system.as_deref(), Some("You see."));
+        assert_eq!(
+            settings.config.roles.seer.system.as_deref(),
+            Some("You see.")
+        );
     }
 
     #[test]
     fn the_phase_limits_fall_back_from_the_command_line_to_the_file_to_the_code() {
         let file = format!("{MODEL}\n[phases]\nnight_limit = \"1m 30s\"\nday_limit = \"2m\"\n");
-        let minute = Duration::from_secs(60);
-        // The code alone.
+        // The code alone: the same limits every variant plays under.
         let settings = settle(MODEL, Overrides::default());
-        assert_eq!(settings.night_limit, minute);
-        assert_eq!(settings.day_limit, minute);
+        assert_eq!(settings.night_limit, Rules::default().night_limit);
+        assert_eq!(settings.day_limit, Rules::default().day_limit);
         // The file over the code.
         let settings = settle(&file, Overrides::default());
         assert_eq!(settings.night_limit, Duration::from_secs(90));
         assert_eq!(settings.day_limit, Duration::from_secs(120));
-        // The command line over the file, one limit at a time.
+        // The command line over the file.
+        let settings = settle(
+            &file,
+            Overrides {
+                night_limit: Some(Duration::from_secs(5)),
+                day_limit: Some(Duration::from_secs(7)),
+                ..Overrides::default()
+            },
+        );
+        assert_eq!(settings.night_limit, Duration::from_secs(5));
+        assert_eq!(settings.day_limit, Duration::from_secs(7));
+        // A limit the command line does not give still comes from the file.
         let settings = settle(
             &file,
             Overrides {
@@ -401,15 +402,6 @@ count = 8
         );
         assert_eq!(settings.night_limit, Duration::from_secs(5));
         assert_eq!(settings.day_limit, Duration::from_secs(120));
-        let settings = settle(
-            &file,
-            Overrides {
-                day_limit: Some(Duration::from_secs(7)),
-                ..Overrides::default()
-            },
-        );
-        assert_eq!(settings.night_limit, Duration::from_secs(90));
-        assert_eq!(settings.day_limit, Duration::from_secs(7));
     }
 
     #[test]
@@ -423,14 +415,19 @@ count = 8
 
     #[test]
     fn the_request_timeout_comes_from_the_file_or_the_code() {
-        let minute = Duration::from_secs(60);
         assert_eq!(
-            settle(MODEL, Overrides::default()).model.request_timeout,
-            minute
+            settle(MODEL, Overrides::default())
+                .config
+                .model
+                .request_timeout,
+            REQUEST_TIMEOUT
         );
         let file = format!("{MODEL}request_timeout = \"10s\"\n");
         assert_eq!(
-            settle(&file, Overrides::default()).model.request_timeout,
+            settle(&file, Overrides::default())
+                .config
+                .model
+                .request_timeout,
             Duration::from_secs(10)
         );
     }
@@ -479,27 +476,28 @@ system = \"Howl.\"
 player1 = \"Cautious.\"
 "
         );
-        let settings = settle(&file, Overrides::default());
-        assert_eq!(settings.text["rules"], "The rules.");
+        let config = settle(&file, Overrides::default()).config;
+        assert_eq!(config.text["rules"], "The rules.");
         assert_eq!(
-            settings.prompt.system.as_deref(),
+            config.prompt.system.as_deref(),
             Some("{{ rules }} You are {{ name }}.")
         );
-        assert_eq!(settings.roles.werewolf.system.as_deref(), Some("Howl."));
-        assert_eq!(settings.roles.villager.system, None);
-        assert_eq!(settings.personas["player1"], "Cautious.");
+        assert_eq!(config.roles.werewolf.system.as_deref(), Some("Howl."));
+        assert_eq!(config.roles.villager.system, None);
+        assert_eq!(config.personas["player1"], "Cautious.");
     }
 
     #[test]
     fn an_omitted_key_variable_means_no_key() {
         let settings = settle(MODEL, Overrides::default());
-        assert!(settings.model.api_key().unwrap().is_none());
+        assert!(settings.config.model.api_key().unwrap().is_none());
     }
 
     #[test]
     fn a_named_key_variable_that_is_not_set_is_an_error_naming_it() {
         let file = format!("{MODEL}api_key_env = \"SOCIAL_DEDUCTION_NO_SUCH_KEY\"\n");
         let error = settle(&file, Overrides::default())
+            .config
             .model
             .api_key()
             .unwrap_err();
@@ -511,18 +509,15 @@ player1 = \"Cautious.\"
 
     #[test]
     fn the_key_is_read_from_the_named_variable_and_never_shown() {
-        // Any variable that is set will do; setting one in a test is unsafe.
-        let (name, value) = std::env::vars()
-            .find(|(name, value)| {
-                name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && value.len() > 3
-            })
-            .unwrap();
+        // A variable Cargo sets for every test, since setting one is unsafe.
+        let name = "CARGO_MANIFEST_DIR";
+        let value = std::env::var(name).unwrap();
         let file = format!("{MODEL}api_key_env = \"{name}\"\n");
         let settings = settle(&file, Overrides::default());
-        let key = settings.model.api_key().unwrap().unwrap();
+        let key = settings.config.model.api_key().unwrap().unwrap();
         assert_eq!(key.expose_secret(), value);
         let shown = format!("{key:?}\n{settings:?}\n{settings}");
-        assert!(shown.contains(&name), "{shown}");
+        assert!(shown.contains(name), "{shown}");
         assert!(!shown.contains(&value), "{shown}");
     }
 

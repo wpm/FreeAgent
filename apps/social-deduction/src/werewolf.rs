@@ -125,7 +125,7 @@ impl RoleCounts {
 }
 
 /// How many of each role sit at the table.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Table {
     /// How many werewolves.
     pub werewolves: usize,
@@ -150,17 +150,22 @@ impl Default for Table {
 }
 
 impl Table {
+    /// Each role and how many of it, in the order the roles are dealt.
+    fn counts(&self) -> [(Role, usize); 4] {
+        [
+            (Role::Werewolf, self.werewolves),
+            (Role::Villager, self.villagers),
+            (Role::Doctor, self.doctors),
+            (Role::Seer, self.seers),
+        ]
+    }
+
     /// Deal the roles at random to players named `player1` onward. The
     /// names say nothing about the roles, since every player sees every
     /// name.
     pub fn deal(&self) -> HashMap<PlayerId, Role> {
         let mut roles = Vec::new();
-        for (role, count) in [
-            (Role::Werewolf, self.werewolves),
-            (Role::Villager, self.villagers),
-            (Role::Doctor, self.doctors),
-            (Role::Seer, self.seers),
-        ] {
+        for (role, count) in self.counts() {
             roles.extend(std::iter::repeat_n(role, count));
         }
         roles.shuffle(&mut rand::rng());
@@ -176,13 +181,11 @@ impl fmt::Display for Table {
     /// The counts in the order the roles are dealt, each in its number:
     /// `2 werewolves, 3 villagers, 1 doctor, 1 seer`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let counted = [
-            (self.werewolves, "werewolf", "werewolves"),
-            (self.villagers, "villager", "villagers"),
-            (self.doctors, "doctor", "doctors"),
-            (self.seers, "seer", "seers"),
-        ]
-        .map(|(count, one, many)| format!("{count} {}", if count == 1 { one } else { many }));
+        let counted = self.counts().map(|(role, count)| match (count, role) {
+            (1, _) => format!("1 {role}"),
+            (_, Role::Werewolf) => format!("{count} werewolves"),
+            _ => format!("{count} {role}s"),
+        });
         f.write_str(&counted.join(", "))
     }
 }
