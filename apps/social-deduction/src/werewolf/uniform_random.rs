@@ -1,7 +1,9 @@
 //! The uniform-random variant: an environment that runs the game as a loop
 //! and players who choose at random.
 
-use super::{Choices, Entry, Message, Observation, PlayerId, Role, Rules, State, Team};
+use super::{
+    Choices, ENVIRONMENT, Entry, Message, Observation, PlayerId, Role, Rules, State, Team,
+};
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Builder, Context, Episode, Logger};
 use futures_util::future::try_join_all;
@@ -13,8 +15,8 @@ use tokio::time::timeout;
 
 /// An episode of a game of `roles` under `rules`: the environment, which
 /// may reach and stop every player and holds `logger`, and a player for
-/// each role built by `player`. The winning team is sent on `winner` when
-/// the game ends.
+/// each role built by `player`, who may send to the environment. The
+/// winning team is sent on `winner` when the game ends.
 pub fn game(
     roles: HashMap<PlayerId, Role>,
     rules: Rules,
@@ -24,9 +26,10 @@ pub fn game(
 ) -> Episode<Actor> {
     let players: HashSet<PlayerId> = roles.keys().cloned().collect();
     let mut init = HashMap::from([(
-        "environment".to_string(),
+        ENVIRONMENT.to_string(),
         ActorInit {
             behavior: Actor::environment(roles, rules, winner),
+            think: None,
             can_send_to: players.clone(),
             can_shut_down: players.clone(),
             has_logger: true,
@@ -38,7 +41,8 @@ pub fn game(
             id,
             ActorInit {
                 behavior,
-                can_send_to: HashSet::new(),
+                think: None,
+                can_send_to: HashSet::from([ENVIRONMENT.to_string()]),
                 can_shut_down: HashSet::new(),
                 has_logger: false,
             },
@@ -312,8 +316,8 @@ impl Behavior for Player {
 
 /// A living player chosen uniformly at random by `me` from `observation`,
 /// among those whose role `me` does not know. None when there is nobody
-/// to choose.
-fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
+/// to choose. The scripted player chooses this way too.
+pub(super) fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
     let mut candidates: Vec<&PlayerId> = observation
         .alive
         .iter()
@@ -330,7 +334,8 @@ fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::werewolf::{Phase, tests::village};
+    use crate::werewolf::Phase;
+    use crate::werewolf::tests::{one_wolf_against, village};
     use std::num::NonZero;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -349,15 +354,15 @@ mod tests {
             &self.context
         }
 
-        /// Clears its throat to itself, the one statement in a game of
-        /// players who otherwise only answer, so a statement goes through
-        /// [`Actor`] too. It does so while initializing, before anyone can
-        /// ask it anything, so the statement is delivered before the
-        /// request it never answers.
+        /// Clears its throat to the environment, the one statement in a
+        /// game of players who otherwise only answer, so a statement goes
+        /// through [`Actor`] too. The environment ignores it.
         async fn initialize(&mut self) -> anyhow::Result<()> {
             let me = self.context.id.clone();
-            self.context
-                .send(Message::Action(me.clone()), HashSet::from([me]))
+            self.context.send(
+                Message::Action(me),
+                HashSet::from([ENVIRONMENT.to_string()]),
+            )
         }
 
         async fn answer(&mut self, _: &Message) -> anyhow::Result<Vec<Message>> {
@@ -446,14 +451,6 @@ mod tests {
         }
         // By the first night three players are shown the game.
         assert!(shown >= 3, "{logged:?}");
-    }
-
-    fn one_wolf_against(villagers: &[&str]) -> HashMap<PlayerId, Role> {
-        let mut roles = HashMap::from([("wolf".to_string(), Role::Werewolf)]);
-        for villager in villagers {
-            roles.insert(villager.to_string(), Role::Villager);
-        }
-        roles
     }
 
     #[tokio::test]

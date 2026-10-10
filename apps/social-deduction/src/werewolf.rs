@@ -20,8 +20,10 @@
 //! its players, the actor enum its episode holds, and the function that
 //! builds its episode.
 
+pub mod announced;
 pub mod llm;
 pub mod report;
+pub mod scripted;
 pub mod uniform_random;
 
 use clap::Args;
@@ -35,6 +37,9 @@ use std::time::Duration;
 
 /// A player is an actor, named as the episode names it.
 pub type PlayerId = ActorId;
+
+/// The environment's name in the episode.
+pub const ENVIRONMENT: &str = "environment";
 
 /// What the awake players chose in a phase: each player's choice of another.
 type Choices = HashMap<PlayerId, PlayerId>;
@@ -115,6 +120,40 @@ pub struct RoleCounts {
 /// when the count is left unset.
 fn how_many(what: &str, default: usize) -> String {
     format!("How many {what} [default: {default}]")
+}
+
+/// How long each phase waits for the players, for a variant to flatten into
+/// its command line arguments. A limit left unset has no `clap` default, so
+/// that a variant can tell it apart from a limit that was given, and fill it
+/// in from [`Rules::default`] or from somewhere else.
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+pub struct PhaseLimits {
+    /// How long the night waits for a player.
+    #[arg(long, value_parser = humantime::parse_duration, help = how_long("night", Rules::default().night_limit))]
+    pub night_limit: Option<Duration>,
+    /// How long the day waits for a player.
+    #[arg(long, value_parser = humantime::parse_duration, help = how_long("day", Rules::default().day_limit))]
+    pub day_limit: Option<Duration>,
+}
+
+/// The help for the limit of `phase`, naming the `default` the code fills
+/// in when the limit is left unset.
+fn how_long(phase: &str, default: Duration) -> String {
+    format!(
+        "How long the {phase} waits for a player [default: {}]",
+        humantime::format_duration(default)
+    )
+}
+
+impl PhaseLimits {
+    /// `rules`, with each limit given here in place of its own.
+    pub fn or(&self, rules: Rules) -> Rules {
+        Rules {
+            night_limit: self.night_limit.unwrap_or(rules.night_limit),
+            day_limit: self.day_limit.unwrap_or(rules.day_limit),
+            ..rules
+        }
+    }
 }
 
 impl RoleCounts {
@@ -416,6 +455,29 @@ pub enum Message {
     Observation(Observation),
     /// A player's choice of another player, to the environment.
     Action(PlayerId),
+    /// The environment opens a phase for one awake player. Phases are
+    /// numbered from 1 for the first night, one up for each phase.
+    Announce {
+        /// The number of the phase.
+        seq: u64,
+        /// What the player may see of it.
+        observation: Observation,
+    },
+    /// A player's selection for the phase numbered `seq`.
+    Select {
+        /// The number of the phase.
+        seq: u64,
+        /// Who selected, since a statement does not carry its sender.
+        from: PlayerId,
+        /// Whom they selected.
+        target: PlayerId,
+    },
+    /// The environment's own message to itself that the phase numbered
+    /// `seq` is over.
+    EndPhase {
+        /// The number of the phase.
+        seq: u64,
+    },
 }
 impl free_agent::Message for Message {}
 
@@ -441,6 +503,13 @@ pub enum Entry {
     /// `from` replied with `message`.
     Replied {
         /// Who replied.
+        from: PlayerId,
+        /// What they said.
+        message: Message,
+    },
+    /// The environment received `message` from `from` as a statement.
+    Received {
+        /// Who sent it.
         from: PlayerId,
         /// What they said.
         message: Message,
@@ -522,6 +591,18 @@ pub struct Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_limit_given_replaces_the_rules_own_and_one_left_unset_keeps_it() {
+        let limits = PhaseLimits {
+            night_limit: Some(Duration::from_secs(5)),
+            day_limit: None,
+        };
+        let rules = limits.or(Rules::default());
+        assert_eq!(rules.night_limit, Duration::from_secs(5));
+        assert_eq!(rules.day_limit, Rules::default().day_limit);
+        assert_eq!(rules.variation, "Uniform Random");
+    }
 
     #[test]
     fn unset_counts_are_filled_from_the_defaults() {
@@ -644,6 +725,15 @@ mod tests {
             ("seer".to_string(), Role::Seer),
             ("villager".to_string(), Role::Villager),
         ]))
+    }
+
+    /// One werewolf against `villagers`.
+    pub(super) fn one_wolf_against(villagers: &[&str]) -> HashMap<PlayerId, Role> {
+        let mut roles = HashMap::from([("wolf".to_string(), Role::Werewolf)]);
+        for villager in villagers {
+            roles.insert(villager.to_string(), Role::Villager);
+        }
+        roles
     }
 
     fn seen_by(observer: &str) -> Vec<String> {

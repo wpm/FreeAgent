@@ -19,6 +19,18 @@ workflow takes a version's notes from here.
   the model and says the game is not playable yet.
 - `social-deduction models`, which lists the models a provider serves,
   marking those known to make tool calls.
+- `social-deduction werewolf scripted`, which plays the model-played game
+  with no model: the environment announces each phase and waits for
+  selections, and every player is a script that selects at once at random.
+  It takes the role counts, `--night-limit` and `--day-limit`, with defaults
+  in the code and no configuration file.
+- An optional think loop for actors: `Think`, `ThinkBuilder` and
+  `ActorInit::think`, with `Context::think` to hand a message to it from
+  either loop. It runs in a task of its own, so an actor keeps perceiving
+  while it thinks.
+- Timers: `Context::think_after` hands a message to the think loop once a
+  delay has passed. A due timer is thought about ahead of whatever is
+  waiting on the think queue.
 
 ### Changed
 
