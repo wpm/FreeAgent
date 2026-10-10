@@ -108,6 +108,20 @@ pub fn known_providers() -> Vec<(&'static str, Option<&'static str>)> {
         .collect()
 }
 
+/// The headers every request to the provider at `base_url` must carry,
+/// when `src/models.toml` knows the provider and it needs any.
+fn known_headers(base_url: &str) -> Vec<(&'static str, &'static str)> {
+    known(base_url)
+        .map(|known| {
+            known
+                .headers
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The environment variable conventionally holding the API key for the
 /// provider at `base_url`, when `src/models.toml` knows the provider and
 /// it wants one.
@@ -226,15 +240,7 @@ impl Provider {
         request_timeout: Duration,
     ) -> anyhow::Result<Self> {
         let base_url = base_url.into();
-        let headers: Vec<(&str, &str)> = known(&base_url)
-            .map(|known| {
-                known
-                    .headers
-                    .iter()
-                    .map(|(name, value)| (name.as_str(), value.as_str()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let headers = known_headers(&base_url);
         Self::with_headers(base_url, api_key, request_timeout, &headers)
     }
 
@@ -351,15 +357,11 @@ mod tests {
     #[test]
     fn a_known_provider_s_headers_are_read_from_the_file() {
         assert_eq!(
-            known("https://api.anthropic.com/v1").unwrap().headers,
-            BTreeMap::from([("anthropic-version".to_string(), "2023-06-01".to_string())])
+            known_headers("https://api.anthropic.com/v1"),
+            [("anthropic-version", "2023-06-01")]
         );
-        assert!(
-            known("https://api.openai.com/v1")
-                .unwrap()
-                .headers
-                .is_empty()
-        );
+        assert!(known_headers("https://api.openai.com/v1").is_empty());
+        assert!(known_headers("http://localhost:1234/v1").is_empty());
     }
 
     #[tokio::test]
