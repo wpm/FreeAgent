@@ -143,6 +143,8 @@ mod tests {
     fn the_whitelist_is_not_empty_and_matches_an_id_exactly_as_written() {
         assert!(tool_models().next().is_some());
         assert!(makes_tool_calls("qwen2.5-7b-instruct"));
+        assert!(makes_tool_calls("claude-opus-5-5"));
+        assert!(makes_tool_calls("gpt-5.5"));
         // Not a comment, a blank line, or another case.
         assert!(!makes_tool_calls("# Models known to make tool calls."));
         assert!(!makes_tool_calls(""));
