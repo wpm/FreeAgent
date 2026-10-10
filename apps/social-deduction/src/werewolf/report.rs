@@ -7,7 +7,8 @@ use std::num::NonZero;
 /// Turns the log's entries, one at a time, into lines of prose: the
 /// table, then each night and day with what every player did and how it
 /// ended, then who won. It learns who died from who is shown as alive
-/// next, so a phase's result is told as the next one begins.
+/// next, so a phase's result is told as the next one begins. A phase
+/// announced is told as one requested, and a selection as a reply.
 #[derive(Debug, Default)]
 pub struct Narrator {
     /// Every player's role, from the deal.
@@ -28,15 +29,19 @@ impl Narrator {
                 vec![self.table(variation)]
             }
             Entry::Sent {
-                message: Message::Observation(observation),
+                message: Message::Observation(observation) | Message::Announce { observation, .. },
                 ..
             } => self.begin(observation),
             Entry::Sent { .. } => vec![],
             Entry::Replied {
                 from,
                 message: Message::Action(chosen),
+            }
+            | Entry::Received {
+                from,
+                message: Message::Select { target: chosen, .. },
             } => vec![self.deed(from, chosen)],
-            Entry::Replied { .. } => vec![],
+            Entry::Replied { .. } | Entry::Received { .. } => vec![],
             Entry::End {
                 winner,
                 days,
@@ -155,13 +160,17 @@ mod tests {
         ])
     }
 
-    fn observation(round: u8, phase: Phase, alive: &[&str]) -> Message {
-        Message::Observation(Observation {
+    fn seen(round: u8, phase: Phase, alive: &[&str]) -> Observation {
+        Observation {
             round: NonZero::new(round).unwrap(),
             phase,
             roles: HashMap::new(),
             alive: alive.iter().map(|name| id(name)).collect(),
-        })
+        }
+    }
+
+    fn observation(round: u8, phase: Phase, alive: &[&str]) -> Message {
+        Message::Observation(seen(round, phase, alive))
     }
 
     fn shown(to: &str, round: u8, phase: Phase, alive: &[&str]) -> Entry {
@@ -175,6 +184,29 @@ mod tests {
         Entry::Replied {
             from: id(from),
             message: Message::Action(id(chosen)),
+        }
+    }
+
+    /// The environment announced the phase to `to`.
+    fn announced(to: &str, seq: u64, round: u8, phase: Phase, alive: &[&str]) -> Entry {
+        Entry::Sent {
+            to: id(to),
+            message: Message::Announce {
+                seq,
+                observation: seen(round, phase, alive),
+            },
+        }
+    }
+
+    /// `from` selected `target` in the phase numbered `seq`.
+    fn selected(from: &str, seq: u64, target: &str) -> Entry {
+        Entry::Received {
+            from: id(from),
+            message: Message::Select {
+                seq,
+                from: id(from),
+                target: id(target),
+            },
         }
     }
 
@@ -315,6 +347,51 @@ mod tests {
                 "The villagers win after 1 day. Survivors: doctor (doctor), seer (seer)."
             ]
         );
+    }
+
+    #[test]
+    fn an_announced_game_is_told_as_a_requested_one_is() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        assert_eq!(
+            narrator.narrate(&announced("wolf", 1, 1, Phase::Night, &everyone)),
+            ["Night 1."]
+        );
+        assert!(
+            narrator
+                .narrate(&announced("seer", 1, 1, Phase::Night, &everyone))
+                .is_empty()
+        );
+        assert_eq!(
+            narrator.narrate(&selected("wolf", 1, "ann")),
+            ["wolf (werewolf) votes to kill ann."]
+        );
+        assert_eq!(
+            narrator.narrate(&announced(
+                "wolf",
+                2,
+                1,
+                Phase::Day,
+                &["wolf", "seer", "doctor"]
+            )),
+            ["ann dies.", "Day 1."]
+        );
+        assert_eq!(
+            narrator.narrate(&selected("seer", 2, "wolf")),
+            ["seer votes against wolf."]
+        );
+    }
+
+    #[test]
+    fn a_statement_that_is_not_a_selection_is_passed_over() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        let received = Entry::Received {
+            from: id("wolf"),
+            message: Message::Action(id("ann")),
+        };
+        assert!(narrator.narrate(&received).is_empty());
     }
 
     #[test]
