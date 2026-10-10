@@ -208,4 +208,22 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn the_playing_provider_outlives_a_hang_up_and_finds_nothing_at_any_other_path() {
+        let base_url = playing(&["qwen2.5-7b-instruct"]);
+        let address = base_url
+            .trim_start_matches("http://")
+            .trim_end_matches("/v1");
+        drop(TcpStream::connect(address).unwrap());
+        let mut asking = TcpStream::connect(address).unwrap();
+        asking
+            .write_all(b"GET /v1/elsewhere HTTP/1.1\r\nHost: test\r\n\r\n")
+            .unwrap();
+        let mut answer = String::new();
+        asking.read_to_string(&mut answer).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 404 Not Found\r\n"), "{answer}");
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        assert_eq!(provider.models().await.unwrap(), ["qwen2.5-7b-instruct"]);
+    }
 }
