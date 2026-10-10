@@ -3,4 +3,5 @@
 
 #![warn(missing_docs)]
 
+pub mod model;
 pub mod werewolf;

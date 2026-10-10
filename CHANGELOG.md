@@ -13,6 +13,12 @@ workflow takes a version's notes from here.
   statement, request, and reply on the Tokio runtime.
 - The `social-deduction` application, which plays Werewolf with the roles
   dealt at random.
+- `social-deduction werewolf llm`, in which every player is a language
+  model set up by a TOML configuration file: the model, how to reach it, and
+  the prompt templates each role is given. For now it checks the file and
+  the model and says the game is not playable yet.
+- `social-deduction models`, which lists the models a provider serves,
+  marking those known to make tool calls.
 
 ### Changed
 

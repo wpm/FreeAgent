@@ -18,6 +18,7 @@
 //! a [`SecretString`], which is redacted wherever it is shown.
 
 use super::{PlayerId, Role, RoleCounts, Rules, Table};
+use crate::model::Provider;
 use anyhow::{Context, anyhow, bail};
 use clap::Args;
 use minijinja::{Environment, UndefinedBehavior, Value, context};
@@ -101,6 +102,12 @@ impl Model {
                     .with_context(|| format!("api_key_env names {name}, which is not set"))
             })
             .transpose()
+    }
+
+    /// The provider the table is reached through, with its key read from
+    /// the environment as [`Model::api_key`] reads it.
+    pub fn provider(&self) -> anyhow::Result<Provider> {
+        Provider::new(&self.base_url, self.api_key()?, self.request_timeout)
     }
 }
 
@@ -360,7 +367,7 @@ id = "qwen2.5-7b-instruct"
     }
 
     #[test]
-    fn the_examples_parse_and_render() {
+    fn the_examples_parse_and_render_and_name_a_model_known_to_make_tool_calls() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/werewolf/llm");
         let files: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
@@ -371,6 +378,12 @@ id = "qwen2.5-7b-instruct"
         for file in files {
             let config =
                 Config::load(&file).unwrap_or_else(|e| panic!("{}: {e:#}", file.display()));
+            assert!(
+                crate::model::makes_tool_calls(&config.model.id),
+                "{}: {}",
+                file.display(),
+                config.model.id
+            );
             let prompts = config
                 .settle(Overrides::default())
                 .prompts()

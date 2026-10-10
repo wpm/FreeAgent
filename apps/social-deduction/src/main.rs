@@ -1,25 +1,36 @@
 //! Play a social deduction game: name the game and its variant, deal the
 //! roles, run one game, log it to standard error as JSON lines, and tell it
-//! on standard output as it happens.
+//! on standard output as it happens. Or list the models a provider serves,
+//! which belongs to no game.
 
 use clap::{Parser, Subcommand};
+use social_deduction::model::{check_makes_tool_calls, makes_tool_calls};
 use social_deduction::werewolf::llm::{self, Config};
 use social_deduction::werewolf::report::Narrator;
 use social_deduction::werewolf::uniform_random::{Actor, game};
 use social_deduction::werewolf::{RoleCounts, Rules, Table};
+use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::oneshot;
 
-/// The games. Each is a subcommand that names one of its variants.
+/// The command line: a game, which is a subcommand that names one of its
+/// variants, or a command that belongs to no game.
 #[derive(Parser, Debug)]
 #[command(version, about)]
-enum Game {
+enum CommandLine {
     /// Werewolf: werewolves against villagers, by night and by day.
     #[command(subcommand)]
     Werewolf(Werewolf),
+    /// List the models a provider serves, marking those known to make tool
+    /// calls.
+    Models {
+        /// The TOML configuration file whose [model] table names the provider
+        #[arg(long)]
+        config: PathBuf,
+    },
 }
 
 /// The variants of Werewolf, each with its own arguments.
@@ -45,17 +56,21 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    match Game::parse() {
-        Game::Werewolf(Werewolf::UniformRandom { roles }) => {
+    match CommandLine::parse() {
+        CommandLine::Werewolf(Werewolf::UniformRandom { roles }) => {
             uniform_random(roles.or(Table::default())).await
         }
-        Game::Werewolf(Werewolf::Llm { config, overrides }) => {
+        CommandLine::Werewolf(Werewolf::Llm { config, overrides }) => {
             let settings = Config::load(&config)?.settle(overrides);
-            // The key is read and every prompt rendered now, so that a
-            // variable that is not set or a template that is broken fails
-            // before anything else. The game that would use them comes later.
-            let _api_key = settings.config.model.api_key()?;
+            // The key is read, every prompt rendered, and the model checked
+            // now, so that a variable that is not set, a template that is
+            // broken, or a model that cannot play fails before anything
+            // else. The game that would use them comes later.
+            let model = &settings.config.model;
+            let provider = model.provider()?;
             let prompts = settings.prompts()?;
+            check_makes_tool_calls(&model.id)?;
+            provider.check_serves(&model.id).await?;
             print!("{settings}");
             for prompt in &prompts {
                 print!("{prompt}");
@@ -63,7 +78,26 @@ async fn main() -> anyhow::Result<()> {
             println!("The model-played game is not playable yet.");
             Ok(())
         }
+        CommandLine::Models { config } => {
+            let ids = Config::load(&config)?.model.provider()?.models().await?;
+            print!("{}", marked(ids));
+            Ok(())
+        }
     }
+}
+
+/// The listing the `models` command prints: one id per line in sorted
+/// order, those known to make tool calls marked `*` and the rest indented
+/// to line up, then a line saying what the mark means.
+fn marked(mut ids: Vec<String>) -> String {
+    ids.sort();
+    let mut listing = String::new();
+    for id in &ids {
+        let mark = if makes_tool_calls(id) { "*" } else { " " };
+        writeln!(listing, "{mark} {id}").unwrap();
+    }
+    writeln!(listing, "* marks a model known to make tool calls.").unwrap();
+    listing
 }
 
 /// Play one uniform-random game at `table`.
@@ -98,8 +132,8 @@ mod tests {
 
     #[test]
     fn the_command_line_is_a_game_then_a_variant_that_tells_unset_from_given() {
-        Game::command().debug_assert();
-        let Game::Werewolf(Werewolf::UniformRandom { roles }) = Game::parse_from([
+        CommandLine::command().debug_assert();
+        let CommandLine::Werewolf(Werewolf::UniformRandom { roles }) = CommandLine::parse_from([
             "social-deduction",
             "werewolf",
             "uniform-random",
@@ -114,7 +148,7 @@ mod tests {
 
     #[test]
     fn the_llm_variant_takes_the_file_the_role_counts_and_the_limits() {
-        let Game::Werewolf(Werewolf::Llm { config, overrides }) = Game::parse_from([
+        let CommandLine::Werewolf(Werewolf::Llm { config, overrides }) = CommandLine::parse_from([
             "social-deduction",
             "werewolf",
             "llm",
@@ -150,7 +184,7 @@ mod tests {
         .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()));
         let llm = [counts.clone(), limits.to_vec()].concat();
         for (variant, defaults) in [("uniform-random", counts), ("llm", llm)] {
-            let help = Game::command()
+            let help = CommandLine::command()
                 .find_subcommand_mut("werewolf")
                 .unwrap()
                 .find_subcommand_mut(variant)
@@ -162,5 +196,29 @@ mod tests {
                 assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
             }
         }
+    }
+
+    #[test]
+    fn the_models_command_takes_the_file_and_belongs_to_no_game() {
+        let CommandLine::Models { config } =
+            CommandLine::parse_from(["social-deduction", "models", "--config", "game.toml"])
+        else {
+            panic!()
+        };
+        assert_eq!(config, PathBuf::from("game.toml"));
+        assert!(CommandLine::try_parse_from(["social-deduction", "werewolf", "models"]).is_err());
+    }
+
+    #[test]
+    fn the_listing_is_sorted_marks_the_models_known_to_make_tool_calls_and_says_so() {
+        let ids = ["qwen2.5-7b-instruct", "gpt-0"].map(String::from).to_vec();
+        assert_eq!(
+            marked(ids),
+            "  gpt-0\n* qwen2.5-7b-instruct\n* marks a model known to make tool calls.\n"
+        );
+        assert_eq!(
+            marked(vec![]),
+            "* marks a model known to make tool calls.\n"
+        );
     }
 }
