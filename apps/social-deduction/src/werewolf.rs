@@ -27,7 +27,7 @@ pub mod scripted;
 pub mod uniform_random;
 
 use clap::Args;
-use free_agent::{ActorId, ActorInit, Behavior, Builder, Episode, Logger};
+use free_agent::{ActorId, ActorInit, Behavior, Builder, Episode, Logger, ThinkBuilder};
 use rand::seq::{IndexedRandom, SliceRandom};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -54,14 +54,29 @@ pub fn episode<A>(
 where
     A: Behavior<Message = Message, Log = Entry>,
 {
+    thinking_episode(environment, players, |id| (player(id), None), logger)
+}
+
+/// The episode of [`episode`], whose players may think: `player` builds
+/// each player's behavior and its think loop, if it has one. A player may
+/// send to the environment alone, stops nobody, and has no logger.
+pub fn thinking_episode<A>(
+    environment: ActorInit<A>,
+    players: impl IntoIterator<Item = PlayerId>,
+    mut player: impl FnMut(&PlayerId) -> (Builder<A>, Option<ThinkBuilder<Message, Entry>>),
+    logger: Logger<Entry>,
+) -> Episode<A>
+where
+    A: Behavior<Message = Message, Log = Entry>,
+{
     let mut init = HashMap::from([(ENVIRONMENT.to_string(), environment)]);
     for id in players {
-        let behavior = player(&id);
+        let (behavior, think) = player(&id);
         init.insert(
             id,
             ActorInit {
                 behavior,
-                think: None,
+                think,
                 can_send_to: HashSet::from([ENVIRONMENT.to_string()]),
                 can_shut_down: HashSet::new(),
                 has_logger: false,
