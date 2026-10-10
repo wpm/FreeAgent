@@ -618,6 +618,24 @@ pub struct Observation {
     alive: HashSet<PlayerId>,
 }
 
+/// The players `me` may choose from what it sees in `observation`: the
+/// living, other than `me`, whose roles `me` does not know. That keeps a
+/// werewolf from choosing a werewolf, the seer from asking about anyone
+/// twice, and a doctor from protecting itself. Every player chooses from
+/// this, so players of different kinds in the same seat face the same
+/// choice. Sorted by name, so that a random choice among them depends on
+/// the random number alone.
+pub fn candidates(me: &PlayerId, observation: &Observation) -> Vec<PlayerId> {
+    let mut candidates: Vec<PlayerId> = observation
+        .alive
+        .iter()
+        .filter(|player| *player != me && !observation.roles.contains_key(*player))
+        .cloned()
+        .collect();
+    candidates.sort();
+    candidates
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1033,5 +1051,53 @@ mod tests {
         state.alive.remove("wolf1");
         state.alive.remove("wolf2");
         assert_eq!(state.winner(), Some(Team::Villagers));
+    }
+
+    fn id(name: &str) -> PlayerId {
+        name.to_string()
+    }
+
+    /// What `me` sees of a village where everyone in `alive` lives and
+    /// `me` knows the roles in `known`.
+    pub(super) fn seen(alive: &[&str], known: &[(&str, Role)]) -> Observation {
+        Observation {
+            round: NonZero::new(1).unwrap(),
+            phase: Phase::Night,
+            roles: known.iter().map(|(name, role)| (id(name), *role)).collect(),
+            alive: alive.iter().map(|name| id(name)).collect(),
+        }
+    }
+
+    #[test]
+    fn the_candidates_are_the_living_whose_role_is_unknown_in_name_order() {
+        let observation = seen(
+            &["wolf1", "wolf2", "bob", "ann"],
+            &[("wolf1", Role::Werewolf), ("wolf2", Role::Werewolf)],
+        );
+        assert_eq!(
+            candidates(&id("wolf1"), &observation),
+            [id("ann"), id("bob")]
+        );
+    }
+
+    #[test]
+    fn a_player_is_never_its_own_candidate() {
+        let observation = seen(&["ann", "bob"], &[("ann", Role::Villager)]);
+        assert_eq!(candidates(&id("ann"), &observation), [id("bob")]);
+    }
+
+    #[test]
+    fn a_player_who_knows_everyone_alive_has_no_candidates() {
+        let observation = seen(
+            &["seer", "wolf"],
+            &[("seer", Role::Seer), ("wolf", Role::Werewolf)],
+        );
+        assert!(candidates(&id("seer"), &observation).is_empty());
+    }
+
+    #[test]
+    fn the_dead_are_not_candidates() {
+        let observation = seen(&["ann"], &[("ann", Role::Villager)]);
+        assert!(candidates(&id("ann"), &observation).is_empty());
     }
 }

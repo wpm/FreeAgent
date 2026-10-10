@@ -1,7 +1,7 @@
 //! The uniform-random variant: an environment that runs the game as a loop
 //! and players who choose at random.
 
-use super::{Choices, Entry, Message, Observation, PlayerId, Role, Rules, State, Team};
+use super::{Choices, Entry, Message, Observation, PlayerId, Role, Rules, State, Team, candidates};
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Builder, Context, Episode, Logger};
 use futures_util::future::try_join_all;
@@ -260,9 +260,8 @@ impl Behavior for Environment {
     }
 }
 
-/// A player who, asked to choose, picks at random among the living whose
-/// role it does not know. That keeps a werewolf from choosing a werewolf and
-/// the seer from asking about anyone twice.
+/// A player who, asked to choose, picks one of its [`candidates`] at
+/// random.
 pub struct Player {
     context: Context<Message, Entry>,
 }
@@ -296,29 +295,20 @@ impl Behavior for Player {
     }
 }
 
-/// A living player chosen uniformly at random by `me` from `observation`,
-/// among those whose role `me` does not know. None when there is nobody
-/// to choose. The scripted player chooses this way too.
+/// One of the [`candidates`] `me` sees in `observation`, chosen
+/// uniformly at random. None when there are no candidates. The scripted
+/// player chooses this way too.
 pub(super) fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
-    let mut candidates: Vec<&PlayerId> = observation
-        .alive
-        .iter()
-        .filter(|player| *player != me && !observation.roles.contains_key(*player))
-        .collect();
-    // Sorted so the choice depends on the random number alone, not on
-    // hash order.
-    candidates.sort();
-    candidates
+    candidates(me, observation)
         .choose(&mut rand::rng())
-        .map(|player| (*player).clone())
+        .cloned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::werewolf::tests::{between_the_deal_and_the_end, one_wolf_against, village};
-    use crate::werewolf::{ENVIRONMENT, Phase};
-    use std::num::NonZero;
+    use crate::werewolf::ENVIRONMENT;
+    use crate::werewolf::tests::{between_the_deal_and_the_end, one_wolf_against, seen, village};
     use tokio::sync::mpsc::unbounded_channel;
 
     /// A player who never answers, for a game with a time limit to wait
@@ -449,58 +439,25 @@ mod tests {
         assert!(error.to_string().contains("patience"), "{error}");
     }
 
-    fn id(name: &str) -> PlayerId {
-        name.to_string()
-    }
-
-    /// What `me` sees of a village where everyone in `alive` lives and
-    /// `me` knows the roles in `known`.
-    fn seen(alive: &[&str], known: &[(&str, Role)]) -> Observation {
-        Observation {
-            round: NonZero::new(1).unwrap(),
-            phase: Phase::Night,
-            roles: known.iter().map(|(name, role)| (id(name), *role)).collect(),
-            alive: alive.iter().map(|name| id(name)).collect(),
-        }
-    }
-
     #[test]
-    fn a_player_chooses_someone_alive_whose_role_it_does_not_know() {
+    fn a_player_chooses_one_of_its_candidates() {
+        let me = "wolf1".to_string();
         let observation = seen(
             &["wolf1", "wolf2", "ann", "bob"],
             &[("wolf1", Role::Werewolf), ("wolf2", Role::Werewolf)],
         );
-        let allowed = HashSet::from([id("ann"), id("bob")]);
+        let allowed = candidates(&me, &observation);
+        assert_eq!(allowed.len(), 2);
 
         for _ in 0..50 {
-            let chosen = choose(&id("wolf1"), &observation).unwrap();
+            let chosen = choose(&me, &observation).unwrap();
             assert!(allowed.contains(&chosen), "{chosen}");
         }
     }
 
     #[test]
-    fn a_player_never_chooses_itself() {
-        let observation = seen(&["ann", "bob"], &[("ann", Role::Villager)]);
-
-        for _ in 0..50 {
-            assert_eq!(choose(&id("ann"), &observation), Some(id("bob")));
-        }
-    }
-
-    #[test]
-    fn a_player_with_no_one_to_choose_chooses_no_one() {
-        let observation = seen(
-            &["seer", "wolf"],
-            &[("seer", Role::Seer), ("wolf", Role::Werewolf)],
-        );
-
-        assert_eq!(choose(&id("seer"), &observation), None);
-    }
-
-    #[test]
-    fn a_player_does_not_choose_the_dead() {
+    fn a_player_without_candidates_chooses_no_one() {
         let observation = seen(&["ann"], &[("ann", Role::Villager)]);
-
-        assert_eq!(choose(&id("ann"), &observation), None);
+        assert_eq!(choose(&"ann".to_string(), &observation), None);
     }
 }
