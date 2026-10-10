@@ -122,9 +122,73 @@ fn a_game_and_a_variant_must_be_named() {
 #[test]
 fn help_lists_the_games_the_variants_and_the_role_counts() {
     assert!(printed(&["--help"]).contains("werewolf"));
-    assert!(printed(&["werewolf", "--help"]).contains("uniform-random"));
-    let help = printed(&["werewolf", "uniform-random", "--help"]);
-    for count in ["--werewolves", "--villagers", "--doctors", "--seers"] {
-        assert!(help.contains(count), "{help}");
+    let help = printed(&["werewolf", "--help"]);
+    assert!(
+        help.contains("uniform-random") && help.contains("llm"),
+        "{help}"
+    );
+    for variant in ["uniform-random", "llm"] {
+        let help = printed(&["werewolf", variant, "--help"]);
+        for count in ["--werewolves", "--villagers", "--doctors", "--seers"] {
+            assert!(help.contains(count), "{help}");
+        }
     }
+}
+
+/// An example configuration file, by its name in the examples directory.
+fn example(name: &str) -> String {
+    format!(
+        "{}/examples/werewolf/llm/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+#[test]
+fn the_llm_variant_prints_its_settings_and_is_not_playable_yet() {
+    let printed = printed(&["werewolf", "llm", "--config", &example("minimal.toml")]);
+    assert_eq!(
+        printed,
+        "\
+model: qwen2.5-7b-instruct at http://localhost:1234/v1
+request timeout: 1m
+API key: none
+roles: 2 werewolves, 3 villagers, 1 doctor, 1 seer
+night limit: 1m
+day limit: 1m
+The model-played game is not playable yet.
+"
+    );
+}
+
+#[test]
+fn the_llm_variant_hears_the_command_line_over_the_file() {
+    let printed = printed(&[
+        "werewolf",
+        "llm",
+        "--config",
+        &example("personas.toml"),
+        "--werewolves",
+        "1",
+        "--day-limit",
+        "2m",
+    ]);
+    assert!(
+        printed.contains("roles: 1 werewolf, 3 villagers"),
+        "{printed}"
+    );
+    assert!(printed.contains("day limit: 2m\n"), "{printed}");
+}
+
+#[test]
+fn the_llm_variant_needs_a_configuration_file() {
+    assert_usage_error(&["werewolf", "llm"]);
+    assert_usage_error(&["werewolf", "llm", "--werewolves", "1"]);
+}
+
+#[test]
+fn a_configuration_file_that_cannot_be_read_is_an_error_naming_it() {
+    let output = run(&["werewolf", "llm", "--config", "no-such-file.toml"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("no-such-file.toml"), "{stderr}");
 }

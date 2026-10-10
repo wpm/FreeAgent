@@ -21,9 +21,13 @@ async-trait.workspace = true
 futures-util.workspace = true
 clap.workspace = true
 free-agent.workspace = true
+humantime.workspace = true
+humantime-serde.workspace = true
 rand.workspace = true
+secrecy.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+toml.workspace = true
 
 [dev-dependencies]
 # A paused clock lets a test wait out a day's time limit without waiting.
