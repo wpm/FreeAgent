@@ -151,7 +151,7 @@ impl Default for Table {
 
 impl Table {
     /// Each role and how many of it, in the order the roles are dealt.
-    fn counts(&self) -> [(Role, usize); 4] {
+    pub fn counts(&self) -> [(Role, usize); 4] {
         [
             (Role::Werewolf, self.werewolves),
             (Role::Villager, self.villagers),
@@ -160,20 +160,21 @@ impl Table {
         ]
     }
 
-    /// Deal the roles at random to players named `player1` onward. The
-    /// names say nothing about the roles, since every player sees every
-    /// name.
+    /// The seats, named `player1` onward, one per player. The names say
+    /// nothing about the roles, since every player sees every name.
+    pub fn seats(&self) -> impl Iterator<Item = PlayerId> {
+        let players: usize = self.counts().iter().map(|(_, count)| count).sum();
+        (1..=players).map(|seat| format!("player{seat}"))
+    }
+
+    /// Deal the roles at random to the seats.
     pub fn deal(&self) -> HashMap<PlayerId, Role> {
         let mut roles = Vec::new();
         for (role, count) in self.counts() {
             roles.extend(std::iter::repeat_n(role, count));
         }
         roles.shuffle(&mut rand::rng());
-        roles
-            .into_iter()
-            .enumerate()
-            .map(|(seat, role)| (format!("player{}", seat + 1), role))
-            .collect()
+        self.seats().zip(roles).collect()
     }
 }
 
@@ -541,6 +542,18 @@ mod tests {
         assert_eq!(count(Role::Villager), 3);
         assert_eq!(count(Role::Doctor), 1);
         assert_eq!(count(Role::Seer), 1);
+    }
+
+    #[test]
+    fn the_seats_are_numbered_from_one_up_to_the_number_of_players() {
+        let table = Table {
+            werewolves: 1,
+            villagers: 2,
+            doctors: 0,
+            seers: 1,
+        };
+        let seats: Vec<_> = table.seats().collect();
+        assert_eq!(seats, ["player1", "player2", "player3", "player4"]);
     }
 
     #[test]

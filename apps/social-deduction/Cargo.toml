@@ -23,6 +23,7 @@ clap.workspace = true
 free-agent.workspace = true
 humantime.workspace = true
 humantime-serde.workspace = true
+minijinja.workspace = true
 rand.workspace = true
 secrecy.workspace = true
 serde.workspace = true
