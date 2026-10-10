@@ -12,9 +12,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::oneshot;
 
-/// The environment's name in the episode.
-pub const ENVIRONMENT: &str = "environment";
-
 /// Everything the episode needs to run the environment for a game of
 /// `roles` under `rules`, as the actor `wrap` makes of it: it may send to
 /// and stop every player, holds the logger, and thinks. The winning team
@@ -109,18 +106,33 @@ impl Game {
         counts && self.selections.len() == self.awake.len()
     }
 
-    /// Resolve the current phase from its selections under its vote.
-    /// Returns who died.
-    fn resolve(&mut self) -> Option<PlayerId> {
-        match self.state.phase {
+    /// End the phase numbered `seq`, unless it has already ended: resolve
+    /// it from its selections under its vote, and move on to the next
+    /// phase if the game goes on. Returns who died and who won, if anyone.
+    fn end(&mut self, seq: u64) -> Option<Ended> {
+        if seq != self.seq {
+            return None;
+        }
+        let dead = match self.state.phase {
             Phase::Night => self
                 .state
                 .resolve_night(&self.selections, self.rules.night_vote.as_ref()),
             Phase::Day => self
                 .state
                 .resolve_day(&self.selections, self.rules.day_vote.as_ref()),
+        };
+        let winner = self.state.winner();
+        if winner.is_none() {
+            self.state.next();
         }
+        Some(Ended { dead, winner })
     }
+}
+
+/// How a phase ended: who died in it, and who won the game if anyone.
+struct Ended {
+    dead: Option<PlayerId>,
+    winner: Option<Team>,
 }
 
 /// A phase just opened: its number, what each awake player may see of it,
@@ -163,27 +175,18 @@ impl Environment {
         self.context.think_after(limit, Message::EndPhase { seq })
     }
 
-    /// End the phase numbered `seq`, unless it has already ended: resolve
-    /// it, stop whoever died, and then end the game or open the next
-    /// phase.
+    /// End the phase numbered `seq`, unless it has already ended: stop
+    /// whoever died in it, and then end the game or open the next phase.
     fn end_phase(&self, seq: u64) -> anyhow::Result<()> {
-        let (dead, winner) = {
-            let mut game = self.game();
-            if game.seq != seq {
-                return Ok(());
-            }
-            let dead = game.resolve();
-            (dead, game.state.winner())
+        let Some(Ended { dead, winner }) = self.game().end(seq) else {
+            return Ok(());
         };
         if let Some(player) = &dead {
             self.context.stop(player)?;
         }
         match winner {
             Some(team) => self.end_game(team),
-            None => {
-                self.game().state.next();
-                self.open_phase()
-            }
+            None => self.open_phase(),
         }
     }
 
@@ -267,25 +270,23 @@ impl Think for Environment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::werewolf::tests::village;
+    use crate::werewolf::tests::{one_wolf_against, village};
 
     fn id(name: &str) -> PlayerId {
         name.to_string()
     }
 
     /// The village, with its first night open.
-    fn opened() -> (Game, u64) {
+    fn opened() -> (Game, Opened) {
         let (winner, _) = oneshot::channel();
         let mut game = Game::new(village().roles, Rules::default(), winner);
-        let seq = game.open().unwrap().seq;
-        (game, seq)
+        let night = game.open().unwrap();
+        (game, night)
     }
 
     #[test]
     fn opening_a_phase_numbers_it_from_one_and_shows_it_to_the_awake() {
-        let (winner, _) = oneshot::channel();
-        let mut game = Game::new(village().roles, Rules::default(), winner);
-        let night = game.open().unwrap();
+        let (mut game, night) = opened();
         assert_eq!(night.seq, 1);
         let mut shown: Vec<PlayerId> = night.shown.into_iter().map(|(player, _)| player).collect();
         shown.sort();
@@ -300,7 +301,7 @@ mod tests {
 
     #[test]
     fn the_last_selection_of_a_phase_ends_it() {
-        let (mut game, seq) = opened();
+        let (mut game, Opened { seq, .. }) = opened();
         assert!(!game.select(seq, &id("wolf1"), &id("villager")));
         assert!(!game.select(seq, &id("wolf2"), &id("villager")));
         assert!(game.select(seq, &id("seer"), &id("wolf1")));
@@ -308,7 +309,7 @@ mod tests {
 
     #[test]
     fn a_selection_for_another_phase_does_not_count() {
-        let (mut game, seq) = opened();
+        let (mut game, Opened { seq, .. }) = opened();
         assert!(!game.select(seq - 1, &id("wolf1"), &id("villager")));
         assert!(!game.select(seq + 1, &id("wolf1"), &id("villager")));
         assert!(game.selections.is_empty());
@@ -316,14 +317,14 @@ mod tests {
 
     #[test]
     fn a_selection_by_a_player_who_is_not_awake_does_not_count() {
-        let (mut game, seq) = opened();
+        let (mut game, Opened { seq, .. }) = opened();
         assert!(!game.select(seq, &id("villager"), &id("wolf1")));
         assert!(game.selections.is_empty());
     }
 
     #[test]
     fn only_a_players_first_selection_in_a_phase_counts() {
-        let (mut game, seq) = opened();
+        let (mut game, Opened { seq, .. }) = opened();
         game.select(seq, &id("wolf1"), &id("villager"));
         game.select(seq, &id("wolf2"), &id("villager"));
         assert!(!game.select(seq, &id("wolf1"), &id("seer")));
@@ -332,14 +333,41 @@ mod tests {
 
     #[test]
     fn a_phase_is_resolved_from_its_selections_under_its_vote() {
-        let (mut game, seq) = opened();
-        game.select(seq, &id("wolf1"), &id("villager"));
-        game.select(seq, &id("wolf2"), &id("villager"));
-        assert_eq!(game.resolve(), Some(id("villager")));
-        game.state.next();
+        let (winner, _) = oneshot::channel();
+        let roles = one_wolf_against(&["ann", "bob", "cat"]);
+        let mut game = Game::new(roles, Rules::default(), winner);
         let seq = game.open().unwrap().seq;
-        game.select(seq, &id("wolf1"), &id("seer"));
-        game.select(seq, &id("seer"), &id("wolf1"));
-        assert_eq!(game.resolve(), None);
+        game.select(seq, &id("wolf"), &id("ann"));
+        let night = game.end(seq).unwrap();
+        assert_eq!(night.dead, Some(id("ann")));
+        assert_eq!(night.winner, None);
+        // The game goes on, so the next phase is the day.
+        let day = game.open().unwrap();
+        assert_eq!(day.seq, 2);
+        assert_eq!(day.limit, Rules::default().day_limit);
+        game.select(day.seq, &id("wolf"), &id("bob"));
+        game.select(day.seq, &id("bob"), &id("wolf"));
+        let tied = game.end(day.seq).unwrap();
+        assert_eq!(tied.dead, None);
+        assert_eq!(tied.winner, None);
+    }
+
+    #[test]
+    fn a_phase_that_has_ended_does_not_end_again() {
+        let (mut game, Opened { seq, .. }) = opened();
+        assert!(game.end(seq).is_some());
+        game.open().unwrap();
+        assert!(game.end(seq).is_none());
+    }
+
+    #[test]
+    fn a_phase_that_decides_the_game_is_the_last() {
+        let (mut game, Opened { seq, .. }) = opened();
+        game.state.alive.remove("wolf2");
+        game.select(seq, &id("wolf1"), &id("villager"));
+        let night = game.end(seq).unwrap();
+        assert_eq!(night.dead, Some(id("villager")));
+        assert_eq!(night.winner, Some(Team::Werewolves));
+        assert_eq!(game.state.days(), 0);
     }
 }

@@ -38,6 +38,9 @@ use std::time::Duration;
 /// A player is an actor, named as the episode names it.
 pub type PlayerId = ActorId;
 
+/// The environment's name in the episode.
+pub const ENVIRONMENT: &str = "environment";
+
 /// What the awake players chose in a phase: each player's choice of another.
 type Choices = HashMap<PlayerId, PlayerId>;
 
@@ -676,6 +679,15 @@ mod tests {
             ("seer".to_string(), Role::Seer),
             ("villager".to_string(), Role::Villager),
         ]))
+    }
+
+    /// One werewolf against `villagers`.
+    pub(super) fn one_wolf_against(villagers: &[&str]) -> HashMap<PlayerId, Role> {
+        let mut roles = HashMap::from([("wolf".to_string(), Role::Werewolf)]);
+        for villager in villagers {
+            roles.insert(villager.to_string(), Role::Villager);
+        }
+        roles
     }
 
     fn seen_by(observer: &str) -> Vec<String> {

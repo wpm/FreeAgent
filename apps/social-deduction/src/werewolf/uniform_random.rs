@@ -1,7 +1,9 @@
 //! The uniform-random variant: an environment that runs the game as a loop
 //! and players who choose at random.
 
-use super::{Choices, Entry, Message, Observation, PlayerId, Role, Rules, State, Team};
+use super::{
+    Choices, ENVIRONMENT, Entry, Message, Observation, PlayerId, Role, Rules, State, Team,
+};
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Builder, Context, Episode, Logger};
 use futures_util::future::try_join_all;
@@ -10,9 +12,6 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
-
-/// The environment's name in the episode.
-const ENVIRONMENT: &str = "environment";
 
 /// An episode of a game of `roles` under `rules`: the environment, which
 /// may reach and stop every player and holds `logger`, and a player for
@@ -335,7 +334,8 @@ pub(super) fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerI
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::werewolf::{Phase, tests::village};
+    use crate::werewolf::Phase;
+    use crate::werewolf::tests::{one_wolf_against, village};
     use std::num::NonZero;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -451,14 +451,6 @@ mod tests {
         }
         // By the first night three players are shown the game.
         assert!(shown >= 3, "{logged:?}");
-    }
-
-    fn one_wolf_against(villagers: &[&str]) -> HashMap<PlayerId, Role> {
-        let mut roles = HashMap::from([("wolf".to_string(), Role::Werewolf)]);
-        for villager in villagers {
-            roles.insert(villager.to_string(), Role::Villager);
-        }
-        roles
     }
 
     #[tokio::test]
