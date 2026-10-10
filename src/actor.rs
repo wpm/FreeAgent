@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow::{self, Break, Continue};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -72,7 +72,7 @@ pub(crate) struct Actor<B: Behavior> {
 }
 
 impl<B: Behavior> Actor<B> {
-    /// An actor's whole life, in four phases.
+    /// An actor's whole life, in five phases.
     ///
     /// 1. Initialize, and tell the episode this actor is ready.
     /// 2. Spawn the think loop, if there is one, in a task of its own.
@@ -108,7 +108,7 @@ impl<B: Behavior> Actor<B> {
             .think
             .take()
             .map(|think| tokio::spawn(think.run(shutdown.clone())));
-        let perceived = self.perceive().await;
+        let perceived = self.perceive(&shutdown).await;
         if let Some(thinking) = thinking {
             // Whatever ended perceiving ends thinking, and the think loop
             // is gone before anything is cleaned up from under it.
@@ -121,8 +121,7 @@ impl<B: Behavior> Actor<B> {
 
     /// Wait for the start signal and the mail, and hand each to the
     /// behavior, until shut down or the episode is gone before the start.
-    async fn perceive(&mut self) -> anyhow::Result<()> {
-        let shutdown = self.behavior.context().shutdown.mine.clone();
+    async fn perceive(&mut self, shutdown: &CancellationToken) -> anyhow::Result<()> {
         let mut start_consumed = false;
         loop {
             // Wait for whichever happens first: shutdown, the start signal,
@@ -208,28 +207,25 @@ pub(crate) struct ThinkLoop<M: Message> {
 }
 
 impl<M: Message> ThinkLoop<M> {
+    /// Open a think queue into `context`, and build the loop from `build`
+    /// with a twin of it.
+    pub(crate) fn open<L>(build: ThinkBuilder<M, L>, context: &mut Context<M, L>) -> Self {
+        let (thoughts, queue) = unbounded_channel();
+        context.thoughts = Some(thoughts);
+        Self {
+            think: build(context.twin()),
+            queue,
+        }
+    }
+
     /// Think about each message on the queue in turn, one at a time in the
     /// order they arrived, until `shutdown` fires. An error from a thought
     /// is dropped and the loop goes on to the next message. Shutdown drops a
     /// thought in progress at its next await and leaves the rest of the
     /// queue unhandled.
     async fn run(mut self, shutdown: CancellationToken) {
-        loop {
-            // `biased` tries the arms in order, so shutdown wins a tie. The
-            // queue cannot close while this loop runs, since the perceive
-            // loop's context holds a sender until the actor has joined this
-            // task.
-            let message = tokio::select! {
-                biased;
-                _ = shutdown.cancelled() => break,
-                Some(message) = self.queue.recv() => message,
-            };
-            if run_unless_stopped(&shutdown, self.think.think(&message))
-                .await
-                .is_none()
-            {
-                break;
-            }
+        while let Some(Some(message)) = run_unless_stopped(&shutdown, self.queue.recv()).await {
+            let _ = run_unless_stopped(&shutdown, self.think.think(&message)).await;
         }
     }
 }
@@ -272,7 +268,8 @@ pub struct Context<M: Message, L = M> {
 
 impl<M: Message, L> Context<M, L> {
     /// A second context for the same actor, with everything this one has:
-    /// the think loop's, beside the perceive loop's.
+    /// the think loop's, beside the perceive loop's. Only the episode makes
+    /// contexts, so this is not `Clone`.
     pub(crate) fn twin(&self) -> Self {
         Self {
             id: self.id.clone(),
@@ -501,17 +498,16 @@ pub trait Behavior: Send {
 /// in the meantime. An error from a thought is dropped, and the loop goes on
 /// to the next message.
 ///
-/// The think loop keeps the [`Context`] it is built with, which can do all
-/// the behavior's can except reply: send statements, make requests and
-/// await their replies, stop actors, shut its actor down, log, and think
-/// some more. The [`ThinkBuilder`] in the actor's [`ActorInit`] wraps the
-/// `Think` around it.
+/// The think loop keeps the [`Context`] it is built with, and the
+/// [`ThinkBuilder`] in the actor's [`ActorInit`] wraps the `Think` around
+/// it. Through it the loop does everything the behavior does except reply:
+/// it sends statements, makes requests and awaits their replies, stops
+/// actors, shuts its actor down, logs, and thinks some more.
 ///
-/// An actor's state is its brain, and it has one. Both loops run at once,
-/// so state they share lives in an `Arc<std::sync::Mutex<S>>` that the
-/// application makes and gives to both when it builds them. Each lock is
-/// held briefly and never across an await: a `std::sync::MutexGuard` is not
-/// `Send`, so the compiler rejects a lock held across a model call.
+/// Both loops run at once, so state they share lives in an
+/// `Arc<std::sync::Mutex<_>>` held briefly and never across an await: a
+/// `std::sync::MutexGuard` is not `Send`, so the compiler rejects a lock
+/// held across a model call.
 ///
 /// ```
 /// # use async_trait::async_trait;
@@ -526,15 +522,11 @@ pub trait Behavior: Send {
 /// }
 /// impl Message for Note {}
 ///
-/// /// What the actor has worked out so far.
-/// #[derive(Default)]
-/// struct Findings(Vec<String>);
-///
 /// /// Hands each question off to be studied, and answers every request at
 /// /// once with the findings so far.
 /// struct Scholar {
 ///     context: Context<Note>,
-///     findings: Arc<Mutex<Findings>>,
+///     findings: Arc<Mutex<Vec<String>>>,
 /// }
 /// #[async_trait]
 /// impl Behavior for Scholar {
@@ -547,15 +539,15 @@ pub trait Behavior: Send {
 ///         self.context.think(message.clone())
 ///     }
 ///     async fn answer(&mut self, _message: &Note) -> anyhow::Result<Vec<Note>> {
-///         let findings = self.findings.lock().unwrap().0.clone();
-///         Ok(findings.into_iter().map(Note::Answer).collect())
+///         let findings = self.findings.lock().unwrap();
+///         Ok(findings.iter().cloned().map(Note::Answer).collect())
 ///     }
 /// }
 ///
 /// /// Takes its time over each question, then records what it found.
 /// struct Study {
 ///     context: Context<Note>,
-///     findings: Arc<Mutex<Findings>>,
+///     findings: Arc<Mutex<Vec<String>>>,
 /// }
 /// #[async_trait]
 /// impl Think for Study {
@@ -566,14 +558,14 @@ pub trait Behavior: Send {
 ///         };
 ///         // The slow work runs with no lock held.
 ///         let answer = look_up(question).await;
-///         self.findings.lock().unwrap().0.push(answer.clone());
+///         self.findings.lock().unwrap().push(answer.clone());
 ///         self.context.log(Note::Answer(answer));
 ///         Ok(())
 ///     }
 /// }
 /// # async fn look_up(question: &str) -> String { format!("{question}: 42") }
 ///
-/// let findings = Arc::new(Mutex::new(Findings::default()));
+/// let findings = Arc::new(Mutex::new(Vec::new()));
 /// let shared = Arc::clone(&findings);
 /// let init = ActorInit {
 ///     behavior: Box::new(move |context| Scholar { context, findings }),
@@ -831,17 +823,16 @@ mod tests {
     /// what it has thought about.
     fn thinking_rig(name: &str, delay: Duration) -> (Rig<Delegator>, UnboundedReceiver<Note>) {
         let (thought, thoughts) = unbounded_channel();
-        let (queue, think_queue) = unbounded_channel();
         let mut rig = rig_with(name, HashMap::new(), HashMap::new(), Delegator);
-        rig.actor.behavior.0.thoughts = Some(queue);
-        rig.actor.think = Some(ThinkLoop {
-            think: Box::new(Thinker {
-                context: rig.context().twin(),
+        let build = move |context| {
+            let thinker = Thinker {
+                context,
                 delay,
                 thought,
-            }),
-            queue: think_queue,
-        });
+            };
+            Box::new(thinker) as Box<dyn Think<Message = Note>>
+        };
+        rig.actor.think = Some(ThinkLoop::open(Box::new(build), &mut rig.actor.behavior.0));
         (rig, thoughts)
     }
 
@@ -951,11 +942,7 @@ mod tests {
             context,
             seen: 0,
         });
-        let ann = rig(
-            "ann",
-            HashMap::from([(id("bob"), bob.sender.clone())]),
-            HashMap::new(),
-        );
+        let ann = ann_beside(&bob);
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
         for _ in 0..2 {
@@ -979,11 +966,7 @@ mod tests {
     #[tokio::test]
     async fn the_default_receive_ignores_the_statement() {
         let bob = rig_with("bob", HashMap::new(), HashMap::new(), Mute);
-        let ann = rig(
-            "ann",
-            HashMap::from([(id("bob"), bob.sender.clone())]),
-            HashMap::new(),
-        );
+        let ann = ann_beside(&bob);
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
 
@@ -1005,11 +988,7 @@ mod tests {
     #[tokio::test]
     async fn the_default_answer_is_nothing() {
         let bob = rig_with("bob", HashMap::new(), HashMap::new(), Mute);
-        let ann = rig(
-            "ann",
-            HashMap::from([(id("bob"), bob.sender.clone())]),
-            HashMap::new(),
-        );
+        let ann = ann_beside(&bob);
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
 
@@ -1220,11 +1199,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_recipient_killed_mid_step_is_left_out_of_the_replies() {
         let (bob, _gate) = gated_rig("bob");
-        let ann = rig(
-            "ann",
-            HashMap::from([(id("bob"), bob.sender.clone())]),
-            HashMap::new(),
-        );
+        let ann = ann_beside(&bob);
         let bob_running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
         let asking = tokio::spawn(async move {
@@ -1244,11 +1219,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_responder_whose_asker_gave_up_carries_on() {
         let (bob, gate) = gated_rig("bob");
-        let ann = rig(
-            "ann",
-            HashMap::from([(id("bob"), bob.sender.clone())]),
-            HashMap::new(),
-        );
+        let ann = ann_beside(&bob);
         let bob_running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
 

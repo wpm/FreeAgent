@@ -66,8 +66,7 @@ impl<B: Behavior> Episode<B> {
                     !init.can_send_to.contains(&id),
                     "init of {id:?} names itself"
                 );
-                let (thoughts, queue) = init.think.is_some().then(unbounded_channel).unzip();
-                let context = Context {
+                let mut context = Context {
                     id: id.clone(),
                     episode,
                     mailboxes: pick(&senders, &init.can_send_to),
@@ -76,12 +75,9 @@ impl<B: Behavior> Episode<B> {
                         others: pick(&shutdowns, &init.can_shut_down),
                     },
                     log: init.has_logger.then(|| logger.clone()),
-                    thoughts,
+                    thoughts: None,
                 };
-                let think = init.think.zip(queue).map(|(build, queue)| ThinkLoop {
-                    think: build(context.twin()),
-                    queue,
-                });
+                let think = init.think.map(|build| ThinkLoop::open(build, &mut context));
                 (
                     id,
                     Actor {
@@ -223,12 +219,12 @@ fn pick<V: Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actor::{Think, ThinkBuilder};
+    use crate::actor::{Builder, Think, ThinkBuilder};
     use crate::log::Event;
     use crate::message::Message;
     use async_trait::async_trait;
     use serde::{Deserialize, Serialize};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use tokio::sync::Semaphore;
     use tokio::sync::mpsc::UnboundedSender;
 
@@ -278,11 +274,25 @@ mod tests {
             }
             self.context.log(self.context.id.clone());
             self.started.send(self.context.id.clone())?;
-            if self.context.thoughts.is_some() {
-                self.context.think(Note)?;
-            }
+            // Only an actor with a think loop can.
+            let _ = self.context.think(Note);
             Ok(())
         }
+    }
+
+    /// Builds a reporter that announces on `started`, initializes as
+    /// `initialization` says, and refuses to start if `fails`.
+    fn reporter(
+        started: UnboundedSender<ActorId>,
+        initialization: Initialization,
+        fails: bool,
+    ) -> Builder<Reporter> {
+        Box::new(move |context| Reporter {
+            context,
+            initialization,
+            started,
+            fails,
+        })
     }
 
     /// An episode under test, with the channels the test watches it through.
@@ -309,16 +319,8 @@ mod tests {
         let init = ids
             .iter()
             .map(|id| {
-                let started = started.clone();
-                let fails = failing.contains(id);
-                let initialization = initialization(id);
                 let init = ActorInit {
-                    behavior: Box::new(move |context| Reporter {
-                        context,
-                        initialization,
-                        started,
-                        fails,
-                    }),
+                    behavior: reporter(started.clone(), initialization(id), failing.contains(id)),
                     think: None,
                     can_send_to: HashSet::new(),
                     can_shut_down: HashSet::new(),
@@ -372,15 +374,9 @@ mod tests {
         let init = links
             .iter()
             .map(|(id, others)| {
-                let started = started.clone();
                 let others: HashSet<ActorId> = others.iter().map(|o| o.to_string()).collect();
                 let init = ActorInit {
-                    behavior: Box::new(move |context| Reporter {
-                        context,
-                        initialization: Initialization::default(),
-                        started,
-                        fails: false,
-                    }),
+                    behavior: reporter(started.clone(), Initialization::default(), false),
                     think: None,
                     can_send_to: others.clone(),
                     can_shut_down: others,
@@ -416,7 +412,7 @@ mod tests {
     struct Thinking {
         episode: Episode<Reporter>,
         /// A twin of the context Ann's think loop was built from.
-        context: Arc<Mutex<Option<Context<Note, ActorId>>>>,
+        context: UnboundedReceiver<Context<Note, ActorId>>,
         /// Ann's think loop reports each thought here, and the channel
         /// closes when the loop is gone.
         thoughts: UnboundedReceiver<()>,
@@ -430,28 +426,21 @@ mod tests {
         let (started, starts) = unbounded_channel();
         let (logger, _) = unbounded_channel();
         let (alive, ended) = unbounded_channel();
-        let seen = Arc::new(Mutex::new(None));
-        let stash = Arc::clone(&seen);
+        let (seen, contexts) = unbounded_channel();
         let init = [("ann", "bob"), ("bob", "ann")]
             .into_iter()
             .map(|(id, other)| {
-                let started = started.clone();
                 let think = (id == "ann").then(|| {
                     let alive = alive.clone();
-                    let stash = Arc::clone(&stash);
+                    let seen = seen.clone();
                     let build: ThinkBuilder<Note, ActorId> = Box::new(move |context| {
-                        *stash.lock().unwrap() = Some(context.twin());
+                        seen.send(context.twin()).unwrap();
                         Box::new(Closer { context, alive })
                     });
                     build
                 });
                 let init = ActorInit {
-                    behavior: Box::new(move |context| Reporter {
-                        context,
-                        initialization: Initialization::default(),
-                        started,
-                        fails: false,
-                    }),
+                    behavior: reporter(started.clone(), Initialization::default(), false),
                     think,
                     can_send_to: HashSet::from([other.to_string()]),
                     can_shut_down: HashSet::from([other.to_string()]),
@@ -462,7 +451,7 @@ mod tests {
             .collect();
         Thinking {
             episode: Episode::new(init, logger),
-            context: seen,
+            context: contexts,
             thoughts: ended,
             _starts: starts,
         }
@@ -493,12 +482,13 @@ mod tests {
     #[test]
     fn new_gives_a_think_loop_a_context_like_its_perceive_loops() {
         let Thinking {
-            episode, context, ..
+            episode,
+            mut context,
+            ..
         } = with_ann_thinking();
 
         let perceive = episode.actors["ann"].behavior.context();
-        let guard = context.lock().unwrap();
-        let think = guard.as_ref().unwrap();
+        let think = context.try_recv().unwrap();
         assert_eq!(think.id, perceive.id);
         assert_eq!(think.episode, perceive.episode);
         let reaches: Vec<_> = think.mailboxes.keys().cloned().collect();
