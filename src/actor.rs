@@ -87,16 +87,16 @@ impl<B: Behavior> Actor<B> {
             let _ = ready.send(());
         }
         let mut start_consumed = false;
-        let mut mailbox_open = true;
         loop {
             // Wait for whichever happens first: shutdown, the start signal,
             // or the next envelope. Each arm is `pattern = future => body`;
             // the body runs with the future's output bound to the pattern.
             // `biased` tries the arms in order, so shutdown wins a tie. The
             // start arm drops out once it has fired, because a oneshot
-            // receiver panics if polled again, and the mailbox arm once the
-            // mailbox has closed, which it does when every actor that may
-            // send to this one has stopped.
+            // receiver panics if polled again. The mailbox arm drops out
+            // when the mailbox yields `None`, which it does once it has
+            // closed because every actor that may send to this one has
+            // stopped.
             let flow = tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => Break(()),
@@ -104,13 +104,7 @@ impl<B: Behavior> Actor<B> {
                     start_consumed = true;
                     self.open(signal).await?
                 }
-                envelope = self.mailbox.recv(), if mailbox_open => match envelope {
-                    Some(envelope) => self.deliver(envelope).await?,
-                    None => {
-                        mailbox_open = false;
-                        Continue(())
-                    }
-                }
+                Some(envelope) = self.mailbox.recv() => self.deliver(envelope).await?,
             };
             if flow.is_break() {
                 break;
@@ -221,9 +215,6 @@ impl<M: Message, L> Context<M, L> {
     /// Fails before anything is sent when `to` names this actor itself, or
     /// an actor outside those this one may send to.
     pub fn send(&self, message: M, to: HashSet<ActorId>) -> anyhow::Result<()> {
-        if to.contains(&self.id) {
-            bail!("{} cannot send to itself", self.id);
-        }
         let senders = to
             .iter()
             .map(|id| self.mailbox_of(id))
@@ -241,20 +232,13 @@ impl<M: Message, L> Context<M, L> {
     ///
     /// # Errors
     ///
-    /// Fails before anything is sent when `to` names an actor outside those
-    /// this one may send to, or names this actor itself, which is busy with this
-    /// very step.
+    /// Fails before anything is sent when `to` names this actor itself, or
+    /// an actor outside those this one may send to.
     pub async fn request(
         &self,
         message: M,
         to: HashSet<ActorId>,
     ) -> anyhow::Result<HashMap<ActorId, Vec<M>>> {
-        if to.contains(&self.id) {
-            bail!(
-                "{} cannot request from itself: it would wait forever",
-                self.id
-            );
-        }
         let senders = to
             .iter()
             .map(|id| self.mailbox_of(id).map(|sender| (id, sender)))
@@ -280,8 +264,12 @@ impl<M: Message, L> Context<M, L> {
     ///
     /// # Errors
     ///
-    /// Fails when `id` is not an actor this one may send to.
+    /// Fails when `id` is this actor itself, or not an actor this one may
+    /// send to.
     fn mailbox_of(&self, id: &ActorId) -> anyhow::Result<&UnboundedSender<Envelope<M>>> {
+        if id == &self.id {
+            bail!("{id} cannot send to itself");
+        }
         self.mailboxes.get(id).with_context(|| {
             format!(
                 "{} cannot send to {id}: not an actor it may send to",
@@ -629,7 +617,7 @@ mod tests {
     #[tokio::test]
     async fn send_to_itself_fails_and_sends_nothing() {
         let (bob, mut bob_mailbox) = unbounded_channel();
-        let mut ann = rig("ann", HashMap::from([(id("bob"), bob)]), HashMap::new());
+        let ann = rig("ann", HashMap::from([(id("bob"), bob)]), HashMap::new());
 
         let error = ann
             .context()
@@ -638,10 +626,6 @@ mod tests {
 
         assert!(error.to_string().contains("itself"), "{error}");
         assert!(bob_mailbox.try_recv().is_err(), "nothing should reach bob");
-        assert!(
-            ann.actor.mailbox.try_recv().is_err(),
-            "nothing should reach ann"
-        );
     }
 
     #[tokio::test]

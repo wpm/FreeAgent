@@ -11,6 +11,9 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
+/// The environment's name in the episode.
+const ENVIRONMENT: &str = "environment";
+
 /// An episode of a game of `roles` under `rules`: the environment, which
 /// may reach and stop every player and holds `logger`, and a player for
 /// each role built by `player`, who may send to the environment. The
@@ -22,10 +25,9 @@ pub fn game(
     logger: Logger<Entry>,
     mut player: impl FnMut(&PlayerId) -> Builder<Actor>,
 ) -> Episode<Actor> {
-    let environment = "environment".to_string();
     let players: HashSet<PlayerId> = roles.keys().cloned().collect();
     let mut init = HashMap::from([(
-        environment.clone(),
+        ENVIRONMENT.to_string(),
         ActorInit {
             behavior: Actor::environment(roles, rules, winner),
             can_send_to: players.clone(),
@@ -39,7 +41,7 @@ pub fn game(
             id,
             ActorInit {
                 behavior,
-                can_send_to: HashSet::from([environment.clone()]),
+                can_send_to: HashSet::from([ENVIRONMENT.to_string()]),
                 can_shut_down: HashSet::new(),
                 has_logger: false,
             },
@@ -357,7 +359,7 @@ mod tests {
             let me = self.context.id.clone();
             self.context.send(
                 Message::Action(me),
-                HashSet::from(["environment".to_string()]),
+                HashSet::from([ENVIRONMENT.to_string()]),
             )
         }
 

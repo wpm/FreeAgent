@@ -31,7 +31,8 @@ impl<B: Behavior> Episode<B> {
     /// # Panics
     ///
     /// Panics when an init's `can_send_to` or `can_shut_down` names an actor
-    /// missing from `init`. An episode's wiring is checked when it is built.
+    /// missing from `init`, or its `can_send_to` names the actor itself. An
+    /// episode's wiring is checked when it is built.
     pub fn new(init: HashMap<ActorId, ActorInit<B>>, logger: Logger<B::Log>) -> Self {
         // First pass: give every actor a channel and a shutdown token. The
         // init and the receiver are unique, so they stay together in one
@@ -60,6 +61,10 @@ impl<B: Behavior> Episode<B> {
                 readies.insert(id.clone(), is_ready);
                 let (start, started) = oneshot::channel();
                 starts.insert(id.clone(), start);
+                assert!(
+                    !init.can_send_to.contains(&id),
+                    "init of {id:?} names itself"
+                );
                 let context = Context {
                     id: id.clone(),
                     episode,
@@ -398,6 +403,12 @@ mod tests {
     #[should_panic(expected = "unknown actor \"zed\"")]
     fn new_panics_when_an_init_names_an_unknown_actor() {
         wired(&[("ann", &["zed"])]);
+    }
+
+    #[test]
+    #[should_panic(expected = "\"ann\" names itself")]
+    fn new_panics_when_an_init_names_the_actor_itself() {
+        wired(&[("ann", &["ann"])]);
     }
 
     #[tokio::test]
