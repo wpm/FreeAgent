@@ -10,6 +10,9 @@
 //! The API key is a [`SecretString`], exposed only where the
 //! `Authorization` header is built, so it never appears in an error.
 
+#[doc(hidden)]
+pub mod canned;
+
 use anyhow::{Context, bail};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
@@ -86,8 +89,9 @@ impl Provider {
     }
 
     /// The ids of the models the provider serves, as `GET {base_url}/models`
-    /// lists them. A request that fails or is answered with anything but
-    /// success is an error naming the URL and the status.
+    /// lists them. A request that fails is an error naming the URL, and one
+    /// answered with anything but success an error naming the URL, the
+    /// status, and whatever the provider said about it.
     pub async fn models(&self) -> anyhow::Result<Vec<String>> {
         let url = format!("{}/models", self.base_url.trim_end_matches('/'));
         let mut request = self.client.get(&url);
@@ -97,7 +101,11 @@ impl Provider {
         let response = request.send().await.with_context(|| format!("GET {url}"))?;
         let status = response.status();
         if !status.is_success() {
-            bail!("GET {url} was answered {status}");
+            let said = response.text().await.unwrap_or_default();
+            match said.trim() {
+                "" => bail!("GET {url} was answered {status}"),
+                said => bail!("GET {url} was answered {status}: {said}"),
+            }
         }
         let listing: Listing = response
             .json()
@@ -119,54 +127,11 @@ impl Provider {
 
 #[cfg(test)]
 mod tests {
+    use super::canned::{answering, bound, listing, unreachable};
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread::JoinHandle;
 
     /// Long enough for a request to a listener in this process.
     const TIMEOUT: Duration = Duration::from_secs(5);
-
-    /// A listener on a port of the OS's choosing, and the root of the API
-    /// it would serve.
-    fn bound() -> (TcpListener, String) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
-        (listener, base_url)
-    }
-
-    /// A provider that answers one request with `status` and `body`, in a
-    /// thread that gives back the head of the request it was sent.
-    fn canned(status: &str, body: &str) -> (String, JoinHandle<String>) {
-        let (listener, base_url) = bound();
-        let response = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let served = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut head = Vec::new();
-            let mut buffer = [0; 1024];
-            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
-                let n = stream.read(&mut buffer).unwrap();
-                assert!(n > 0, "the request ended before its head did");
-                head.extend_from_slice(&buffer[..n]);
-            }
-            stream.write_all(response.as_bytes()).unwrap();
-            String::from_utf8(head).unwrap()
-        });
-        (base_url, served)
-    }
-
-    /// A listing of `ids` in OpenAI's shape, with the fields a provider
-    /// adds that are not read.
-    fn listing(ids: &[&str]) -> String {
-        let data: Vec<_> = ids
-            .iter()
-            .map(|id| serde_json::json!({"id": id, "object": "model", "owned_by": "test"}))
-            .collect();
-        serde_json::json!({"object": "list", "data": data}).to_string()
-    }
 
     /// The lines of a request head, lowercased, so a header is found
     /// whatever its case.
@@ -195,7 +160,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_listing_is_asked_of_the_models_path_without_a_key_when_none_is_configured() {
-        let (base_url, served) = canned("200 OK", &listing(&["b", "a"]));
+        let (base_url, served) = answering("200 OK", &listing(&["b", "a"]));
         let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
         let models = provider.models().await.unwrap();
         assert_eq!(models, ["b", "a"]);
@@ -209,7 +174,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_listing_request_carries_the_key_as_a_bearer_token() {
-        let (base_url, served) = canned("200 OK", &listing(&["a"]));
+        let (base_url, served) = answering("200 OK", &listing(&["a"]));
         let key = SecretString::from("sk-secret");
         let provider = Provider::new(base_url, Some(key), TIMEOUT).unwrap();
         provider.models().await.unwrap();
@@ -222,22 +187,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_status_that_is_not_success_is_an_error_naming_the_url_and_the_status_not_the_key() {
-        let (base_url, _served) = canned("401 Unauthorized", "{}");
+    async fn a_status_that_is_not_success_is_an_error_naming_the_url_the_status_and_what_was_said_not_the_key()
+     {
+        let said = r#"{"error": {"message": "Incorrect API key provided"}}"#;
+        let (base_url, _served) = answering("401 Unauthorized", said);
         let key = SecretString::from("sk-secret");
         let provider = Provider::new(base_url.clone(), Some(key), TIMEOUT).unwrap();
         let error = provider.models().await.unwrap_err();
         let shown = format!("{error:#}");
         assert!(shown.contains(&format!("{base_url}/models")), "{shown}");
         assert!(shown.contains("401"), "{shown}");
+        assert!(shown.contains("Incorrect API key provided"), "{shown}");
         assert!(!shown.contains("sk-secret"), "{shown}");
+        // A provider that says nothing is not quoted.
+        let (base_url, _served) = answering("503 Service Unavailable", "");
+        let provider = Provider::new(base_url.clone(), None, TIMEOUT).unwrap();
+        let shown = format!("{:#}", provider.models().await.unwrap_err());
+        assert!(shown.ends_with("503 Service Unavailable"), "{shown}");
     }
 
     #[tokio::test]
     async fn a_request_that_fails_is_an_error_naming_the_url() {
-        // A port that was listening and is no more.
-        let (listener, base_url) = bound();
-        drop(listener);
+        let base_url = unreachable();
         let provider = Provider::new(base_url.clone(), None, TIMEOUT).unwrap();
         let error = provider.models().await.unwrap_err();
         let shown = format!("{error:#}");
@@ -261,17 +232,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_listing_that_is_not_the_shape_expected_is_an_error() {
-        let (base_url, _served) = canned("200 OK", r#"{"models": []}"#);
+        let (base_url, _served) = answering("200 OK", r#"{"models": []}"#);
         let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
         assert!(provider.models().await.is_err());
     }
 
     #[tokio::test]
     async fn a_model_the_provider_lists_is_served_and_one_it_does_not_is_an_error_naming_both() {
-        let (base_url, _served) = canned("200 OK", &listing(&["a", "qwen2.5-7b-instruct"]));
+        let (base_url, _served) = answering("200 OK", &listing(&["a", "qwen2.5-7b-instruct"]));
         let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
         provider.check_serves("qwen2.5-7b-instruct").await.unwrap();
-        let (base_url, _served) = canned("200 OK", &listing(&["a", "qwen2.5-7b-instruct"]));
+        let (base_url, _served) = answering("200 OK", &listing(&["a", "qwen2.5-7b-instruct"]));
         let provider = Provider::new(base_url.clone(), None, TIMEOUT).unwrap();
         let error = provider.check_serves("qwen").await.unwrap_err();
         let shown = format!("{error:#}");

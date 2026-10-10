@@ -25,6 +25,7 @@ use minijinja::{Environment, UndefinedBehavior, Value, context};
 use secrecy::SecretString;
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
 use std::time::Duration;
@@ -39,12 +40,21 @@ pub struct Overrides {
     /// How many of each role sit at the table.
     #[command(flatten)]
     pub roles: RoleCounts,
-    /// How long the night waits for a player [default: 1m]
-    #[arg(long, value_parser = humantime::parse_duration)]
+    /// How long the night waits for a player.
+    #[arg(long, value_parser = humantime::parse_duration, help = how_long("night", Rules::default().night_limit))]
     pub night_limit: Option<Duration>,
-    /// How long the day waits for a player [default: 1m]
-    #[arg(long, value_parser = humantime::parse_duration)]
+    /// How long the day waits for a player.
+    #[arg(long, value_parser = humantime::parse_duration, help = how_long("day", Rules::default().day_limit))]
     pub day_limit: Option<Duration>,
+}
+
+/// The help for the limit of `phase`, naming the `default` the code fills
+/// in when the limit is left unset.
+fn how_long(phase: &str, default: Duration) -> String {
+    format!(
+        "How long the {phase} waits for a player [default: {}]",
+        humantime::format_duration(default)
+    )
 }
 
 /// The configuration file, as written. Every table but `[model]` may be
@@ -90,17 +100,30 @@ pub struct Model {
 }
 
 impl Model {
+    /// Read and parse the `[model]` table alone from the file at `path`,
+    /// for a command that plays no game and need not hear about the rest
+    /// of the file. An unknown key in the table is still an error.
+    pub fn load(path: &Path) -> anyhow::Result<Self> {
+        Self::parse(&read(path)?).with_context(|| format!("in {}", path.display()))
+    }
+
+    /// Parse the `[model]` table of `file`, the text of a configuration
+    /// file, and nothing else in it.
+    pub fn parse(file: &str) -> anyhow::Result<Self> {
+        #[derive(Deserialize)]
+        struct Just {
+            model: Model,
+        }
+        Ok(toml::from_str::<Just>(file)?.model)
+    }
+
     /// The API key, read from the environment variable `api_key_env`
     /// names. A variable that is named but not set is an error. When none
     /// is named there is no key, which is what a local server expects.
     pub fn api_key(&self) -> anyhow::Result<Option<SecretString>> {
         self.api_key_env
             .as_deref()
-            .map(|name| {
-                std::env::var(name)
-                    .map(SecretString::from)
-                    .with_context(|| format!("api_key_env names {name}, which is not set"))
-            })
+            .map(|name| key(name, std::env::var_os(name)))
             .transpose()
     }
 
@@ -109,6 +132,22 @@ impl Model {
     pub fn provider(&self) -> anyhow::Result<Provider> {
         Provider::new(&self.base_url, self.api_key()?, self.request_timeout)
     }
+}
+
+/// The key the environment variable `name` holds as `value`: an error
+/// that names the variable when it is not set, or is set to something
+/// that is not UTF-8.
+fn key(name: &str, value: Option<OsString>) -> anyhow::Result<SecretString> {
+    let value = value.ok_or_else(|| anyhow!("api_key_env names {name}, which is not set"))?;
+    let value = value
+        .into_string()
+        .map_err(|_| anyhow!("api_key_env names {name}, whose value is not UTF-8"))?;
+    Ok(SecretString::from(value))
+}
+
+/// The text of the configuration file at `path`.
+fn read(path: &Path) -> anyhow::Result<String> {
+    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
 }
 
 /// The `[phases]` table: how long each phase waits for the players, for
@@ -191,9 +230,7 @@ impl Config {
     /// Read and parse the file at `path`. Reading it says nothing about
     /// the API key, so a file can be checked without the key being set.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let file =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Self::parse(&file).with_context(|| format!("in {}", path.display()))
+        Self::parse(&read(path)?).with_context(|| format!("in {}", path.display()))
     }
 
     /// Parse `file`, the text of a configuration file. A `[text]` block
@@ -201,7 +238,10 @@ impl Config {
     /// templates could not tell them apart.
     pub fn parse(file: &str) -> anyhow::Result<Self> {
         let config: Self = toml::from_str(file)?;
-        if let Some(taken) = VARIABLES.iter().find(|v| config.text.contains_key(**v)) {
+        if let Some(taken) = variables()
+            .into_iter()
+            .find(|v| config.text.contains_key(*v))
+        {
             bail!("[text] has a block named {taken}, which is a template variable");
         }
         Ok(config)
@@ -233,8 +273,20 @@ impl Config {
     }
 }
 
-/// The variables every template has besides the text blocks.
-const VARIABLES: [&str; 3] = ["name", "role", "persona"];
+/// The variables every template has besides the text blocks, for the seat
+/// `name` dealt `role`, with the seat's `persona`.
+fn player(name: &str, role: &str, persona: &str) -> BTreeMap<&'static str, Value> {
+    BTreeMap::from([
+        ("name", Value::from(name)),
+        ("role", Value::from(role)),
+        ("persona", Value::from(persona)),
+    ])
+}
+
+/// The names of the variables every template has besides the text blocks.
+fn variables() -> Vec<&'static str> {
+    player("", "", "").into_keys().collect()
+}
 
 /// One player's system prompt, rendered for a seat dealt a role.
 #[derive(Debug)]
@@ -263,17 +315,21 @@ impl Settings {
     /// from `[prompt] system`, with the variables `name`, `role` and
     /// `persona` and every `[text]` block. An undefined variable is an
     /// error, as is a role at the table with no template or a persona for
-    /// a seat that is not there. An error from a template names the seat
-    /// and the role.
+    /// a seat that is not there. A template that does not compile is an
+    /// error naming the role; one that does not render, the seat and the
+    /// role.
     pub fn prompts(&self) -> anyhow::Result<Vec<SystemPrompt>> {
         let config = &self.config;
         let seats: Vec<_> = self.table.seats().collect();
         if let Some(seat) = config.personas.keys().find(|seat| !seats.contains(seat)) {
             bail!("[personas] names {seat}, which is not a seat at this table");
         }
+        let mut env = Environment::new();
+        env.set_undefined_behavior(UndefinedBehavior::Strict);
+        // Each role's template is compiled once, and rendered once a seat.
         let mut templates = Vec::new();
         for (role, _) in self.table.counts().into_iter().filter(|&(_, n)| n > 0) {
-            let template = config
+            let source = config
                 .roles
                 .get(role)
                 .system
@@ -282,19 +338,20 @@ impl Settings {
                 .ok_or_else(|| {
                     anyhow!("no system prompt for the {role}: neither [roles.{role}] nor [prompt] has one")
                 })?;
+            let template = env
+                .template_from_str(source)
+                .with_context(|| format!("compiling the {role} prompt template"))?;
             templates.push((role, template));
         }
-        let mut env = Environment::new();
-        env.set_undefined_behavior(UndefinedBehavior::Strict);
         let blocks = Value::from(&config.text);
         let mut prompts = Vec::new();
         for seat in &seats {
             let persona = config.personas.get(seat).map_or("", String::as_str);
-            for &(role, template) in &templates {
-                let variables =
-                    context! { name => seat, role => role.to_string(), persona, ..blocks.clone() };
-                let text = env
-                    .render_str(template, variables)
+            for (role, template) in &templates {
+                let role = *role;
+                let own = Value::from(player(seat, &role.to_string(), persona));
+                let text = template
+                    .render(context! { ..own, ..blocks.clone() })
                     .with_context(|| format!("rendering the {role} prompt for {seat}"))?;
                 prompts.push(SystemPrompt {
                     seat: seat.clone(),
@@ -698,8 +755,18 @@ system = \"{{{{ rules }}}} {{{{ wolf }}}}\"
     }
 
     #[test]
+    fn a_template_that_does_not_compile_is_an_error_naming_the_role() {
+        let file = format!("{MODEL}[roles.seer]\nsystem = \"{{% if %}}\"\n{TEMPLATE}");
+        let error = settle(&file, Overrides::default()).prompts().unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("seer"), "{shown}");
+        assert!(shown.contains("syntax"), "{shown}");
+    }
+
+    #[test]
     fn a_text_block_named_like_a_variable_is_an_error_naming_it() {
-        for variable in VARIABLES {
+        assert_eq!(variables(), ["name", "persona", "role"]);
+        for variable in variables() {
             let file = format!("{MODEL}{TEMPLATE}[text]\n{variable} = \"Taken.\"\n");
             let error = Config::parse(&file).unwrap_err();
             assert!(format!("{error:#}").contains(variable), "{error:#}");
@@ -770,6 +837,26 @@ system = \"{{{{ rules }}}} {{{{ wolf }}}}\"
             format!("{error:#}").contains("SOCIAL_DEDUCTION_NO_SUCH_KEY"),
             "{error:#}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_named_key_variable_whose_value_is_not_utf_8_is_an_error_naming_it() {
+        use std::os::unix::ffi::OsStringExt;
+        let error = key("SOCIAL_DEDUCTION_KEY", Some(OsString::from_vec(vec![0xff]))).unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("SOCIAL_DEDUCTION_KEY"), "{shown}");
+        assert!(!shown.contains("not set"), "{shown}");
+    }
+
+    #[test]
+    fn the_model_table_is_read_on_its_own_whatever_the_rest_of_the_file_says() {
+        let file = format!("{MODEL}[prompt]\nsytem = \"\"\n");
+        assert!(Config::parse(&file).is_err());
+        assert_eq!(Model::parse(&file).unwrap().id, "qwen2.5-7b-instruct");
+        // Though not whatever the table itself says.
+        assert!(Model::parse(&format!("{MODEL}temperature = 0.5\n")).is_err());
+        assert!(Model::parse("[prompt]\n").is_err());
     }
 
     #[test]

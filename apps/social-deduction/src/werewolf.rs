@@ -97,18 +97,24 @@ impl Role {
 /// it in from [`Table::default`] or from somewhere else.
 #[derive(Args, Debug, Default)]
 pub struct RoleCounts {
-    /// How many werewolves [default: 2]
-    #[arg(long)]
+    /// How many werewolves.
+    #[arg(long, help = how_many("werewolves", Table::default().werewolves))]
     pub werewolves: Option<usize>,
-    /// How many plain villagers [default: 3]
-    #[arg(long)]
+    /// How many plain villagers.
+    #[arg(long, help = how_many("plain villagers", Table::default().villagers))]
     pub villagers: Option<usize>,
-    /// How many doctors [default: 1]
-    #[arg(long)]
+    /// How many doctors.
+    #[arg(long, help = how_many("doctors", Table::default().doctors))]
     pub doctors: Option<usize>,
-    /// How many seers [default: 1]
-    #[arg(long)]
+    /// How many seers.
+    #[arg(long, help = how_many("seers", Table::default().seers))]
     pub seers: Option<usize>,
+}
+
+/// The help for a count of `what`, naming the `default` the code fills in
+/// when the count is left unset.
+fn how_many(what: &str, default: usize) -> String {
+    format!("How many {what} [default: {default}]")
 }
 
 impl RoleCounts {

@@ -2,10 +2,9 @@
 //! standard output, and logs it to standard error as JSON lines.
 
 use free_agent::Event;
+use social_deduction::model::canned::{serving, unreachable};
 use social_deduction::werewolf::{Entry, PlayerId, Role};
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::process::{Command, Output};
 
 fn run(args: &[&str]) -> Output {
@@ -150,51 +149,12 @@ fn help_lists_the_games_the_variants_and_the_role_counts() {
     }
 }
 
-/// A listener on a port of the OS's choosing, and the root of the API it
-/// would serve.
-fn bound() -> (TcpListener, String) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
-    (listener, base_url)
-}
-
-/// A provider that serves `ids`: a listener that answers one request with
-/// the listing, in a thread of its own, and the root of its API.
-fn provider(ids: &[&str]) -> String {
-    let (listener, base_url) = bound();
-    let data: Vec<_> = ids.iter().map(|id| serde_json::json!({"id": id})).collect();
-    let body = serde_json::json!({"data": data}).to_string();
-    std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut head = Vec::new();
-        let mut buffer = [0; 1024];
-        while !head.windows(4).any(|w| w == b"\r\n\r\n") {
-            let n = stream.read(&mut buffer).unwrap();
-            assert!(n > 0, "the request ended before its head did");
-            head.extend_from_slice(&buffer[..n]);
-        }
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-        .unwrap();
-    });
-    base_url
-}
-
 /// The base URL the examples name. Something may well be listening there,
 /// so no test asks it anything.
 const EXAMPLE_BASE_URL: &str = "http://localhost:1234/v1";
 
 /// The model the examples name, which is known to make tool calls.
 const EXAMPLE_MODEL: &str = "qwen2.5-7b-instruct";
-
-/// The root of an API nobody serves: a port that was listening and is no
-/// more.
-fn nobody() -> String {
-    bound().1
-}
 
 /// An example configuration file, by its name in the examples directory.
 fn example(name: &str) -> String {
@@ -222,7 +182,7 @@ fn configured(test: &str, name: &str, base_url: &str, id: &str) -> String {
 
 #[test]
 fn the_llm_variant_prints_its_settings_then_every_prompt_and_is_not_playable_yet() {
-    let base_url = provider(&[EXAMPLE_MODEL]);
+    let base_url = serving(&[EXAMPLE_MODEL]);
     let config = configured("prints", "personas.toml", &base_url, EXAMPLE_MODEL);
     let printed = printed(&["werewolf", "llm", "--config", &config]);
     let lines: Vec<&str> = printed.lines().collect();
@@ -265,7 +225,7 @@ fn a_template_that_cannot_render_is_an_error_before_anything_is_printed() {
 
 #[test]
 fn the_llm_variant_hears_the_command_line_over_the_file() {
-    let base_url = provider(&[EXAMPLE_MODEL]);
+    let base_url = serving(&[EXAMPLE_MODEL]);
     let config = configured("hears", "personas.toml", &base_url, EXAMPLE_MODEL);
     let printed = printed(&[
         "werewolf",
@@ -308,7 +268,7 @@ fn the_llm_variant_refuses_a_model_not_known_to_make_tool_calls_before_asking_an
 
 #[test]
 fn the_llm_variant_refuses_a_model_its_provider_does_not_serve() {
-    let base_url = provider(&["llama-3.1-8b-instruct"]);
+    let base_url = serving(&["llama-3.1-8b-instruct"]);
     let config = configured("unserved", "minimal.toml", &base_url, EXAMPLE_MODEL);
     let stderr = refused(&["werewolf", "llm", "--config", &config]);
     assert!(stderr.contains(&base_url), "{stderr}");
@@ -317,7 +277,7 @@ fn the_llm_variant_refuses_a_model_its_provider_does_not_serve() {
 
 #[test]
 fn the_models_command_lists_the_provider_s_models_sorted_and_marks_those_that_make_tool_calls() {
-    let base_url = provider(&["zephyr-7b", EXAMPLE_MODEL, "llama-3.1-8b-instruct"]);
+    let base_url = serving(&["zephyr-7b", EXAMPLE_MODEL, "llama-3.1-8b-instruct"]);
     let config = configured("models", "minimal.toml", &base_url, EXAMPLE_MODEL);
     let printed = printed(&["models", "--config", &config]);
     let lines: Vec<&str> = printed.lines().collect();
@@ -334,10 +294,22 @@ fn the_models_command_lists_the_provider_s_models_sorted_and_marks_those_that_ma
 }
 
 #[test]
+fn the_models_command_reads_only_the_model_table() {
+    // A file the game would refuse, for a misspelled key outside [model].
+    let base_url = serving(&[EXAMPLE_MODEL]);
+    let config = configured("only-model", "minimal.toml", &base_url, EXAMPLE_MODEL);
+    let mut file = std::fs::read_to_string(&config).unwrap();
+    file.push_str("\n[roles.seer]\nsytem = \"\"\n");
+    std::fs::write(&config, file).unwrap();
+    assert!(refused(&["werewolf", "llm", "--config", &config]).contains("sytem"));
+    assert!(printed(&["models", "--config", &config]).contains(EXAMPLE_MODEL));
+}
+
+#[test]
 fn the_models_command_needs_a_configuration_file_and_names_a_provider_it_cannot_reach() {
     assert_usage_error(&["models"]);
     assert!(printed(&["models", "--help"]).contains("--config"));
-    let base_url = nobody();
+    let base_url = unreachable();
     let config = configured("nobody", "minimal.toml", &base_url, EXAMPLE_MODEL);
     let stderr = refused(&["models", "--config", &config]);
     assert!(stderr.contains(&base_url), "{stderr}");

@@ -5,7 +5,7 @@
 
 use clap::{Parser, Subcommand};
 use social_deduction::model::{check_makes_tool_calls, makes_tool_calls};
-use social_deduction::werewolf::llm::{self, Config};
+use social_deduction::werewolf::llm::{self, Config, Model};
 use social_deduction::werewolf::report::Narrator;
 use social_deduction::werewolf::uniform_random::{Actor, game};
 use social_deduction::werewolf::{RoleCounts, Rules, Table};
@@ -79,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         CommandLine::Models { config } => {
-            let ids = Config::load(&config)?.model.provider()?.models().await?;
+            let ids = Model::load(&config)?.provider()?.models().await?;
             print!("{}", marked(ids));
             Ok(())
         }
