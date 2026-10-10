@@ -1,0 +1,33 @@
+# The least a model-played game needs: a local LM Studio model and one
+# system prompt for everyone. The rules live in a text block the prompt
+# pulls in, and the prompt tells a werewolf apart from the rest with one
+# conditional. Run it with
+#
+#     social-deduction werewolf llm --config minimal.toml
+
+[model]
+base_url = "http://localhost:1234/v1"
+id = "qwen2.5-7b-instruct"
+
+[text]
+rules = """
+Werewolf is a game of hidden roles. A few of the players are secretly
+werewolves; the rest are villagers, among them a doctor and a seer. Play
+alternates between night and day. By night the werewolves choose a villager
+to kill, the doctor chooses one player to save from that kill, and the seer
+learns one player's side. By day everyone votes and the player with the most
+votes is eliminated. The villagers win when the last werewolf is dead. The
+werewolves win when they are at least as many as the villagers.
+"""
+
+[prompt]
+system = """
+{{ rules }}
+
+You are {{ name }}, a {{ role }}.
+{% if role == "werewolf" %}
+You know who the other werewolves are. Kill a villager each night and avoid
+being voted out by day.
+{% endif %}
+{% if persona %}{{ persona }}{% endif %}
+"""

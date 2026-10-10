@@ -40,11 +40,19 @@ anyhow = "1.0.104"
 async-trait = "0.1.92"
 futures-util = "0.3.34"
 clap = { version = "4.6.7", features = ["derive"] }
+humantime = "2.4.0"
+humantime-serde = "1.1.1"
+minijinja = "3.0.0"
+secrecy = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.2", features = ["macros", "rt", "sync", "time"] }
 tokio-util = "0.7.20"
+# Only parsing: nothing writes TOML.
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 rand = "0.10.3"
+# Only what reaching a model needs: rustls and JSON, nothing by default.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
 uuid = { version = "1.27.0", features = ["v4", "serde"] }
 # The version lets a crate that depends on the library be published too.
 free-agent = { path = ".", version = "0.1.0" }

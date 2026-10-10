@@ -31,3 +31,41 @@ votes is eliminated. Werewolves know who the other werewolves are, the seer
 knows what it has discovered, and everyone else knows only their own role and
 who is still alive. The villagers win when the last werewolf is dead. The
 werewolves win when they are at least as many as the villagers.
+
+The command line names the game, then its variant. In `uniform-random`
+every player chooses at random:
+
+```sh
+social-deduction werewolf uniform-random [--werewolves N] [--villagers N] [--doctors N] [--seers N]
+```
+
+The table seats two werewolves, three villagers, a doctor and a seer unless
+the counts say otherwise. The game is told on standard output as it happens
+and logged to standard error as JSON Lines.
+
+In `llm` every player is a language model, set up by a TOML configuration
+file that names the model, how to reach it, and the prompts each role is
+given. The [examples](examples/werewolf/llm) show how one is written.
+
+```sh
+social-deduction werewolf llm --config game.toml [role counts] [--night-limit 30s] [--day-limit 2m]
+```
+
+A setting comes from the command line if it is given there, otherwise from
+the file, otherwise from a default in the code. The file names the
+environment variable that holds the provider's API key, never the key
+itself. A model player makes its choices with tool calls, so the model must
+be one known to make them, listed in `src/tool_models.txt` and compiled in,
+and its provider must serve it. For now `llm` checks its configuration and
+its model, prints the settings that took effect, and says the game is not
+playable yet.
+
+## Models
+
+The `models` command belongs to no game. It asks the provider a
+configuration file names for the models it serves and lists them, marking
+with `*` those known to make tool calls:
+
+```sh
+social-deduction models --config game.toml
+```

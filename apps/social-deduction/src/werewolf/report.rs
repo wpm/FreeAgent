@@ -1,6 +1,6 @@
 //! A legible account of a game, told from its log as the log is written.
 
-use crate::{Entry, Message, Observation, Phase, PlayerId, Role};
+use super::{Entry, Message, Observation, Phase, PlayerId, Role};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
 
@@ -140,7 +140,7 @@ fn names(players: &[&PlayerId]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Team;
+    use crate::werewolf::Team;
 
     fn id(name: &str) -> PlayerId {
         name.to_string()
