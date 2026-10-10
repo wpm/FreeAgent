@@ -66,7 +66,7 @@ impl RoleCounts {
 }
 
 /// How many of each role sit at the table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct Table {
     werewolves: usize,
     villagers: usize,
@@ -146,15 +146,8 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn the_command_line_is_a_game_then_a_variant() {
+    fn the_command_line_is_a_game_then_a_variant_that_tells_unset_from_given() {
         Game::command().debug_assert();
-        let Game::Werewolf(Werewolf::UniformRandom { roles }) =
-            Game::parse_from(["social-deduction", "werewolf", "uniform-random"]);
-        assert_eq!(roles.werewolves, None);
-    }
-
-    #[test]
-    fn a_count_left_unset_is_told_apart_from_one_given() {
         let Game::Werewolf(Werewolf::UniformRandom { roles }) = Game::parse_from([
             "social-deduction",
             "werewolf",
@@ -164,6 +157,27 @@ mod tests {
         ]);
         assert_eq!(roles.werewolves, Some(1));
         assert_eq!(roles.villagers, None);
+    }
+
+    #[test]
+    fn the_help_names_the_defaults_the_code_fills_in() {
+        let help = Game::command()
+            .find_subcommand_mut("werewolf")
+            .unwrap()
+            .find_subcommand_mut("uniform-random")
+            .unwrap()
+            .render_help()
+            .to_string();
+        let table = Table::default();
+        for (count, default) in [
+            ("--werewolves", table.werewolves),
+            ("--villagers", table.villagers),
+            ("--doctors", table.doctors),
+            ("--seers", table.seers),
+        ] {
+            let line = help.lines().find(|line| line.contains(count)).unwrap();
+            assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
+        }
     }
 
     #[test]
