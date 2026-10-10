@@ -27,7 +27,7 @@ pub mod scripted;
 pub mod uniform_random;
 
 use clap::Args;
-use free_agent::ActorId;
+use free_agent::{ActorId, ActorInit, Behavior, Builder, Episode, Logger};
 use rand::seq::{IndexedRandom, SliceRandom};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -40,6 +40,36 @@ pub type PlayerId = ActorId;
 
 /// The environment's name in the episode.
 pub const ENVIRONMENT: &str = "environment";
+
+/// An episode of a game: `environment`, which runs it and holds `logger`,
+/// and a player for each of `players` built by `player`. A player may send
+/// to the environment alone, stops nobody, has no logger, and does not
+/// think.
+pub fn episode<A>(
+    environment: ActorInit<A>,
+    players: impl IntoIterator<Item = PlayerId>,
+    mut player: impl FnMut(&PlayerId) -> Builder<A>,
+    logger: Logger<Entry>,
+) -> Episode<A>
+where
+    A: Behavior<Message = Message, Log = Entry>,
+{
+    let mut init = HashMap::from([(ENVIRONMENT.to_string(), environment)]);
+    for id in players {
+        let behavior = player(&id);
+        init.insert(
+            id,
+            ActorInit {
+                behavior,
+                think: None,
+                can_send_to: HashSet::from([ENVIRONMENT.to_string()]),
+                can_shut_down: HashSet::new(),
+                has_logger: false,
+            },
+        );
+    }
+    Episode::new(init, logger)
+}
 
 /// What the awake players chose in a phase: each player's choice of another.
 type Choices = HashMap<PlayerId, PlayerId>;
@@ -725,6 +755,36 @@ mod tests {
             ("seer".to_string(), Role::Seer),
             ("villager".to_string(), Role::Villager),
         ]))
+    }
+
+    /// Everything `logged` between the deal and the end of the game,
+    /// checking that the deal is of `roles` under `variation`, and that
+    /// the end names `winner` and survivors from among the players.
+    pub(super) fn between_the_deal_and_the_end<'a>(
+        logged: &'a [Entry],
+        variation: &str,
+        roles: &HashMap<PlayerId, Role>,
+        winner: Team,
+    ) -> &'a [Entry] {
+        assert_eq!(
+            logged.first(),
+            Some(&Entry::Start {
+                variation: variation.to_string(),
+                roles: roles.clone(),
+            })
+        );
+        let last = logged.last();
+        assert!(
+            matches!(
+                last,
+                Some(Entry::End { winner: won, survivors, .. })
+                    if *won == winner
+                        && !survivors.is_empty()
+                        && survivors.iter().all(|player| roles.contains_key(player))
+            ),
+            "{last:?}"
+        );
+        &logged[1..logged.len() - 1]
     }
 
     /// One werewolf against `villagers`.

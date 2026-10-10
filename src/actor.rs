@@ -915,6 +915,15 @@ mod tests {
         )
     }
 
+    /// Assert that "first", "second", and "third" come on `thoughts` in
+    /// that order, one each second from `began`.
+    async fn first_second_third(thoughts: &mut UnboundedReceiver<Note>, began: Instant) {
+        for (text, seconds) in [("first", 1), ("second", 2), ("third", 3)] {
+            assert_eq!(thoughts.recv().await.unwrap(), note(text));
+            assert_eq!(began.elapsed(), Duration::from_secs(seconds), "{text}");
+        }
+    }
+
     fn id(name: &str) -> ActorId {
         name.to_string()
     }
@@ -1353,10 +1362,7 @@ mod tests {
         }
 
         // Each takes its second in turn: none of them overlap.
-        for (text, seconds) in [("first", 1), ("second", 2), ("third", 3)] {
-            assert_eq!(thoughts.recv().await.unwrap(), note(text));
-            assert_eq!(began.elapsed(), Duration::from_secs(seconds), "{text}");
-        }
+        first_second_third(&mut thoughts, began).await;
         bob.stop.cancel();
         running.await.unwrap().unwrap();
     }
@@ -1539,10 +1545,7 @@ mod tests {
                 .unwrap();
         }
 
-        for (text, seconds) in [("first", 1), ("second", 2), ("third", 3)] {
-            assert_eq!(thoughts.recv().await.unwrap(), note(text));
-            assert_eq!(began.elapsed(), Duration::from_secs(seconds), "{text}");
-        }
+        first_second_third(&mut thoughts, began).await;
         bob.stop.cancel();
         running.await.unwrap().unwrap();
     }
