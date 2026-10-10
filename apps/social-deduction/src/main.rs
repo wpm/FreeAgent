@@ -18,7 +18,7 @@ use tokio::sync::oneshot;
 
 /// The command line: a game, which is a subcommand that names one of its
 /// variants, or a command that belongs to no game.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, PartialEq)]
 #[command(version, about)]
 enum CommandLine {
     /// Werewolf: werewolves against villagers, by night and by day.
@@ -34,7 +34,7 @@ enum CommandLine {
 }
 
 /// The variants of Werewolf, each with its own arguments.
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, PartialEq)]
 enum Werewolf {
     /// Every player chooses uniformly at random.
     UniformRandom {
@@ -130,41 +130,49 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
+    /// The command line `args` parse to, after the binary's name.
+    fn parsed(args: &[&str]) -> CommandLine {
+        CommandLine::parse_from([&["social-deduction"], args].concat())
+    }
+
     #[test]
     fn the_command_line_is_a_game_then_a_variant_that_tells_unset_from_given() {
         CommandLine::command().debug_assert();
-        let CommandLine::Werewolf(Werewolf::UniformRandom { roles }) = CommandLine::parse_from([
-            "social-deduction",
-            "werewolf",
-            "uniform-random",
-            "--werewolves",
-            "1",
-        ]) else {
-            panic!()
-        };
-        assert_eq!(roles.werewolves, Some(1));
-        assert_eq!(roles.villagers, None);
+        assert_eq!(
+            parsed(&["werewolf", "uniform-random", "--werewolves", "1"]),
+            CommandLine::Werewolf(Werewolf::UniformRandom {
+                roles: RoleCounts {
+                    werewolves: Some(1),
+                    ..RoleCounts::default()
+                }
+            })
+        );
     }
 
     #[test]
     fn the_llm_variant_takes_the_file_the_role_counts_and_the_limits() {
-        let CommandLine::Werewolf(Werewolf::Llm { config, overrides }) = CommandLine::parse_from([
-            "social-deduction",
-            "werewolf",
-            "llm",
+        let args = [
             "--config",
             "game.toml",
             "--seers",
             "2",
             "--night-limit",
             "30s",
-        ]) else {
-            panic!()
-        };
-        assert_eq!(config, PathBuf::from("game.toml"));
-        assert_eq!(overrides.roles.seers, Some(2));
-        assert_eq!(overrides.night_limit, Some(Duration::from_secs(30)));
-        assert_eq!(overrides.day_limit, None);
+        ];
+        assert_eq!(
+            parsed(&[&["werewolf", "llm"], &args[..]].concat()),
+            CommandLine::Werewolf(Werewolf::Llm {
+                config: PathBuf::from("game.toml"),
+                overrides: llm::Overrides {
+                    roles: RoleCounts {
+                        seers: Some(2),
+                        ..RoleCounts::default()
+                    },
+                    night_limit: Some(Duration::from_secs(30)),
+                    day_limit: None,
+                },
+            })
+        );
     }
 
     #[test]
@@ -200,12 +208,12 @@ mod tests {
 
     #[test]
     fn the_models_command_takes_the_file_and_belongs_to_no_game() {
-        let CommandLine::Models { config } =
-            CommandLine::parse_from(["social-deduction", "models", "--config", "game.toml"])
-        else {
-            panic!()
-        };
-        assert_eq!(config, PathBuf::from("game.toml"));
+        assert_eq!(
+            parsed(&["models", "--config", "game.toml"]),
+            CommandLine::Models {
+                config: PathBuf::from("game.toml")
+            }
+        );
         assert!(CommandLine::try_parse_from(["social-deduction", "werewolf", "models"]).is_err());
     }
 

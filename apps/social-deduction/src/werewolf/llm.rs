@@ -35,7 +35,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What the command line may say over the file: the role counts and the
 /// phase limits. Each is unset unless given, so that the file can be heard.
-#[derive(Args, Debug, Default)]
+#[derive(Args, Debug, Default, PartialEq, Eq)]
 pub struct Overrides {
     /// How many of each role sit at the table.
     #[command(flatten)]
@@ -369,27 +369,18 @@ impl fmt::Display for Settings {
     /// key's variable named and the key itself never shown.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let model = &self.config.model;
+        let timeout = humantime::format_duration(model.request_timeout);
+        let night = humantime::format_duration(self.night_limit);
+        let day = humantime::format_duration(self.day_limit);
         writeln!(f, "model: {} at {}", model.id, model.base_url)?;
-        writeln!(
-            f,
-            "request timeout: {}",
-            humantime::format_duration(model.request_timeout)
-        )?;
+        writeln!(f, "request timeout: {timeout}")?;
         match &model.api_key_env {
             Some(name) => writeln!(f, "API key: from {name}")?,
             None => writeln!(f, "API key: none")?,
         }
         writeln!(f, "roles: {}", self.table)?;
-        writeln!(
-            f,
-            "night limit: {}",
-            humantime::format_duration(self.night_limit)
-        )?;
-        writeln!(
-            f,
-            "day limit: {}",
-            humantime::format_duration(self.day_limit)
-        )
+        writeln!(f, "night limit: {night}")?;
+        writeln!(f, "day limit: {day}")
     }
 }
 
@@ -433,19 +424,15 @@ id = "qwen2.5-7b-instruct"
             .collect();
         assert!(!files.is_empty(), "no examples in {dir}");
         for file in files {
-            let config =
-                Config::load(&file).unwrap_or_else(|e| panic!("{}: {e:#}", file.display()));
-            assert!(
-                crate::model::makes_tool_calls(&config.model.id),
-                "{}: {}",
-                file.display(),
-                config.model.id
-            );
+            let name = file.display().to_string();
+            let config = Config::load(&file).unwrap_or_else(|e| panic!("{name}: {e:#}"));
+            let id = &config.model.id;
+            assert!(crate::model::makes_tool_calls(id), "{name}: {id}");
             let prompts = config
                 .settle(Overrides::default())
                 .prompts()
-                .unwrap_or_else(|e| panic!("{}: {e:#}", file.display()));
-            assert!(!prompts.is_empty(), "{}", file.display());
+                .unwrap_or_else(|e| panic!("{name}: {e:#}"));
+            assert!(!prompts.is_empty(), "{name}");
         }
     }
 

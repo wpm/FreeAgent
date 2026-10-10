@@ -95,7 +95,7 @@ impl Role {
 /// command line arguments. A count left unset has no `clap` default, so
 /// that a variant can tell it apart from a count that was given, and fill
 /// it in from [`Table::default`] or from somewhere else.
-#[derive(Args, Debug, Default)]
+#[derive(Args, Debug, Default, PartialEq, Eq)]
 pub struct RoleCounts {
     /// How many werewolves.
     #[arg(long, help = how_many("werewolves", Table::default().werewolves))]
