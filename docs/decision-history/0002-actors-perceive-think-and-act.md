@@ -201,6 +201,24 @@ Both loops, the think queue and the timers all carry the actor's one message
 type, `B::Message`. A message on the think queue says by its content why it
 is there.
 
+### Two kinds of exchange
+
+When an actor waits for an answer, the waiting has to live somewhere. It can
+live in a suspended future, a task sitting at `.await` until the answer
+comes, or in data, an entry that a later message is matched against. This
+record uses each for the exchange it suits:
+
+- **Request and reply is a fast, synchronous call into another actor's
+  reflexes.** The asker waits at the call site. That is safe because only
+  `perceive` replies, so what the asker waits on is fast by construction.
+- **A slow exchange is a pair of correlated statements.** The asker sends a
+  statement and goes on. The answer comes back later as a statement of its
+  own, matched by a sequence number. Nothing waits.
+
+Neither is transitional. Request and reply stays as it is in the library,
+and a library mechanism for slow exchanges, if one is needed, builds on
+correlated statements rather than replacing either.
+
 ### Stale messages are caught by sequence numbers
 
 Without a reply tied to its request, a slow answer can arrive after it has
