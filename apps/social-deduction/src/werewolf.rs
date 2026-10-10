@@ -107,8 +107,8 @@ impl fmt::Display for Team {
     }
 }
 
-/// What a player is.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
+/// What a player is. The roles are ordered as they are dealt.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Role {
     /// Kills by night, and knows the other werewolves.
     Werewolf,
@@ -526,9 +526,10 @@ pub enum Message {
 }
 impl free_agent::Message for Message {}
 
-/// What the environment writes to the log: the deal, every message to or
-/// from a player as it was, and the result. Only the result summarizes
-/// anything; the rest is kept whole for whatever reads the log later.
+/// What the environment writes to the log: the deal, the configuration of
+/// a model-played game, every message to or from a player as it was, and
+/// the result. Only the result summarizes anything; the rest is kept whole
+/// for whatever reads the log later.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Entry {
     /// The game begins: who plays what, under which variation.
@@ -538,6 +539,9 @@ pub enum Entry {
         /// Every player's role.
         roles: HashMap<PlayerId, Role>,
     },
+    /// The configuration a model-played game ran under, logged right after
+    /// the deal.
+    Configuration(Box<llm::Configuration>),
     /// The environment sent `message` to `to`.
     Sent {
         /// Who was sent to.

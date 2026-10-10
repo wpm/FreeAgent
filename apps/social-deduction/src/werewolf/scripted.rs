@@ -41,7 +41,7 @@ fn episode(
     player: impl FnMut(&PlayerId) -> Builder<Actor>,
 ) -> Episode<Actor> {
     let players: Vec<PlayerId> = roles.keys().cloned().collect();
-    let environment = announced::init(roles, rules, winner, Actor::Environment);
+    let environment = announced::init(roles, rules, None, winner, Actor::Environment);
     super::episode(environment, players, player, logger)
 }
 
