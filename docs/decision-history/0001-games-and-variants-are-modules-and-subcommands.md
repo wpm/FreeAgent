@@ -66,7 +66,7 @@ apps/social-deduction/
     main.rs               # parses the command line and runs the chosen variant
     lib.rs                # declares the game modules
     model.rs              # the model client, shared by every game and `models`
-    tool_models.txt       # models known to make tool calls
+    models.toml           # models known to make tool calls, and providers known
     werewolf.rs           # what every variant shares
     werewolf/
       report.rs           # the Narrator
@@ -139,8 +139,8 @@ behavior and tests are unchanged.
 ```sh
 social-deduction werewolf uniform-random [--werewolves N] [--villagers N] [--doctors N] [--seers N]
 social-deduction werewolf scripted [role counts] [--night-limit 30s] [--day-limit 2m]
-social-deduction werewolf llm --config game.toml [role counts] [--night-limit 30s] [--day-limit 2m]
-social-deduction models --config game.toml
+social-deduction werewolf llm game.toml [role counts] [--night-limit 30s] [--day-limit 2m] [--model-base-url URL] [--model-id ID]
+social-deduction models BASE_URL [--api-key-env NAME]
 ```
 
 The first level names a game, or one of the few commands that belong to no
@@ -152,15 +152,21 @@ change.
 
 - `werewolf uniform-random` takes the role counts that 0.1.0 took at the top
   level, with the same defaults.
-- `werewolf llm` takes `--config`, the path to a TOML file, the same
-  role-count options as `uniform-random`, and `--night-limit` and
-  `--day-limit`. The role counts are one shared `clap` argument group, so
-  both variants spell them the same way.
+- `werewolf llm` takes the path to a TOML file, the same role-count
+  options as `uniform-random`, `--night-limit` and `--day-limit`, and
+  `--model-base-url` and `--model-id`, which say the provider and the model
+  over the file's `[model]` table, for trying another without editing the
+  file. The role counts are one shared `clap` argument group, so both
+  variants spell them the same way, and the model options are a group of
+  their own, under a heading of their own in the help.
 - `werewolf scripted` takes the role counts, `--night-limit` and
   `--day-limit`, all with defaults in the code, and no configuration file.
-- `models` takes `--config`, asks the provider the file names for its
-  `GET /v1/models` listing, and prints each model id, marking those on the
-  tool-call whitelist. It plays no game.
+- `models` takes the root of a provider's OpenAI-compatible API, asks it
+  for its `GET /v1/models` listing, and prints each model id, marking those
+  on the tool-call whitelist. `--api-key-env` names the environment
+  variable holding the provider's key, over the one known for the
+  provider. Its help ends with a table of the providers known. It plays no
+  game.
 
 The subcommand names `uniform-random` and `llm` are working names. Renaming
 them is a change to this record's command line, not to its structure.
@@ -173,8 +179,10 @@ output as it happens.
 
 **Precedence.** A setting comes from the command line if it is given there,
 otherwise from the configuration file, otherwise from a default in the code.
-Role counts and phase limits can be given in all three places. Phase limits
-are written as durations, such as `30s` or `2m`. The model request timeout,
+Role counts and phase limits can be given in all three places. The model's
+base URL and id can be given on the command line over the file, which must
+name them. Phase limits are written as durations, such as `30s` or `2m`.
+The model request timeout,
 `request_timeout`, is a duration too, with a default in the code that the
 file can override.
 
@@ -235,14 +243,24 @@ game.
 
 **Providers.** Every model is reached through the OpenAI chat completions
 protocol: OpenAI itself, Anthropic's OpenAI-compatible endpoint, and a local
-LM Studio server among them. A provider is a base URL and the name of the
-environment variable that holds its API key.
+LM Studio server among them. A provider is a base URL, the root of its API
+ending in `/v1`, and the name of the environment variable that holds its
+API key.
+
+**Some providers are known.** OpenAI and Anthropic hold their keys in
+conventional variables, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`, and
+Anthropic's listing wants an `anthropic-version` header on every request.
+So the model client knows a few providers by base URL, each with its key
+variable and the headers its requests carry. A base URL at or under a known
+root reads its key from that variable unless the command line or the file
+names another, and sends the headers.
 
 **API keys come from the environment, never the file.** The file names the
-variable (`api_key_env = "OPENAI_API_KEY"`); the key is read from it once at
-startup into a `secrecy::SecretString` and exposed only where a request is
-built, so it never appears in `Debug` output, the log or an error message.
-A variable that is not set is an error at startup.
+variable (`api_key_env = "OPENAI_API_KEY"`), or leaves it to the provider's
+known one; the key is read from it once at startup into a
+`secrecy::SecretString` and exposed only where a request is built, so it
+never appears in `Debug` output, the log or an error message. A variable
+that is not set is an error at startup.
 
 **A configured model must pass two checks before the game starts:**
 
@@ -257,14 +275,17 @@ A variable that is not set is an error at startup.
 
 Either failure stops the program before any actor is built.
 
-**The whitelist is a text file compiled into the binary.** It is not
-particular to Werewolf, since `models` reads it too, so it lives at the root
-of the crate's source, `src/tool_models.txt`, and is read with
-`include_str!`: one model id per line, exactly as `/v1/models` lists it,
-with blank lines and lines starting with `#` ignored. An id is matched
-exactly, across every provider. Adding a model is an edit to the file and a
-rebuild, which is acceptable while this is a command line program with one
-user. A test checks that the file parses and is not empty.
+**What the model client knows is one TOML file compiled into the binary.**
+The whitelist and the known providers are not particular to Werewolf, since
+`models` reads them too, so they live at the root of the crate's source, in
+`src/models.toml`, read with `include_str!` and parsed once with `serde`.
+The file holds `tool_models`, an array of ids exactly as `/v1/models` lists
+them, and a `[[providers]]` table for each known provider with its
+`base_url`, `api_key_env` and `headers`. An id is matched exactly, across
+every provider, and an unknown key in the file is an error. Adding a model
+or a provider is an edit to the file and a rebuild, which is acceptable
+while this is a command line program with one user. A test checks that the
+file parses and knows at least one model and one provider.
 
 ## Alternatives considered
 
@@ -344,7 +365,7 @@ for a better split.
 
 - **A new model needs a rebuild.** Until the whitelist moves out of the
   binary, trying a model that is not on it means editing
-  `src/tool_models.txt` and building again. `models` shows which of a
+  `src/models.toml` and building again. `models` shows which of a
   provider's models are on it.
 
 ## Deliberately deferred
