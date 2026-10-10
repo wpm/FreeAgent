@@ -99,9 +99,9 @@ impl Behavior for Actor {
     }
 }
 
-/// A player who answers each announcement at once, selecting at random
-/// among the living whose role it does not know, as the uniform-random
-/// player chooses. It has no think loop.
+/// A player who answers each announcement at once, selecting one of its
+/// [candidates](super::candidates) at random, as the uniform-random player
+/// chooses. It has no think loop.
 pub struct Player {
     context: Context<Message, Entry>,
 }
