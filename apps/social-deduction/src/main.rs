@@ -5,8 +5,10 @@
 
 use clap::{Parser, Subcommand};
 use free_agent::{Behavior, Episode, Logger};
-use social_deduction::model::{check_makes_tool_calls, makes_tool_calls};
-use social_deduction::werewolf::llm::{self, Config, Model};
+use social_deduction::model::{
+    Provider, REQUEST_TIMEOUT, api_key, check_makes_tool_calls, makes_tool_calls,
+};
+use social_deduction::werewolf::llm::{self, Config};
 use social_deduction::werewolf::report::Narrator;
 use social_deduction::werewolf::{Entry, PhaseLimits, RoleCounts, Rules, Table, Team};
 use social_deduction::werewolf::{scripted, uniform_random};
@@ -28,9 +30,12 @@ enum CommandLine {
     /// List the models a provider serves, marking those known to make tool
     /// calls.
     Models {
-        /// The TOML configuration file whose [model] table names the provider
+        /// The root of the provider's OpenAI-compatible API, ending in /v1
+        base_url: String,
+        /// The environment variable holding the API key, for a provider
+        /// that wants one
         #[arg(long)]
-        config: PathBuf,
+        api_key_env: Option<String>,
     },
 }
 
@@ -98,9 +103,13 @@ async fn main() -> anyhow::Result<()> {
             println!("The model-played game is not playable yet.");
             Ok(())
         }
-        CommandLine::Models { config } => {
-            let ids = Model::load(&config)?.provider()?.models().await?;
-            print!("{}", marked(ids));
+        CommandLine::Models {
+            base_url,
+            api_key_env,
+        } => {
+            let api_key = api_key_env.as_deref().map(api_key).transpose()?;
+            let provider = Provider::new(base_url, api_key, REQUEST_TIMEOUT)?;
+            print!("{}", marked(provider.models().await?));
             Ok(())
         }
     }
@@ -262,11 +271,25 @@ mod tests {
     }
 
     #[test]
-    fn the_models_command_takes_the_file_and_belongs_to_no_game() {
+    fn the_models_command_takes_the_base_url_and_a_key_variable_and_belongs_to_no_game() {
         assert_eq!(
-            parsed(&["models", "--config", "game.toml"]),
+            parsed(&["models", "http://localhost:1234/v1"]),
             CommandLine::Models {
-                config: PathBuf::from("game.toml")
+                base_url: "http://localhost:1234/v1".to_string(),
+                api_key_env: None,
+            }
+        );
+        let args = [
+            "models",
+            "https://api.openai.com/v1",
+            "--api-key-env",
+            "OPENAI_API_KEY",
+        ];
+        assert_eq!(
+            parsed(&args),
+            CommandLine::Models {
+                base_url: "https://api.openai.com/v1".to_string(),
+                api_key_env: Some("OPENAI_API_KEY".to_string()),
             }
         );
         assert!(CommandLine::try_parse_from(["social-deduction", "werewolf", "models"]).is_err());

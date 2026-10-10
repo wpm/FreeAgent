@@ -310,8 +310,7 @@ fn the_llm_variant_refuses_a_model_its_provider_does_not_serve() {
 #[test]
 fn the_models_command_lists_the_provider_s_models_sorted_and_marks_those_that_make_tool_calls() {
     let base_url = serving(&["zephyr-7b", EXAMPLE_MODEL, "llama-3.1-8b-instruct"]);
-    let config = configured("models", "minimal.toml", &base_url, EXAMPLE_MODEL);
-    let printed = printed(&["models", "--config", &config]);
+    let printed = printed(&["models", &base_url]);
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
         lines,
@@ -326,23 +325,21 @@ fn the_models_command_lists_the_provider_s_models_sorted_and_marks_those_that_ma
 }
 
 #[test]
-fn the_models_command_reads_only_the_model_table() {
-    // A file the game would refuse, for a misspelled key outside [model].
-    let base_url = serving(&[EXAMPLE_MODEL]);
-    let config = configured("only-model", "minimal.toml", &base_url, EXAMPLE_MODEL);
-    let mut file = std::fs::read_to_string(&config).unwrap();
-    file.push_str("\n[roles.seer]\nsytem = \"\"\n");
-    std::fs::write(&config, file).unwrap();
-    assert!(refused(&["werewolf", "llm", "--config", &config]).contains("sytem"));
-    assert!(printed(&["models", "--config", &config]).contains(EXAMPLE_MODEL));
+fn the_models_command_needs_a_base_url_and_names_a_provider_it_cannot_reach() {
+    assert_usage_error(&["models"]);
+    let help = printed(&["models", "--help"]);
+    assert!(help.contains("BASE_URL"), "{help}");
+    assert!(help.contains("--api-key-env"), "{help}");
+    let base_url = unreachable();
+    let stderr = refused(&["models", &base_url]);
+    assert!(stderr.contains(&base_url), "{stderr}");
 }
 
 #[test]
-fn the_models_command_needs_a_configuration_file_and_names_a_provider_it_cannot_reach() {
-    assert_usage_error(&["models"]);
-    assert!(printed(&["models", "--help"]).contains("--config"));
+fn the_models_command_refuses_a_key_variable_that_is_not_set_before_asking_anyone() {
     let base_url = unreachable();
-    let config = configured("nobody", "minimal.toml", &base_url, EXAMPLE_MODEL);
-    let stderr = refused(&["models", "--config", &config]);
-    assert!(stderr.contains(&base_url), "{stderr}");
+    let name = "SOCIAL_DEDUCTION_NO_SUCH_KEY";
+    let stderr = refused(&["models", &base_url, "--api-key-env", name]);
+    assert!(stderr.contains(name), "{stderr}");
+    assert!(!stderr.contains(&base_url), "{stderr}");
 }

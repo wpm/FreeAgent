@@ -13,10 +13,14 @@
 #[doc(hidden)]
 pub mod canned;
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
+use std::ffi::OsString;
 use std::time::Duration;
+
+/// How long a request may take unless the configuration says otherwise.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The whitelist, compiled in: one model id per line, exactly as the
 /// provider lists it, with blank lines and lines starting with `#` ignored.
@@ -46,6 +50,22 @@ pub fn check_makes_tool_calls(id: &str) -> anyhow::Result<()> {
     } else {
         bail!("{id} is not known to make tool calls: it is not listed in src/tool_models.txt")
     }
+}
+
+/// The API key the environment variable `name` holds. A variable that is
+/// not set, or is set to something that is not UTF-8, is an error naming
+/// it.
+pub fn api_key(name: &str) -> anyhow::Result<SecretString> {
+    key(name, std::env::var_os(name))
+}
+
+/// The key the environment variable `name` holds as `value`.
+fn key(name: &str, value: Option<OsString>) -> anyhow::Result<SecretString> {
+    let value = value.ok_or_else(|| anyhow!("api_key_env names {name}, which is not set"))?;
+    let value = value
+        .into_string()
+        .map_err(|_| anyhow!("api_key_env names {name}, whose value is not UTF-8"))?;
+    Ok(SecretString::from(value))
 }
 
 /// A model provider: the root of its OpenAI-compatible API, ending in
@@ -149,6 +169,34 @@ mod tests {
         assert!(!makes_tool_calls("# Models known to make tool calls."));
         assert!(!makes_tool_calls(""));
         assert!(!makes_tool_calls("QWEN2.5-7B-INSTRUCT"));
+    }
+
+    #[test]
+    fn a_key_variable_that_is_not_set_is_an_error_naming_it() {
+        let error = api_key("SOCIAL_DEDUCTION_NO_SUCH_KEY").unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("SOCIAL_DEDUCTION_NO_SUCH_KEY"), "{shown}");
+        assert!(shown.contains("not set"), "{shown}");
+    }
+
+    #[test]
+    fn the_key_is_read_from_the_named_variable_and_never_shown() {
+        // A variable Cargo sets for every test, since setting one is unsafe.
+        let name = "CARGO_MANIFEST_DIR";
+        let value = std::env::var(name).unwrap();
+        let key = api_key(name).unwrap();
+        assert_eq!(key.expose_secret(), value);
+        assert!(!format!("{key:?}").contains(&value));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_key_variable_whose_value_is_not_utf_8_is_an_error_naming_it() {
+        use std::os::unix::ffi::OsStringExt;
+        let error = key("SOCIAL_DEDUCTION_KEY", Some(OsString::from_vec(vec![0xff]))).unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("SOCIAL_DEDUCTION_KEY"), "{shown}");
+        assert!(!shown.contains("not set"), "{shown}");
     }
 
     #[test]

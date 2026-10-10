@@ -18,20 +18,16 @@
 //! a [`SecretString`], which is redacted wherever it is shown.
 
 use super::{PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table};
-use crate::model::Provider;
+use crate::model::{Provider, REQUEST_TIMEOUT, api_key};
 use anyhow::{Context, anyhow, bail};
 use clap::Args;
 use minijinja::{Environment, UndefinedBehavior, Value, context};
 use secrecy::SecretString;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
 use std::time::Duration;
-
-/// How long a request may take unless the file says otherwise.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What the command line may say over the file: the role counts and the
 /// phase limits. Each is unset unless given, so that the file can be heard.
@@ -88,31 +84,11 @@ pub struct Model {
 }
 
 impl Model {
-    /// Read and parse the `[model]` table alone from the file at `path`,
-    /// for a command that plays no game and need not hear about the rest
-    /// of the file. An unknown key in the table is still an error.
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
-        Self::parse(&read(path)?).with_context(|| format!("in {}", path.display()))
-    }
-
-    /// Parse the `[model]` table of `file`, the text of a configuration
-    /// file, and nothing else in it.
-    pub fn parse(file: &str) -> anyhow::Result<Self> {
-        #[derive(Deserialize)]
-        struct Just {
-            model: Model,
-        }
-        Ok(toml::from_str::<Just>(file)?.model)
-    }
-
     /// The API key, read from the environment variable `api_key_env`
     /// names. A variable that is named but not set is an error. When none
     /// is named there is no key, which is what a local server expects.
     pub fn api_key(&self) -> anyhow::Result<Option<SecretString>> {
-        self.api_key_env
-            .as_deref()
-            .map(|name| key(name, std::env::var_os(name)))
-            .transpose()
+        self.api_key_env.as_deref().map(api_key).transpose()
     }
 
     /// The provider the table is reached through, with its key read from
@@ -120,17 +96,6 @@ impl Model {
     pub fn provider(&self) -> anyhow::Result<Provider> {
         Provider::new(&self.base_url, self.api_key()?, self.request_timeout)
     }
-}
-
-/// The key the environment variable `name` holds as `value`: an error
-/// that names the variable when it is not set, or is set to something
-/// that is not UTF-8.
-fn key(name: &str, value: Option<OsString>) -> anyhow::Result<SecretString> {
-    let value = value.ok_or_else(|| anyhow!("api_key_env names {name}, which is not set"))?;
-    let value = value
-        .into_string()
-        .map_err(|_| anyhow!("api_key_env names {name}, whose value is not UTF-8"))?;
-    Ok(SecretString::from(value))
 }
 
 /// The text of the configuration file at `path`.
@@ -824,26 +789,6 @@ system = \"{{{{ rules }}}} {{{{ wolf }}}}\"
             format!("{error:#}").contains("SOCIAL_DEDUCTION_NO_SUCH_KEY"),
             "{error:#}"
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_named_key_variable_whose_value_is_not_utf_8_is_an_error_naming_it() {
-        use std::os::unix::ffi::OsStringExt;
-        let error = key("SOCIAL_DEDUCTION_KEY", Some(OsString::from_vec(vec![0xff]))).unwrap_err();
-        let shown = format!("{error:#}");
-        assert!(shown.contains("SOCIAL_DEDUCTION_KEY"), "{shown}");
-        assert!(!shown.contains("not set"), "{shown}");
-    }
-
-    #[test]
-    fn the_model_table_is_read_on_its_own_whatever_the_rest_of_the_file_says() {
-        let file = format!("{MODEL}[prompt]\nsytem = \"\"\n");
-        assert!(Config::parse(&file).is_err());
-        assert_eq!(Model::parse(&file).unwrap().id, "qwen2.5-7b-instruct");
-        // Though not whatever the table itself says.
-        assert!(Model::parse(&format!("{MODEL}temperature = 0.5\n")).is_err());
-        assert!(Model::parse("[prompt]\n").is_err());
     }
 
     #[test]

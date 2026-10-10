@@ -75,10 +75,12 @@ playable yet.
 
 ## Models
 
-The `models` command belongs to no game. It asks the provider a
-configuration file names for the models it serves and lists them, marking
-with `*` those known to make tool calls:
+The `models` command belongs to no game. It asks a provider, named by the
+root of its OpenAI-compatible API, for the models it serves and lists them,
+marking with `*` those known to make tool calls. A provider that wants an
+API key is told the environment variable holding it:
 
 ```sh
-social-deduction models --config game.toml
+social-deduction models http://localhost:1234/v1
+social-deduction models https://api.openai.com/v1 --api-key-env OPENAI_API_KEY
 ```
