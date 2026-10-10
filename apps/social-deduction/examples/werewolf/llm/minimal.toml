@@ -3,7 +3,7 @@
 # pulls in, and the prompt tells a werewolf apart from the rest with one
 # conditional. Run it with
 #
-#     social-deduction werewolf llm --config minimal.toml
+#     social-deduction werewolf llm minimal.toml
 
 [model]
 base_url = "http://localhost:1234/v1"

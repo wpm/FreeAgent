@@ -55,7 +55,7 @@ pub fn check_makes_tool_calls(id: &str) -> anyhow::Result<()> {
 }
 
 /// The providers the client knows, compiled in: on each line the root of
-/// a provider's API, the environment variable conventionally holding its
+/// a provider's API, ending in /v1, the environment variable conventionally holding its
 /// key, and the headers its requests must carry, with blank lines and
 /// lines starting with `#` ignored. Adding a provider is an edit to the
 /// file and a rebuild.
@@ -335,11 +335,11 @@ mod tests {
         assert!(providers.len() >= 2, "{providers:?}");
         assert_eq!(
             providers[0],
-            ("https://api.openai.com", Some("OPENAI_API_KEY"))
+            ("https://api.openai.com/v1", Some("OPENAI_API_KEY"))
         );
         assert_eq!(
             providers[1],
-            ("https://api.anthropic.com", Some("ANTHROPIC_API_KEY"))
+            ("https://api.anthropic.com/v1", Some("ANTHROPIC_API_KEY"))
         );
     }
 
@@ -393,15 +393,16 @@ mod tests {
             Some("OPENAI_API_KEY")
         );
         assert_eq!(
-            known_key_variable("https://api.anthropic.com"),
+            known_key_variable("https://api.anthropic.com/v1"),
             Some("ANTHROPIC_API_KEY")
         );
         assert_eq!(known_key_variable("http://localhost:1234/v1"), None);
-        // Under the root, not merely starting with it.
+        // Under the root, not merely starting with it, nor above it.
         assert_eq!(
             known_key_variable("https://api.openai.com.example/v1"),
             None
         );
+        assert_eq!(known_key_variable("https://api.openai.com"), None);
     }
 
     #[test]

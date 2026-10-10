@@ -29,8 +29,9 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
-/// What the command line may say over the file: the role counts and the
-/// phase limits. Each is unset unless given, so that the file can be heard.
+/// What the command line may say over the file: the role counts, the
+/// phase limits, and the model. Each is unset unless given, so that the
+/// file can be heard.
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 pub struct Overrides {
     /// How many of each role sit at the table.
@@ -39,6 +40,23 @@ pub struct Overrides {
     /// How long each phase waits for the players.
     #[command(flatten)]
     pub limits: PhaseLimits,
+    /// The model and where it is.
+    #[command(flatten)]
+    pub model: ModelOverrides,
+}
+
+/// What the command line may say over the file's `[model]` table, for
+/// trying another model or provider without editing the file. Each is
+/// unset unless given. The help lists them under a heading of their own.
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+#[command(next_help_heading = "Model")]
+pub struct ModelOverrides {
+    /// The root of the provider's OpenAI-compatible API, ending in /v1
+    #[arg(long = "model-base-url", value_name = "BASE_URL")]
+    pub base_url: Option<String>,
+    /// The model's id, exactly as the provider lists it
+    #[arg(long = "model-id", value_name = "ID")]
+    pub id: Option<String>,
 }
 
 /// The configuration file, as written. Every table but `[model]` may be
@@ -171,11 +189,13 @@ pub struct Prompt {
     pub system: Option<String>,
 }
 
-/// The settings that took effect: the file as written, and the settings
-/// the command line and the code have a say in, decided.
+/// The settings that took effect: the file, with whatever the command
+/// line said over its model, and the settings the command line and the
+/// code have a say in, decided.
 #[derive(Debug)]
 pub struct Settings {
-    /// The file as written.
+    /// The file as written, but for the model, which is as the command
+    /// line said if it said anything.
     pub config: Config,
     /// How many of each role sit at the table.
     pub table: Table,
@@ -208,8 +228,16 @@ impl Config {
 
     /// The settings that take effect with `overrides` from the command
     /// line: each role count and phase limit from the command line if
-    /// given there, otherwise from the file, otherwise from the code.
-    pub fn settle(self, overrides: Overrides) -> Settings {
+    /// given there, otherwise from the file, otherwise from the code, and
+    /// the model's provider and id from the command line if given there,
+    /// otherwise from the file.
+    pub fn settle(mut self, overrides: Overrides) -> Settings {
+        if let Some(base_url) = overrides.model.base_url {
+            self.model.base_url = base_url;
+        }
+        if let Some(id) = overrides.model.id {
+            self.model.id = id;
+        }
         let file = RoleCounts {
             werewolves: self.roles.werewolf.count,
             villagers: self.roles.villager.count,
@@ -409,6 +437,31 @@ id = "qwen2.5-7b-instruct"
     #[test]
     fn the_model_section_is_required() {
         assert!(Config::parse("[phases]\nnight_limit = \"1s\"\n").is_err());
+    }
+
+    #[test]
+    fn the_model_and_its_provider_fall_back_from_the_command_line_to_the_file() {
+        let settings = settle(MODEL, Overrides::default());
+        assert_eq!(settings.config.model.base_url, "http://localhost:1234/v1");
+        assert_eq!(settings.config.model.id, "qwen2.5-7b-instruct");
+        let args = [
+            "llm",
+            "--model-base-url",
+            "https://api.openai.com/v1",
+            "--model-id",
+            "gpt-5.5",
+        ];
+        let settings = settle(MODEL, Variant::parse_from(args).overrides);
+        assert_eq!(settings.config.model.base_url, "https://api.openai.com/v1");
+        assert_eq!(settings.config.model.id, "gpt-5.5");
+        // With everything that follows from the provider.
+        assert_eq!(settings.config.model.key_variable(), Some("OPENAI_API_KEY"));
+        assert!(
+            settings
+                .to_string()
+                .starts_with("model: gpt-5.5 at https://api.openai.com/v1\n"),
+            "{settings}"
+        );
     }
 
     #[test]

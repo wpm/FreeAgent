@@ -1,8 +1,9 @@
 # Providers the model client knows, one per line, in whitespace-separated
-# columns: the root of the provider's API, the environment variable that
-# conventionally holds its API key (- for none), and then any headers every
+# columns: the root of the provider's OpenAI-compatible API, ending in /v1,
+# as a base URL is given on the command line; the environment variable that
+# conventionally holds its API key (- for none); and then any headers every
 # request to it must carry, each as name:value. A base URL at or under the
 # root is read with the variable, unless another is named, and sent the
 # headers. Blank lines and lines starting with # are ignored.
-https://api.openai.com     OPENAI_API_KEY
-https://api.anthropic.com  ANTHROPIC_API_KEY  anthropic-version:2023-06-01
+https://api.openai.com/v1     OPENAI_API_KEY
+https://api.anthropic.com/v1  ANTHROPIC_API_KEY  anthropic-version:2023-06-01

@@ -60,7 +60,6 @@ enum Werewolf {
     /// Every player is a language model, set up by a configuration file.
     Llm {
         /// The TOML configuration file
-        #[arg(long)]
         config: PathBuf,
         #[command(flatten)]
         overrides: llm::Overrides,
@@ -209,14 +208,15 @@ mod tests {
     }
 
     #[test]
-    fn the_llm_variant_takes_the_file_the_role_counts_and_the_limits() {
+    fn the_llm_variant_takes_the_file_the_role_counts_the_limits_and_the_model() {
         let args = [
-            "--config",
             "game.toml",
             "--seers",
             "2",
             "--night-limit",
             "30s",
+            "--model-id",
+            "gpt-5.5",
         ];
         assert_eq!(
             parsed(&[&["werewolf", "llm"], &args[..]].concat()),
@@ -231,9 +231,32 @@ mod tests {
                         night_limit: Some(Duration::from_secs(30)),
                         day_limit: None,
                     },
+                    model: llm::ModelOverrides {
+                        base_url: None,
+                        id: Some("gpt-5.5".to_string()),
+                    },
                 },
             })
         );
+    }
+
+    #[test]
+    fn the_llm_help_lists_the_model_options_under_a_heading_of_their_own() {
+        let help = CommandLine::command()
+            .find_subcommand_mut("werewolf")
+            .unwrap()
+            .find_subcommand_mut("llm")
+            .unwrap()
+            .render_help()
+            .to_string();
+        let at = |text: &str| {
+            help.find(text)
+                .unwrap_or_else(|| panic!("{text} in {help}"))
+        };
+        assert!(at("Options:") < at("--werewolves"), "{help}");
+        assert!(at("--werewolves") < at("\nModel:\n"), "{help}");
+        assert!(at("\nModel:\n") < at("--model-base-url"), "{help}");
+        assert!(at("--model-base-url") < at("--model-id"), "{help}");
     }
 
     #[test]
@@ -333,11 +356,11 @@ mod tests {
         let table = known_providers_help();
         let rows: Vec<&str> = table.lines().skip(1).collect();
         assert!(
-            rows.contains(&"  https://api.openai.com     OPENAI_API_KEY"),
+            rows.contains(&"  https://api.openai.com/v1     OPENAI_API_KEY"),
             "{table}"
         );
         assert!(
-            rows.contains(&"  https://api.anthropic.com  ANTHROPIC_API_KEY"),
+            rows.contains(&"  https://api.anthropic.com/v1  ANTHROPIC_API_KEY"),
             "{table}"
         );
         // The variables line up, whatever the roots' lengths.

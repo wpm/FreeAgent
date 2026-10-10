@@ -2,7 +2,7 @@
 # for two of the seats. A persona belongs to a seat, player1 onward, and
 # the roles are still dealt at random. Run it with
 #
-#     social-deduction werewolf llm --config personas.toml
+#     social-deduction werewolf llm personas.toml
 
 [model]
 base_url = "http://localhost:1234/v1"
