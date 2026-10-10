@@ -652,6 +652,10 @@ pub fn candidates(me: &PlayerId, observation: &Observation) -> Vec<PlayerId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use free_agent::Event;
+    use tokio::sync::mpsc::UnboundedReceiver;
+    use tokio::sync::oneshot;
+    use tokio::time::Instant;
 
     #[test]
     fn a_limit_given_replaces_the_rules_own_and_one_left_unset_keeps_it() {
@@ -816,6 +820,47 @@ mod tests {
             "{last:?}"
         );
         &logged[1..logged.len() - 1]
+    }
+
+    /// What a game reports: the winner, everything the environment
+    /// logged, and how long the game took.
+    pub(super) type Played = (Team, Vec<Entry>, Duration);
+
+    /// Run `episode`, whose winner comes on `won` and whose log on `log`.
+    pub(super) async fn run<A: Behavior<Message = Message, Log = Entry> + 'static>(
+        episode: Episode<A>,
+        won: oneshot::Receiver<Team>,
+        mut log: UnboundedReceiver<Event<Entry>>,
+    ) -> anyhow::Result<Played> {
+        let started = Instant::now();
+        episode.run(Duration::from_secs(60 * 60)).await?;
+        let took = started.elapsed();
+
+        let mut logged = Vec::new();
+        while let Some(event) = log.recv().await {
+            logged.push(event.payload);
+        }
+        Ok((won.await?, logged, took))
+    }
+
+    /// The selections the environment logged as received.
+    pub(super) fn received(logged: &[Entry]) -> Vec<&Message> {
+        logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Received { message, .. } => Some(message),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A selection of `target` by `from` in the phase numbered `seq`.
+    pub(super) fn selection(seq: u64, from: &str, target: &str) -> Message {
+        Message::Select {
+            seq,
+            from: from.to_string(),
+            target: target.to_string(),
+        }
     }
 
     /// One werewolf against `villagers`.

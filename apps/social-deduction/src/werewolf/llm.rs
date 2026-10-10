@@ -471,27 +471,30 @@ impl Behavior for Actor {
     }
 }
 
-/// What a player has been shown and what it has done, in order, as the
-/// entries the environment logs about it: an announcement sent to it, and
-/// a selection received from it. Shared by the player's two loops, and
-/// never locked across an await.
-type History = Arc<Mutex<Vec<Entry>>>;
-
-/// A player whose selections are made by a language model. Its perceive
-/// loop and its think loop are each a `Player` with a context of its own
-/// over one shared history: the perceive loop remembers each
-/// announcement and hands it to the think loop, which tells the model the
-/// history as a story and sends the environment what the model selects. A
-/// variant's actor enum holds the perceive loop's, built by [`Player::init`].
-pub struct Player {
-    context: Context<Message, Entry>,
-    history: History,
+/// What a player's two loops share: what it has been shown and what it has
+/// done, what it is told, and whom it asks.
+struct Mind {
+    /// The history, in order, as the entries the environment logs about
+    /// the player: an announcement sent to it, and a selection received
+    /// from it. Never locked across an await.
+    history: Mutex<Vec<Entry>>,
     /// Its system prompt, rendered for its seat and role.
     prompt: String,
     /// The model's id, as each request names it.
     model_id: String,
     /// The model asked for each selection.
     model: Arc<dyn model::Model>,
+}
+
+/// A player whose selections are made by a language model. Its perceive
+/// loop and its think loop are each a `Player` with a context of its own
+/// over one shared mind: the perceive loop remembers each announcement and
+/// hands it to the think loop, which tells the model the history as a story
+/// and sends the environment what the model selects. A variant's actor
+/// enum holds the perceive loop's, built by [`Player::init`].
+pub struct Player {
+    context: Context<Message, Entry>,
+    mind: Arc<Mind>,
 }
 
 impl Player {
@@ -503,29 +506,19 @@ impl Player {
         model_id: String,
         model: Arc<dyn model::Model>,
     ) -> (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>) {
-        let history = History::default();
-        let (shared, prompt_shared, model_id_shared, model_shared) = (
-            Arc::clone(&history),
-            prompt.clone(),
-            model_id.clone(),
-            Arc::clone(&model),
-        );
-        let behavior: Builder<Actor> = Box::new(move |context| {
-            Actor::Player(Player {
-                context,
-                history,
-                prompt,
-                model_id,
-                model,
-            })
+        let mind = Arc::new(Mind {
+            history: Mutex::new(Vec::new()),
+            prompt,
+            model_id,
+            model,
         });
+        let shared = Arc::clone(&mind);
+        let behavior: Builder<Actor> =
+            Box::new(move |context| Actor::Player(Player { context, mind }));
         let think: ThinkBuilder<Message, Entry> = Box::new(move |context| {
             Box::new(Player {
                 context,
-                history: shared,
-                prompt: prompt_shared,
-                model_id: model_id_shared,
-                model: model_shared,
+                mind: shared,
             })
         });
         (behavior, Some(think))
@@ -533,7 +526,7 @@ impl Player {
 
     /// Add `entry` to the history.
     fn remember(&self, entry: Entry) {
-        self.history.lock().unwrap().push(entry);
+        self.mind.history.lock().unwrap().push(entry);
     }
 
     /// The request for a selection from `candidates` in the phase
@@ -548,6 +541,7 @@ impl Player {
         let me = &self.context.id;
         let mut narrator = Narrator::for_player(me.clone());
         let story: Vec<String> = self
+            .mind
             .history
             .lock()
             .unwrap()
@@ -556,9 +550,9 @@ impl Player {
             .collect();
         let asked = format!("{}\n\n{}", story.join("\n"), situation(me, observation)?);
         Ok(Request::new(
-            &self.model_id,
+            &self.mind.model_id,
             vec![
-                model::Message::system(&self.prompt),
+                model::Message::system(&self.mind.prompt),
                 model::Message::user(asked),
             ],
             select(candidates),
@@ -608,7 +602,7 @@ impl Think for Player {
             return Ok(());
         }
         let request = self.request(observation, &candidates)?;
-        let response = self.model.complete(&request).await?;
+        let response = self.mind.model.complete(&request).await?;
         let selection = Message::Select {
             seq: *seq,
             from: me.clone(),
@@ -693,13 +687,13 @@ fn selected(response: &Response, candidates: &[PlayerId]) -> anyhow::Result<Play
 mod tests {
     use super::*;
     use crate::model::fake::{FakeModel, choosing_first};
-    use crate::model::{Answer, Call, Choice, ToolCall};
-    use crate::werewolf::tests::{between_the_deal_and_the_end, one_wolf_against, seen};
+    use crate::werewolf::tests::{
+        Played, between_the_deal_and_the_end, one_wolf_against, received, run, seen, selection,
+    };
     use clap::Parser;
     use secrecy::ExposeSecret;
     use std::num::NonZero;
     use tokio::sync::mpsc::unbounded_channel;
-    use tokio::time::Instant;
 
     /// A file naming only the model, which is all that is required.
     const MODEL: &str = r#"
@@ -1239,17 +1233,24 @@ day limit: 1m 30s
     /// What the player `name` asked `model`, in order: the user message of
     /// each request carrying its prompt.
     fn asked_of(model: &FakeModel, name: &str) -> Vec<String> {
+        let prompt = model::Message::system(told(name));
         model
             .requests()
             .iter()
-            .filter(|request| request.messages[0] == model::Message::system(told(name)))
+            .filter(|request| request.messages[0] == prompt)
             .map(|request| request.messages[1].content.clone())
             .collect()
     }
 
-    /// What a game reports: the winner, everything the environment
-    /// logged, and how long the game took.
-    type Played = (Team, Vec<Entry>, Duration);
+    /// The story a request's user message tells, before the situation.
+    fn story(asked: &str) -> &str {
+        asked.rsplit_once("\n\n").unwrap().0
+    }
+
+    /// The situation a request's user message ends with.
+    fn asked(asked: &str) -> &str {
+        asked.rsplit_once("\n\n").unwrap().1
+    }
 
     /// Run a game of `roles` under `rules`, every player a model player
     /// told its prompt and asking `model`.
@@ -1260,17 +1261,9 @@ day limit: 1m 30s
     ) -> anyhow::Result<Played> {
         let prompts = roles.keys().map(|id| (id.clone(), told(id))).collect();
         let (winner, won) = oneshot::channel();
-        let (logger, mut log) = unbounded_channel();
+        let (logger, log) = unbounded_channel();
         let episode = game(roles, rules, prompts, MODEL_ID, model, winner, logger);
-        let started = Instant::now();
-        episode.run(Duration::from_secs(60 * 60)).await?;
-        let took = started.elapsed();
-
-        let mut logged = Vec::new();
-        while let Some(event) = log.recv().await {
-            logged.push(event.payload);
-        }
-        Ok((won.await?, logged, took))
+        run(episode, won, log).await
     }
 
     /// Short limits, so a phase that waits them out is told apart from
@@ -1294,42 +1287,6 @@ day limit: 1m 30s
             ("ann".to_string(), Role::Villager),
             ("bob".to_string(), Role::Villager),
         ])
-    }
-
-    /// The selections the environment logged as received.
-    fn received(logged: &[Entry]) -> Vec<&Message> {
-        logged
-            .iter()
-            .filter_map(|entry| match entry {
-                Entry::Received { message, .. } => Some(message),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// A selection of `target` by `from` in the phase numbered `seq`.
-    fn chose(seq: u64, from: &str, target: &str) -> Message {
-        Message::Select {
-            seq,
-            from: from.to_string(),
-            target: target.to_string(),
-        }
-    }
-
-    /// A response calling the tool `name` with `arguments` as they came.
-    fn calling(name: &str, arguments: &str) -> Response {
-        Response {
-            choices: vec![Choice {
-                message: Answer {
-                    tool_calls: Some(vec![ToolCall {
-                        function: Call {
-                            name: name.to_string(),
-                            arguments: arguments.to_string(),
-                        },
-                    }]),
-                },
-            }],
-        }
     }
 
     /// The answer that selects the werewolf itself, who is no candidate.
@@ -1360,26 +1317,22 @@ day limit: 1m 30s
                          It is night 1. Choose whom the werewolves should kill."
                     ),
                 ],
-                select(&["ann".to_string(), "bob".to_string()]),
+                Tool::new(
+                    "select",
+                    "Knowing everything you know, select the best one.",
+                    json!({
+                        "type": "object",
+                        "properties": {"target": {"type": "string", "enum": ["ann", "bob"]}},
+                        "required": ["target"],
+                        "additionalProperties": false,
+                    }),
+                ),
             )]
         );
         let sent = serde_json::to_value(&requests[0]).unwrap();
         assert_eq!(
             sent["tool_choice"],
             json!({"type": "function", "function": {"name": "select"}})
-        );
-        assert_eq!(
-            sent["tools"][0]["function"],
-            json!({
-                "name": "select",
-                "description": "Knowing everything you know, select the best one.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"target": {"type": "string", "enum": ["ann", "bob"]}},
-                    "required": ["target"],
-                    "additionalProperties": false,
-                },
-            })
         );
     }
 
@@ -1389,7 +1342,7 @@ day limit: 1m 30s
         let roles = one_wolf_against(&["ann", "bob"]);
         let (winner, logged, took) = play(roles, quick(), model).await.unwrap();
         assert_eq!(winner, Team::Werewolves);
-        assert_eq!(received(&logged), [&chose(1, "wolf", "bob")]);
+        assert_eq!(received(&logged), [&selection(1, "wolf", "bob")]);
         assert!(took < quick().night_limit, "{took:?}");
     }
 
@@ -1416,8 +1369,7 @@ day limit: 1m 30s
         );
         assert_eq!(asked.len(), 4);
         for pair in asked.windows(2) {
-            let (story, _) = pair[0].rsplit_once("\n\n").unwrap();
-            assert!(pair[1].starts_with(story), "{pair:?}");
+            assert!(pair[1].starts_with(story(&pair[0])), "{pair:?}");
         }
     }
 
@@ -1447,9 +1399,9 @@ day limit: 1m 30s
             assert_eq!(
                 received,
                 [
-                    &chose(2, "ann", "bob"),
-                    &chose(2, "bob", "ann"),
-                    &chose(2, "wolf", "ann")
+                    &selection(2, "ann", "bob"),
+                    &selection(2, "bob", "ann"),
+                    &selection(2, "wolf", "ann")
                 ]
             );
         }
@@ -1497,14 +1449,7 @@ day limit: 1m 30s
         let situations: HashSet<String> = model
             .requests()
             .iter()
-            .map(|request| {
-                request.messages[1]
-                    .content
-                    .rsplit("\n\n")
-                    .next()
-                    .unwrap()
-                    .to_string()
-            })
+            .map(|request| asked(&request.messages[1].content).to_string())
             .collect();
         assert_eq!(
             situations,
@@ -1559,21 +1504,25 @@ day limit: 1m 30s
             .unwrap(),
             "bob"
         );
+        // A response as a provider sends it, for the shapes `tool_call`
+        // cannot make.
+        let answered = |said: serde_json::Value| serde_json::from_value::<Response>(said).unwrap();
         let wrong = [
-            ("no choice", Response { choices: vec![] }),
+            ("no choice", answered(json!({"choices": []}))),
             (
                 "no tool call",
-                Response {
-                    choices: vec![Choice {
-                        message: Answer { tool_calls: None },
-                    }],
-                },
+                answered(json!({"choices": [{"message": {"content": "bob"}}]})),
             ),
             (
                 "another tool",
                 Response::tool_call("vote", &json!({"target": "bob"})),
             ),
-            ("arguments that do not parse", calling(SELECT, "{")),
+            (
+                "arguments that do not parse",
+                answered(json!({
+                    "choices": [{"message": {"tool_calls": [{"function": {"name": "select", "arguments": "{"}}]}}]
+                })),
+            ),
             ("no target", Response::tool_call(SELECT, &json!({}))),
             (
                 "a target that is not a name",
