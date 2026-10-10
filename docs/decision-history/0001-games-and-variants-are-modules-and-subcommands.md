@@ -58,16 +58,27 @@ game and then variant, and each variant takes its own arguments.**
 ### Layout
 
 ```
-apps/social-deduction/src/
-  main.rs               # parses the command line and runs the chosen variant
-  lib.rs                # declares the game modules
-  werewolf.rs           # what every variant shares
-  werewolf/
-    report.rs           # the Narrator
-    uniform_random.rs   # the uniform-random variant
-    llm.rs              # the model-played variant
-    llm/                # its submodules, if it grows any
+apps/social-deduction/
+  examples/
+    werewolf/
+      llm/                # example configuration files for `werewolf llm`
+  src/
+    main.rs               # parses the command line and runs the chosen variant
+    lib.rs                # declares the game modules
+    model.rs              # the model client, shared by every game and `models`
+    tool_models.txt       # models known to make tool calls
+    werewolf.rs           # what every variant shares
+    werewolf/
+      report.rs           # the Narrator
+      uniform_random.rs   # the uniform-random variant
+      llm.rs              # the model-played variant
+      llm/                # its submodules, if it grows any
 ```
+
+`examples/` holds configuration files that show how a variant is set up,
+not Rust examples: Cargo builds only `.rs` files there, so TOML files are left
+alone. A test loads every file in it and renders its prompts, so the
+examples cannot drift out of date with the configuration they illustrate.
 
 Modules follow the 2018 edition's convention: a module with submodules is a
 file named after it beside a directory of the same name, `werewolf.rs`
@@ -143,13 +154,64 @@ output as it happens.
 **Precedence.** A setting comes from the command line if it is given there,
 otherwise from the configuration file, otherwise from a default in the code.
 Role counts and phase limits can be given in all three places. Phase limits
-are written as durations, such as `30s` or `2m`.
+are written as durations, such as `30s` or `2m`. The model request timeout,
+`request_timeout`, is a duration too, with a default in the code that the
+file can override.
 
 **One model for the whole table.** Every model player uses the same model
 from the same provider. The file names it once.
 
-**Prompts are written inline in the file,** one for each role, as TOML
-strings. A user changes how the game is played by rewriting them.
+**Prompts are templates, written inline in the file.** A user changes how
+the game is played by rewriting them. Each model player's system prompt is
+rendered from a `minijinja` template with these variables:
+
+- `name`, `role` and `persona`: the player's name, the role it was dealt,
+  and its persona, if its seat has one;
+- every named text block in the file's `[text]` table, so shared text such
+  as the rules is written once and used anywhere.
+
+The template used is the most specific one given: the role's own
+`system` override if it has one, otherwise the default `[prompt] system`.
+
+```toml
+[text]
+rules = """Werewolf is played by …"""
+wolf = """You know who the other werewolves are. Win by …"""
+
+[prompt]
+system = """{{ rules }}
+
+You are {{ name }}, a {{ role }}.
+{% if role == "werewolf" %}{{ wolf }}{% endif %}
+{% if persona %}{{ persona }}{% endif %}"""
+
+[roles.seer]
+system = """{{ rules }}
+
+You are {{ name }}, the seer. …"""
+
+[personas]
+player1 = "You are cautious and slow to accuse."
+player4 = "You trust your instincts and say so."
+```
+
+One template for everyone is a default that ignores `role`; prompts that
+differ by role are conditionals, text blocks or overrides; prompts that
+differ by player are personas.
+
+**A persona belongs to a seat, and roles are still dealt at random.** Seats
+are named `player1` onward, as in the uniform-random variant, and a persona
+is keyed by seat. The deal stays random, so that a persona's results are not
+confounded with the strength of the role it happens to hold, and win rates
+stay comparable across games. A persona for a seat that does not exist is an
+error.
+
+**A template that cannot render stops the program.** Undefined variables are
+strict: `{{ rulez }}` is an error, not an empty string. `persona` is always
+defined, and empty for a seat without one, so a template can test it. Every seat's prompt
+is rendered at startup for every role it could be dealt, before any actor is
+built, so a broken template fails at once rather than in the middle of a
+game.
 
 **Providers.** Every model is reached through the OpenAI chat completions
 protocol: OpenAI itself, Anthropic's OpenAI-compatible endpoint, and a local
@@ -214,6 +276,18 @@ probe request, rather than keeping a list. Put off in favor of the
 whitelist, which is simpler and good enough for one user; something cleverer
 comes later.
 
+### A fixed deal for per-player prompts
+
+Let the file assign each seat both its role and its prompt. Useful for a
+scripted scenario, but it removes the random deal that makes games
+comparable. Rejected for personas, which vary players without fixing roles.
+
+### Plain prompts with a shared preamble
+
+Shared text prepended to one prompt per role. Simpler, but it cannot vary
+prompts by player or put shared text anywhere but the start. Rejected for
+templates.
+
 ### The whitelist in the configuration file
 
 Easy to edit without a rebuild, but a list anyone can add to at run time is
@@ -255,8 +329,8 @@ for a better split.
 
 ## Deliberately deferred
 
-1. **Models that differ by role or by player,** and prompts kept in files of
-   their own.
+1. **Models that differ by role or by player,** prompts kept in files of
+   their own, and a fixed deal.
 2. **A second game,** and with it whether games keep sharing one crate.
 3. **Mixed tables,** in which players of different kinds play in one game.
 4. **Final names for the variant subcommands.**
