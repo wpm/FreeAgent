@@ -17,7 +17,7 @@
 //! variable that holds it, and [`Model::api_key`] reads that variable into
 //! a [`SecretString`], which is redacted wherever it is shown.
 
-use super::{PlayerId, Role, RoleCounts, Rules, Table};
+use super::{PlayerId, Role, RoleCounts, Rules, Table, how_long};
 use crate::model::Provider;
 use anyhow::{Context, anyhow, bail};
 use clap::Args;
@@ -46,15 +46,6 @@ pub struct Overrides {
     /// How long the day waits for a player.
     #[arg(long, value_parser = humantime::parse_duration, help = how_long("day", Rules::default().day_limit))]
     pub day_limit: Option<Duration>,
-}
-
-/// The help for the limit of `phase`, naming the `default` the code fills
-/// in when the limit is left unset.
-fn how_long(phase: &str, default: Duration) -> String {
-    format!(
-        "How long the {phase} waits for a player [default: {}]",
-        humantime::format_duration(default)
-    )
 }
 
 /// The configuration file, as written. Every table but `[model]` may be

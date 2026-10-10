@@ -122,6 +122,16 @@ fn how_many(what: &str, default: usize) -> String {
     format!("How many {what} [default: {default}]")
 }
 
+/// The help for the limit of `phase`, naming the `default` the code fills
+/// in when the limit is left unset, for a variant whose command line takes
+/// the phase limits.
+pub fn how_long(phase: &str, default: Duration) -> String {
+    format!(
+        "How long the {phase} waits for a player [default: {}]",
+        humantime::format_duration(default)
+    )
+}
+
 impl RoleCounts {
     /// The table these counts seat, with any count left unset taken from
     /// `default`.

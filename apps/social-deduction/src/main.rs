@@ -4,11 +4,12 @@
 //! which belongs to no game.
 
 use clap::{Parser, Subcommand};
+use free_agent::{Behavior, Episode, Logger};
 use social_deduction::model::{check_makes_tool_calls, makes_tool_calls};
 use social_deduction::werewolf::llm::{self, Config, Model};
 use social_deduction::werewolf::report::Narrator;
-use social_deduction::werewolf::uniform_random::{Actor, game};
-use social_deduction::werewolf::{RoleCounts, Rules, Table};
+use social_deduction::werewolf::{Entry, RoleCounts, Rules, Table, Team, how_long};
+use social_deduction::werewolf::{scripted, uniform_random};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -41,6 +42,18 @@ enum Werewolf {
         #[command(flatten)]
         roles: RoleCounts,
     },
+    /// Every player is a script that answers each announcement at once with
+    /// a choice made at random: the model-played game, without a model.
+    Scripted {
+        #[command(flatten)]
+        roles: RoleCounts,
+        /// How long the night waits for a player.
+        #[arg(long, value_parser = humantime::parse_duration, help = how_long("night", Rules::default().night_limit))]
+        night_limit: Option<Duration>,
+        /// How long the day waits for a player.
+        #[arg(long, value_parser = humantime::parse_duration, help = how_long("day", Rules::default().day_limit))]
+        day_limit: Option<Duration>,
+    },
     /// Every player is a language model, set up by a configuration file.
     Llm {
         /// The TOML configuration file
@@ -58,7 +71,27 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 async fn main() -> anyhow::Result<()> {
     match CommandLine::parse() {
         CommandLine::Werewolf(Werewolf::UniformRandom { roles }) => {
-            uniform_random(roles.or(Table::default())).await
+            let roles = roles.or(Table::default()).deal();
+            play(|winner, logger| {
+                uniform_random::game(roles, Rules::default(), winner, logger, |_| {
+                    uniform_random::Actor::player()
+                })
+            })
+            .await
+        }
+        CommandLine::Werewolf(Werewolf::Scripted {
+            roles,
+            night_limit,
+            day_limit,
+        }) => {
+            let roles = roles.or(Table::default()).deal();
+            let defaults = scripted::rules();
+            let rules = Rules {
+                night_limit: night_limit.unwrap_or(defaults.night_limit),
+                day_limit: day_limit.unwrap_or(defaults.day_limit),
+                ..defaults
+            };
+            play(|winner, logger| scripted::game(roles, rules, winner, logger)).await
         }
         CommandLine::Werewolf(Werewolf::Llm { config, overrides }) => {
             let settings = Config::load(&config)?.settle(overrides);
@@ -100,14 +133,17 @@ fn marked(mut ids: Vec<String>) -> String {
     listing
 }
 
-/// Play one uniform-random game at `table`.
-async fn uniform_random(table: Table) -> anyhow::Result<()> {
+/// Play one game, the episode `game` builds once given where to send the
+/// winner and the logger the environment holds. The log goes to standard
+/// error as JSON lines and the narration to standard output as the game
+/// happens.
+async fn play<A: Behavior<Log = Entry> + 'static>(
+    game: impl FnOnce(oneshot::Sender<Team>, Logger<Entry>) -> Episode<A>,
+) -> anyhow::Result<()> {
     // The winner reaches the log too, which is where it is read from here.
     let (winner, _won) = oneshot::channel();
     let (logger, mut log) = unbounded_channel();
-    let episode = game(table.deal(), Rules::default(), winner, logger, |_| {
-        Actor::player()
-    });
+    let episode = game(winner, logger);
     let telling = tokio::spawn(async move {
         let mut narrator = Narrator::default();
         let mut stdout = io::stdout();
@@ -176,6 +212,29 @@ mod tests {
     }
 
     #[test]
+    fn the_scripted_variant_takes_the_role_counts_and_the_limits() {
+        let args = [
+            "werewolf",
+            "scripted",
+            "--villagers",
+            "4",
+            "--day-limit",
+            "2m",
+        ];
+        assert_eq!(
+            parsed(&args),
+            CommandLine::Werewolf(Werewolf::Scripted {
+                roles: RoleCounts {
+                    villagers: Some(4),
+                    ..RoleCounts::default()
+                },
+                night_limit: None,
+                day_limit: Some(Duration::from_secs(120)),
+            })
+        );
+    }
+
+    #[test]
     fn the_help_names_the_defaults_the_code_fills_in() {
         let table = Table::default();
         let counts = vec![
@@ -190,8 +249,13 @@ mod tests {
             ("--day-limit", rules.day_limit),
         ]
         .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()));
-        let llm = [counts.clone(), limits.to_vec()].concat();
-        for (variant, defaults) in [("uniform-random", counts), ("llm", llm)] {
+        let limited = [counts.clone(), limits.to_vec()].concat();
+        let variants = [
+            ("uniform-random", counts),
+            ("scripted", limited.clone()),
+            ("llm", limited),
+        ];
+        for (variant, defaults) in variants {
             let help = CommandLine::command()
                 .find_subcommand_mut("werewolf")
                 .unwrap()
