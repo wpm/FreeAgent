@@ -5,7 +5,7 @@ use super::{Choices, Entry, Message, Observation, PlayerId, Role, Rules, State, 
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Builder, Context, Episode, Logger};
 use futures_util::future::try_join_all;
-use rand::seq::IndexedRandom;
+use rand::seq::IteratorRandom;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -300,8 +300,8 @@ impl Behavior for Player {
 /// player chooses this way too.
 pub(super) fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
     candidates(me, observation)
+        .into_iter()
         .choose(&mut rand::rng())
-        .cloned()
 }
 
 #[cfg(test)]
