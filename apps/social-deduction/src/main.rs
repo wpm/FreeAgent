@@ -51,10 +51,15 @@ async fn main() -> anyhow::Result<()> {
         }
         Game::Werewolf(Werewolf::Llm { config, overrides }) => {
             let settings = Config::load(&config)?.settle(overrides);
-            // The key is read now so that a variable that is not set fails
-            // before anything else. The game that would use it comes later.
+            // The key is read and every prompt rendered now, so that a
+            // variable that is not set or a template that is broken fails
+            // before anything else. The game that would use them comes later.
             let _api_key = settings.config.model.api_key()?;
+            let prompts = settings.prompts()?;
             print!("{settings}");
+            for prompt in &prompts {
+                print!("{prompt}");
+            }
             println!("The model-played game is not playable yet.");
             Ok(())
         }

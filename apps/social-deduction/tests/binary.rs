@@ -144,18 +144,53 @@ fn example(name: &str) -> String {
 }
 
 #[test]
-fn the_llm_variant_prints_its_settings_and_is_not_playable_yet() {
-    let printed = printed(&["werewolf", "llm", "--config", &example("minimal.toml")]);
+fn the_llm_variant_prints_its_settings_then_every_prompt_and_is_not_playable_yet() {
+    let printed = printed(&["werewolf", "llm", "--config", &example("personas.toml")]);
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
         lines[0], "model: qwen2.5-7b-instruct at http://localhost:1234/v1",
         "{printed}"
     );
+    // Every seat for every role, in order, each under a header.
+    let headers: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| line.starts_with("--- "))
+        .collect();
+    let expected: Vec<String> = (1..=7)
+        .flat_map(|seat| {
+            ["werewolf", "villager", "doctor", "seer"]
+                .map(|role| format!("--- player{seat} as {role} ---"))
+        })
+        .collect();
+    assert_eq!(headers, expected, "{printed}");
+    assert!(
+        printed.contains("You are player1, a werewolf.\n"),
+        "{printed}"
+    );
+    assert!(printed.contains("You are player1, the seer."), "{printed}");
     assert_eq!(
         lines.last().unwrap(),
         &"The model-played game is not playable yet.",
         "{printed}"
     );
+}
+
+#[test]
+fn a_template_that_cannot_render_is_an_error_before_anything_is_printed() {
+    let path = format!("{}/broken-template.toml", env!("CARGO_TARGET_TMPDIR"));
+    std::fs::write(
+        &path,
+        "[model]\nbase_url = \"http://localhost:1234/v1\"\nid = \"m\"\n[prompt]\nsystem = \"{{ rulez }}\"\n",
+    )
+    .unwrap();
+    let output = run(&["werewolf", "llm", "--config", &path]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for expected in ["player1", "werewolf", "rulez"] {
+        assert!(stderr.contains(expected), "{stderr}");
+    }
 }
 
 #[test]

@@ -6,16 +6,21 @@
 //! [`Overrides`] the command line may give, and the [`Settings`] that take
 //! effect once the two are combined with the defaults in the code. A
 //! setting comes from the command line if it is given there, otherwise
-//! from the file, otherwise from the code. The templates the file holds are
-//! kept as written; rendering them comes later.
+//! from the file, otherwise from the code.
+//!
+//! Each player's system prompt is a `minijinja` template from the file,
+//! rendered for its seat and role. [`Settings::prompts`] renders every
+//! [`SystemPrompt`] a game could call for, so that a broken template stops
+//! the program before any game begins.
 //!
 //! The API key never appears in the file. The file names the environment
 //! variable that holds it, and [`Model::api_key`] reads that variable into
 //! a [`SecretString`], which is redacted wherever it is shown.
 
-use super::{RoleCounts, Rules, Table};
-use anyhow::Context;
+use super::{PlayerId, Role, RoleCounts, Rules, Table};
+use anyhow::{Context, bail};
 use clap::Args;
+use minijinja::{Environment, UndefinedBehavior, Value, context};
 use secrecy::SecretString;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -131,6 +136,18 @@ pub struct Roles {
     pub seer: RoleConfig,
 }
 
+impl Roles {
+    /// What the file says about `role`.
+    pub fn get(&self, role: Role) -> &RoleConfig {
+        match role {
+            Role::Werewolf => &self.werewolf,
+            Role::Villager => &self.villager,
+            Role::Doctor => &self.doctor,
+            Role::Seer => &self.seer,
+        }
+    }
+}
+
 /// What the file says about one role.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -203,6 +220,88 @@ impl Config {
     }
 }
 
+/// The variables every template has besides the text blocks.
+const VARIABLES: [&str; 3] = ["name", "role", "persona"];
+
+/// One player's system prompt, rendered for a seat dealt a role.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemPrompt {
+    /// The seat, `player1` onward.
+    pub seat: PlayerId,
+    /// The role the seat was dealt.
+    pub role: Role,
+    /// The rendered prompt.
+    pub text: String,
+}
+
+impl fmt::Display for SystemPrompt {
+    /// The prompt under a header naming its seat and role.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "--- {} as {} ---", self.seat, self.role)?;
+        writeln!(f, "{}", self.text)
+    }
+}
+
+impl Settings {
+    /// Render the system prompt of every seat for every role at the table,
+    /// since any seat may be dealt any of them, in seat order and then the
+    /// order the roles are dealt. A role's prompt is rendered from its own
+    /// `[roles.<role>] system` template if the file has one, otherwise
+    /// from `[prompt] system`, with the variables `name`, `role` and
+    /// `persona` and every `[text]` block. An undefined variable is an
+    /// error, as is a role at the table with no template, a text block
+    /// named like a variable, or a persona for a seat that is not there.
+    /// An error from a template names the seat and the role.
+    pub fn prompts(&self) -> anyhow::Result<Vec<SystemPrompt>> {
+        let config = &self.config;
+        if let Some(taken) = VARIABLES.iter().find(|v| config.text.contains_key(**v)) {
+            bail!("[text] has a block named {taken}, which is a template variable");
+        }
+        let seats: Vec<_> = self.table.seats().collect();
+        if let Some(seat) = config.personas.keys().find(|seat| !seats.contains(seat)) {
+            bail!("[personas] names {seat}, which is not a seat at this table");
+        }
+        let mut templates = Vec::new();
+        for (role, count) in self.table.counts() {
+            if count == 0 {
+                continue;
+            }
+            match config
+                .roles
+                .get(role)
+                .system
+                .as_deref()
+                .or(config.prompt.system.as_deref())
+            {
+                Some(template) => templates.push((role, template)),
+                None => bail!(
+                    "no system prompt for the {role}: neither [roles.{role}] nor [prompt] has one"
+                ),
+            }
+        }
+        let mut env = Environment::new();
+        env.set_undefined_behavior(UndefinedBehavior::Strict);
+        let text = Value::from(&config.text);
+        let mut prompts = Vec::new();
+        for seat in &seats {
+            let persona = config.personas.get(seat).map_or("", String::as_str);
+            for &(role, template) in &templates {
+                let variables =
+                    context! { name => seat, role => role.to_string(), persona, ..text.clone() };
+                let text = env
+                    .render_str(template, variables)
+                    .with_context(|| format!("rendering the {role} prompt for {seat}"))?;
+                prompts.push(SystemPrompt {
+                    seat: seat.clone(),
+                    role,
+                    text,
+                });
+            }
+        }
+        Ok(prompts)
+    }
+}
+
 impl fmt::Display for Settings {
     /// The settings a game would be played under, one per line, with the
     /// key's variable named and the key itself never shown.
@@ -263,7 +362,7 @@ id = "qwen2.5-7b-instruct"
     }
 
     #[test]
-    fn the_examples_parse() {
+    fn the_examples_parse_and_render() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/werewolf/llm");
         let files: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
@@ -272,7 +371,13 @@ id = "qwen2.5-7b-instruct"
             .collect();
         assert!(!files.is_empty(), "no examples in {dir}");
         for file in files {
-            Config::load(&file).unwrap_or_else(|e| panic!("{}: {e:#}", file.display()));
+            let config =
+                Config::load(&file).unwrap_or_else(|e| panic!("{}: {e:#}", file.display()));
+            let prompts = config
+                .settle(Overrides::default())
+                .prompts()
+                .unwrap_or_else(|e| panic!("{}: {e:#}", file.display()));
+            assert!(!prompts.is_empty(), "{}", file.display());
         }
     }
 
@@ -485,6 +590,166 @@ player1 = \"Cautious.\"
         assert_eq!(config.roles.werewolf.system.as_deref(), Some("Howl."));
         assert_eq!(config.roles.villager.system, None);
         assert_eq!(config.personas["player1"], "Cautious.");
+    }
+
+    /// A file whose one template shows every variable but the text blocks.
+    const TEMPLATE: &str = r#"
+[prompt]
+system = "{{ name }} the {{ role }}[{{ persona }}]"
+"#;
+
+    /// The prompt `prompts` holds for `seat` dealt `role`.
+    fn prompt<'a>(prompts: &'a [SystemPrompt], seat: &str, role: Role) -> &'a str {
+        &prompts
+            .iter()
+            .find(|prompt| prompt.seat == seat && prompt.role == role)
+            .unwrap_or_else(|| panic!("no prompt for {seat} as {role}"))
+            .text
+    }
+
+    #[test]
+    fn a_role_s_own_template_is_used_over_the_default() {
+        let file = format!(
+            "{MODEL}
+[prompt]
+system = \"Default for the {{{{ role }}}}.\"
+[roles.seer]
+system = \"The seer's own.\"
+"
+        );
+        let prompts = settle(&file, Overrides::default()).prompts().unwrap();
+        assert_eq!(
+            prompt(&prompts, "player1", Role::Werewolf),
+            "Default for the werewolf."
+        );
+        assert_eq!(prompt(&prompts, "player1", Role::Seer), "The seer's own.");
+    }
+
+    #[test]
+    fn a_role_at_the_table_with_no_template_is_an_error_naming_it() {
+        let file = format!("{MODEL}[roles.seer]\nsystem = \"The seer's own.\"\n");
+        let error = settle(&file, Overrides::default()).prompts().unwrap_err();
+        assert!(format!("{error:#}").contains("werewolf"), "{error:#}");
+        // A role that is not at the table needs no template.
+        let overrides = Overrides {
+            roles: RoleCounts {
+                werewolves: Some(0),
+                villagers: Some(0),
+                doctors: Some(0),
+                seers: Some(2),
+            },
+            ..Overrides::default()
+        };
+        let prompts = settle(&file, overrides).prompts().unwrap();
+        assert_eq!(prompts.len(), 2);
+    }
+
+    #[test]
+    fn the_seat_the_role_and_the_persona_are_variables() {
+        let file = format!("{MODEL}{TEMPLATE}[personas]\nplayer2 = \"Cautious.\"\n");
+        let prompts = settle(&file, Overrides::default()).prompts().unwrap();
+        assert_eq!(
+            prompt(&prompts, "player2", Role::Doctor),
+            "player2 the doctor[Cautious.]"
+        );
+        assert_eq!(
+            prompt(&prompts, "player3", Role::Seer),
+            "player3 the seer[]"
+        );
+    }
+
+    #[test]
+    fn every_text_block_is_a_variable() {
+        let file = format!(
+            "{MODEL}
+[text]
+rules = \"The rules.\"
+wolf = \"Howl.\"
+[prompt]
+system = \"{{{{ rules }}}} {{{{ wolf }}}}\"
+"
+        );
+        let prompts = settle(&file, Overrides::default()).prompts().unwrap();
+        assert_eq!(
+            prompt(&prompts, "player1", Role::Villager),
+            "The rules. Howl."
+        );
+    }
+
+    #[test]
+    fn an_undefined_variable_is_an_error_naming_the_seat_and_the_role() {
+        let file = format!("{MODEL}[prompt]\nsystem = \"{{{{ rulez }}}}\"\n");
+        let error = settle(&file, Overrides::default()).prompts().unwrap_err();
+        let shown = format!("{error:#}");
+        for expected in ["player1", "werewolf", "rulez"] {
+            assert!(shown.contains(expected), "{shown}");
+        }
+    }
+
+    #[test]
+    fn a_text_block_named_like_a_variable_is_an_error_naming_it() {
+        for variable in ["name", "role", "persona"] {
+            let file = format!("{MODEL}{TEMPLATE}[text]\n{variable} = \"Taken.\"\n");
+            let error = settle(&file, Overrides::default()).prompts().unwrap_err();
+            assert!(format!("{error:#}").contains(variable), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn a_persona_for_a_seat_that_does_not_exist_is_an_error_naming_it() {
+        let file = format!("{MODEL}{TEMPLATE}[personas]\nplayer8 = \"Late.\"\n");
+        let error = settle(&file, Overrides::default()).prompts().unwrap_err();
+        assert!(format!("{error:#}").contains("player8"), "{error:#}");
+        // The seats follow the settled counts, not the file's alone.
+        let overrides = Overrides {
+            roles: RoleCounts {
+                villagers: Some(4),
+                ..RoleCounts::default()
+            },
+            ..Overrides::default()
+        };
+        settle(&file, overrides).prompts().unwrap();
+    }
+
+    #[test]
+    fn every_seat_is_rendered_for_every_role_at_the_table_in_order() {
+        let file = format!("{MODEL}{TEMPLATE}");
+        let prompts = settle(&file, Overrides::default()).prompts().unwrap();
+        let rendered: Vec<_> = prompts
+            .iter()
+            .map(|prompt| (prompt.seat.clone(), prompt.role))
+            .collect();
+        let expected: Vec<_> = (1..=7)
+            .flat_map(|seat| {
+                [Role::Werewolf, Role::Villager, Role::Doctor, Role::Seer]
+                    .map(|role| (format!("player{seat}"), role))
+            })
+            .collect();
+        assert_eq!(rendered, expected);
+        // A role with no one in it is not rendered.
+        let overrides = Overrides {
+            roles: RoleCounts {
+                seers: Some(0),
+                ..RoleCounts::default()
+            },
+            ..Overrides::default()
+        };
+        let prompts = settle(&file, overrides).prompts().unwrap();
+        assert_eq!(prompts.len(), 6 * 3);
+        assert!(prompts.iter().all(|prompt| prompt.role != Role::Seer));
+    }
+
+    #[test]
+    fn a_prompt_is_shown_under_a_header_naming_its_seat_and_role() {
+        let prompt = SystemPrompt {
+            seat: "player3".into(),
+            role: Role::Seer,
+            text: "You see.\nSay so.".into(),
+        };
+        assert_eq!(
+            prompt.to_string(),
+            "--- player3 as seer ---\nYou see.\nSay so.\n"
+        );
     }
 
     #[test]
