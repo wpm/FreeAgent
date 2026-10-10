@@ -14,4 +14,11 @@ workflow takes a version's notes from here.
 - The `social-deduction` application, which plays Werewolf with the roles
   dealt at random.
 
+### Changed
+
+- The command line is `social-deduction werewolf uniform-random`, a game
+  and then its variant, each a subcommand with its own `--help`. The role
+  counts `--werewolves`, `--villagers`, `--doctors` and `--seers` belong to
+  the variant; the 0.1.0 top-level flags are gone.
+
 [Unreleased]: https://github.com/wpm/FreeAgent/compare/main...HEAD
