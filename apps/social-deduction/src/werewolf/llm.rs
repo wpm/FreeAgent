@@ -17,7 +17,7 @@
 //! variable that holds it, and [`Model::api_key`] reads that variable into
 //! a [`SecretString`], which is redacted wherever it is shown.
 
-use super::{PlayerId, Role, RoleCounts, Rules, Table};
+use super::{PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table};
 use crate::model::Provider;
 use anyhow::{Context, anyhow, bail};
 use clap::Args;
@@ -40,21 +40,9 @@ pub struct Overrides {
     /// How many of each role sit at the table.
     #[command(flatten)]
     pub roles: RoleCounts,
-    /// How long the night waits for a player.
-    #[arg(long, value_parser = humantime::parse_duration, help = how_long("night", Rules::default().night_limit))]
-    pub night_limit: Option<Duration>,
-    /// How long the day waits for a player.
-    #[arg(long, value_parser = humantime::parse_duration, help = how_long("day", Rules::default().day_limit))]
-    pub day_limit: Option<Duration>,
-}
-
-/// The help for the limit of `phase`, naming the `default` the code fills
-/// in when the limit is left unset.
-fn how_long(phase: &str, default: Duration) -> String {
-    format!(
-        "How long the {phase} waits for a player [default: {}]",
-        humantime::format_duration(default)
-    )
+    /// How long each phase waits for the players.
+    #[command(flatten)]
+    pub limits: PhaseLimits,
 }
 
 /// The configuration file, as written. Every table but `[model]` may be
@@ -261,10 +249,12 @@ impl Config {
         Settings {
             table: overrides.roles.or(file.or(Table::default())),
             night_limit: overrides
+                .limits
                 .night_limit
                 .or(self.phases.night_limit)
                 .unwrap_or(rules.night_limit),
             day_limit: overrides
+                .limits
                 .day_limit
                 .or(self.phases.day_limit)
                 .unwrap_or(rules.day_limit),
@@ -545,8 +535,10 @@ count = 8
         let settings = settle(
             &file,
             Overrides {
-                night_limit: Some(Duration::from_secs(5)),
-                day_limit: Some(Duration::from_secs(7)),
+                limits: PhaseLimits {
+                    night_limit: Some(Duration::from_secs(5)),
+                    day_limit: Some(Duration::from_secs(7)),
+                },
                 ..Overrides::default()
             },
         );
@@ -556,7 +548,10 @@ count = 8
         let settings = settle(
             &file,
             Overrides {
-                night_limit: Some(Duration::from_secs(5)),
+                limits: PhaseLimits {
+                    night_limit: Some(Duration::from_secs(5)),
+                    day_limit: None,
+                },
                 ..Overrides::default()
             },
         );
@@ -567,8 +562,13 @@ count = 8
     #[test]
     fn the_command_line_takes_durations_in_humantime_form() {
         let variant = Variant::parse_from(["llm", "--night-limit", "30s", "--day-limit", "1m 30s"]);
-        assert_eq!(variant.overrides.night_limit, Some(Duration::from_secs(30)));
-        assert_eq!(variant.overrides.day_limit, Some(Duration::from_secs(90)));
+        assert_eq!(
+            variant.overrides.limits,
+            PhaseLimits {
+                night_limit: Some(Duration::from_secs(30)),
+                day_limit: Some(Duration::from_secs(90)),
+            }
+        );
         assert!(Variant::try_parse_from(["llm", "--night-limit", "soon"]).is_err());
         assert!(Variant::try_parse_from(["llm", "--day-limit", "30"]).is_err());
     }

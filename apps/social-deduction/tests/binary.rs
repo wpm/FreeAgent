@@ -35,10 +35,10 @@ fn refused(args: &[&str]) -> String {
     String::from_utf8(output.stderr).unwrap()
 }
 
-/// Play Werewolf at random with `args` after the game and its variant: the
-/// events on standard error, parsed, and what was printed.
-fn played(args: &[&str]) -> (Vec<Event<Entry>>, String) {
-    let output = succeeded(&[&["werewolf", "uniform-random"], args].concat());
+/// Play Werewolf in `variant` with `args` after the game and its variant:
+/// the events on standard error, parsed, and what was printed.
+fn played(variant: &str, args: &[&str]) -> (Vec<Event<Entry>>, String) {
+    let output = succeeded(&[&["werewolf", variant], args].concat());
     let stderr = String::from_utf8(output.stderr).unwrap();
     let events = stderr
         .lines()
@@ -62,14 +62,16 @@ fn assert_usage_error(args: &[&str]) {
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 }
 
-#[test]
-fn the_log_runs_from_the_deal_to_the_result_under_one_episode_id() {
-    let (events, printed) = played(&[]);
+/// Play a game of `variant`, whose log must name `variation`, with the
+/// default table, and check that it is logged from the deal to the result
+/// under one episode id and told from the table to the winner.
+fn assert_plays_the_default_table(variant: &str, variation: &str) {
+    let (events, printed) = played(variant, &[]);
 
     let episode = events[0].episode;
     assert!(events.iter().all(|event| event.episode == episode));
-    let (variation, roles) = start(&events);
-    assert_eq!(variation, "Uniform Random");
+    let (named, roles) = start(&events);
+    assert_eq!(named, variation);
     // The default table seats seven.
     assert_eq!(roles.len(), 7);
     let Some(Entry::End { winner, .. }) = events.last().map(|event| &event.payload) else {
@@ -79,7 +81,7 @@ fn the_log_runs_from_the_deal_to_the_result_under_one_episode_id() {
     // closes with the winner.
     let lines: Vec<&str> = printed.lines().collect();
     assert!(
-        lines[0].starts_with("Uniform Random with 7 players: "),
+        lines[0].starts_with(&format!("{variation} with 7 players: ")),
         "{printed}"
     );
     assert_eq!(lines[1], "Night 1.", "{printed}");
@@ -93,23 +95,52 @@ fn the_log_runs_from_the_deal_to_the_result_under_one_episode_id() {
 }
 
 #[test]
-fn the_table_is_dealt_as_asked() {
-    let (events, _) = played(&[
-        "--werewolves",
-        "1",
-        "--villagers",
-        "2",
-        "--doctors",
-        "0",
-        "--seers",
-        "0",
-    ]);
+fn the_log_runs_from_the_deal_to_the_result_under_one_episode_id() {
+    assert_plays_the_default_table("uniform-random", "Uniform Random");
+}
 
-    let (_, roles) = start(&events);
-    let count = |role| roles.values().filter(|r| **r == role).count();
-    assert_eq!(roles.len(), 3);
-    assert_eq!(count(Role::Werewolf), 1);
-    assert_eq!(count(Role::Villager), 2);
+#[test]
+fn the_scripted_variant_plays_the_announcing_environment_without_a_model() {
+    assert_plays_the_default_table("scripted", "Scripted");
+}
+
+#[test]
+fn the_table_is_dealt_as_asked() {
+    for variant in ["uniform-random", "scripted"] {
+        let (events, _) = played(
+            variant,
+            &[
+                "--werewolves",
+                "1",
+                "--villagers",
+                "2",
+                "--doctors",
+                "0",
+                "--seers",
+                "0",
+            ],
+        );
+
+        let (_, roles) = start(&events);
+        let count = |role| roles.values().filter(|r| **r == role).count();
+        assert_eq!(roles.len(), 3);
+        assert_eq!(count(Role::Werewolf), 1);
+        assert_eq!(count(Role::Villager), 2);
+    }
+}
+
+#[test]
+fn the_scripted_variant_takes_the_limits_and_needs_no_configuration_file() {
+    succeeded(&[
+        "werewolf",
+        "scripted",
+        "--night-limit",
+        "5s",
+        "--day-limit",
+        "1m",
+    ]);
+    assert_usage_error(&["werewolf", "scripted", "--night-limit", "soon"]);
+    assert_usage_error(&["werewolf", "scripted", "--config", "game.toml"]);
 }
 
 #[test]
@@ -137,14 +168,15 @@ fn help_lists_the_games_the_variants_and_the_role_counts() {
         "{help}"
     );
     let help = printed(&["werewolf", "--help"]);
-    assert!(
-        help.contains("uniform-random") && help.contains("llm"),
-        "{help}"
-    );
-    for variant in ["uniform-random", "llm"] {
+    for variant in ["uniform-random", "scripted", "llm"] {
+        assert!(help.contains(variant), "{help}");
+    }
+    let counts = ["--werewolves", "--villagers", "--doctors", "--seers"];
+    let limits = ["--night-limit", "--day-limit"];
+    for (variant, limited) in [("uniform-random", false), ("scripted", true), ("llm", true)] {
         let help = printed(&["werewolf", variant, "--help"]);
-        for count in ["--werewolves", "--villagers", "--doctors", "--seers"] {
-            assert!(help.contains(count), "{help}");
+        for option in counts.iter().chain(limits.iter().filter(|_| limited)) {
+            assert!(help.contains(option), "{help}");
         }
     }
 }

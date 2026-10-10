@@ -43,6 +43,19 @@ The table seats two werewolves, three villagers, a doctor and a seer unless
 the counts say otherwise. The game is told on standard output as it happens
 and logged to standard error as JSON Lines.
 
+In `scripted` the environment announces each phase and waits for the
+players' selections, as it does for language models, and every player is a
+script that selects at once, at random among the living whose roles it does
+not know. It plays the model-played game with no model, provider, API key or
+configuration file, so a game finishes in moments.
+
+```sh
+social-deduction werewolf scripted [role counts] [--night-limit 30s] [--day-limit 2m]
+```
+
+The role counts are those of `uniform-random`, with the same defaults. Each
+phase waits a minute for its selections unless a limit says otherwise.
+
 In `llm` every player is a language model, set up by a TOML configuration
 file that names the model, how to reach it, and the prompts each role is
 given. The [examples](examples/werewolf/llm) show how one is written.
