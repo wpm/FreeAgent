@@ -18,6 +18,7 @@
 //! a [`SecretString`], which is redacted wherever it is shown.
 
 use super::{PlayerId, Role, RoleCounts, Rules, Table};
+use crate::model::Provider;
 use anyhow::{Context, anyhow, bail};
 use clap::Args;
 use minijinja::{Environment, UndefinedBehavior, Value, context};
@@ -101,6 +102,16 @@ impl Model {
                     .with_context(|| format!("api_key_env names {name}, which is not set"))
             })
             .transpose()
+    }
+
+    /// The provider the table is reached through, with its key read from
+    /// the environment as [`Model::api_key`] reads it.
+    pub fn provider(&self) -> anyhow::Result<Provider> {
+        Ok(Provider::new(
+            &self.base_url,
+            self.api_key()?,
+            self.request_timeout,
+        ))
     }
 }
 
@@ -771,6 +782,28 @@ system = \"{{{{ rules }}}} {{{{ wolf }}}}\"
         let shown = format!("{key:?}\n{settings:?}\n{settings}");
         assert!(shown.contains(name), "{shown}");
         assert!(!shown.contains(&value), "{shown}");
+    }
+
+    #[test]
+    fn the_provider_is_reached_at_the_base_url_within_the_timeout() {
+        let file = format!("{MODEL}request_timeout = \"10s\"\n");
+        let provider = settle(&file, Overrides::default())
+            .config
+            .model
+            .provider()
+            .unwrap();
+        assert_eq!(provider.base_url(), "http://localhost:1234/v1");
+        assert_eq!(provider.request_timeout(), Duration::from_secs(10));
+        let file = format!("{MODEL}api_key_env = \"SOCIAL_DEDUCTION_NO_SUCH_KEY\"\n");
+        let error = settle(&file, Overrides::default())
+            .config
+            .model
+            .provider()
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("SOCIAL_DEDUCTION_NO_SUCH_KEY"),
+            "{error:#}"
+        );
     }
 
     #[test]

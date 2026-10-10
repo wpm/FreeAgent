@@ -51,6 +51,8 @@ tokio-util = "0.7.20"
 # Only parsing: nothing writes TOML.
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 rand = "0.10.3"
+# Only what reaching a model needs: rustls and JSON, nothing by default.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
 uuid = { version = "1.27.0", features = ["v4", "serde"] }
 # The version lets a crate that depends on the library be published too.
 free-agent = { path = ".", version = "0.1.0" }

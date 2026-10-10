@@ -1,0 +1,3 @@
+# Models known to make tool calls. One id per line, exactly as the provider's
+# /v1/models lists it. Blank lines and lines starting with # are ignored.
+qwen2.5-7b-instruct

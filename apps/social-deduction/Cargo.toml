@@ -25,6 +25,7 @@ humantime.workspace = true
 humantime-serde.workspace = true
 minijinja.workspace = true
 rand.workspace = true
+reqwest.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
@@ -32,5 +33,6 @@ toml.workspace = true
 
 [dev-dependencies]
 # A paused clock lets a test wait out a day's time limit without waiting.
-tokio = { workspace = true, features = ["test-util"] }
+# The tests answer the model client from a local listener.
+tokio = { workspace = true, features = ["test-util", "net", "io-util"] }
 serde_json.workspace = true
