@@ -42,5 +42,8 @@ workflow takes a version's notes from here.
 - By day a player may vote against anyone living but itself, whatever it
   knows them to be, so a seer can vote out a werewolf it has found. By
   night it still chooses among those whose roles it does not know.
+- A selection that arrives after the next phase has been announced is told
+  as too late to count, for the phase it was for, instead of as a deed of
+  the phase that followed.
 
 [Unreleased]: https://github.com/wpm/FreeAgent/compare/main...HEAD
