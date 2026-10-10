@@ -226,16 +226,6 @@ impl Behavior for Environment {
         &self.context
     }
 
-    /// Log the deal and open the first night.
-    async fn start(&mut self) -> anyhow::Result<()> {
-        let (variation, roles) = {
-            let game = self.game();
-            (game.rules.variation.clone(), game.state.roles.clone())
-        };
-        self.context.log(Entry::Start { variation, roles });
-        self.open_phase()
-    }
-
     /// Log a selection, stale or not, and record it if it counts. The last
     /// selection a phase is waiting for ends it. Anything else is ignored.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
@@ -250,6 +240,16 @@ impl Behavior for Environment {
             }
         }
         Ok(())
+    }
+
+    /// Log the deal and open the first night.
+    async fn start(&mut self) -> anyhow::Result<()> {
+        let (variation, roles) = {
+            let game = self.game();
+            (game.rules.variation.clone(), game.state.roles.clone())
+        };
+        self.context.log(Entry::Start { variation, roles });
+        self.open_phase()
     }
 }
 

@@ -6,7 +6,7 @@ use super::announced::{self, Environment};
 use super::uniform_random::choose;
 use super::{ENVIRONMENT, Entry, Message, PlayerId, Role, Rules, Team};
 use async_trait::async_trait;
-use free_agent::{ActorInit, Behavior, Builder, Context, Episode, Logger};
+use free_agent::{Behavior, Builder, Context, Episode, Logger};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::oneshot;
 
@@ -38,27 +38,11 @@ fn episode(
     rules: Rules,
     winner: oneshot::Sender<Team>,
     logger: Logger<Entry>,
-    mut player: impl FnMut(&PlayerId) -> Builder<Actor>,
+    player: impl FnMut(&PlayerId) -> Builder<Actor>,
 ) -> Episode<Actor> {
     let players: Vec<PlayerId> = roles.keys().cloned().collect();
-    let mut init = HashMap::from([(
-        ENVIRONMENT.to_string(),
-        announced::init(roles, rules, winner, Actor::Environment),
-    )]);
-    for id in players {
-        let behavior = player(&id);
-        init.insert(
-            id,
-            ActorInit {
-                behavior,
-                think: None,
-                can_send_to: HashSet::from([ENVIRONMENT.to_string()]),
-                can_shut_down: HashSet::new(),
-                has_logger: false,
-            },
-        );
-    }
-    Episode::new(init, logger)
+    let environment = announced::init(roles, rules, winner, Actor::Environment);
+    super::episode(environment, players, player, logger)
 }
 
 /// What an actor in the game does: run it, or play in it. An episode holds
@@ -152,7 +136,7 @@ impl Behavior for Player {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::werewolf::tests::{one_wolf_against, village};
+    use crate::werewolf::tests::{between_the_deal_and_the_end, one_wolf_against, village};
     use crate::werewolf::{Observation, Phase};
     use free_agent::Event;
     use std::time::Duration;
@@ -288,29 +272,9 @@ mod tests {
         let episode = game(roles.clone(), rules(), winner, logger);
         let (winner, logged, _) = run(episode, won, log).await.unwrap();
 
-        assert_eq!(
-            logged.first(),
-            Some(&Entry::Start {
-                variation: "Scripted".to_string(),
-                roles: roles.clone(),
-            })
-        );
-
-        let last = logged.last();
-        assert!(
-            matches!(
-                last,
-                Some(Entry::End { winner: won, survivors, .. })
-                    if *won == winner
-                        && !survivors.is_empty()
-                        && survivors.iter().all(|player| roles.contains_key(player))
-            ),
-            "{last:?}"
-        );
-
         // Everything between is a message to or from a player, as it was.
         let mut announced = 0;
-        for entry in &logged[1..logged.len() - 1] {
+        for entry in between_the_deal_and_the_end(&logged, "Scripted", &roles, winner) {
             match entry {
                 Entry::Sent {
                     to,

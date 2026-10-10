@@ -1,9 +1,7 @@
 //! The uniform-random variant: an environment that runs the game as a loop
 //! and players who choose at random.
 
-use super::{
-    Choices, ENVIRONMENT, Entry, Message, Observation, PlayerId, Role, Rules, State, Team,
-};
+use super::{Choices, Entry, Message, Observation, PlayerId, Role, Rules, State, Team};
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Builder, Context, Episode, Logger};
 use futures_util::future::try_join_all;
@@ -22,33 +20,17 @@ pub fn game(
     rules: Rules,
     winner: oneshot::Sender<Team>,
     logger: Logger<Entry>,
-    mut player: impl FnMut(&PlayerId) -> Builder<Actor>,
+    player: impl FnMut(&PlayerId) -> Builder<Actor>,
 ) -> Episode<Actor> {
     let players: HashSet<PlayerId> = roles.keys().cloned().collect();
-    let mut init = HashMap::from([(
-        ENVIRONMENT.to_string(),
-        ActorInit {
-            behavior: Actor::environment(roles, rules, winner),
-            think: None,
-            can_send_to: players.clone(),
-            can_shut_down: players.clone(),
-            has_logger: true,
-        },
-    )]);
-    for id in players {
-        let behavior = player(&id);
-        init.insert(
-            id,
-            ActorInit {
-                behavior,
-                think: None,
-                can_send_to: HashSet::from([ENVIRONMENT.to_string()]),
-                can_shut_down: HashSet::new(),
-                has_logger: false,
-            },
-        );
-    }
-    Episode::new(init, logger)
+    let environment = ActorInit {
+        behavior: Actor::environment(roles, rules, winner),
+        think: None,
+        can_send_to: players.clone(),
+        can_shut_down: players.clone(),
+        has_logger: true,
+    };
+    super::episode(environment, players, player, logger)
 }
 
 /// What an actor in the game does: run it, or play in it. An episode holds
@@ -334,8 +316,8 @@ pub(super) fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerI
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::werewolf::Phase;
-    use crate::werewolf::tests::{one_wolf_against, village};
+    use crate::werewolf::tests::{between_the_deal_and_the_end, one_wolf_against, village};
+    use crate::werewolf::{ENVIRONMENT, Phase};
     use std::num::NonZero;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -408,29 +390,9 @@ mod tests {
         let roles = village().roles;
         let (winner, logged) = play(roles.clone(), Rules::default(), &[]).await.unwrap();
 
-        assert_eq!(
-            logged.first(),
-            Some(&Entry::Start {
-                variation: "Uniform Random".to_string(),
-                roles: roles.clone(),
-            })
-        );
-
-        let last = logged.last();
-        assert!(
-            matches!(
-                last,
-                Some(Entry::End { winner: won, survivors, .. })
-                    if *won == winner
-                        && !survivors.is_empty()
-                        && survivors.iter().all(|player| roles.contains_key(player))
-            ),
-            "{last:?}"
-        );
-
         // Everything between is a message to or from a player, as it was.
         let mut shown = 0;
-        for entry in &logged[1..logged.len() - 1] {
+        for entry in between_the_deal_and_the_end(&logged, "Uniform Random", &roles, winner) {
             match entry {
                 Entry::Sent {
                     to,
