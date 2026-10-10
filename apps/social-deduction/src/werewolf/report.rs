@@ -5,6 +5,16 @@ use super::{Entry, Message, Observation, Phase, PlayerId, Role};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
 
+/// Whose account a narrator gives.
+#[derive(Debug, Default)]
+enum Voice {
+    /// Everyone's: the deal, every deed, every death.
+    #[default]
+    Omniscient,
+    /// One player's: what it was shown and what it did, told to it.
+    Player(PlayerId),
+}
+
 /// Turns the log's entries, one at a time, into lines of prose. The
 /// omniscient narrator tells the table, then each night and day with what
 /// every player did and how it ended, then who won. A player's narrator
@@ -14,9 +24,8 @@ use std::num::NonZero;
 /// announced is told as one requested, and a selection as a reply.
 #[derive(Debug, Default)]
 pub struct Narrator {
-    /// The player whose account this is, or nobody's for the omniscient
-    /// account.
-    me: Option<PlayerId>,
+    /// Whose account this is.
+    voice: Voice,
     /// Every role known so far: from the deal, and from what players are
     /// shown.
     roles: HashMap<PlayerId, Role>,
@@ -29,12 +38,13 @@ pub struct Narrator {
 impl Narrator {
     /// The account `me` would give of its own game. Feed it the entries
     /// about `me`: each observation `me` was sent, and each selection it
-    /// made. Entries about anyone else add nothing. It opens with who `me`
-    /// is, names the roles `me` knows and nobody else's, and tells `me`'s
-    /// deeds as "You ...".
+    /// made. Entries about anyone else add nothing, so the whole log tells
+    /// it the same account as `me`'s own history does. It opens with who
+    /// `me` is, names the roles `me` knows and nobody else's, and tells
+    /// `me`'s deeds as "You ...".
     pub fn for_player(me: PlayerId) -> Self {
         Self {
-            me: Some(me),
+            voice: Voice::Player(me),
             ..Self::default()
         }
     }
@@ -42,7 +52,7 @@ impl Narrator {
     /// The lines `entry` adds to the account, often none.
     pub fn narrate(&mut self, entry: &Entry) -> Vec<String> {
         match entry {
-            Entry::Start { variation, roles } if self.me.is_none() => {
+            Entry::Start { variation, roles } if matches!(self.voice, Voice::Omniscient) => {
                 self.roles = roles.clone();
                 self.alive = roles.keys().cloned().collect();
                 vec![self.table(variation)]
@@ -50,7 +60,11 @@ impl Narrator {
             Entry::Sent {
                 to,
                 message: Message::Observation(observation) | Message::Announce { observation, .. },
-            } if self.concerns(to) => self.shown(observation),
+            } if self.concerns(to) => {
+                let mut lines = self.learn(&observation.roles);
+                lines.extend(self.begin(observation));
+                lines
+            }
             Entry::Replied {
                 from,
                 message: Message::Action(chosen),
@@ -64,7 +78,7 @@ impl Narrator {
                 days,
                 survivors,
             } => {
-                let mut lines = self.outcome(survivors, None);
+                let mut lines = self.outcome(survivors, false);
                 let mut names: Vec<&PlayerId> = survivors.iter().collect();
                 names.sort();
                 let seats: Vec<String> = names.iter().map(|name| self.seat(name)).collect();
@@ -82,7 +96,10 @@ impl Narrator {
     /// Whether an entry about `player` belongs in this account: every
     /// player's does in the omniscient one, only `me`'s in a player's.
     fn concerns(&self, player: &PlayerId) -> bool {
-        self.me.as_ref().is_none_or(|me| me == player)
+        match &self.voice {
+            Voice::Omniscient => true,
+            Voice::Player(me) => me == player,
+        }
     }
 
     /// The deal, with every player's role.
@@ -106,38 +123,27 @@ impl Narrator {
         }
     }
 
-    /// What a player being shown `observation` adds: the roles it shows,
-    /// told as who the player is at its first observation and as what it
-    /// learns after that, and then the phase it begins.
-    fn shown(&mut self, observation: &Observation) -> Vec<String> {
-        let mut lines = self.learn(&observation.roles);
-        lines.extend(self.begin(observation));
-        lines
-    }
-
-    /// Takes in the roles an observation shows. In a player's account, its
-    /// first observation says who it is, and a role it is shown later is
-    /// one it learned.
+    /// Takes in the roles an observation shows that were not known. In a
+    /// player's account, its first observation says who it is, and a role
+    /// it is shown later is one it learned.
     fn learn(&mut self, roles: &HashMap<PlayerId, Role>) -> Vec<String> {
-        let mut lines = vec![];
-        if let Some(me) = &self.me {
-            if self.phase.is_none() {
-                lines.push(identity(me, roles));
-            } else {
-                let mut learned: Vec<(&PlayerId, &Role)> = roles
-                    .iter()
-                    .filter(|(player, _)| !self.roles.contains_key(*player))
-                    .collect();
-                learned.sort_by(|a, b| a.0.cmp(b.0));
-                lines.extend(
-                    learned
-                        .iter()
-                        .map(|(player, role)| format!("You learn {player} is a {role}.")),
-                );
-            }
-        }
-        self.roles
-            .extend(roles.iter().map(|(player, role)| (player.clone(), *role)));
+        let mut new: Vec<(&PlayerId, &Role)> = roles
+            .iter()
+            .filter(|(player, _)| !self.roles.contains_key(*player))
+            .collect();
+        new.sort_by(|a, b| a.0.cmp(b.0));
+        let lines = match &self.voice {
+            Voice::Omniscient => vec![],
+            Voice::Player(me) if self.phase.is_none() => vec![identity(me, roles)],
+            Voice::Player(_) => new
+                .iter()
+                .map(|(player, role)| format!("You learn {player} is a {role}."))
+                .collect(),
+        };
+        self.roles.extend(
+            new.into_iter()
+                .map(|(player, role)| (player.clone(), *role)),
+        );
         lines
     }
 
@@ -148,7 +154,11 @@ impl Narrator {
         if self.phase.as_ref() == Some(&phase) {
             return vec![];
         }
-        let mut lines = self.outcome(&observation.alive, Some(&phase));
+        let slept = self
+            .phase
+            .as_ref()
+            .is_some_and(|told| ordinal(&phase) != ordinal(told) + 1);
+        let mut lines = self.outcome(&observation.alive, slept);
         self.alive = observation.alive.clone();
         self.phase = Some(phase);
         lines.push(match observation.phase {
@@ -158,27 +168,21 @@ impl Narrator {
         lines
     }
 
-    /// How the phase being told ended, given who is alive after it. When
-    /// `next` is not the phase right after it, the player slept through
-    /// phases between, and the deaths are told without saying how.
-    fn outcome(
-        &mut self,
-        alive_after: &HashSet<PlayerId>,
-        next: Option<&(NonZero<u8>, Phase)>,
-    ) -> Vec<String> {
-        let Some(told) = &self.phase else {
+    /// How the phase being told ended, given who is alive after it. A
+    /// player that `slept` through phases since is told who died without
+    /// being told how.
+    fn outcome(&mut self, alive_after: &HashSet<PlayerId>, slept: bool) -> Vec<String> {
+        let Some((_, phase)) = &self.phase else {
             return vec![];
         };
-        let mut dead: Vec<&PlayerId> = self.alive.difference(alive_after).collect();
-        dead.sort();
-        let slept = next.is_some_and(|next| ordinal(next) != ordinal(told) + 1);
-        let line = match (&told.1, slept, dead.as_slice()) {
-            (_, true, []) => "Nobody died.".to_string(),
-            (_, true, dead) => format!("{} died.", names(dead)),
-            (Phase::Night, false, []) => "Nobody dies.".to_string(),
-            (Phase::Night, false, dead) => format!("{} dies.", names(dead)),
-            (Phase::Day, false, []) => "Nobody is voted out.".to_string(),
-            (Phase::Day, false, dead) => format!("{} is voted out.", names(dead)),
+        let dead = names(self.alive.difference(alive_after));
+        let line = match (phase, slept, dead.is_empty()) {
+            (_, true, true) => "Nobody died.".to_string(),
+            (_, true, false) => format!("{dead} died."),
+            (Phase::Night, false, true) => "Nobody dies.".to_string(),
+            (Phase::Night, false, false) => format!("{dead} dies."),
+            (Phase::Day, false, true) => "Nobody is voted out.".to_string(),
+            (Phase::Day, false, false) => format!("{dead} is voted out."),
         };
         self.alive = alive_after.clone();
         vec![line]
@@ -190,26 +194,30 @@ impl Narrator {
     fn deed(&self, player: &PlayerId, chosen: &PlayerId) -> String {
         let role = self.roles.get(player).copied();
         let phase = self.phase.as_ref().map(|(_, phase)| phase);
-        if self.me.is_some() {
-            return match (phase, role) {
-                (Some(Phase::Night), Some(Role::Werewolf)) => format!("You vote to kill {chosen}."),
-                (Some(Phase::Night), Some(Role::Doctor)) => format!("You protect {chosen}."),
-                (Some(Phase::Night), Some(Role::Seer)) => format!("You ask about {chosen}."),
-                _ => format!("You vote against {chosen}."),
-            };
-        }
-        match (phase, role) {
-            (Some(Phase::Night), Some(Role::Werewolf)) => {
+        match (&self.voice, phase, role) {
+            (Voice::Player(_), Some(Phase::Night), Some(Role::Werewolf)) => {
+                format!("You vote to kill {chosen}.")
+            }
+            (Voice::Player(_), Some(Phase::Night), Some(Role::Doctor)) => {
+                format!("You protect {chosen}.")
+            }
+            (Voice::Player(_), Some(Phase::Night), Some(Role::Seer)) => {
+                format!("You ask about {chosen}.")
+            }
+            (Voice::Player(_), _, _) => format!("You vote against {chosen}."),
+            (Voice::Omniscient, Some(Phase::Night), Some(Role::Werewolf)) => {
                 format!("{player} (werewolf) votes to kill {chosen}.")
             }
-            (Some(Phase::Night), Some(Role::Doctor)) => {
+            (Voice::Omniscient, Some(Phase::Night), Some(Role::Doctor)) => {
                 format!("{player} (doctor) protects {chosen}.")
             }
-            (Some(Phase::Night), Some(Role::Seer)) => match self.roles.get(chosen) {
-                Some(seen) => format!("{player} (seer) learns {chosen} is a {seen}."),
-                None => format!("{player} (seer) asks about {chosen}."),
-            },
-            _ => format!("{player} votes against {chosen}."),
+            (Voice::Omniscient, Some(Phase::Night), Some(Role::Seer)) => {
+                match self.roles.get(chosen) {
+                    Some(seen) => format!("{player} (seer) learns {chosen} is a {seen}."),
+                    None => format!("{player} (seer) asks about {chosen}."),
+                }
+            }
+            (Voice::Omniscient, _, _) => format!("{player} votes against {chosen}."),
         }
     }
 }
@@ -219,19 +227,17 @@ impl Narrator {
 fn identity(me: &PlayerId, roles: &HashMap<PlayerId, Role>) -> String {
     match roles.get(me) {
         Some(Role::Werewolf) => {
-            let mut pack: Vec<&PlayerId> = roles
+            let pack: Vec<&PlayerId> = roles
                 .iter()
                 .filter(|(_, role)| **role == Role::Werewolf)
                 .map(|(player, _)| player)
                 .collect();
-            pack.sort();
-            if pack.len() == 1 {
-                format!("You are {me}, the only werewolf.")
-            } else {
-                format!(
+            match pack.as_slice() {
+                [_] => format!("You are {me}, the only werewolf."),
+                pack => format!(
                     "You are {me}, a werewolf. The werewolves are {}.",
-                    names(&pack)
-                )
+                    names(pack.iter().copied())
+                ),
             }
         }
         Some(Role::Villager) => format!("You are {me}, a villager."),
@@ -250,9 +256,10 @@ fn ordinal((round, phase): &(NonZero<u8>, Phase)) -> u16 {
     u16::from(round.get()) * 2 + half
 }
 
-/// Players as a list in prose.
-fn names(players: &[&PlayerId]) -> String {
-    let names: Vec<&str> = players.iter().map(|name| name.as_str()).collect();
+/// Players as a list in prose, by name.
+fn names<'a>(players: impl IntoIterator<Item = &'a PlayerId>) -> String {
+    let mut names: Vec<&str> = players.into_iter().map(|name| name.as_str()).collect();
+    names.sort_unstable();
     names.join(" and ")
 }
 
@@ -274,13 +281,18 @@ mod tests {
         ])
     }
 
-    fn seen(round: u8, phase: Phase, alive: &[&str]) -> Observation {
+    /// Round `round`'s `phase`, with `alive` alive and `known` roles shown.
+    fn observed(round: u8, phase: Phase, alive: &[&str], known: &[(&str, Role)]) -> Observation {
         Observation {
             round: NonZero::new(round).unwrap(),
             phase,
-            roles: HashMap::new(),
+            roles: known.iter().map(|(name, role)| (id(name), *role)).collect(),
             alive: alive.iter().map(|name| id(name)).collect(),
         }
+    }
+
+    fn seen(round: u8, phase: Phase, alive: &[&str]) -> Observation {
+        observed(round, phase, alive, &[])
     }
 
     fn observation(round: u8, phase: Phase, alive: &[&str]) -> Message {
@@ -288,20 +300,15 @@ mod tests {
     }
 
     fn shown(to: &str, round: u8, phase: Phase, alive: &[&str]) -> Entry {
-        Entry::Sent {
-            to: id(to),
-            message: observation(round, phase, alive),
-        }
+        told(to, round, phase, alive, &[])
     }
 
     /// `to` was shown round `round`'s `phase` with `alive` alive and `known`
     /// roles, as a player of a requesting environment is.
     fn told(to: &str, round: u8, phase: Phase, alive: &[&str], known: &[(&str, Role)]) -> Entry {
-        let mut observation = seen(round, phase, alive);
-        observation.roles = known.iter().map(|(name, role)| (id(name), *role)).collect();
         Entry::Sent {
             to: id(to),
-            message: Message::Observation(observation),
+            message: Message::Observation(observed(round, phase, alive, known)),
         }
     }
 
@@ -670,16 +677,15 @@ mod tests {
             )),
             ["You learn wolf is a werewolf.", "ann dies.", "Day 1."]
         );
-        assert!(
-            narrator
-                .narrate(&told(
-                    "seer",
-                    2,
-                    Phase::Night,
-                    &["wolf", "seer", "doctor"],
-                    &[("seer", Role::Seer), ("wolf", Role::Werewolf)]
-                ))
-                .starts_with(&["Nobody is voted out.".to_string()])
+        assert_eq!(
+            narrator.narrate(&told(
+                "seer",
+                2,
+                Phase::Night,
+                &["wolf", "seer", "doctor"],
+                &[("seer", Role::Seer), ("wolf", Role::Werewolf)]
+            )),
+            ["Nobody is voted out.", "Night 2."]
         );
     }
 
@@ -774,14 +780,13 @@ mod tests {
     fn an_announced_game_is_told_to_its_player_as_a_requested_one_is() {
         let mut narrator = Narrator::for_player(id("wolf"));
         let everyone = ["wolf", "seer", "doctor", "ann"];
-        let mut announcement = announced("wolf", 1, 1, Phase::Night, &everyone);
-        if let Entry::Sent {
-            message: Message::Announce { observation, .. },
-            ..
-        } = &mut announcement
-        {
-            observation.roles = HashMap::from([(id("wolf"), Role::Werewolf)]);
-        }
+        let announcement = Entry::Sent {
+            to: id("wolf"),
+            message: Message::Announce {
+                seq: 1,
+                observation: observed(1, Phase::Night, &everyone, &[("wolf", Role::Werewolf)]),
+            },
+        };
         assert_eq!(
             narrator.narrate(&announcement),
             ["You are wolf, the only werewolf.", "Night 1."]
