@@ -31,7 +31,8 @@ impl<B: Behavior> Episode<B> {
     /// # Panics
     ///
     /// Panics when an init's `can_send_to` or `can_shut_down` names an actor
-    /// missing from `init`. An episode's wiring is checked when it is built.
+    /// missing from `init`, or its `can_send_to` names the actor itself. An
+    /// episode's wiring is checked when it is built.
     pub fn new(init: HashMap<ActorId, ActorInit<B>>, logger: Logger<B::Log>) -> Self {
         // First pass: give every actor a channel and a shutdown token. The
         // init and the receiver are unique, so they stay together in one
@@ -50,8 +51,7 @@ impl<B: Behavior> Episode<B> {
             })
             .collect();
         // Second pass: now that the directories are complete, build each
-        // actor with only the senders and tokens its init allows, plus the
-        // sender for its own mailbox.
+        // actor with only the senders and tokens its init allows.
         let mut readies = HashMap::new();
         let mut starts = HashMap::new();
         let actors = staged
@@ -61,12 +61,14 @@ impl<B: Behavior> Episode<B> {
                 readies.insert(id.clone(), is_ready);
                 let (start, started) = oneshot::channel();
                 starts.insert(id.clone(), start);
-                let mut mailboxes = pick(&senders, &init.can_send_to);
-                mailboxes.insert(id.clone(), senders[&id].clone());
+                assert!(
+                    !init.can_send_to.contains(&id),
+                    "init of {id:?} names itself"
+                );
                 let context = Context {
                     id: id.clone(),
                     episode,
-                    mailboxes,
+                    mailboxes: pick(&senders, &init.can_send_to),
                     shutdown: Shutdown {
                         mine: shutdowns[&id].clone(),
                         others: pick(&shutdowns, &init.can_shut_down),
@@ -281,7 +283,7 @@ mod tests {
 
     /// An episode of [`Reporter`]s named `ids`, those in `failing` set to
     /// refuse to start and those in `logging` holding the episode's logger.
-    /// Each actor is wired to itself alone and initializes as
+    /// Each actor is wired to no one and initializes as
     /// `initialization(id)` says.
     fn episode_with(
         ids: &[&str],
@@ -384,18 +386,16 @@ mod tests {
     }
 
     #[test]
-    fn new_wires_each_actor_to_itself_and_the_actors_its_init_names() {
+    fn new_wires_each_actor_to_the_actors_its_init_names() {
         let episode = wired(&[("ann", &["bob"]), ("bob", &[])]);
 
         let ann = episode.actors["ann"].behavior.context();
-        let mut reaches: Vec<_> = ann.mailboxes.keys().cloned().collect();
-        reaches.sort();
+        let reaches: Vec<_> = ann.mailboxes.keys().cloned().collect();
         let stops: Vec<_> = ann.shutdown.others.keys().cloned().collect();
-        assert_eq!(reaches, ["ann", "bob"]);
+        assert_eq!(reaches, ["bob"]);
         assert_eq!(stops, ["bob"]);
         let bob = episode.actors["bob"].behavior.context();
-        let reaches: Vec<_> = bob.mailboxes.keys().cloned().collect();
-        assert_eq!(reaches, ["bob"]);
+        assert!(bob.mailboxes.is_empty());
         assert!(bob.shutdown.others.is_empty());
     }
 
@@ -403,6 +403,12 @@ mod tests {
     #[should_panic(expected = "unknown actor \"zed\"")]
     fn new_panics_when_an_init_names_an_unknown_actor() {
         wired(&[("ann", &["zed"])]);
+    }
+
+    #[test]
+    #[should_panic(expected = "\"ann\" names itself")]
+    fn new_panics_when_an_init_names_the_actor_itself() {
+        wired(&[("ann", &["ann"])]);
     }
 
     #[tokio::test]

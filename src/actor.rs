@@ -67,8 +67,10 @@ impl<B: Behavior> Actor<B> {
     /// 4. Clean up.
     ///
     /// Phases 2 and 3 overlap: mail that arrives before the start signal is
-    /// delivered as it comes. An error from the behavior at any phase ends
-    /// the actor with that error.
+    /// delivered as it comes. The mailbox closes once every actor that may
+    /// send to this one has stopped, and from then on the actor only waits
+    /// to be shut down. An error from the behavior at any phase ends the
+    /// actor with that error.
     ///
     /// Shutdown cuts any phase short. A step in progress is dropped at its
     /// next await, mail still in the mailbox stays there, and cleanup runs
@@ -91,7 +93,10 @@ impl<B: Behavior> Actor<B> {
             // the body runs with the future's output bound to the pattern.
             // `biased` tries the arms in order, so shutdown wins a tie. The
             // start arm drops out once it has fired, because a oneshot
-            // receiver panics if polled again.
+            // receiver panics if polled again. The mailbox arm drops out
+            // when the mailbox yields `None`, which it does once it has
+            // closed because every actor that may send to this one has
+            // stopped.
             let flow = tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => Break(()),
@@ -99,11 +104,7 @@ impl<B: Behavior> Actor<B> {
                     start_consumed = true;
                     self.open(signal).await?
                 }
-                envelope = self.mailbox.recv() => {
-                    // This actor holds a sender to its own mailbox, so the
-                    // mailbox outlives the loop.
-                    self.deliver(envelope.expect("mailbox closed")).await?
-                }
+                Some(envelope) = self.mailbox.recv() => self.deliver(envelope).await?,
             };
             if flow.is_break() {
                 break;
@@ -187,8 +188,7 @@ pub struct Context<M: Message, L = M> {
     pub id: ActorId,
     /// The episode this actor is in, stamped on everything it logs.
     pub episode: Uuid,
-    /// The sending ends of the mailboxes this actor may put something in,
-    /// its own among them.
+    /// The sending ends of the mailboxes of the actors this one may send to.
     pub(crate) mailboxes: HashMap<ActorId, UnboundedSender<Envelope<M>>>,
     /// Tokens on which this Actor is shut down, and shuts down others.
     pub(crate) shutdown: Shutdown,
@@ -207,13 +207,13 @@ impl<M: Message, L> Context<M, L> {
     }
 
     /// Send the statement `message` to every actor in `to`. An actor that
-    /// has already stopped is skipped. An actor may send to itself: the
-    /// message waits in its own mailbox for the current step to finish.
+    /// has already stopped is skipped. An actor never sends to itself:
+    /// nothing it says comes back to its own mailbox.
     ///
     /// # Errors
     ///
-    /// Fails before anything is sent when `to` names an actor outside those
-    /// this one may send to.
+    /// Fails before anything is sent when `to` names this actor itself, or
+    /// an actor outside those this one may send to.
     pub fn send(&self, message: M, to: HashSet<ActorId>) -> anyhow::Result<()> {
         let senders = to
             .iter()
@@ -232,20 +232,13 @@ impl<M: Message, L> Context<M, L> {
     ///
     /// # Errors
     ///
-    /// Fails before anything is sent when `to` names an actor outside those
-    /// this one may send to, or names this actor itself, which is busy with this
-    /// very step.
+    /// Fails before anything is sent when `to` names this actor itself, or
+    /// an actor outside those this one may send to.
     pub async fn request(
         &self,
         message: M,
         to: HashSet<ActorId>,
     ) -> anyhow::Result<HashMap<ActorId, Vec<M>>> {
-        if to.contains(&self.id) {
-            bail!(
-                "{} cannot request from itself: it would wait forever",
-                self.id
-            );
-        }
         let senders = to
             .iter()
             .map(|id| self.mailbox_of(id).map(|sender| (id, sender)))
@@ -267,13 +260,16 @@ impl<M: Message, L> Context<M, L> {
         Ok(replies)
     }
 
-    /// The sending end of the mailbox of `id`, which is this actor's own
-    /// when `id` is its own name.
+    /// The sending end of the mailbox of `id`.
     ///
     /// # Errors
     ///
-    /// Fails when `id` is not an actor this one may send to.
+    /// Fails when `id` is this actor itself, or not an actor this one may
+    /// send to.
     fn mailbox_of(&self, id: &ActorId) -> anyhow::Result<&UnboundedSender<Envelope<M>>> {
+        if id == &self.id {
+            bail!("{id} cannot send to itself");
+        }
         self.mailboxes.get(id).with_context(|| {
             format!(
                 "{} cannot send to {id}: not an actor it may send to",
@@ -540,7 +536,7 @@ mod tests {
     }
 
     /// A rig around the behavior `build` makes from its context, which may
-    /// send to itself and to `others`.
+    /// send to `others`.
     fn rig_with<B: Behavior<Message = Note, Log = Note>>(
         name: &str,
         others: HashMap<ActorId, UnboundedSender<Envelope<Note>>>,
@@ -551,12 +547,10 @@ mod tests {
         let (ready, _) = oneshot::channel();
         let (start, started) = oneshot::channel();
         let stop = CancellationToken::new();
-        let mut mailboxes = others;
-        mailboxes.insert(id(name), sender.clone());
         let context = Context {
             id: id(name),
             episode: Uuid::new_v4(),
-            mailboxes,
+            mailboxes: others,
             shutdown: Shutdown {
                 mine: stop.clone(),
                 others: can_stop,
@@ -621,18 +615,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_to_itself_lands_in_the_actors_own_mailbox() {
-        let mut ann = rig("ann", HashMap::new(), HashMap::new());
+    async fn send_to_itself_fails_and_sends_nothing() {
+        let (bob, mut bob_mailbox) = unbounded_channel();
+        let ann = rig("ann", HashMap::from([(id("bob"), bob)]), HashMap::new());
 
-        ann.context()
-            .send(note("remember this"), HashSet::from([id("ann")]))
-            .unwrap();
+        let error = ann
+            .context()
+            .send(note("remember this"), HashSet::from([id("ann"), id("bob")]))
+            .unwrap_err();
 
-        let heard = ann.actor.mailbox.recv().await.unwrap();
-        assert!(
-            matches!(&heard, Envelope::Statement(Note(text)) if text == "remember this"),
-            "{heard:?}"
-        );
+        assert!(error.to_string().contains("itself"), "{error}");
+        assert!(bob_mailbox.try_recv().is_err(), "nothing should reach bob");
     }
 
     #[tokio::test]
@@ -882,6 +875,22 @@ mod tests {
         bob.start.send(()).unwrap();
         // Let Bob take the start signal and settle into waiting.
         sleep(Duration::from_secs(1)).await;
+
+        bob.stop.cancel();
+
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_actor_nobody_can_send_to_waits_for_shutdown() {
+        let bob = rig("bob", HashMap::new(), HashMap::new());
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        // The test held the one sender to Bob's mailbox. Without it the
+        // mailbox closes, and Bob waits on.
+        drop(bob.sender);
+        sleep(Duration::from_secs(1)).await;
+        assert!(!running.is_finished(), "bob should still be running");
 
         bob.stop.cancel();
 
