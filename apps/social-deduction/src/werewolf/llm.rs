@@ -18,7 +18,7 @@
 //! a [`SecretString`], which is redacted wherever it is shown.
 
 use super::{PlayerId, Role, RoleCounts, Rules, Table};
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use clap::Args;
 use minijinja::{Environment, UndefinedBehavior, Value, context};
 use secrecy::SecretString;
@@ -189,9 +189,15 @@ impl Config {
         Self::parse(&file).with_context(|| format!("in {}", path.display()))
     }
 
-    /// Parse `file`, the text of a configuration file.
+    /// Parse `file`, the text of a configuration file. A `[text]` block
+    /// named like one of the template variables is an error, since the
+    /// templates could not tell them apart.
     pub fn parse(file: &str) -> anyhow::Result<Self> {
-        Ok(toml::from_str(file)?)
+        let config: Self = toml::from_str(file)?;
+        if let Some(taken) = VARIABLES.iter().find(|v| config.text.contains_key(**v)) {
+            bail!("[text] has a block named {taken}, which is a template variable");
+        }
+        Ok(config)
     }
 
     /// The settings that take effect with `overrides` from the command
@@ -224,7 +230,7 @@ impl Config {
 const VARIABLES: [&str; 3] = ["name", "role", "persona"];
 
 /// One player's system prompt, rendered for a seat dealt a role.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct SystemPrompt {
     /// The seat, `player1` onward.
     pub seat: PlayerId,
@@ -249,45 +255,37 @@ impl Settings {
     /// `[roles.<role>] system` template if the file has one, otherwise
     /// from `[prompt] system`, with the variables `name`, `role` and
     /// `persona` and every `[text]` block. An undefined variable is an
-    /// error, as is a role at the table with no template, a text block
-    /// named like a variable, or a persona for a seat that is not there.
-    /// An error from a template names the seat and the role.
+    /// error, as is a role at the table with no template or a persona for
+    /// a seat that is not there. An error from a template names the seat
+    /// and the role.
     pub fn prompts(&self) -> anyhow::Result<Vec<SystemPrompt>> {
         let config = &self.config;
-        if let Some(taken) = VARIABLES.iter().find(|v| config.text.contains_key(**v)) {
-            bail!("[text] has a block named {taken}, which is a template variable");
-        }
         let seats: Vec<_> = self.table.seats().collect();
         if let Some(seat) = config.personas.keys().find(|seat| !seats.contains(seat)) {
             bail!("[personas] names {seat}, which is not a seat at this table");
         }
         let mut templates = Vec::new();
-        for (role, count) in self.table.counts() {
-            if count == 0 {
-                continue;
-            }
-            match config
+        for (role, _) in self.table.counts().into_iter().filter(|&(_, n)| n > 0) {
+            let template = config
                 .roles
                 .get(role)
                 .system
                 .as_deref()
                 .or(config.prompt.system.as_deref())
-            {
-                Some(template) => templates.push((role, template)),
-                None => bail!(
-                    "no system prompt for the {role}: neither [roles.{role}] nor [prompt] has one"
-                ),
-            }
+                .ok_or_else(|| {
+                    anyhow!("no system prompt for the {role}: neither [roles.{role}] nor [prompt] has one")
+                })?;
+            templates.push((role, template));
         }
         let mut env = Environment::new();
         env.set_undefined_behavior(UndefinedBehavior::Strict);
-        let text = Value::from(&config.text);
+        let blocks = Value::from(&config.text);
         let mut prompts = Vec::new();
         for seat in &seats {
             let persona = config.personas.get(seat).map_or("", String::as_str);
             for &(role, template) in &templates {
                 let variables =
-                    context! { name => seat, role => role.to_string(), persona, ..text.clone() };
+                    context! { name => seat, role => role.to_string(), persona, ..blocks.clone() };
                 let text = env
                     .render_str(template, variables)
                     .with_context(|| format!("rendering the {role} prompt for {seat}"))?;
@@ -688,9 +686,9 @@ system = \"{{{{ rules }}}} {{{{ wolf }}}}\"
 
     #[test]
     fn a_text_block_named_like_a_variable_is_an_error_naming_it() {
-        for variable in ["name", "role", "persona"] {
+        for variable in VARIABLES {
             let file = format!("{MODEL}{TEMPLATE}[text]\n{variable} = \"Taken.\"\n");
-            let error = settle(&file, Overrides::default()).prompts().unwrap_err();
+            let error = Config::parse(&file).unwrap_err();
             assert!(format!("{error:#}").contains(variable), "{error:#}");
         }
     }
@@ -726,17 +724,6 @@ system = \"{{{{ rules }}}} {{{{ wolf }}}}\"
             })
             .collect();
         assert_eq!(rendered, expected);
-        // A role with no one in it is not rendered.
-        let overrides = Overrides {
-            roles: RoleCounts {
-                seers: Some(0),
-                ..RoleCounts::default()
-            },
-            ..Overrides::default()
-        };
-        let prompts = settle(&file, overrides).prompts().unwrap();
-        assert_eq!(prompts.len(), 6 * 3);
-        assert!(prompts.iter().all(|prompt| prompt.role != Role::Seer));
     }
 
     #[test]

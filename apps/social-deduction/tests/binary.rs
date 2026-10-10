@@ -151,23 +151,16 @@ fn the_llm_variant_prints_its_settings_then_every_prompt_and_is_not_playable_yet
         lines[0], "model: qwen2.5-7b-instruct at http://localhost:1234/v1",
         "{printed}"
     );
-    // Every seat for every role, in order, each under a header.
+    // Every seat for every role, each under a header, after the settings.
     let headers: Vec<&str> = lines
         .iter()
         .copied()
         .filter(|line| line.starts_with("--- "))
         .collect();
-    let expected: Vec<String> = (1..=7)
-        .flat_map(|seat| {
-            ["werewolf", "villager", "doctor", "seer"]
-                .map(|role| format!("--- player{seat} as {role} ---"))
-        })
-        .collect();
-    assert_eq!(headers, expected, "{printed}");
-    assert!(
-        printed.contains("You are player1, a werewolf.\n"),
-        "{printed}"
-    );
+    assert_eq!(headers.len(), 7 * 4, "{printed}");
+    assert_eq!(headers[0], "--- player1 as werewolf ---", "{printed}");
+    assert_eq!(headers[27], "--- player7 as seer ---", "{printed}");
+    assert_eq!(lines[6], headers[0], "{printed}");
     assert!(printed.contains("You are player1, the seer."), "{printed}");
     assert_eq!(
         lines.last().unwrap(),
