@@ -1,8 +1,7 @@
 //! The model-played variant: every player is a language model, set up by
 //! a TOML configuration file.
 //!
-//! The game itself is not playable yet. What is here is its
-//! configuration: the [`Config`] the file is parsed into, the
+//! The configuration is the [`Config`] the file is parsed into, the
 //! [`Overrides`] the command line may give, and the [`Settings`] that take
 //! effect once the two are combined with the defaults in the code. A
 //! setting comes from the command line if it is given there, otherwise
@@ -16,18 +15,39 @@
 //! The API key never appears in the file. The file names the environment
 //! variable that holds it, and [`Model::api_key`] reads that variable into
 //! a [`SecretString`], which is redacted wherever it is shown.
+//!
+//! The game is the announcing environment's, with a model [`Player`] in
+//! every seat. A player remembers what it is shown and what it does, as
+//! the entries the environment logs about it. Announced a phase, it tells
+//! the model that history as a story from its own point of view and where
+//! the game stands, and has it select one of the player's [candidates]
+//! with one forced tool call. The call is made in the player's think loop,
+//! so the player keeps perceiving while the model works. An answer that is
+//! not a selection is no selection. [`game`] builds the episode.
 
-use super::{PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table};
-use crate::model::{Provider, REQUEST_TIMEOUT, api_key, key_variable};
-use anyhow::{Context, anyhow, bail};
+use super::announced;
+use super::report::Narrator;
+use super::{
+    ENVIRONMENT, Entry, Message, Observation, Phase, PhaseLimits, PlayerId, Role, RoleCounts,
+    Rules, Table, Team, candidates,
+};
+use crate::model::{
+    self, Provider, REQUEST_TIMEOUT, Request, Response, Tool, api_key, key_variable,
+};
+use anyhow::{Context as _, anyhow, bail};
+use async_trait::async_trait;
 use clap::Args;
+use free_agent::{Behavior, Builder, Context, Episode, Logger, Think, ThinkBuilder};
 use minijinja::{Environment, UndefinedBehavior, Value, context};
 use secrecy::SecretString;
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use serde_json::json;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 /// What the command line may say over the file: the role counts, the
 /// phase limits, and the model. Each is unset unless given, so that the
@@ -378,11 +398,302 @@ fn request_timeout() -> Duration {
     REQUEST_TIMEOUT
 }
 
+/// The rules of the model-played variant: the uniform-random variant's,
+/// played as "LLM".
+pub fn rules() -> Rules {
+    Rules {
+        variation: "LLM".to_string(),
+        ..Rules::default()
+    }
+}
+
+/// An episode of a game of `roles` under `rules`: the announcing
+/// environment, which may reach and stop every player and holds `logger`,
+/// and a model player for each role, who may send to the environment. Each
+/// player is told its system prompt, which `prompts` has for every player
+/// in `roles`, and makes each selection by asking `model` as the model
+/// `model_id`. The winning team is sent on `winner` when the game ends.
+pub fn game(
+    roles: HashMap<PlayerId, Role>,
+    rules: Rules,
+    mut prompts: HashMap<PlayerId, String>,
+    model_id: &str,
+    model: Arc<dyn model::Model>,
+    winner: oneshot::Sender<Team>,
+    logger: Logger<Entry>,
+) -> Episode<Actor> {
+    let players: Vec<PlayerId> = roles.keys().cloned().collect();
+    let environment = announced::init(roles, rules, winner, Actor::Environment);
+    let player = |id: &PlayerId| {
+        let prompt = prompts
+            .remove(id)
+            .unwrap_or_else(|| panic!("no system prompt for {id}"));
+        Player::init(prompt, model_id.to_string(), Arc::clone(&model))
+    };
+    super::thinking_episode(environment, players, player, logger)
+}
+
+/// What an actor in the game does: run it, or play in it. An episode holds
+/// one kind of actor, so the two sides meet here and each method goes to
+/// whichever side this is.
+pub enum Actor {
+    /// The side that holds the game.
+    Environment(announced::Environment),
+    /// A side that sees only what it is shown.
+    Player(Player),
+}
+
+// Nobody in this game requests, so the sides only receive and start.
+#[async_trait]
+impl Behavior for Actor {
+    type Message = Message;
+    type Log = Entry;
+
+    fn context(&self) -> &Context<Message, Entry> {
+        match self {
+            Actor::Environment(environment) => environment.context(),
+            Actor::Player(player) => player.context(),
+        }
+    }
+
+    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.receive(message).await,
+            Actor::Player(player) => player.receive(message).await,
+        }
+    }
+
+    async fn start(&mut self) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.start().await,
+            Actor::Player(player) => player.start().await,
+        }
+    }
+}
+
+/// What a player's two loops share: what it has been shown and what it has
+/// done, what it is told, and whom it asks.
+struct Mind {
+    /// The history, in order, as the entries the environment logs about
+    /// the player: an announcement sent to it, and a selection received
+    /// from it. Never locked across an await.
+    history: Mutex<Vec<Entry>>,
+    /// Its system prompt, rendered for its seat and role.
+    prompt: String,
+    /// The model's id, as each request names it.
+    model_id: String,
+    /// The model asked for each selection.
+    model: Arc<dyn model::Model>,
+}
+
+/// A player whose selections are made by a language model. Its perceive
+/// loop and its think loop are each a `Player` with a context of its own
+/// over one shared mind: the perceive loop remembers each announcement and
+/// hands it to the think loop, which tells the model the history as a story
+/// and sends the environment what the model selects. A variant's actor
+/// enum holds the perceive loop's, built by [`Player::init`].
+pub struct Player {
+    context: Context<Message, Entry>,
+    mind: Arc<Mind>,
+}
+
+impl Player {
+    /// Builds a player's two loops once the episode has made their
+    /// contexts: the perceive loop as the actor, and the think loop. The
+    /// player is told `prompt`, and asks `model` as the model `model_id`.
+    pub fn init(
+        prompt: String,
+        model_id: String,
+        model: Arc<dyn model::Model>,
+    ) -> (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>) {
+        let mind = Arc::new(Mind {
+            history: Mutex::new(Vec::new()),
+            prompt,
+            model_id,
+            model,
+        });
+        let shared = Arc::clone(&mind);
+        let behavior: Builder<Actor> =
+            Box::new(move |context| Actor::Player(Player { context, mind }));
+        let think: ThinkBuilder<Message, Entry> = Box::new(move |context| {
+            Box::new(Player {
+                context,
+                mind: shared,
+            })
+        });
+        (behavior, Some(think))
+    }
+
+    /// Add `entry` to the history.
+    fn remember(&self, entry: Entry) {
+        self.mind.history.lock().unwrap().push(entry);
+    }
+
+    /// The request for a selection from `candidates` in the phase
+    /// `observation` shows: the system prompt, then the history as a story
+    /// told to the player, a blank line, and where the game stands, with
+    /// the [`select`] tool to answer with.
+    fn request(
+        &self,
+        observation: &Observation,
+        candidates: &[PlayerId],
+    ) -> anyhow::Result<Request> {
+        let me = &self.context.id;
+        let mut narrator = Narrator::for_player(me.clone());
+        let story: Vec<String> = self
+            .mind
+            .history
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|entry| narrator.narrate(entry))
+            .collect();
+        let asked = format!("{}\n\n{}", story.join("\n"), situation(me, observation)?);
+        Ok(Request::new(
+            &self.mind.model_id,
+            vec![
+                model::Message::system(&self.mind.prompt),
+                model::Message::user(asked),
+            ],
+            select(candidates),
+        ))
+    }
+}
+
+#[async_trait]
+impl Behavior for Player {
+    type Message = Message;
+    type Log = Entry;
+
+    fn context(&self) -> &Context<Message, Entry> {
+        &self.context
+    }
+
+    /// Announced a phase, remember it and think about it. Anything else is
+    /// ignored.
+    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
+        if let Message::Announce { .. } = message {
+            self.remember(Entry::Sent {
+                to: self.context.id.clone(),
+                message: message.clone(),
+            });
+            self.context.think(message.clone())?;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Think for Player {
+    type Message = Message;
+
+    /// Announced a phase, select someone in it: ask the model, remember
+    /// what it selects, and send the selection to the environment. With
+    /// nobody to select, the model is not asked. An answer that is not a
+    /// selection of a candidate is an error, and no selection. Nothing
+    /// else is thought about.
+    async fn think(&mut self, message: &Message) -> anyhow::Result<()> {
+        let Message::Announce { seq, observation } = message else {
+            return Ok(());
+        };
+        let me = &self.context.id;
+        let candidates = candidates(me, observation);
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let request = self.request(observation, &candidates)?;
+        let response = self.mind.model.complete(&request).await?;
+        let selection = Message::Select {
+            seq: *seq,
+            from: me.clone(),
+            target: selected(&response, &candidates)?,
+        };
+        self.remember(Entry::Received {
+            from: me.clone(),
+            message: selection.clone(),
+        });
+        self.context
+            .send(selection, HashSet::from([ENVIRONMENT.to_string()]))
+    }
+}
+
+/// Where the game stands for `me` as `observation` shows it, and what is
+/// asked of it: by night, what its role does, and by day, the vote. A
+/// player awake by night is a werewolf, the doctor or the seer, and is
+/// shown its own role.
+fn situation(me: &PlayerId, observation: &Observation) -> anyhow::Result<String> {
+    let (phase, asked) = match (&observation.phase, observation.roles.get(me)) {
+        (Phase::Day, _) => ("day", "Choose whom to vote out."),
+        (Phase::Night, Some(Role::Werewolf)) => {
+            ("night", "Choose whom the werewolves should kill.")
+        }
+        (Phase::Night, Some(Role::Doctor)) => ("night", "Choose whom to protect."),
+        (Phase::Night, Some(Role::Seer)) => ("night", "Choose whom to ask about."),
+        (Phase::Night, Some(Role::Villager)) => bail!("{me} is a villager, who sleeps by night"),
+        (Phase::Night, None) => bail!("{me} is not shown its own role"),
+    };
+    Ok(format!("It is {phase} {}. {asked}", observation.round))
+}
+
+/// The name of the one tool a player is offered.
+const SELECT: &str = "select";
+
+/// The tool a player selects with: `select`, taking a `target` that is one
+/// of `candidates`.
+fn select(candidates: &[PlayerId]) -> Tool {
+    Tool::new(
+        SELECT,
+        "Knowing everything you know, select the best one.",
+        json!({
+            "type": "object",
+            "properties": {"target": {"type": "string", "enum": candidates}},
+            "required": ["target"],
+            "additionalProperties": false,
+        }),
+    )
+}
+
+/// The arguments of a [`select`] call.
+#[derive(Deserialize)]
+struct Selection {
+    target: PlayerId,
+}
+
+/// Whom `response` selects from `candidates`: the `target` of its call to
+/// [`select`]. No tool call, a call to anything else, arguments that do not
+/// parse, or a target who is not a candidate is an error.
+fn selected(response: &Response, candidates: &[PlayerId]) -> anyhow::Result<PlayerId> {
+    let call = &response
+        .tool_calls()
+        .first()
+        .ok_or_else(|| anyhow!("the model made no tool call"))?
+        .function;
+    if call.name != SELECT {
+        bail!("the model called {} instead of {SELECT}", call.name);
+    }
+    let Selection { target } = serde_json::from_str(&call.arguments).with_context(|| {
+        format!(
+            "the arguments of the model's {SELECT} call: {}",
+            call.arguments
+        )
+    })?;
+    if !candidates.contains(&target) {
+        bail!("the model selected {target}, who is not a candidate");
+    }
+    Ok(target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::fake::{FakeModel, choosing_first};
+    use crate::werewolf::tests::{
+        Played, between_the_deal_and_the_end, one_wolf_against, received, run, seen, selection,
+    };
     use clap::Parser;
     use secrecy::ExposeSecret;
+    use std::num::NonZero;
+    use tokio::sync::mpsc::unbounded_channel;
 
     /// A file naming only the model, which is all that is required.
     const MODEL: &str = r#"
@@ -900,5 +1211,330 @@ day limit: 1m 30s
         let named = format!("{openai}api_key_env = \"MY_KEY\"\n");
         let settings = settle(&named, Overrides::default());
         assert_eq!(settings.config.model.key_variable(), Some("MY_KEY"));
+    }
+
+    /// The id of the model every test's players ask for.
+    const MODEL_ID: &str = "qwen2.5-7b-instruct";
+
+    /// A model answering every request with `answer` of it, held so that
+    /// the test can read what it was asked while the players ask it.
+    fn answering(
+        answer: impl Fn(&Request) -> anyhow::Result<Response> + Send + Sync + 'static,
+    ) -> Arc<FakeModel> {
+        Arc::new(FakeModel::answering(answer))
+    }
+
+    /// The prompt the player `name` is told, which names it, so that a
+    /// request says whose it is.
+    fn told(name: &str) -> String {
+        format!("You are {name}.")
+    }
+
+    /// What the player `name` asked `model`, in order: the user message of
+    /// each request carrying its prompt.
+    fn asked_of(model: &FakeModel, name: &str) -> Vec<String> {
+        let prompt = model::Message::system(told(name));
+        model
+            .requests()
+            .iter()
+            .filter(|request| request.messages[0] == prompt)
+            .map(|request| request.messages[1].content.clone())
+            .collect()
+    }
+
+    /// The story a request's user message tells, before the situation.
+    fn story(asked: &str) -> &str {
+        asked.rsplit_once("\n\n").unwrap().0
+    }
+
+    /// The situation a request's user message ends with.
+    fn asked(asked: &str) -> &str {
+        asked.rsplit_once("\n\n").unwrap().1
+    }
+
+    /// Run a game of `roles` under `rules`, every player a model player
+    /// told its prompt and asking `model`.
+    async fn play(
+        roles: HashMap<PlayerId, Role>,
+        rules: Rules,
+        model: Arc<FakeModel>,
+    ) -> anyhow::Result<Played> {
+        let prompts = roles.keys().map(|id| (id.clone(), told(id))).collect();
+        let (winner, won) = oneshot::channel();
+        let (logger, log) = unbounded_channel();
+        let episode = game(roles, rules, prompts, MODEL_ID, model, winner, logger);
+        run(episode, won, log).await
+    }
+
+    /// Short limits, so a phase that waits them out is told apart from
+    /// one that does not.
+    fn quick() -> Rules {
+        Rules {
+            night_limit: Duration::from_secs(10),
+            day_limit: Duration::from_secs(10),
+            ..rules()
+        }
+    }
+
+    /// A werewolf, a doctor and two villagers. With every player selecting
+    /// its first candidate, the doctor protects whomever the werewolf
+    /// picks each night, the village votes a villager out each day, and
+    /// the werewolves win after two days.
+    fn doctored() -> HashMap<PlayerId, Role> {
+        HashMap::from([
+            ("wolf".to_string(), Role::Werewolf),
+            ("doc".to_string(), Role::Doctor),
+            ("ann".to_string(), Role::Villager),
+            ("bob".to_string(), Role::Villager),
+        ])
+    }
+
+    /// The answer that selects the werewolf itself, who is no candidate.
+    fn naming_itself(_: &Request) -> anyhow::Result<Response> {
+        Ok(Response::tool_call(SELECT, &json!({"target": "wolf"})))
+    }
+
+    /// The answer of a model that is down.
+    fn down(_: &Request) -> anyhow::Result<Response> {
+        Err(anyhow!("the model is down"))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_request_tells_the_prompt_the_story_and_the_situation_and_forces_the_select_tool() {
+        let model = answering(choosing_first);
+        let roles = one_wolf_against(&["ann", "bob"]);
+        let (winner, _, _) = play(roles, rules(), Arc::clone(&model)).await.unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        let requests = model.requests();
+        assert_eq!(
+            requests,
+            [Request::new(
+                MODEL_ID,
+                vec![
+                    model::Message::system("You are wolf."),
+                    model::Message::user(
+                        "You are wolf, the only werewolf.\nNight 1.\n\n\
+                         It is night 1. Choose whom the werewolves should kill."
+                    ),
+                ],
+                Tool::new(
+                    "select",
+                    "Knowing everything you know, select the best one.",
+                    json!({
+                        "type": "object",
+                        "properties": {"target": {"type": "string", "enum": ["ann", "bob"]}},
+                        "required": ["target"],
+                        "additionalProperties": false,
+                    }),
+                ),
+            )]
+        );
+        let sent = serde_json::to_value(&requests[0]).unwrap();
+        assert_eq!(
+            sent["tool_choice"],
+            json!({"type": "function", "function": {"name": "select"}})
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_good_answer_is_the_player_s_selection_for_the_phase() {
+        let model = answering(|_| Ok(Response::tool_call(SELECT, &json!({"target": "bob"}))));
+        let roles = one_wolf_against(&["ann", "bob"]);
+        let (winner, logged, took) = play(roles, quick(), model).await.unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        assert_eq!(received(&logged), [&selection(1, "wolf", "bob")]);
+        assert!(took < quick().night_limit, "{took:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn each_request_begins_with_the_history_of_the_one_before() {
+        let model = answering(choosing_first);
+        play(doctored(), rules(), Arc::clone(&model)).await.unwrap();
+        let asked = asked_of(&model, "doc");
+        assert_eq!(
+            asked.last().unwrap(),
+            "You are doc, the doctor.\n\
+             Night 1.\n\
+             You protect ann.\n\
+             Nobody dies.\n\
+             Day 1.\n\
+             You vote against ann.\n\
+             ann is voted out.\n\
+             Night 2.\n\
+             You protect bob.\n\
+             Nobody dies.\n\
+             Day 2.\n\
+             \n\
+             It is day 2. Choose whom to vote out."
+        );
+        assert_eq!(asked.len(), 4);
+        for pair in asked.windows(2) {
+            assert!(pair[1].starts_with(story(&pair[0])), "{pair:?}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_bad_answer_by_night_is_no_selection_and_the_day_is_played_normally() {
+        // Nobody dies the night the werewolf fails to select, which waits
+        // out its limit. By day everyone selects its first candidate, and
+        // ann is voted out, bringing the werewolf to parity.
+        for by_night in [
+            naming_itself as fn(&Request) -> anyhow::Result<Response>,
+            down,
+        ] {
+            let model = answering(move |request| {
+                if request.messages[1].content.contains("It is night") {
+                    by_night(request)
+                } else {
+                    choosing_first(request)
+                }
+            });
+            let roles = one_wolf_against(&["ann", "bob"]);
+            let (winner, logged, took) = play(roles, quick(), Arc::clone(&model)).await.unwrap();
+            assert_eq!(winner, Team::Werewolves);
+            assert_eq!(took, quick().night_limit);
+            assert_eq!(model.requests().len(), 4);
+            let mut received = received(&logged);
+            received.sort_by_key(|message| format!("{message:?}"));
+            assert_eq!(
+                received,
+                [
+                    &selection(2, "ann", "bob"),
+                    &selection(2, "bob", "ann"),
+                    &selection(2, "wolf", "ann")
+                ]
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn with_nobody_to_select_the_model_is_not_asked() {
+        // Two werewolves know each other, so neither has anyone to select.
+        let roles = HashMap::from([
+            ("wolf1".to_string(), Role::Werewolf),
+            ("wolf2".to_string(), Role::Werewolf),
+        ]);
+        let model = answering(choosing_first);
+        let (winner, logged, took) = play(roles, quick(), Arc::clone(&model)).await.unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        assert!(model.requests().is_empty());
+        assert!(received(&logged).is_empty());
+        assert_eq!(took, quick().night_limit);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_game_of_model_players_runs_to_a_winner() {
+        let roles = doctored();
+        let model = answering(choosing_first);
+        let (winner, logged, _) = play(roles.clone(), rules(), Arc::clone(&model))
+            .await
+            .unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        let announced = between_the_deal_and_the_end(&logged, "LLM", &roles, winner)
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    Entry::Sent {
+                        message: Message::Announce { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        // Every announcement was asked about, and every answer selected.
+        assert_eq!(announced, 11);
+        assert_eq!(model.requests().len(), announced);
+        assert_eq!(received(&logged).len(), announced);
+        let situations: HashSet<String> = model
+            .requests()
+            .iter()
+            .map(|request| asked(&request.messages[1].content).to_string())
+            .collect();
+        assert_eq!(
+            situations,
+            HashSet::from([
+                "It is night 1. Choose whom the werewolves should kill.".to_string(),
+                "It is night 1. Choose whom to protect.".to_string(),
+                "It is day 1. Choose whom to vote out.".to_string(),
+                "It is night 2. Choose whom the werewolves should kill.".to_string(),
+                "It is night 2. Choose whom to protect.".to_string(),
+                "It is day 2. Choose whom to vote out.".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn the_situation_is_the_phase_and_what_the_role_does_in_it() {
+        let night = |known: &[(&str, Role)]| seen(&["wolf", "doc", "seer", "ann"], known);
+        let me = |name: &str| name.to_string();
+        assert_eq!(
+            situation(&me("wolf"), &night(&[("wolf", Role::Werewolf)])).unwrap(),
+            "It is night 1. Choose whom the werewolves should kill."
+        );
+        assert_eq!(
+            situation(&me("doc"), &night(&[("doc", Role::Doctor)])).unwrap(),
+            "It is night 1. Choose whom to protect."
+        );
+        assert_eq!(
+            situation(&me("seer"), &night(&[("seer", Role::Seer)])).unwrap(),
+            "It is night 1. Choose whom to ask about."
+        );
+        // By day everyone votes, whatever its role.
+        let mut day = night(&[("ann", Role::Villager)]);
+        day.phase = Phase::Day;
+        day.round = NonZero::new(2).unwrap();
+        assert_eq!(
+            situation(&me("ann"), &day).unwrap(),
+            "It is day 2. Choose whom to vote out."
+        );
+        // A villager sleeps by night, and a player is shown its own role.
+        assert!(situation(&me("ann"), &night(&[("ann", Role::Villager)])).is_err());
+        assert!(situation(&me("ann"), &night(&[])).is_err());
+    }
+
+    #[test]
+    fn an_answer_selects_only_by_a_select_call_whose_target_is_a_candidate() {
+        let candidates = ["ann".to_string(), "bob".to_string()];
+        assert_eq!(
+            selected(
+                &Response::tool_call(SELECT, &json!({"target": "bob"})),
+                &candidates
+            )
+            .unwrap(),
+            "bob"
+        );
+        // A response as a provider sends it, for the shapes `tool_call`
+        // cannot make.
+        let answered = |said: serde_json::Value| serde_json::from_value::<Response>(said).unwrap();
+        let wrong = [
+            ("no choice", answered(json!({"choices": []}))),
+            (
+                "no tool call",
+                answered(json!({"choices": [{"message": {"content": "bob"}}]})),
+            ),
+            (
+                "another tool",
+                Response::tool_call("vote", &json!({"target": "bob"})),
+            ),
+            (
+                "arguments that do not parse",
+                answered(json!({
+                    "choices": [{"message": {"tool_calls": [{"function": {"name": "select", "arguments": "{"}}]}}]
+                })),
+            ),
+            ("no target", Response::tool_call(SELECT, &json!({}))),
+            (
+                "a target that is not a name",
+                Response::tool_call(SELECT, &json!({"target": 3})),
+            ),
+            (
+                "a target who is not a candidate",
+                Response::tool_call(SELECT, &json!({"target": "wolf"})),
+            ),
+        ];
+        for (what, response) in wrong {
+            assert!(selected(&response, &candidates).is_err(), "{what}");
+        }
     }
 }
