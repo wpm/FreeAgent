@@ -46,7 +46,6 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fmt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -311,14 +310,6 @@ pub struct SystemPrompt {
     pub text: String,
 }
 
-impl fmt::Display for SystemPrompt {
-    /// The prompt under a header naming its seat and role.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "--- {} as {} ---", self.seat, self.role)?;
-        writeln!(f, "{}", self.text)
-    }
-}
-
 impl Settings {
     /// Render the system prompt of every seat for every role at the table,
     /// since any seat may be dealt any of them, in seat order and then the
@@ -423,25 +414,15 @@ impl Settings {
             text: config.text.clone(),
         })
     }
-}
 
-impl fmt::Display for Settings {
-    /// The settings a game would be played under, one per line, with the
-    /// key's variable named and the key itself never shown.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let model = &self.config.model;
-        let timeout = humantime::format_duration(model.request_timeout);
-        let night = humantime::format_duration(self.night_limit);
-        let day = humantime::format_duration(self.day_limit);
-        writeln!(f, "model: {} at {}", model.id, model.base_url)?;
-        writeln!(f, "request timeout: {timeout}")?;
-        match model.key_variable() {
-            Some(name) => writeln!(f, "API key: from {name}")?,
-            None => writeln!(f, "API key: none")?,
+    /// The rules a game is played under: the variant's, with the phase
+    /// limits that took effect.
+    pub fn rules(&self) -> Rules {
+        Rules {
+            night_limit: self.night_limit,
+            day_limit: self.day_limit,
+            ..rules()
         }
-        writeln!(f, "roles: {}", self.table)?;
-        writeln!(f, "night limit: {night}")?;
-        writeln!(f, "day limit: {day}")
     }
 }
 
@@ -865,12 +846,6 @@ id = "qwen2.5-7b-instruct"
         assert_eq!(settings.config.model.id, "gpt-5.5");
         // With everything that follows from the provider.
         assert_eq!(settings.config.model.key_variable(), Some("OPENAI_API_KEY"));
-        assert!(
-            settings
-                .to_string()
-                .starts_with("model: gpt-5.5 at https://api.openai.com/v1\n"),
-            "{settings}"
-        );
     }
 
     #[test]
@@ -990,6 +965,16 @@ count = 8
         );
         assert_eq!(settings.night_limit, Duration::from_secs(5));
         assert_eq!(settings.day_limit, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn the_rules_are_the_variant_s_with_the_limits_that_took_effect() {
+        let file = format!("{MODEL}\n[phases]\nnight_limit = \"1m 30s\"\nday_limit = \"7s\"\n");
+        let settings = settle(&file, Overrides::default());
+        let rules = settings.rules();
+        assert_eq!(rules.variation, "LLM");
+        assert_eq!(rules.night_limit, settings.night_limit);
+        assert_eq!(rules.day_limit, settings.day_limit);
     }
 
     #[test]
@@ -1227,19 +1212,6 @@ system = \"{{{{ rules }}}} {{{{ wolf }}}}\"
     }
 
     #[test]
-    fn a_prompt_is_shown_under_a_header_naming_its_seat_and_role() {
-        let prompt = SystemPrompt {
-            seat: "player3".into(),
-            role: Role::Seer,
-            text: "You see.\nSay so.".into(),
-        };
-        assert_eq!(
-            prompt.to_string(),
-            "--- player3 as seer ---\nYou see.\nSay so.\n"
-        );
-    }
-
-    #[test]
     fn an_omitted_key_variable_means_no_key() {
         let settings = settle(MODEL, Overrides::default());
         assert!(settings.config.model.api_key().unwrap().is_none());
@@ -1268,32 +1240,9 @@ system = \"{{{{ rules }}}} {{{{ wolf }}}}\"
         let settings = settle(&file, Overrides::default());
         let key = settings.config.model.api_key().unwrap().unwrap();
         assert_eq!(key.expose_secret(), value);
-        let shown = format!("{key:?}\n{settings:?}\n{settings}");
+        let shown = format!("{key:?}\n{settings:?}");
         assert!(shown.contains(name), "{shown}");
         assert!(!shown.contains(&value), "{shown}");
-    }
-
-    #[test]
-    fn the_settings_are_printed_one_per_line() {
-        let file = format!(
-            "{MODEL}api_key_env = \"OPENAI_API_KEY\"\n[phases]\nnight_limit = \"30s\"\nday_limit = \"1m 30s\"\n"
-        );
-        assert_eq!(
-            settle(&file, Overrides::default()).to_string(),
-            "\
-model: qwen2.5-7b-instruct at http://localhost:1234/v1
-request timeout: 1m
-API key: from OPENAI_API_KEY
-roles: 2 werewolves, 3 villagers, 1 doctor, 1 seer
-night limit: 30s
-day limit: 1m 30s
-"
-        );
-        let settings = settle(MODEL, Overrides::default());
-        assert!(
-            settings.to_string().contains("API key: none\n"),
-            "{settings}"
-        );
     }
 
     #[test]
@@ -1301,11 +1250,6 @@ day limit: 1m 30s
         let openai = MODEL.replace("http://localhost:1234/v1", "https://api.openai.com/v1");
         let settings = settle(&openai, Overrides::default());
         assert_eq!(settings.config.model.key_variable(), Some("OPENAI_API_KEY"));
-        assert!(
-            settings
-                .to_string()
-                .contains("API key: from OPENAI_API_KEY\n")
-        );
         let named = format!("{openai}api_key_env = \"MY_KEY\"\n");
         let settings = settle(&named, Overrides::default());
         assert_eq!(settings.config.model.key_variable(), Some("MY_KEY"));

@@ -2,10 +2,12 @@
 //! standard output, and logs it to standard error as JSON lines.
 
 use free_agent::Event;
-use social_deduction::model::canned::{serving, unreachable};
+use social_deduction::model::canned::{playing, serving, unreachable};
+use social_deduction::werewolf::llm::Configuration;
 use social_deduction::werewolf::{Entry, PlayerId, Role};
 use std::collections::HashMap;
 use std::process::{Command, Output};
+use std::time::Duration;
 
 fn run(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_social-deduction"))
@@ -62,11 +64,16 @@ fn assert_usage_error(args: &[&str]) {
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 }
 
-/// Play a game of `variant`, whose log must name `variation`, with the
-/// default table, and check that it is logged from the deal to the result
-/// under one episode id and told from the table to the winner.
-fn assert_plays_the_default_table(variant: &str, variation: &str) {
-    let (events, printed) = played(variant, &[]);
+/// Play a game of `variant` with `args` after it, whose log must name
+/// `variation`, with the default table, and check that it is logged from
+/// the deal to the result under one episode id and told from the table to
+/// the winner. The events, for whatever else the variant logs.
+fn assert_plays_the_default_table(
+    variant: &str,
+    variation: &str,
+    args: &[&str],
+) -> Vec<Event<Entry>> {
+    let (events, printed) = played(variant, args);
 
     let episode = events[0].episode;
     assert!(events.iter().all(|event| event.episode == episode));
@@ -92,16 +99,17 @@ fn assert_plays_the_default_table(variant: &str, variation: &str) {
             .starts_with(&format!("The {winner} win after ")),
         "{printed}"
     );
+    events
 }
 
 #[test]
 fn the_log_runs_from_the_deal_to_the_result_under_one_episode_id() {
-    assert_plays_the_default_table("uniform-random", "Uniform Random");
+    assert_plays_the_default_table("uniform-random", "Uniform Random", &[]);
 }
 
 #[test]
 fn the_scripted_variant_plays_the_announcing_environment_without_a_model() {
-    assert_plays_the_default_table("scripted", "Scripted");
+    assert_plays_the_default_table("scripted", "Scripted", &[]);
 }
 
 #[test]
@@ -212,33 +220,47 @@ fn configured(test: &str, name: &str, base_url: &str, id: &str) -> String {
     path
 }
 
+/// The configuration the log of `events` has right after the deal.
+fn configuration(events: &[Event<Entry>]) -> &Configuration {
+    let Some(Entry::Configuration(configuration)) = events.get(1).map(|event| &event.payload)
+    else {
+        panic!("{events:?}");
+    };
+    configuration
+}
+
 #[test]
-fn the_llm_variant_prints_its_settings_then_every_prompt_and_is_not_playable_yet() {
-    let base_url = serving(&[EXAMPLE_MODEL]);
-    let config = configured("prints", "personas.toml", &base_url, EXAMPLE_MODEL);
-    let printed = printed(&["werewolf", "llm", &config]);
-    let lines: Vec<&str> = printed.lines().collect();
+fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_to_the_result() {
+    let base_url = playing(&[EXAMPLE_MODEL]);
+    let config = configured("plays", "personas.toml", &base_url, EXAMPLE_MODEL);
+    // Short limits, so that a phase nobody selects in ends soon.
+    let args = [&config, "--night-limit", "1s", "--day-limit", "1s"];
+    let events = assert_plays_the_default_table("llm", "LLM", &args);
+    let (_, roles) = start(&events);
+    let configuration = configuration(&events);
+    assert_eq!(configuration.base_url, base_url);
+    assert_eq!(configuration.model, EXAMPLE_MODEL);
+    assert_eq!(configuration.night_limit, Duration::from_secs(1));
+    // Each player was told the prompt for the role it was dealt.
+    assert_eq!(configuration.prompts.len(), 7);
+    for (player, role) in roles {
+        let prompt = &configuration.prompts[player];
+        let told = match role {
+            Role::Seer => format!("You are {player}, the seer."),
+            role => format!("You are {player}, a {role}."),
+        };
+        assert!(prompt.contains(&told), "{player} as {role}: {prompt}");
+    }
     assert_eq!(
-        lines[0],
-        format!("model: qwen2.5-7b-instruct at {base_url}"),
-        "{printed}"
+        configuration.personas["player1"],
+        "You are cautious and slow to accuse."
     );
-    // Every seat for every role, each under a header, after the settings.
-    let headers: Vec<&str> = lines
+    // The configuration is logged once.
+    let configurations = events
         .iter()
-        .copied()
-        .filter(|line| line.starts_with("--- "))
-        .collect();
-    assert_eq!(headers.len(), 7 * 4, "{printed}");
-    assert_eq!(headers[0], "--- player1 as werewolf ---", "{printed}");
-    assert_eq!(headers[27], "--- player7 as seer ---", "{printed}");
-    assert_eq!(lines[6], headers[0], "{printed}");
-    assert!(printed.contains("You are player1, the seer."), "{printed}");
-    assert_eq!(
-        lines.last().unwrap(),
-        &"The model-played game is not playable yet.",
-        "{printed}"
-    );
+        .filter(|event| matches!(event.payload, Entry::Configuration(_)))
+        .count();
+    assert_eq!(configurations, 1);
 }
 
 #[test]
@@ -257,28 +279,30 @@ fn a_template_that_cannot_render_is_an_error_before_anything_is_printed() {
 
 #[test]
 fn the_llm_variant_hears_the_command_line_over_the_file() {
-    let base_url = serving(&[EXAMPLE_MODEL, "gpt-5.5"]);
-    let config = configured("hears", "personas.toml", &base_url, EXAMPLE_MODEL);
-    let printed = printed(&[
-        "werewolf",
+    let base_url = playing(&[EXAMPLE_MODEL, "gpt-5.5"]);
+    let config = configured("hears", "minimal.toml", &base_url, EXAMPLE_MODEL);
+    let (events, _) = played(
         "llm",
-        &config,
-        "--werewolves",
-        "1",
-        "--day-limit",
-        "2m",
-        "--model-id",
-        "gpt-5.5",
-    ]);
-    assert!(
-        printed.contains("roles: 1 werewolf, 3 villagers"),
-        "{printed}"
+        &[
+            &config,
+            "--werewolves",
+            "1",
+            "--night-limit",
+            "1s",
+            "--day-limit",
+            "2s",
+            "--model-id",
+            "gpt-5.5",
+        ],
     );
-    assert!(printed.contains("day limit: 2m\n"), "{printed}");
-    assert!(
-        printed.contains(&format!("model: gpt-5.5 at {base_url}\n")),
-        "{printed}"
-    );
+    let (_, roles) = start(&events);
+    assert_eq!(roles.len(), 6);
+    let configuration = configuration(&events);
+    assert_eq!(configuration.role_counts[&Role::Werewolf], 1);
+    assert_eq!(configuration.role_counts[&Role::Villager], 3);
+    assert_eq!(configuration.day_limit, Duration::from_secs(2));
+    assert_eq!(configuration.model, "gpt-5.5");
+    assert_eq!(configuration.base_url, base_url);
 }
 
 #[test]
