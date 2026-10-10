@@ -14,6 +14,7 @@
 pub mod canned;
 
 use anyhow::{Context, anyhow, bail};
+use reqwest::StatusCode;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::ffi::OsString;
@@ -66,6 +67,61 @@ fn key(name: &str, value: Option<OsString>) -> anyhow::Result<SecretString> {
         .into_string()
         .map_err(|_| anyhow!("api_key_env names {name}, whose value is not UTF-8"))?;
     Ok(SecretString::from(value))
+}
+
+/// A status that is not success, in words: the status, what it is likely
+/// to mean coming from a provider that was sent a key or not, and
+/// whatever the provider `said` about it. A provider's message comes as
+/// `error.message` in JSON, as OpenAI's and Anthropic's do; any other
+/// text is quoted as it is.
+fn explained(status: StatusCode, keyed: bool, said: &str) -> String {
+    let meaning = match status {
+        StatusCode::UNAUTHORIZED if keyed => Some("the API key was not accepted"),
+        StatusCode::UNAUTHORIZED => Some("it wants an API key"),
+        StatusCode::FORBIDDEN => Some("the API key is not allowed to list models"),
+        StatusCode::NOT_FOUND => Some(
+            "nothing is served at that path; the base URL is the root of the API, ending in /v1",
+        ),
+        StatusCode::TOO_MANY_REQUESTS => {
+            Some("it is limiting the rate of requests; try again shortly")
+        }
+        status if status.is_server_error() => {
+            Some("it is having trouble of its own; try again shortly")
+        }
+        _ => None,
+    };
+    let mut explanation = status.to_string();
+    if let Some(meaning) = meaning {
+        explanation.push_str(": ");
+        explanation.push_str(meaning);
+    }
+    if let Some(said) = message(said) {
+        explanation.push_str(". The provider said: ");
+        explanation.push_str(&said);
+    }
+    explanation
+}
+
+/// What a provider said about a failure: the message of a JSON error
+/// in OpenAI's and Anthropic's shape, or else its text, trimmed, or
+/// nothing when it said nothing.
+fn message(said: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Said {
+        error: Error,
+    }
+    #[derive(Deserialize)]
+    struct Error {
+        message: String,
+    }
+    let said = said.trim();
+    if said.is_empty() {
+        return None;
+    }
+    Some(match serde_json::from_str::<Said>(said) {
+        Ok(json) => json.error.message,
+        Err(_) => said.to_string(),
+    })
 }
 
 /// A model provider: the root of its OpenAI-compatible API, ending in
@@ -122,10 +178,10 @@ impl Provider {
         let status = response.status();
         if !status.is_success() {
             let said = response.text().await.unwrap_or_default();
-            match said.trim() {
-                "" => bail!("GET {url} was answered {status}"),
-                said => bail!("GET {url} was answered {status}: {said}"),
-            }
+            bail!(
+                "GET {url} was answered {}",
+                explained(status, self.api_key.is_some(), &said)
+            );
         }
         let listing: Listing = response
             .json()
@@ -239,21 +295,86 @@ mod tests {
     #[tokio::test]
     async fn a_status_that_is_not_success_is_an_error_naming_the_url_the_status_and_what_was_said_not_the_key()
      {
-        let said = r#"{"error": {"message": "Incorrect API key provided"}}"#;
+        let said = r#"{"error": {"message": "Incorrect API key provided", "type": "invalid_request_error"}}"#;
         let (base_url, _served) = answering("401 Unauthorized", said);
         let key = SecretString::from("sk-secret");
         let provider = Provider::new(base_url.clone(), Some(key), TIMEOUT).unwrap();
         let error = provider.models().await.unwrap_err();
         let shown = format!("{error:#}");
-        assert!(shown.contains(&format!("{base_url}/models")), "{shown}");
-        assert!(shown.contains("401"), "{shown}");
-        assert!(shown.contains("Incorrect API key provided"), "{shown}");
+        assert_eq!(
+            shown,
+            format!(
+                "GET {base_url}/models was answered 401 Unauthorized: the API key was not accepted. \
+                 The provider said: Incorrect API key provided"
+            )
+        );
         assert!(!shown.contains("sk-secret"), "{shown}");
-        // A provider that says nothing is not quoted.
-        let (base_url, _served) = answering("503 Service Unavailable", "");
-        let provider = Provider::new(base_url.clone(), None, TIMEOUT).unwrap();
-        let shown = format!("{:#}", provider.models().await.unwrap_err());
-        assert!(shown.ends_with("503 Service Unavailable"), "{shown}");
+    }
+
+    /// What `status` and `said` are explained as, from a provider sent a
+    /// key or not.
+    fn explanation(status: &str, keyed: bool, said: &str) -> String {
+        let status = StatusCode::from_bytes(status.split(' ').next().unwrap().as_bytes()).unwrap();
+        explained(status, keyed, said)
+    }
+
+    #[test]
+    fn a_status_is_explained_in_words() {
+        assert_eq!(
+            explanation("401 Unauthorized", false, ""),
+            "401 Unauthorized: it wants an API key"
+        );
+        assert_eq!(
+            explanation("401 Unauthorized", true, ""),
+            "401 Unauthorized: the API key was not accepted"
+        );
+        assert_eq!(
+            explanation("403 Forbidden", true, ""),
+            "403 Forbidden: the API key is not allowed to list models"
+        );
+        assert_eq!(
+            explanation("404 Not Found", false, ""),
+            "404 Not Found: nothing is served at that path; the base URL is the root of the API, ending in /v1"
+        );
+        assert_eq!(
+            explanation("429 Too Many Requests", true, ""),
+            "429 Too Many Requests: it is limiting the rate of requests; try again shortly"
+        );
+        assert_eq!(
+            explanation("503 Service Unavailable", false, ""),
+            "503 Service Unavailable: it is having trouble of its own; try again shortly"
+        );
+        // A status with no explanation is given as it is.
+        assert_eq!(
+            explanation("418 I'm a teapot", false, ""),
+            "418 I'm a teapot"
+        );
+    }
+
+    #[test]
+    fn what_the_provider_said_is_its_message_when_it_is_json_and_its_text_when_not() {
+        // OpenAI's and Anthropic's shape.
+        assert_eq!(
+            explanation(
+                "418 I'm a teapot",
+                false,
+                r#"{"type": "error", "error": {"type": "api_error", "message": "Brewing"}}"#
+            ),
+            "418 I'm a teapot. The provider said: Brewing"
+        );
+        // Anything else is quoted as it is, trimmed; nothing is not quoted.
+        assert_eq!(
+            explanation("418 I'm a teapot", false, "  <html>Brewing</html>\n"),
+            "418 I'm a teapot. The provider said: <html>Brewing</html>"
+        );
+        assert_eq!(
+            explanation("418 I'm a teapot", false, r#"{"message": "Brewing"}"#),
+            r#"418 I'm a teapot. The provider said: {"message": "Brewing"}"#
+        );
+        assert_eq!(
+            explanation("418 I'm a teapot", false, " \n"),
+            "418 I'm a teapot"
+        );
     }
 
     #[tokio::test]
