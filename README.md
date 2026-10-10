@@ -16,9 +16,11 @@ behavior handles statements with [`receive`](Behavior::receive) and requests
 with [`answer`](Behavior::answer). It thinks in an optional second loop, a
 [`Think`] in a task of its own that takes what [`Context::think`] hands it
 one message at a time, so slow work such as a model call never holds up
-perceiving. It acts through the [`Context`] each loop holds, which is how it
-reaches the rest of the episode, to send statements, to request and await
-replies, to stop other actors, and to log. Everything an actor sends goes to
+perceiving. A timer set with [`Context::think_after`] is a delayed thought,
+handled when it falls due ahead of whatever is waiting to be thought about.
+It acts through the [`Context`] each loop holds, which is how it reaches the
+rest of the episode, to send statements, to request and await replies, to
+stop other actors, and to log. Everything an actor sends goes to
 other actors, never to itself. A typical episode has one environment actor
 and several agent actors.
 

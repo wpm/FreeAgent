@@ -5,11 +5,12 @@
 //! An actor perceives, thinks, and acts. It perceives in its message loop:
 //! a [`Behavior`] driven by a mailbox handles each statement and request as
 //! it comes. It thinks in an optional second loop, a [`Think`] in a task of
-//! its own, which takes the messages handed to it by [`Context::think`] one
-//! at a time, so that slow work such as a model call never holds up
-//! perceiving. It acts through every message either loop sends. Each loop
-//! reaches the rest of the episode through a [`Context`] of its own, which
-//! an [`Episode`](crate::Episode) builds from the actor's [`ActorInit`].
+//! its own, which takes the messages handed to it by [`Context::think`] and
+//! the timers set by [`Context::think_after`] one at a time, so that slow
+//! work such as a model call never holds up perceiving. It acts through
+//! every message either loop sends. Each loop reaches the rest of the
+//! episode through a [`Context`] of its own, which an
+//! [`Episode`](crate::Episode) builds from the actor's [`ActorInit`].
 //!
 //! [actor model]: https://en.wikipedia.org/wiki/Actor_model
 
@@ -19,10 +20,14 @@ use anyhow::{Context as _, bail};
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{HashMap, HashSet};
+use std::future::poll_fn;
 use std::ops::ControlFlow::{self, Break, Continue};
+use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use tokio_util::time::DelayQueue;
 use uuid::Uuid;
 
 /// An actor's name, unique within an episode.
@@ -59,8 +64,8 @@ pub(crate) struct Actor<B: Behavior> {
     /// What this Actor does at each point in its life. It owns the
     /// [`Context`] through which it reaches other actors.
     pub(crate) behavior: B,
-    /// What this Actor thinks about, and the queue it takes it from. Taken
-    /// when the loop is spawned.
+    /// What this Actor thinks about, with the queue and the timers it takes
+    /// it from. Taken when the loop is spawned.
     pub(crate) think: Option<ThinkLoop<B::Message>>,
     /// This Actor's one-time signal to the episode that it is initialized
     /// and running its message loop. Taken when it is sent.
@@ -91,8 +96,8 @@ impl<B: Behavior> Actor<B> {
     ///
     /// Shutdown cuts any phase short. A step or a thought in progress is
     /// dropped at its next await, mail still in the mailbox and messages
-    /// still on the think queue stay there, and cleanup runs only after a
-    /// finished initialization.
+    /// still on the think queue stay there, pending timers are dropped, and
+    /// cleanup runs only after a finished initialization.
     pub(crate) async fn run(mut self) -> anyhow::Result<()> {
         let shutdown = self.behavior.context().shutdown.mine.clone();
         let Some(initialized) = run_unless_stopped(&shutdown, self.behavior.initialize()).await
@@ -198,33 +203,59 @@ impl<B: Behavior> Actor<B> {
     }
 }
 
-/// An actor's think loop: what thinks, and the queue it thinks from.
+/// An actor's think loop: what thinks, the queue it thinks from, and the
+/// channel its timers arrive on.
 pub(crate) struct ThinkLoop<M: Message> {
     /// What this loop thinks. It owns the loop's [`Context`].
     pub(crate) think: Box<dyn Think<Message = M>>,
     /// The channel on which this loop receives what to think about.
     pub(crate) queue: UnboundedReceiver<M>,
+    /// The channel on which this loop receives timers to set: a deadline
+    /// and the message to think about once it has passed.
+    pub(crate) timers: UnboundedReceiver<(Instant, M)>,
 }
 
 impl<M: Message> ThinkLoop<M> {
-    /// Open a think queue into `context`, and build the loop from `build`
-    /// with a twin of it.
+    /// Open a think queue and a timer channel into `context`, and build the
+    /// loop from `build` with a twin of it.
     pub(crate) fn open<L>(build: ThinkBuilder<M, L>, context: &mut Context<M, L>) -> Self {
-        let (thoughts, queue) = unbounded_channel();
-        context.thoughts = Some(thoughts);
+        let (now, queue) = unbounded_channel();
+        let (later, timers) = unbounded_channel();
+        context.thoughts = Some(Thoughts { now, later });
         Self {
             think: build(context.twin()),
             queue,
+            timers,
         }
     }
 
-    /// Think about each message on the queue in turn, one at a time in the
-    /// order they arrived, until `shutdown` fires. An error from a thought
-    /// is dropped and the loop goes on to the next message. Shutdown drops a
-    /// thought in progress at its next await and leaves the rest of the
-    /// queue unhandled.
+    /// Think about each message in turn, one at a time, until `shutdown`
+    /// fires: a timer as soon as it is due, ahead of whatever is waiting on
+    /// the queue, and otherwise the queue in the order it arrived. Nothing
+    /// interrupts a thought in progress. An error from a thought is dropped
+    /// and the loop goes on to the next message. Shutdown drops a thought in
+    /// progress at its next await, and leaves the rest of the queue and
+    /// every pending timer unhandled.
     async fn run(mut self, shutdown: CancellationToken) {
-        while let Some(Some(message)) = run_unless_stopped(&shutdown, self.queue.recv()).await {
+        let mut pending = DelayQueue::new();
+        loop {
+            // Wait for whichever happens first, trying the arms in order.
+            // A new timer joins the pending ones, and the wait goes on. The
+            // pending timers are polled only while there are some, because
+            // an empty `DelayQueue` reports that it is finished rather than
+            // pending.
+            let message = tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => break,
+                Some((deadline, message)) = self.timers.recv() => {
+                    pending.insert_at(message, deadline);
+                    continue;
+                }
+                Some(due) = poll_fn(|cx| pending.poll_expired(cx)), if !pending.is_empty() => {
+                    due.into_inner()
+                }
+                Some(message) = self.queue.recv() => message,
+            };
             let _ = run_unless_stopped(&shutdown, self.think.think(&message)).await;
         }
     }
@@ -261,9 +292,18 @@ pub struct Context<M: Message, L = M> {
     pub(crate) shutdown: Shutdown,
     /// Where this Actor's events go, when it has a logger.
     pub(crate) log: Option<Logger<L>>,
-    /// The sending end of this Actor's think queue, when it has a think
-    /// loop.
-    pub(crate) thoughts: Option<UnboundedSender<M>>,
+    /// The way into this Actor's think loop, when it has one.
+    pub(crate) thoughts: Option<Thoughts<M>>,
+}
+
+/// The sending ends of a think loop's channels: the think queue, and the
+/// timers.
+#[derive(Clone)]
+pub(crate) struct Thoughts<M> {
+    /// Messages to think about next.
+    now: UnboundedSender<M>,
+    /// Messages to think about once their deadline has passed.
+    later: UnboundedSender<(Instant, M)>,
 }
 
 impl<M: Message, L> Context<M, L> {
@@ -371,12 +411,40 @@ impl<M: Message, L> Context<M, L> {
     ///
     /// Fails when this actor has no think loop.
     pub fn think(&self, message: M) -> anyhow::Result<()> {
-        let Some(queue) = &self.thoughts else {
-            bail!("{} cannot think: it has no think loop", self.id);
-        };
         // A failed send means the think loop has already ended.
-        let _ = queue.send(message);
+        let _ = self.thoughts()?.now.send(message);
         Ok(())
+    }
+
+    /// Hand `message` to this actor's think loop once `delay` has passed.
+    /// The deadline is set now, and the loop thinks about the message as
+    /// soon after it as the thought in progress is done, ahead of anything
+    /// waiting on the think queue. Timers fire in deadline order. A timer
+    /// cannot be cancelled: an actor that no longer wants one recognizes it
+    /// when it arrives, usually by a sequence number it put in the message,
+    /// and ignores it.
+    ///
+    /// # Errors
+    ///
+    /// Fails when this actor has no think loop.
+    pub fn think_after(&self, delay: Duration, message: M) -> anyhow::Result<()> {
+        // A failed send means the think loop has already ended.
+        let _ = self
+            .thoughts()?
+            .later
+            .send((Instant::now() + delay, message));
+        Ok(())
+    }
+
+    /// The way into this actor's think loop.
+    ///
+    /// # Errors
+    ///
+    /// Fails when this actor has no think loop.
+    fn thoughts(&self) -> anyhow::Result<&Thoughts<M>> {
+        self.thoughts
+            .as_ref()
+            .with_context(|| format!("{} cannot think: it has no think loop", self.id))
     }
 
     /// Stop another actor at once, wherever it is in its step.
@@ -493,16 +561,19 @@ pub trait Behavior: Send {
 
 /// What an actor thinks about, one message at a time, in a task beside its
 /// perceive loop. A message gets here by [`Context::think`], from either
-/// loop. A slow await inside [`think`](Think::think), such as a model call,
-/// holds up only the next thought: the actor keeps receiving and answering
-/// in the meantime. An error from a thought is dropped, and the loop goes on
-/// to the next message.
+/// loop, or as a timer by [`Context::think_after`], which hands it over once
+/// a delay has passed. A due timer is thought about before anything waiting
+/// on the think queue, so a deadline is never stuck behind a backlog. A slow
+/// await inside [`think`](Think::think), such as a model call, holds up only
+/// the next thought: the actor keeps receiving and answering in the
+/// meantime. An error from a thought is dropped, and the loop goes on to the
+/// next message.
 ///
 /// The think loop keeps the [`Context`] it is built with, and the
 /// [`ThinkBuilder`] in the actor's [`ActorInit`] wraps the `Think` around
 /// it. Through it the loop does everything the behavior does except reply:
 /// it sends statements, makes requests and awaits their replies, stops
-/// actors, shuts its actor down, logs, and thinks some more.
+/// actors, shuts its actor down, logs, thinks some more, and sets timers.
 ///
 /// Both loops run at once, so state they share lives in an
 /// `Arc<std::sync::Mutex<_>>` held briefly and never across an await: a
@@ -613,10 +684,9 @@ mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
-    use std::time::Duration;
     use tokio::sync::Semaphore;
     use tokio::sync::mpsc::unbounded_channel;
-    use tokio::time::{Instant, sleep, timeout};
+    use tokio::time::{sleep, timeout};
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     struct Note(String);
@@ -1384,6 +1454,150 @@ mod tests {
 
         let error = running.await.unwrap().unwrap_err();
         assert!(error.to_string().contains("panicked"), "{error}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_due_timer_is_handled_before_messages_waiting_on_the_think_queue() {
+        let (bob, mut thoughts) = thinking_rig("bob", Duration::from_secs(1));
+        let context = bob.context().twin();
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+
+        // The alarm falls due while Bob is on "first", with "second" waiting.
+        context.think(note("first")).unwrap();
+        context.think(note("second")).unwrap();
+        context
+            .think_after(Duration::from_millis(500), note("alarm"))
+            .unwrap();
+
+        for text in ["first", "alarm", "second"] {
+            assert_eq!(thoughts.recv().await.unwrap(), note(text));
+        }
+        bob.stop.cancel();
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timer_set_during_a_think_is_handled_as_soon_as_the_think_returns() {
+        let (bob, mut thoughts) = thinking_rig("bob", Duration::from_secs(1));
+        let context = bob.context().twin();
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        let began = Instant::now();
+        context.think(note("first")).unwrap();
+        // Let Bob settle into thinking about "first".
+        sleep(Duration::from_millis(100)).await;
+
+        // The alarm comes due in the middle of "first", behind "second".
+        context.think(note("second")).unwrap();
+        context
+            .think_after(Duration::from_millis(500), note("alarm"))
+            .unwrap();
+
+        for (text, seconds) in [("first", 1), ("alarm", 2), ("second", 3)] {
+            assert_eq!(thoughts.recv().await.unwrap(), note(text));
+            assert_eq!(began.elapsed(), Duration::from_secs(seconds), "{text}");
+        }
+        bob.stop.cancel();
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_deadline_is_measured_from_the_call_to_think_after() {
+        let (bob, mut thoughts) = thinking_rig("bob", Duration::from_secs(1));
+        let context = bob.context().twin();
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        let began = Instant::now();
+        context.think(note("first")).unwrap();
+        // Let Bob settle into thinking about "first".
+        sleep(Duration::from_millis(100)).await;
+
+        // Set at 0.1s for 2.1s, though the loop only sees it at 1s.
+        context
+            .think_after(Duration::from_secs(2), note("alarm"))
+            .unwrap();
+
+        assert_eq!(thoughts.recv().await.unwrap(), note("first"));
+        assert_eq!(thoughts.recv().await.unwrap(), note("alarm"));
+        assert_eq!(began.elapsed(), Duration::from_millis(3100));
+        bob.stop.cancel();
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timers_fire_in_deadline_order() {
+        let (bob, mut thoughts) = thinking_rig("bob", Duration::ZERO);
+        let context = bob.context().twin();
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        let began = Instant::now();
+
+        for (text, seconds) in [("third", 3), ("first", 1), ("second", 2)] {
+            context
+                .think_after(Duration::from_secs(seconds), note(text))
+                .unwrap();
+        }
+
+        for (text, seconds) in [("first", 1), ("second", 2), ("third", 3)] {
+            assert_eq!(thoughts.recv().await.unwrap(), note(text));
+            assert_eq!(began.elapsed(), Duration::from_secs(seconds), "{text}");
+        }
+        bob.stop.cancel();
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timer_is_not_handled_before_its_deadline() {
+        let (bob, mut thoughts) = thinking_rig("bob", Duration::ZERO);
+        let context = bob.context().twin();
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        let began = Instant::now();
+
+        context
+            .think_after(Duration::from_secs(10), note("alarm"))
+            .unwrap();
+
+        sleep(Duration::from_secs(9)).await;
+        assert!(thoughts.try_recv().is_err(), "the alarm should not be due");
+        assert_eq!(thoughts.recv().await.unwrap(), note("alarm"));
+        assert_eq!(began.elapsed(), Duration::from_secs(10));
+        bob.stop.cancel();
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutting_down_drops_pending_timers() {
+        let (bob, mut thoughts) = thinking_rig("bob", Duration::ZERO);
+        let context = bob.context().twin();
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        for seconds in [1, 2] {
+            context
+                .think_after(Duration::from_secs(seconds), note("alarm"))
+                .unwrap();
+        }
+        // Let Bob set both alarms and settle into waiting for them.
+        sleep(Duration::from_millis(500)).await;
+
+        bob.stop.cancel();
+
+        running.await.unwrap().unwrap();
+        // The thinker is gone, and neither alarm reached it.
+        assert!(thoughts.recv().await.is_none(), "nothing should be thought");
+    }
+
+    #[tokio::test]
+    async fn think_after_fails_on_an_actor_with_no_think_loop() {
+        let ann = rig("ann", HashMap::new(), HashMap::new());
+
+        let error = ann
+            .context()
+            .think_after(Duration::from_secs(1), note("hmm"))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("no think loop"), "{error}");
     }
 
     #[tokio::test(start_paused = true)]

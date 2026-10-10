@@ -23,6 +23,9 @@ workflow takes a version's notes from here.
   `ActorInit::think`, with `Context::think` to hand a message to it from
   either loop. It runs in a task of its own, so an actor keeps perceiving
   while it thinks.
+- Timers: `Context::think_after` hands a message to the think loop once a
+  delay has passed. A due timer is thought about ahead of whatever is
+  waiting on the think queue.
 
 ### Changed
 
