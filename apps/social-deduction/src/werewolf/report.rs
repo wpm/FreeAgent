@@ -266,7 +266,8 @@ fn names<'a>(players: impl IntoIterator<Item = &'a PlayerId>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::werewolf::Team;
+    use crate::werewolf::{Configuration, Team};
+    use std::time::Duration;
 
     fn id(name: &str) -> PlayerId {
         name.to_string()
@@ -813,6 +814,30 @@ mod tests {
                 "ann dies.",
                 "The werewolves win after 0 days. Survivors: doctor, seer (seer), wolf (werewolf)."
             ]
+        );
+    }
+
+    #[test]
+    fn the_configuration_adds_nothing_to_either_account() {
+        let configuration = Entry::Configuration(Box::new(Configuration {
+            role_counts: HashMap::from([(Role::Werewolf, 1), (Role::Villager, 2)]),
+            night_limit: Duration::from_secs(30),
+            day_limit: Duration::from_secs(60),
+            request_timeout: Duration::from_secs(10),
+            base_url: "http://localhost:1234/v1".to_string(),
+            model: "qwen2.5-7b-instruct".to_string(),
+            api_key_env: None,
+            personas: HashMap::new(),
+            prompts: HashMap::from([(id("wolf"), "You are wolf.".to_string())]),
+            default_template: Some("You are {{ name }}.".to_string()),
+            role_templates: HashMap::new(),
+            text: HashMap::new(),
+        }));
+        assert!(Narrator::default().narrate(&configuration).is_empty());
+        assert!(
+            Narrator::for_player(id("wolf"))
+                .narrate(&configuration)
+                .is_empty()
         );
     }
 }

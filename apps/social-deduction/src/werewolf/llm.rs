@@ -23,13 +23,17 @@
 //! the game stands, and has it select one of the player's [candidates]
 //! with one forced tool call. The call is made in the player's think loop,
 //! so the player keeps perceiving while the model works. An answer that is
-//! not a selection is no selection. [`game`] builds the episode.
+//! not a selection is no selection. [`game`] builds the episode from the
+//! deal, the rules and a [`Setup`], which [`Settings::setup`] makes: what
+//! each player is told, the model every player asks, and the
+//! configuration the log opens with, as [`Settings::configuration`] records
+//! it.
 
 use super::announced;
 use super::report::Narrator;
 use super::{
-    ENVIRONMENT, Entry, Message, Observation, Phase, PhaseLimits, PlayerId, Role, RoleCounts,
-    Rules, Table, Team, candidates,
+    Configuration, ENVIRONMENT, Entry, Message, Observation, Phase, PhaseLimits, PlayerId, Role,
+    RoleCounts, Rules, Table, Team, candidates,
 };
 use crate::model::{
     self, Provider, REQUEST_TIMEOUT, Request, Response, Tool, api_key, key_variable,
@@ -371,6 +375,66 @@ impl Settings {
         }
         Ok(prompts)
     }
+
+    /// The configuration a game runs under, as the log records it right
+    /// after the deal: every setting as it took effect, each player's
+    /// system prompt as `prompts` has it, and the templates and text blocks
+    /// as written. The key's variable is named, and the key itself never
+    /// recorded.
+    pub fn configuration(&self, prompts: &HashMap<PlayerId, String>) -> Configuration {
+        let config = &self.config;
+        let model = &config.model;
+        let role_templates = self
+            .table
+            .counts()
+            .into_iter()
+            .filter_map(|(role, _)| Some((role, config.roles.get(role).system.clone()?)))
+            .collect();
+        Configuration {
+            role_counts: self.table.counts().into_iter().collect(),
+            night_limit: self.night_limit,
+            day_limit: self.day_limit,
+            request_timeout: model.request_timeout,
+            base_url: model.base_url.clone(),
+            model: model.id.clone(),
+            api_key_env: model.key_variable().map(String::from),
+            personas: config.personas.clone().into_iter().collect(),
+            prompts: prompts.clone(),
+            default_template: config.prompt.system.clone(),
+            role_templates,
+            text: config.text.clone().into_iter().collect(),
+        }
+    }
+
+    /// What a game of `roles` is set up with: each player told its prompt
+    /// from `prompts`, which [`Settings::prompts`] rendered for every seat
+    /// and role at the table, for the role it was dealt; `model` as the
+    /// model the settings name; and the configuration the log opens with.
+    /// A player with no prompt rendered for its role is an error naming
+    /// the seat and the role.
+    pub fn setup(
+        &self,
+        roles: &HashMap<PlayerId, Role>,
+        prompts: &[SystemPrompt],
+        model: Arc<dyn model::Model>,
+    ) -> anyhow::Result<Setup> {
+        let told = roles
+            .iter()
+            .map(|(seat, role)| {
+                let prompt = prompts
+                    .iter()
+                    .find(|prompt| prompt.seat == *seat && prompt.role == *role)
+                    .ok_or_else(|| anyhow!("no system prompt rendered for {seat} as {role}"))?;
+                Ok((seat.clone(), prompt.text.clone()))
+            })
+            .collect::<anyhow::Result<HashMap<_, _>>>()?;
+        Ok(Setup {
+            configuration: self.configuration(&told),
+            prompts: told,
+            model_id: self.config.model.id.clone(),
+            model,
+        })
+    }
 }
 
 impl fmt::Display for Settings {
@@ -407,28 +471,53 @@ pub fn rules() -> Rules {
     }
 }
 
+/// What a game is set up with besides its deal and rules: what each player
+/// is told, the model every player asks, and the configuration the log
+/// opens with. [`Settings::setup`] makes it from the settings.
+pub struct Setup {
+    /// Each player's system prompt, rendered for the role it was dealt.
+    pub prompts: HashMap<PlayerId, String>,
+    /// The model's id, as each request names it.
+    pub model_id: String,
+    /// The model asked for each selection.
+    pub model: Arc<dyn model::Model>,
+    /// The configuration logged right after the deal.
+    pub configuration: Configuration,
+}
+
 /// An episode of a game of `roles` under `rules`: the announcing
 /// environment, which may reach and stop every player and holds `logger`,
-/// and a model player for each role, who may send to the environment. Each
-/// player is told its system prompt, which `prompts` has for every player
-/// in `roles`, and makes each selection by asking `model` as the model
-/// `model_id`. The winning team is sent on `winner` when the game ends.
+/// and a model player for each role, who may send to the environment. The
+/// environment logs `setup`'s configuration right after the deal. Each
+/// player is told its system prompt, which `setup` has for every player in
+/// `roles`, and makes each selection by asking `setup`'s model. The winning
+/// team is sent on `winner` when the game ends.
 pub fn game(
     roles: HashMap<PlayerId, Role>,
     rules: Rules,
-    mut prompts: HashMap<PlayerId, String>,
-    model_id: &str,
-    model: Arc<dyn model::Model>,
+    setup: Setup,
     winner: oneshot::Sender<Team>,
     logger: Logger<Entry>,
 ) -> Episode<Actor> {
+    let Setup {
+        mut prompts,
+        model_id,
+        model,
+        configuration,
+    } = setup;
     let players: Vec<PlayerId> = roles.keys().cloned().collect();
-    let environment = announced::init(roles, rules, winner, Actor::Environment);
+    let environment = announced::init(
+        roles,
+        rules,
+        Some(Entry::Configuration(Box::new(configuration))),
+        winner,
+        Actor::Environment,
+    );
     let player = |id: &PlayerId| {
         let prompt = prompts
             .remove(id)
             .unwrap_or_else(|| panic!("no system prompt for {id}"));
-        Player::init(prompt, model_id.to_string(), Arc::clone(&model))
+        Player::init(prompt, model_id.clone(), Arc::clone(&model))
     };
     super::thinking_episode(environment, players, player, logger)
 }
@@ -1213,6 +1302,163 @@ day limit: 1m 30s
         assert_eq!(settings.config.model.key_variable(), Some("MY_KEY"));
     }
 
+    /// A file saying something under every table, for a game of one
+    /// werewolf, one seer and one villager.
+    fn configured() -> String {
+        format!(
+            "{MODEL}
+request_timeout = \"10s\"
+[phases]
+night_limit = \"30s\"
+day_limit = \"1m 30s\"
+[roles.werewolf]
+count = 1
+[roles.villager]
+count = 1
+[roles.doctor]
+count = 0
+[roles.seer]
+count = 1
+system = \"{{{{ name }}}} sees.\"
+[text]
+rules = \"The rules.\"
+[prompt]
+system = \"{{{{ rules }}}} {{{{ name }}}} the {{{{ role }}}}[{{{{ persona }}}}]\"
+[personas]
+player2 = \"Cautious.\"
+"
+        )
+    }
+
+    /// A deal at the table [`configured`] sets.
+    fn dealt() -> HashMap<PlayerId, Role> {
+        HashMap::from([
+            ("player1".to_string(), Role::Villager),
+            ("player2".to_string(), Role::Werewolf),
+            ("player3".to_string(), Role::Seer),
+        ])
+    }
+
+    /// The configuration of a game of [`dealt`] under `settings`.
+    fn configuration_of(settings: &Settings) -> Configuration {
+        let prompts = settings.prompts().unwrap();
+        settings
+            .setup(&dealt(), &prompts, answering(choosing_first))
+            .unwrap()
+            .configuration
+    }
+
+    #[test]
+    fn the_configuration_entry_carries_the_settings_as_they_took_effect() {
+        // The night limit from the command line, everything else from the
+        // file or the code.
+        let overrides = Overrides {
+            limits: PhaseLimits {
+                night_limit: Some(Duration::from_secs(5)),
+                day_limit: None,
+            },
+            ..Overrides::default()
+        };
+        let settings = settle(&configured(), overrides);
+        let prompts = settings.prompts().unwrap();
+        let setup = settings
+            .setup(&dealt(), &prompts, answering(choosing_first))
+            .unwrap();
+        let told = HashMap::from([
+            (
+                "player1".to_string(),
+                "The rules. player1 the villager[]".to_string(),
+            ),
+            (
+                "player2".to_string(),
+                "The rules. player2 the werewolf[Cautious.]".to_string(),
+            ),
+            ("player3".to_string(), "player3 sees.".to_string()),
+        ]);
+        assert_eq!(setup.prompts, told);
+        assert_eq!(setup.model_id, MODEL_ID);
+        assert_eq!(
+            setup.configuration,
+            Configuration {
+                role_counts: HashMap::from([
+                    (Role::Werewolf, 1),
+                    (Role::Villager, 1),
+                    (Role::Doctor, 0),
+                    (Role::Seer, 1),
+                ]),
+                night_limit: Duration::from_secs(5),
+                day_limit: Duration::from_secs(90),
+                request_timeout: Duration::from_secs(10),
+                base_url: "http://localhost:1234/v1".to_string(),
+                model: MODEL_ID.to_string(),
+                api_key_env: None,
+                personas: HashMap::from([("player2".to_string(), "Cautious.".to_string())]),
+                prompts: told,
+                default_template: Some(
+                    "{{ rules }} {{ name }} the {{ role }}[{{ persona }}]".to_string()
+                ),
+                role_templates: HashMap::from([(Role::Seer, "{{ name }} sees.".to_string())]),
+                text: HashMap::from([("rules".to_string(), "The rules.".to_string())]),
+            }
+        );
+    }
+
+    #[test]
+    fn a_player_with_no_prompt_rendered_for_its_role_is_an_error_naming_the_seat_and_the_role() {
+        let settings = settle(&configured(), Overrides::default());
+        let prompts = settings.prompts().unwrap();
+        let mut roles = dealt();
+        roles.insert("player3".to_string(), Role::Doctor);
+        let Err(error) = settings.setup(&roles, &prompts, answering(choosing_first)) else {
+            panic!("set up without a prompt for player3");
+        };
+        let shown = format!("{error:#}");
+        assert!(shown.contains("player3"), "{shown}");
+        assert!(shown.contains("doctor"), "{shown}");
+    }
+
+    #[test]
+    fn the_configuration_entry_writes_durations_as_humantime_does_and_survives_a_trip_through_json()
+    {
+        let entry = Entry::Configuration(Box::new(configuration_of(&settle(
+            &configured(),
+            Overrides::default(),
+        ))));
+        let json = serde_json::to_value(&entry).unwrap();
+        let configuration = &json["Configuration"];
+        assert_eq!(configuration["night_limit"], json!("30s"));
+        assert_eq!(configuration["day_limit"], json!("1m 30s"));
+        assert_eq!(configuration["request_timeout"], json!("10s"));
+        assert_eq!(configuration["role_counts"]["Werewolf"], json!(1));
+        assert_eq!(
+            configuration["role_templates"]["Seer"],
+            json!("{{ name }} sees.")
+        );
+        let back: Entry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn the_configuration_entry_names_the_key_s_variable_and_never_holds_the_key() {
+        // A variable Cargo sets for every test, since setting one is unsafe.
+        let name = "CARGO_MANIFEST_DIR";
+        let value = std::env::var(name).unwrap();
+        let file = configured().replacen(MODEL, &format!("{MODEL}api_key_env = \"{name}\"\n"), 1);
+        let settings = settle(&file, Overrides::default());
+        assert!(settings.config.model.api_key().unwrap().is_some());
+        let configuration = configuration_of(&settings);
+        assert_eq!(configuration.api_key_env.as_deref(), Some(name));
+        let shown = format!(
+            "{configuration:?}\n{}",
+            serde_json::to_string(&configuration).unwrap()
+        );
+        assert!(!shown.contains(&value), "{shown}");
+        // The variable a known provider's key is read from is named too.
+        let openai = configured().replace("http://localhost:1234/v1", "https://api.openai.com/v1");
+        let configuration = configuration_of(&settle(&openai, Overrides::default()));
+        assert_eq!(configuration.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
+    }
+
     /// The id of the model every test's players ask for.
     const MODEL_ID: &str = "qwen2.5-7b-instruct";
 
@@ -1252,6 +1498,19 @@ day limit: 1m 30s
         asked.rsplit_once("\n\n").unwrap().1
     }
 
+    /// The setup of a game of `roles` whose every player is told its
+    /// prompt and asks `model`, with the configuration [`MODEL`] gives.
+    fn setup(roles: &HashMap<PlayerId, Role>, model: Arc<FakeModel>) -> Setup {
+        let prompts: HashMap<PlayerId, String> =
+            roles.keys().map(|id| (id.clone(), told(id))).collect();
+        Setup {
+            configuration: settle(MODEL, Overrides::default()).configuration(&prompts),
+            prompts,
+            model_id: MODEL_ID.to_string(),
+            model,
+        }
+    }
+
     /// Run a game of `roles` under `rules`, every player a model player
     /// told its prompt and asking `model`.
     async fn play(
@@ -1259,10 +1518,10 @@ day limit: 1m 30s
         rules: Rules,
         model: Arc<FakeModel>,
     ) -> anyhow::Result<Played> {
-        let prompts = roles.keys().map(|id| (id.clone(), told(id))).collect();
+        let setup = setup(&roles, model);
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
-        let episode = game(roles, rules, prompts, MODEL_ID, model, winner, logger);
+        let episode = game(roles, rules, setup, winner, logger);
         run(episode, won, log).await
     }
 
@@ -1420,6 +1679,40 @@ day limit: 1m 30s
         assert!(model.requests().is_empty());
         assert!(received(&logged).is_empty());
         assert_eq!(took, quick().night_limit);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_log_opens_with_the_deal_then_the_configuration_then_the_first_night() {
+        let roles = one_wolf_against(&["ann", "bob"]);
+        let model = answering(choosing_first);
+        let configuration = setup(&roles, Arc::clone(&model)).configuration;
+        let (winner, logged, _) = play(roles.clone(), rules(), model).await.unwrap();
+        assert_eq!(
+            logged[0],
+            Entry::Start {
+                variation: "LLM".to_string(),
+                roles,
+            }
+        );
+        assert_eq!(logged[1], Entry::Configuration(Box::new(configuration)));
+        assert!(
+            matches!(
+                &logged[2],
+                Entry::Sent {
+                    to,
+                    message: Message::Announce { seq: 1, .. },
+                } if to == "wolf"
+            ),
+            "{:?}",
+            logged[2]
+        );
+        // The configuration is logged once.
+        let configurations = logged
+            .iter()
+            .filter(|entry| matches!(entry, Entry::Configuration(_)))
+            .count();
+        assert_eq!(configurations, 1);
+        assert_eq!(winner, Team::Werewolves);
     }
 
     #[tokio::test(start_paused = true)]

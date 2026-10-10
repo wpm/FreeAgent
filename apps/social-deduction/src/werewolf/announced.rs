@@ -14,11 +14,13 @@ use tokio::sync::oneshot;
 
 /// Everything the episode needs to run the environment for a game of
 /// `roles` under `rules`, as the actor `wrap` makes of it: it may send to
-/// and stop every player, holds the logger, and thinks. The winning team
-/// is sent on `winner` when the game ends.
+/// and stop every player, holds the logger, and thinks. It logs the deal,
+/// then `configuration` if there is one, before it opens the first night.
+/// The winning team is sent on `winner` when the game ends.
 pub fn init<A>(
     roles: HashMap<PlayerId, Role>,
     rules: Rules,
+    configuration: Option<Entry>,
     winner: oneshot::Sender<Team>,
     wrap: impl FnOnce(Environment) -> A + Send + 'static,
 ) -> ActorInit<A>
@@ -26,7 +28,7 @@ where
     A: Behavior<Message = Message, Log = Entry>,
 {
     let players: HashSet<PlayerId> = roles.keys().cloned().collect();
-    let game = Arc::new(Mutex::new(Game::new(roles, rules, winner)));
+    let game = Arc::new(Mutex::new(Game::new(roles, rules, configuration, winner)));
     let shared = Arc::clone(&game);
     ActorInit {
         behavior: Box::new(move |context| wrap(Environment { context, game })),
@@ -43,10 +45,12 @@ where
 }
 
 /// What the environment's two loops share: the game, the phase it is at,
-/// and where the winner goes.
+/// what is logged after the deal, and where the winner goes.
 struct Game {
     state: State,
     rules: Rules,
+    /// The entry logged right after the deal, if any. Taken when logged.
+    configuration: Option<Entry>,
     /// The number of the current phase. The first night is 1.
     seq: u64,
     /// The players awake in the current phase.
@@ -58,12 +62,19 @@ struct Game {
 }
 
 impl Game {
-    /// A game of `roles` under `rules`, before its first night. The
-    /// winning team is sent on `winner` when the game ends.
-    fn new(roles: HashMap<PlayerId, Role>, rules: Rules, winner: oneshot::Sender<Team>) -> Self {
+    /// A game of `roles` under `rules`, before its first night, with
+    /// `configuration` to log after the deal. The winning team is sent on
+    /// `winner` when the game ends.
+    fn new(
+        roles: HashMap<PlayerId, Role>,
+        rules: Rules,
+        configuration: Option<Entry>,
+        winner: oneshot::Sender<Team>,
+    ) -> Self {
         Self {
             state: State::new(roles),
             rules,
+            configuration,
             seq: 0,
             awake: HashSet::new(),
             selections: Choices::new(),
@@ -242,13 +253,21 @@ impl Behavior for Environment {
         Ok(())
     }
 
-    /// Log the deal and open the first night.
+    /// Log the deal, then the configuration if there is one, and open the
+    /// first night.
     async fn start(&mut self) -> anyhow::Result<()> {
-        let (variation, roles) = {
-            let game = self.game();
-            (game.rules.variation.clone(), game.state.roles.clone())
+        let (variation, roles, configuration) = {
+            let mut game = self.game();
+            (
+                game.rules.variation.clone(),
+                game.state.roles.clone(),
+                game.configuration.take(),
+            )
         };
         self.context.log(Entry::Start { variation, roles });
+        if let Some(configuration) = configuration {
+            self.context.log(configuration);
+        }
         self.open_phase()
     }
 }
@@ -279,7 +298,7 @@ mod tests {
     /// The village, with its first night open.
     fn opened() -> (Game, Opened) {
         let (winner, _) = oneshot::channel();
-        let mut game = Game::new(village().roles, Rules::default(), winner);
+        let mut game = Game::new(village().roles, Rules::default(), None, winner);
         let night = game.open().unwrap();
         (game, night)
     }
@@ -335,7 +354,7 @@ mod tests {
     fn a_phase_is_resolved_from_its_selections_under_its_vote() {
         let (winner, _) = oneshot::channel();
         let roles = one_wolf_against(&["ann", "bob", "cat"]);
-        let mut game = Game::new(roles, Rules::default(), winner);
+        let mut game = Game::new(roles, Rules::default(), None, winner);
         let seq = game.open().unwrap().seq;
         game.select(seq, &id("wolf"), &id("ann"));
         let night = game.end(seq).unwrap();
