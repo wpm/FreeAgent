@@ -1,7 +1,8 @@
-//! Play Werewolf: deal the roles, run one game, log it to standard error
-//! as JSON lines, and tell it on standard output as it happens.
+//! Play a social deduction game: name the game and its variant, deal the
+//! roles, run one game, log it to standard error as JSON lines, and tell it
+//! on standard output as it happens.
 
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use rand::seq::SliceRandom;
 use social_deduction::werewolf::report::Narrator;
 use social_deduction::werewolf::uniform_random::{Actor, game};
@@ -12,22 +13,77 @@ use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::oneshot;
 
-/// How many of each role sit at the table.
+/// The games. Each is a subcommand that names one of its variants.
 #[derive(Parser, Debug)]
 #[command(version, about)]
+enum Game {
+    /// Werewolf: werewolves against villagers, by night and by day.
+    #[command(subcommand)]
+    Werewolf(Werewolf),
+}
+
+/// The variants of Werewolf, each with its own arguments.
+#[derive(Subcommand, Debug)]
+enum Werewolf {
+    /// Every player chooses uniformly at random.
+    UniformRandom {
+        #[command(flatten)]
+        roles: RoleCounts,
+    },
+}
+
+/// How many of each role sit at the table, for a variant to flatten into its
+/// arguments. A count left unset has no `clap` default, so that a variant
+/// can tell it apart from a count that was given, and fill it in from
+/// [`Table::default`] or from somewhere else.
+#[derive(Args, Debug, Default)]
+struct RoleCounts {
+    /// How many werewolves [default: 2]
+    #[arg(long)]
+    werewolves: Option<usize>,
+    /// How many plain villagers [default: 3]
+    #[arg(long)]
+    villagers: Option<usize>,
+    /// How many doctors [default: 1]
+    #[arg(long)]
+    doctors: Option<usize>,
+    /// How many seers [default: 1]
+    #[arg(long)]
+    seers: Option<usize>,
+}
+
+impl RoleCounts {
+    /// The table these counts seat, with any count left unset taken from
+    /// `default`.
+    fn or(&self, default: Table) -> Table {
+        Table {
+            werewolves: self.werewolves.unwrap_or(default.werewolves),
+            villagers: self.villagers.unwrap_or(default.villagers),
+            doctors: self.doctors.unwrap_or(default.doctors),
+            seers: self.seers.unwrap_or(default.seers),
+        }
+    }
+}
+
+/// How many of each role sit at the table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Table {
-    /// How many werewolves.
-    #[arg(long, default_value_t = 2)]
     werewolves: usize,
-    /// How many plain villagers.
-    #[arg(long, default_value_t = 3)]
     villagers: usize,
-    /// How many doctors.
-    #[arg(long, default_value_t = 1)]
     doctors: usize,
-    /// How many seers.
-    #[arg(long, default_value_t = 1)]
     seers: usize,
+}
+
+impl Default for Table {
+    /// Two werewolves, three villagers, a doctor and a seer: seven players.
+    fn default() -> Self {
+        Table {
+            werewolves: 2,
+            villagers: 3,
+            doctors: 1,
+            seers: 1,
+        }
+    }
 }
 
 impl Table {
@@ -58,7 +114,8 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let table = Table::parse();
+    let Game::Werewolf(Werewolf::UniformRandom { roles }) = Game::parse();
+    let table = roles.or(Table::default());
     // The winner reaches the log too, which is where it is read from here.
     let (winner, _won) = oneshot::channel();
     let (logger, mut log) = unbounded_channel();
@@ -85,17 +142,49 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
     use std::collections::HashSet;
 
     #[test]
-    fn the_deal_seats_every_role_as_many_times_as_asked() {
-        let table = Table {
-            werewolves: 2,
-            villagers: 3,
-            doctors: 1,
-            seers: 1,
+    fn the_command_line_is_a_game_then_a_variant() {
+        Game::command().debug_assert();
+        let Game::Werewolf(Werewolf::UniformRandom { roles }) =
+            Game::parse_from(["social-deduction", "werewolf", "uniform-random"]);
+        assert_eq!(roles.werewolves, None);
+    }
+
+    #[test]
+    fn a_count_left_unset_is_told_apart_from_one_given() {
+        let Game::Werewolf(Werewolf::UniformRandom { roles }) = Game::parse_from([
+            "social-deduction",
+            "werewolf",
+            "uniform-random",
+            "--werewolves",
+            "1",
+        ]);
+        assert_eq!(roles.werewolves, Some(1));
+        assert_eq!(roles.villagers, None);
+    }
+
+    #[test]
+    fn unset_counts_are_filled_from_the_defaults() {
+        let roles = RoleCounts {
+            werewolves: Some(1),
+            ..RoleCounts::default()
         };
-        let roles = table.deal();
+        assert_eq!(
+            roles.or(Table::default()),
+            Table {
+                werewolves: 1,
+                ..Table::default()
+            }
+        );
+        assert_eq!(RoleCounts::default().or(Table::default()), Table::default());
+    }
+
+    #[test]
+    fn the_deal_seats_every_role_as_many_times_as_asked() {
+        let roles = Table::default().deal();
         let count = |role| roles.values().filter(|r| **r == role).count();
         assert_eq!(roles.len(), 7);
         assert_eq!(count(Role::Werewolf), 2);

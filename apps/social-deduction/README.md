@@ -31,3 +31,14 @@ votes is eliminated. Werewolves know who the other werewolves are, the seer
 knows what it has discovered, and everyone else knows only their own role and
 who is still alive. The villagers win when the last werewolf is dead. The
 werewolves win when they are at least as many as the villagers.
+
+The command line names the game, then its variant. In `uniform-random`,
+the only variant so far, every player chooses at random:
+
+```sh
+social-deduction werewolf uniform-random [--werewolves N] [--villagers N] [--doctors N] [--seers N]
+```
+
+The table seats two werewolves, three villagers, a doctor and a seer unless
+the counts say otherwise. The game is told on standard output as it happens
+and logged to standard error as JSON Lines.
