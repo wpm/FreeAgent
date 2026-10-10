@@ -2,13 +2,13 @@
 //! roles, run one game, log it to standard error as JSON lines, and tell it
 //! on standard output as it happens.
 
-use clap::{Args, Parser, Subcommand};
-use rand::seq::SliceRandom;
+use clap::{Parser, Subcommand};
+use social_deduction::werewolf::llm::{self, Config};
 use social_deduction::werewolf::report::Narrator;
 use social_deduction::werewolf::uniform_random::{Actor, game};
-use social_deduction::werewolf::{PlayerId, Role, Rules};
-use std::collections::HashMap;
+use social_deduction::werewolf::{RoleCounts, Rules, Table};
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::oneshot;
@@ -30,83 +30,14 @@ enum Werewolf {
         #[command(flatten)]
         roles: RoleCounts,
     },
-}
-
-/// How many of each role sit at the table, for a variant to flatten into its
-/// arguments. A count left unset has no `clap` default, so that a variant
-/// can tell it apart from a count that was given, and fill it in from
-/// [`Table::default`] or from somewhere else.
-#[derive(Args, Debug, Default)]
-struct RoleCounts {
-    /// How many werewolves [default: 2]
-    #[arg(long)]
-    werewolves: Option<usize>,
-    /// How many plain villagers [default: 3]
-    #[arg(long)]
-    villagers: Option<usize>,
-    /// How many doctors [default: 1]
-    #[arg(long)]
-    doctors: Option<usize>,
-    /// How many seers [default: 1]
-    #[arg(long)]
-    seers: Option<usize>,
-}
-
-impl RoleCounts {
-    /// The table these counts seat, with any count left unset taken from
-    /// `default`.
-    fn or(&self, default: Table) -> Table {
-        Table {
-            werewolves: self.werewolves.unwrap_or(default.werewolves),
-            villagers: self.villagers.unwrap_or(default.villagers),
-            doctors: self.doctors.unwrap_or(default.doctors),
-            seers: self.seers.unwrap_or(default.seers),
-        }
-    }
-}
-
-/// How many of each role sit at the table.
-#[derive(Debug, PartialEq, Eq)]
-struct Table {
-    werewolves: usize,
-    villagers: usize,
-    doctors: usize,
-    seers: usize,
-}
-
-impl Default for Table {
-    /// Two werewolves, three villagers, a doctor and a seer: seven players.
-    fn default() -> Self {
-        Table {
-            werewolves: 2,
-            villagers: 3,
-            doctors: 1,
-            seers: 1,
-        }
-    }
-}
-
-impl Table {
-    /// Deal the roles at random to players named `player1` onward. The
-    /// names say nothing about the roles, since every player sees every
-    /// name.
-    fn deal(&self) -> HashMap<PlayerId, Role> {
-        let mut roles = Vec::new();
-        for (role, count) in [
-            (Role::Werewolf, self.werewolves),
-            (Role::Villager, self.villagers),
-            (Role::Doctor, self.doctors),
-            (Role::Seer, self.seers),
-        ] {
-            roles.extend(std::iter::repeat_n(role, count));
-        }
-        roles.shuffle(&mut rand::rng());
-        roles
-            .into_iter()
-            .enumerate()
-            .map(|(seat, role)| (format!("player{}", seat + 1), role))
-            .collect()
-    }
+    /// Every player is a language model, set up by a configuration file.
+    Llm {
+        /// The TOML configuration file
+        #[arg(long)]
+        config: PathBuf,
+        #[command(flatten)]
+        overrides: llm::Overrides,
+    },
 }
 
 /// How long a game may take before it is abandoned.
@@ -114,8 +45,24 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let Game::Werewolf(Werewolf::UniformRandom { roles }) = Game::parse();
-    let table = roles.or(Table::default());
+    match Game::parse() {
+        Game::Werewolf(Werewolf::UniformRandom { roles }) => {
+            uniform_random(roles.or(Table::default())).await
+        }
+        Game::Werewolf(Werewolf::Llm { config, overrides }) => {
+            let settings = Config::load(&config)?.settle(overrides);
+            // The key is read now so that a variable that is not set fails
+            // before anything else. The game that would use it comes later.
+            let _api_key = settings.config.model.api_key()?;
+            print!("{settings}");
+            println!("The model-played game is not playable yet.");
+            Ok(())
+        }
+    }
+}
+
+/// Play one uniform-random game at `table`.
+async fn uniform_random(table: Table) -> anyhow::Result<()> {
     // The winner reaches the log too, which is where it is read from here.
     let (winner, _won) = oneshot::channel();
     let (logger, mut log) = unbounded_channel();
@@ -143,7 +90,6 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use clap::CommandFactory;
-    use std::collections::HashSet;
 
     #[test]
     fn the_command_line_is_a_game_then_a_variant_that_tells_unset_from_given() {
@@ -154,89 +100,62 @@ mod tests {
             "uniform-random",
             "--werewolves",
             "1",
-        ]);
+        ]) else {
+            panic!()
+        };
         assert_eq!(roles.werewolves, Some(1));
         assert_eq!(roles.villagers, None);
     }
 
     #[test]
+    fn the_llm_variant_takes_the_file_the_role_counts_and_the_limits() {
+        let Game::Werewolf(Werewolf::Llm { config, overrides }) = Game::parse_from([
+            "social-deduction",
+            "werewolf",
+            "llm",
+            "--config",
+            "game.toml",
+            "--seers",
+            "2",
+            "--night-limit",
+            "30s",
+        ]) else {
+            panic!()
+        };
+        assert_eq!(config, PathBuf::from("game.toml"));
+        assert_eq!(overrides.roles.seers, Some(2));
+        assert_eq!(overrides.night_limit, Some(Duration::from_secs(30)));
+        assert_eq!(overrides.day_limit, None);
+    }
+
+    #[test]
     fn the_help_names_the_defaults_the_code_fills_in() {
-        let help = Game::command()
-            .find_subcommand_mut("werewolf")
-            .unwrap()
-            .find_subcommand_mut("uniform-random")
-            .unwrap()
-            .render_help()
-            .to_string();
         let table = Table::default();
-        for (count, default) in [
-            ("--werewolves", table.werewolves),
-            ("--villagers", table.villagers),
-            ("--doctors", table.doctors),
-            ("--seers", table.seers),
-        ] {
-            let line = help.lines().find(|line| line.contains(count)).unwrap();
-            assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
-        }
-    }
-
-    #[test]
-    fn unset_counts_are_filled_from_the_defaults() {
-        let roles = RoleCounts {
-            werewolves: Some(1),
-            ..RoleCounts::default()
-        };
-        assert_eq!(
-            roles.or(Table::default()),
-            Table {
-                werewolves: 1,
-                ..Table::default()
+        let counts = vec![
+            ("--werewolves", table.werewolves.to_string()),
+            ("--villagers", table.villagers.to_string()),
+            ("--doctors", table.doctors.to_string()),
+            ("--seers", table.seers.to_string()),
+        ];
+        let rules = Rules::default();
+        let limits = [
+            ("--night-limit", rules.night_limit),
+            ("--day-limit", rules.day_limit),
+        ]
+        .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()));
+        let llm = [counts.clone(), limits.to_vec()].concat();
+        for (variant, defaults) in [("uniform-random", counts), ("llm", llm)] {
+            let help = Game::command()
+                .find_subcommand_mut("werewolf")
+                .unwrap()
+                .find_subcommand_mut(variant)
+                .unwrap()
+                .render_help()
+                .to_string();
+            for (option, default) in defaults {
+                let line = help.lines().find(|line| line.contains(option)).unwrap();
+                assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
             }
-        );
-        assert_eq!(RoleCounts::default().or(Table::default()), Table::default());
-    }
-
-    #[test]
-    fn the_deal_seats_every_role_as_many_times_as_asked() {
-        let roles = Table::default().deal();
-        let count = |role| roles.values().filter(|r| **r == role).count();
-        assert_eq!(roles.len(), 7);
-        assert_eq!(count(Role::Werewolf), 2);
-        assert_eq!(count(Role::Villager), 3);
-        assert_eq!(count(Role::Doctor), 1);
-        assert_eq!(count(Role::Seer), 1);
-    }
-
-    #[test]
-    fn the_deal_names_players_without_giving_away_their_roles() {
-        let table = Table {
-            werewolves: 1,
-            villagers: 2,
-            doctors: 0,
-            seers: 0,
-        };
-        let mut names: Vec<_> = table.deal().into_keys().collect();
-        names.sort();
-        assert_eq!(names, ["player1", "player2", "player3"]);
-    }
-
-    #[test]
-    fn the_deal_is_shuffled() {
-        let table = Table {
-            werewolves: 1,
-            villagers: 1,
-            doctors: 0,
-            seers: 0,
-        };
-        let wolves: HashSet<PlayerId> = (0..50)
-            .flat_map(|_| {
-                table
-                    .deal()
-                    .into_iter()
-                    .filter(|(_, role)| *role == Role::Werewolf)
-                    .map(|(name, _)| name)
-            })
-            .collect();
-        assert_eq!(wolves.len(), 2, "{wolves:?}");
+        }
     }
 }

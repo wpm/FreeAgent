@@ -20,11 +20,13 @@
 //! its players, the actor enum its episode holds, and the function that
 //! builds its episode.
 
+pub mod llm;
 pub mod report;
 pub mod uniform_random;
 
+use clap::Args;
 use free_agent::ActorId;
-use rand::seq::IndexedRandom;
+use rand::seq::{IndexedRandom, SliceRandom};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -86,6 +88,105 @@ impl Role {
             Role::Werewolf => Team::Werewolves,
             Role::Villager | Role::Doctor | Role::Seer => Team::Villagers,
         }
+    }
+}
+
+/// How many of each role sit at the table, for a variant to flatten into its
+/// command line arguments. A count left unset has no `clap` default, so
+/// that a variant can tell it apart from a count that was given, and fill
+/// it in from [`Table::default`] or from somewhere else.
+#[derive(Args, Debug, Default)]
+pub struct RoleCounts {
+    /// How many werewolves [default: 2]
+    #[arg(long)]
+    pub werewolves: Option<usize>,
+    /// How many plain villagers [default: 3]
+    #[arg(long)]
+    pub villagers: Option<usize>,
+    /// How many doctors [default: 1]
+    #[arg(long)]
+    pub doctors: Option<usize>,
+    /// How many seers [default: 1]
+    #[arg(long)]
+    pub seers: Option<usize>,
+}
+
+impl RoleCounts {
+    /// The table these counts seat, with any count left unset taken from
+    /// `default`.
+    pub fn or(&self, default: Table) -> Table {
+        Table {
+            werewolves: self.werewolves.unwrap_or(default.werewolves),
+            villagers: self.villagers.unwrap_or(default.villagers),
+            doctors: self.doctors.unwrap_or(default.doctors),
+            seers: self.seers.unwrap_or(default.seers),
+        }
+    }
+}
+
+/// How many of each role sit at the table.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Table {
+    /// How many werewolves.
+    pub werewolves: usize,
+    /// How many plain villagers.
+    pub villagers: usize,
+    /// How many doctors.
+    pub doctors: usize,
+    /// How many seers.
+    pub seers: usize,
+}
+
+impl Default for Table {
+    /// Two werewolves, three villagers, a doctor and a seer: seven players.
+    fn default() -> Self {
+        Table {
+            werewolves: 2,
+            villagers: 3,
+            doctors: 1,
+            seers: 1,
+        }
+    }
+}
+
+impl Table {
+    /// Each role and how many of it, in the order the roles are dealt.
+    fn counts(&self) -> [(Role, usize); 4] {
+        [
+            (Role::Werewolf, self.werewolves),
+            (Role::Villager, self.villagers),
+            (Role::Doctor, self.doctors),
+            (Role::Seer, self.seers),
+        ]
+    }
+
+    /// Deal the roles at random to players named `player1` onward. The
+    /// names say nothing about the roles, since every player sees every
+    /// name.
+    pub fn deal(&self) -> HashMap<PlayerId, Role> {
+        let mut roles = Vec::new();
+        for (role, count) in self.counts() {
+            roles.extend(std::iter::repeat_n(role, count));
+        }
+        roles.shuffle(&mut rand::rng());
+        roles
+            .into_iter()
+            .enumerate()
+            .map(|(seat, role)| (format!("player{}", seat + 1), role))
+            .collect()
+    }
+}
+
+impl fmt::Display for Table {
+    /// The counts in the order the roles are dealt, each in its number:
+    /// `2 werewolves, 3 villagers, 1 doctor, 1 seer`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let counted = self.counts().map(|(role, count)| match (count, role) {
+            (1, _) => format!("1 {role}"),
+            (_, Role::Werewolf) => format!("{count} werewolves"),
+            _ => format!("{count} {role}s"),
+        });
+        f.write_str(&counted.join(", "))
     }
 }
 
@@ -414,6 +515,84 @@ pub struct Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unset_counts_are_filled_from_the_defaults() {
+        let roles = RoleCounts {
+            werewolves: Some(1),
+            ..RoleCounts::default()
+        };
+        assert_eq!(
+            roles.or(Table::default()),
+            Table {
+                werewolves: 1,
+                ..Table::default()
+            }
+        );
+        assert_eq!(RoleCounts::default().or(Table::default()), Table::default());
+    }
+
+    #[test]
+    fn the_deal_seats_every_role_as_many_times_as_asked() {
+        let roles = Table::default().deal();
+        let count = |role| roles.values().filter(|r| **r == role).count();
+        assert_eq!(roles.len(), 7);
+        assert_eq!(count(Role::Werewolf), 2);
+        assert_eq!(count(Role::Villager), 3);
+        assert_eq!(count(Role::Doctor), 1);
+        assert_eq!(count(Role::Seer), 1);
+    }
+
+    #[test]
+    fn the_deal_names_players_without_giving_away_their_roles() {
+        let table = Table {
+            werewolves: 1,
+            villagers: 2,
+            doctors: 0,
+            seers: 0,
+        };
+        let mut names: Vec<_> = table.deal().into_keys().collect();
+        names.sort();
+        assert_eq!(names, ["player1", "player2", "player3"]);
+    }
+
+    #[test]
+    fn the_deal_is_shuffled() {
+        let table = Table {
+            werewolves: 1,
+            villagers: 1,
+            doctors: 0,
+            seers: 0,
+        };
+        let wolves: HashSet<PlayerId> = (0..50)
+            .flat_map(|_| {
+                table
+                    .deal()
+                    .into_iter()
+                    .filter(|(_, role)| *role == Role::Werewolf)
+                    .map(|(name, _)| name)
+            })
+            .collect();
+        assert_eq!(wolves.len(), 2, "{wolves:?}");
+    }
+
+    #[test]
+    fn a_table_is_told_role_by_role_in_the_singular_or_the_plural() {
+        assert_eq!(
+            Table::default().to_string(),
+            "2 werewolves, 3 villagers, 1 doctor, 1 seer"
+        );
+        let table = Table {
+            werewolves: 1,
+            villagers: 0,
+            doctors: 2,
+            seers: 2,
+        };
+        assert_eq!(
+            table.to_string(),
+            "1 werewolf, 0 villagers, 2 doctors, 2 seers"
+        );
+    }
 
     #[test]
     fn an_entry_survives_a_trip_through_json() {

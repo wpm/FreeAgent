@@ -1,0 +1,45 @@
+# The minimal game, plus a system prompt of the seer's own, and a persona
+# for two of the seats. A persona belongs to a seat, player1 onward, and
+# the roles are still dealt at random. Run it with
+#
+#     social-deduction werewolf llm --config personas.toml
+
+[model]
+base_url = "http://localhost:1234/v1"
+id = "qwen2.5-7b-instruct"
+
+[text]
+rules = """
+Werewolf is a game of hidden roles. A few of the players are secretly
+werewolves; the rest are villagers, among them a doctor and a seer. Play
+alternates between night and day. By night the werewolves choose a villager
+to kill, the doctor chooses one player to save from that kill, and the seer
+learns one player's side. By day everyone votes and the player with the most
+votes is eliminated. The villagers win when the last werewolf is dead. The
+werewolves win when they are at least as many as the villagers.
+"""
+
+[prompt]
+system = """
+{{ rules }}
+
+You are {{ name }}, a {{ role }}.
+{% if role == "werewolf" %}
+You know who the other werewolves are. Kill a villager each night and avoid
+being voted out by day.
+{% endif %}
+{% if persona %}{{ persona }}{% endif %}
+"""
+
+[roles.seer]
+system = """
+{{ rules }}
+
+You are {{ name }}, the seer. Each night you learn one player's side. Use
+what you learn to steer the village's vote without giving yourself away.
+{% if persona %}{{ persona }}{% endif %}
+"""
+
+[personas]
+player1 = "You are cautious and slow to accuse."
+player4 = "You trust your instincts and say so."
