@@ -45,8 +45,9 @@ and logged to standard error as JSON Lines.
 
 In `scripted` the environment announces each phase and waits for the
 players' selections, as it does for language models, and every player is a
-script that selects at once, at random among the living whose roles it does
-not know. It plays the model-played game with no model, provider, API key or
+script that selects at once, at random among those it may choose: by night
+the living whose roles it does not know, by day everyone else living. It
+plays the model-played game with no model, provider, API key or
 configuration file, so a game finishes in moments.
 
 ```sh

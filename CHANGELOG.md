@@ -39,5 +39,8 @@ workflow takes a version's notes from here.
   and then its variant, each a subcommand with its own `--help`. The role
   counts `--werewolves`, `--villagers`, `--doctors` and `--seers` belong to
   the variant; the 0.1.0 top-level flags are gone.
+- By day a player may vote against anyone living but itself, whatever it
+  knows them to be, so a seer can vote out a werewolf it has found. By
+  night it still chooses among those whose roles it does not know.
 
 [Unreleased]: https://github.com/wpm/FreeAgent/compare/main...HEAD

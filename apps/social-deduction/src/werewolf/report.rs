@@ -170,19 +170,22 @@ impl Narrator {
 
     /// How the phase being told ended, given who is alive after it. A
     /// player that `slept` through phases since is told who died without
-    /// being told how.
+    /// being told how. Several dead take a plural verb.
     fn outcome(&mut self, alive_after: &HashSet<PlayerId>, slept: bool) -> Vec<String> {
         let Some((_, phase)) = &self.phase else {
             return vec![];
         };
-        let dead = names(self.alive.difference(alive_after));
-        let line = match (phase, slept, dead.is_empty()) {
-            (_, true, true) => "Nobody died.".to_string(),
-            (_, true, false) => format!("{dead} died."),
-            (Phase::Night, false, true) => "Nobody dies.".to_string(),
-            (Phase::Night, false, false) => format!("{dead} dies."),
-            (Phase::Day, false, true) => "Nobody is voted out.".to_string(),
-            (Phase::Day, false, false) => format!("{dead} is voted out."),
+        let dead: Vec<&PlayerId> = self.alive.difference(alive_after).collect();
+        let listed = names(dead.iter().copied());
+        let line = match (phase, slept, dead.as_slice()) {
+            (_, true, []) => "Nobody died.".to_string(),
+            (_, true, _) => format!("{listed} died."),
+            (Phase::Night, false, []) => "Nobody dies.".to_string(),
+            (Phase::Night, false, [_]) => format!("{listed} dies."),
+            (Phase::Night, false, _) => format!("{listed} die."),
+            (Phase::Day, false, []) => "Nobody is voted out.".to_string(),
+            (Phase::Day, false, [_]) => format!("{listed} is voted out."),
+            (Phase::Day, false, _) => format!("{listed} are voted out."),
         };
         self.alive = alive_after.clone();
         vec![line]
@@ -584,8 +587,27 @@ mod tests {
         assert_eq!(
             narrator.narrate(&ended(Team::Werewolves, 0, &["wolf", "ann"])),
             [
-                "doctor and seer dies.",
+                "doctor and seer die.",
                 "The werewolves win after 0 days. Survivors: ann (villager), wolf (werewolf)."
+            ]
+        );
+    }
+
+    #[test]
+    fn several_voted_out_take_a_plural_verb() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        narrator.narrate(&shown(
+            "wolf",
+            1,
+            Phase::Day,
+            &["wolf", "seer", "doctor", "ann"],
+        ));
+        assert_eq!(
+            narrator.narrate(&ended(Team::Werewolves, 1, &["wolf", "ann"])),
+            [
+                "doctor and seer are voted out.",
+                "The werewolves win after 1 day. Survivors: ann (villager), wolf (werewolf)."
             ]
         );
     }

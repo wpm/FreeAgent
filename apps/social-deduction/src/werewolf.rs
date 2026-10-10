@@ -637,16 +637,22 @@ pub struct Observation {
     alive: HashSet<PlayerId>,
 }
 
-/// The players `me` may choose from what it sees in `observation`: the
-/// living, other than `me`, whose roles `me` does not know. That keeps a
-/// werewolf from choosing a werewolf, the seer from asking about anyone
-/// twice, and a doctor from protecting itself. Sorted by name, so that a
-/// random choice among them depends on the random number alone.
+/// The players `me` may choose from what it sees in `observation`. By
+/// night, the living other than `me` whose roles `me` does not know: a
+/// werewolf does not kill a werewolf, the seer does not ask about anyone
+/// twice, and the doctor does not protect itself. By day, everyone living
+/// other than `me`, since the vote is about who the werewolves are, and a
+/// player who knows is the one with the most reason to vote. Sorted by
+/// name, so that a random choice among them depends on the random number
+/// alone.
 pub fn candidates(me: &PlayerId, observation: &Observation) -> Vec<PlayerId> {
+    let eligible = |player: &PlayerId| {
+        observation.phase == Phase::Day || !observation.roles.contains_key(player)
+    };
     let mut candidates: Vec<PlayerId> = observation
         .alive
         .iter()
-        .filter(|player| *player != me && !observation.roles.contains_key(*player))
+        .filter(|player| *player != me && eligible(player))
         .cloned()
         .collect();
     candidates.sort();
@@ -890,6 +896,14 @@ mod tests {
         }
     }
 
+    /// What a player sees of a village on the first day: [`seen`], by day.
+    pub(super) fn seen_by_day(alive: &[&str], known: &[(&str, Role)]) -> Observation {
+        Observation {
+            phase: Phase::Day,
+            ..seen(alive, known)
+        }
+    }
+
     fn seen_by(observer: &str) -> Vec<String> {
         let observation = village().observation(observer.to_string()).unwrap();
         let mut seen: Vec<_> = observation.roles.keys().cloned().collect();
@@ -1130,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn the_candidates_are_the_living_whose_role_is_unknown_in_name_order() {
+    fn by_night_the_candidates_are_the_living_whose_role_is_unknown_in_name_order() {
         let observation = seen(
             &["wolf1", "wolf2", "bob", "ann"],
             &[("wolf1", Role::Werewolf), ("wolf2", Role::Werewolf)],
@@ -1151,12 +1165,24 @@ mod tests {
     }
 
     #[test]
-    fn a_player_who_knows_everyone_alive_has_no_candidates() {
+    fn a_player_who_knows_everyone_alive_has_no_candidates_by_night() {
         let observation = seen(
             &["seer", "wolf"],
             &[("seer", Role::Seer), ("wolf", Role::Werewolf)],
         );
         assert!(candidates(&"seer".to_string(), &observation).is_empty());
+    }
+
+    #[test]
+    fn by_day_the_candidates_are_everyone_living_but_oneself_whatever_their_roles() {
+        let observation = seen_by_day(
+            &["seer", "wolf", "ann"],
+            &[("seer", Role::Seer), ("wolf", Role::Werewolf)],
+        );
+        assert_eq!(
+            candidates(&"seer".to_string(), &observation),
+            ["ann".to_string(), "wolf".to_string()]
+        );
     }
 
     #[test]

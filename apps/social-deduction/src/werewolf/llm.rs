@@ -565,6 +565,36 @@ struct Mind {
     model: Arc<dyn model::Model>,
 }
 
+impl Mind {
+    /// Add `entry` to the history. An announcement goes at the end. A
+    /// selection goes right after the announcement it answers, which is
+    /// where it belongs in the story: one made after a later phase was
+    /// announced, which the environment has dropped, was still made in its
+    /// own phase, and is not told as a deed of the phase that followed.
+    fn remember(&self, entry: Entry) {
+        let mut history = self.history.lock().unwrap();
+        let at = match &entry {
+            Entry::Received {
+                message: Message::Select { seq, .. },
+                ..
+            } => history
+                .iter()
+                .rposition(|remembered| {
+                    matches!(
+                        remembered,
+                        Entry::Sent {
+                            message: Message::Announce { seq: announced, .. },
+                            ..
+                        } if announced == seq
+                    )
+                })
+                .map_or(history.len(), |announced| announced + 1),
+            _ => history.len(),
+        };
+        history.insert(at, entry);
+    }
+}
+
 /// A player whose selections are made by a language model. Its perceive
 /// loop and its think loop are each a `Player` with a context of its own
 /// over one shared mind: the perceive loop remembers each announcement and
@@ -603,9 +633,9 @@ impl Player {
         (behavior, Some(think))
     }
 
-    /// Add `entry` to the history.
+    /// Add `entry` to the history, where it belongs in the story.
     fn remember(&self, entry: Entry) {
-        self.mind.history.lock().unwrap().push(entry);
+        self.mind.remember(entry);
     }
 
     /// The request for a selection from `candidates` in the phase
@@ -767,7 +797,8 @@ mod tests {
     use super::*;
     use crate::model::fake::{FakeModel, choosing_first};
     use crate::werewolf::tests::{
-        Played, between_the_deal_and_the_end, one_wolf_against, received, run, seen, selection,
+        Played, between_the_deal_and_the_end, one_wolf_against, received, run, seen, seen_by_day,
+        selection,
     };
     use clap::Parser;
     use secrecy::ExposeSecret;
@@ -1573,6 +1604,55 @@ player2 = \"Cautious.\"
         for pair in asked.windows(2) {
             assert!(pair[1].starts_with(story(&pair[0])), "{pair:?}");
         }
+    }
+
+    #[test]
+    fn a_late_selection_is_remembered_in_its_own_phase_and_told_there() {
+        let mind = Mind {
+            history: Mutex::new(Vec::new()),
+            prompt: told("wolf"),
+            model_id: MODEL_ID.to_string(),
+            model: Arc::new(FakeModel::failing("down")),
+        };
+        let everyone = ["wolf", "ann", "bob"];
+        let pack = [("wolf", Role::Werewolf)];
+        let announced = |seq, observation| Entry::Sent {
+            to: "wolf".to_string(),
+            message: Message::Announce { seq, observation },
+        };
+        let selected = |seq| Entry::Received {
+            from: "wolf".to_string(),
+            message: Message::Select {
+                seq,
+                from: "wolf".to_string(),
+                target: "ann".to_string(),
+            },
+        };
+        let night = announced(1, seen(&everyone, &pack));
+        let day = announced(2, seen_by_day(&everyone, &pack));
+        // The day is announced while the model is still deciding the night.
+        mind.remember(night.clone());
+        mind.remember(day.clone());
+        mind.remember(selected(1));
+        mind.remember(selected(2));
+        let history = mind.history.lock().unwrap();
+        assert_eq!(*history, [night, selected(1), day, selected(2)]);
+        let mut narrator = Narrator::for_player("wolf".to_string());
+        let story: Vec<String> = history
+            .iter()
+            .flat_map(|entry| narrator.narrate(entry))
+            .collect();
+        assert_eq!(
+            story,
+            [
+                "You are wolf, the only werewolf.",
+                "Night 1.",
+                "You vote to kill ann.",
+                "Nobody dies.",
+                "Day 1.",
+                "You vote against ann."
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]
