@@ -8,9 +8,9 @@
 //! its own, which takes the messages handed to it by [`Context::think`] and
 //! the timers set by [`Context::think_after`] one at a time, so that slow
 //! work such as a model call never holds up perceiving. It acts through
-//! every message either loop sends. Each loop
-//! reaches the rest of the episode through a [`Context`] of its own, which
-//! an [`Episode`](crate::Episode) builds from the actor's [`ActorInit`].
+//! every message either loop sends. Each loop reaches the rest of the
+//! episode through a [`Context`] of its own, which an
+//! [`Episode`](crate::Episode) builds from the actor's [`ActorInit`].
 //!
 //! [actor model]: https://en.wikipedia.org/wiki/Actor_model
 
@@ -64,8 +64,8 @@ pub(crate) struct Actor<B: Behavior> {
     /// What this Actor does at each point in its life. It owns the
     /// [`Context`] through which it reaches other actors.
     pub(crate) behavior: B,
-    /// What this Actor thinks about, and the queue it takes it from. Taken
-    /// when the loop is spawned.
+    /// What this Actor thinks about, with the queue and the timers it takes
+    /// it from. Taken when the loop is spawned.
     pub(crate) think: Option<ThinkLoop<B::Message>>,
     /// This Actor's one-time signal to the episode that it is initialized
     /// and running its message loop. Taken when it is sent.
@@ -96,8 +96,8 @@ impl<B: Behavior> Actor<B> {
     ///
     /// Shutdown cuts any phase short. A step or a thought in progress is
     /// dropped at its next await, mail still in the mailbox and messages
-    /// still on the think queue stay there, and cleanup runs only after a
-    /// finished initialization.
+    /// still on the think queue stay there, pending timers are dropped, and
+    /// cleanup runs only after a finished initialization.
     pub(crate) async fn run(mut self) -> anyhow::Result<()> {
         let shutdown = self.behavior.context().shutdown.mine.clone();
         let Some(initialized) = run_unless_stopped(&shutdown, self.behavior.initialize()).await
@@ -237,21 +237,21 @@ impl<M: Message> ThinkLoop<M> {
     /// progress at its next await, and leaves the rest of the queue and
     /// every pending timer unhandled.
     async fn run(mut self, shutdown: CancellationToken) {
-        let mut timers = DelayQueue::new();
+        let mut pending = DelayQueue::new();
         loop {
             // Wait for whichever happens first, trying the arms in order.
-            // A new timer goes into the delay queue, and the wait goes on.
-            // The delay queue is polled only while it holds something,
-            // because empty it reports that it is finished rather than
+            // A new timer joins the pending ones, and the wait goes on. The
+            // pending timers are polled only while there are some, because
+            // an empty `DelayQueue` reports that it is finished rather than
             // pending.
             let message = tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => break,
                 Some((deadline, message)) = self.timers.recv() => {
-                    timers.insert_at(message, deadline);
+                    pending.insert_at(message, deadline);
                     continue;
                 }
-                Some(due) = poll_fn(|cx| timers.poll_expired(cx)), if !timers.is_empty() => {
+                Some(due) = poll_fn(|cx| pending.poll_expired(cx)), if !pending.is_empty() => {
                     due.into_inner()
                 }
                 Some(message) = self.queue.recv() => message,
@@ -684,10 +684,9 @@ mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
-    use std::time::Duration;
     use tokio::sync::Semaphore;
     use tokio::sync::mpsc::unbounded_channel;
-    use tokio::time::{Instant, sleep, timeout};
+    use tokio::time::{sleep, timeout};
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     struct Note(String);
