@@ -107,8 +107,8 @@ impl fmt::Display for Team {
     }
 }
 
-/// What a player is.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
+/// What a player is. The roles are ordered as they are dealt.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Role {
     /// Kills by night, and knows the other werewolves.
     Werewolf,
@@ -526,43 +526,6 @@ pub enum Message {
 }
 impl free_agent::Message for Message {}
 
-/// The configuration a model-played game ran under, as it took effect once
-/// the command line, the file and the defaults were combined, so that the
-/// log says by itself what was played and under which prompts. Each
-/// duration is written as `humantime` writes it, such as `"60s"`. The API
-/// key is never recorded.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Configuration {
-    /// How many of each role were dealt.
-    pub role_counts: HashMap<Role, usize>,
-    /// How long the night waited for a player.
-    #[serde(with = "humantime_serde")]
-    pub night_limit: Duration,
-    /// How long the day waited for a player.
-    #[serde(with = "humantime_serde")]
-    pub day_limit: Duration,
-    /// How long each model request could take.
-    #[serde(with = "humantime_serde")]
-    pub request_timeout: Duration,
-    /// The root of the provider's OpenAI-compatible API.
-    pub base_url: String,
-    /// The model's id, as the provider lists it.
-    pub model: String,
-    /// The name of the environment variable the key came from, if any.
-    pub api_key_env: Option<String>,
-    /// Each seat's persona, for the seats that have one.
-    pub personas: HashMap<PlayerId, String>,
-    /// Each player's rendered system prompt, for the role it was dealt.
-    pub prompts: HashMap<PlayerId, String>,
-    /// The default system prompt template as written, if any.
-    pub default_template: Option<String>,
-    /// Each role's own system prompt template as written, for the roles
-    /// that have one.
-    pub role_templates: HashMap<Role, String>,
-    /// The `[text]` blocks as written.
-    pub text: HashMap<String, String>,
-}
-
 /// What the environment writes to the log: the deal, the configuration of
 /// a model-played game, every message to or from a player as it was, and
 /// the result. Only the result summarizes anything; the rest is kept whole
@@ -578,7 +541,7 @@ pub enum Entry {
     },
     /// The configuration a model-played game ran under, logged right after
     /// the deal.
-    Configuration(Box<Configuration>),
+    Configuration(Box<llm::Configuration>),
     /// The environment sent `message` to `to`.
     Sent {
         /// Who was sent to.
