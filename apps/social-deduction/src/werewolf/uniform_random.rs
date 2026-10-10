@@ -283,7 +283,7 @@ pub struct Player {
 
 impl Player {
     /// A player holding `context`, built once the episode has made it.
-    pub(crate) fn new(context: Context<Message, Entry>) -> Self {
+    fn new(context: Context<Message, Entry>) -> Self {
         Player { context }
     }
 }
@@ -330,8 +330,7 @@ fn choose(me: &PlayerId, observation: &Observation) -> Option<PlayerId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::werewolf::Phase;
-    use crate::werewolf::tests::village;
+    use crate::werewolf::{Phase, tests::village};
     use std::num::NonZero;
     use tokio::sync::mpsc::unbounded_channel;
 
