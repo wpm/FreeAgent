@@ -71,8 +71,8 @@ the file. The file names the
 environment variable that holds the provider's API key, never the key
 itself, and may leave it unnamed for a provider whose variable is known,
 such as OpenAI's `OPENAI_API_KEY` and Anthropic's `ANTHROPIC_API_KEY`,
-listed in `src/model_urls.txt` and compiled in. A model player makes its choices with tool calls, so the model must
-be one known to make them, listed in `src/tool_models.txt` and compiled in,
+listed in `src/models.toml` and compiled in. A model player makes its choices with tool calls, so the model must
+be one known to make them, listed in `src/models.toml` and compiled in,
 and its provider must serve it. For now `llm` checks its configuration and
 its model, prints the settings that took effect, and says the game is not
 playable yet.

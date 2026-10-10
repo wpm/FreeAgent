@@ -301,7 +301,7 @@ fn the_llm_variant_refuses_a_model_not_known_to_make_tool_calls_before_asking_an
     let config = configured("unknown", "minimal.toml", EXAMPLE_BASE_URL, "gpt-0");
     let stderr = refused(&["werewolf", "llm", &config]);
     assert!(stderr.contains("gpt-0"), "{stderr}");
-    assert!(stderr.contains("src/tool_models.txt"), "{stderr}");
+    assert!(stderr.contains("src/models.toml"), "{stderr}");
 }
 
 #[test]

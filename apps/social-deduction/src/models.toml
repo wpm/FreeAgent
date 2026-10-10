@@ -1,0 +1,63 @@
+# What the model client knows, compiled in. Adding to it is an edit here and
+# a rebuild.
+
+# Models known to make tool calls, by id exactly as the provider's /v1/models
+# lists it, whatever the provider.
+tool_models = [
+  # Local
+  "qwen2.5-7b-instruct",
+
+  # Anthropic, through its OpenAI-compatible endpoint
+  "claude-fable-5-1",
+  "claude-fable-5",
+  "claude-opus-5-5",
+  "claude-opus-5",
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+  "claude-opus-4-5-20251101",
+  "claude-sonnet-5-5",
+  "claude-sonnet-5",
+  "claude-sonnet-4-6",
+  "claude-sonnet-4-5-20250929",
+  "claude-haiku-5-5",
+  "claude-haiku-4-5-20251001",
+
+  # OpenAI. The "pro" models answer only the Responses API, not chat
+  # completions, so they are left out.
+  "gpt-6.1-sol",
+  "gpt-6-astra",
+  "gpt-6-luna",
+  "gpt-6-sol",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.2",
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "gpt-4.1",
+  "gpt-4.1-mini",
+  "gpt-4o",
+  "gpt-4o-mini",
+  "o3",
+]
+
+# Providers known, in the order the help lists them. Each has the root of its
+# OpenAI-compatible API, ending in /v1, as a base URL is given on the command
+# line; the environment variable that conventionally holds its API key, if it
+# wants one; and the headers every request to it must carry, if any. A base
+# URL at or under the root is read with the variable, unless another is
+# named, and sent the headers.
+
+[[providers]]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[[providers]]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+headers = { anthropic-version = "2023-06-01" }

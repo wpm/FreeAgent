@@ -18,24 +18,54 @@ use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 /// How long a request may take unless the configuration says otherwise.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The whitelist, compiled in: one model id per line, exactly as the
-/// provider lists it, with blank lines and lines starting with `#` ignored.
-/// Adding a model is an edit to the file and a rebuild.
-const TOOL_MODELS: &str = include_str!("tool_models.txt");
+/// What the client knows, compiled in from `src/models.toml`. Adding to
+/// it is an edit there and a rebuild.
+const MODELS: &str = include_str!("models.toml");
 
-/// The ids of the models known to make tool calls, as `src/tool_models.txt`
+/// What `src/models.toml` says, parsed once. The file is part of the
+/// source, so one that does not parse is a build broken at its first use.
+static KNOWLEDGE: LazyLock<Knowledge> =
+    LazyLock::new(|| toml::from_str(MODELS).unwrap_or_else(|e| panic!("src/models.toml: {e}")));
+
+/// The shape of `src/models.toml`. An unknown key is an error, so a
+/// misspelled one fails loudly.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Knowledge {
+    /// The ids of the models known to make tool calls, exactly as their
+    /// providers list them.
+    tool_models: Vec<String>,
+    /// The providers known, in the order the help lists them.
+    #[serde(default)]
+    providers: Vec<Known>,
+}
+
+/// A provider `src/models.toml` knows.
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct Known {
+    /// The root of its OpenAI-compatible API, ending in `/v1`.
+    base_url: String,
+    /// The environment variable conventionally holding its API key, for a
+    /// provider that wants one.
+    api_key_env: Option<String>,
+    /// The headers every request to it must carry.
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+}
+
+/// The ids of the models known to make tool calls, as `src/models.toml`
 /// lists them.
 fn tool_models() -> impl Iterator<Item = &'static str> {
-    TOOL_MODELS
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+    KNOWLEDGE.tool_models.iter().map(String::as_str)
 }
 
 /// Whether the model `id` is known to make tool calls: whether it is on
@@ -50,76 +80,39 @@ pub fn check_makes_tool_calls(id: &str) -> anyhow::Result<()> {
     if makes_tool_calls(id) {
         Ok(())
     } else {
-        bail!("{id} is not known to make tool calls: it is not listed in src/tool_models.txt")
+        bail!("{id} is not known to make tool calls: it is not listed in src/models.toml")
     }
 }
 
-/// The providers the client knows, compiled in: on each line the root of
-/// a provider's API, ending in /v1, the environment variable conventionally holding its
-/// key, and the headers its requests must carry, with blank lines and
-/// lines starting with `#` ignored. Adding a provider is an edit to the
-/// file and a rebuild.
-const MODEL_URLS: &str = include_str!("model_urls.txt");
-
-/// A provider `src/model_urls.txt` knows.
-#[derive(Debug, PartialEq)]
-struct Known {
-    /// The root of its API.
-    root: &'static str,
-    /// The environment variable conventionally holding its API key, for a
-    /// provider that wants one.
-    key_variable: Option<&'static str>,
-    /// The headers every request to it must carry.
-    headers: Vec<(&'static str, &'static str)>,
-}
-
-/// Every provider `src/model_urls.txt` knows, in the file's order.
-fn knowns() -> impl Iterator<Item = Known> {
-    MODEL_URLS
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(|line| {
-            let mut columns = line.split_whitespace();
-            let root = columns.next().unwrap_or_default().trim_end_matches('/');
-            let key_variable = columns.next().filter(|variable| *variable != "-");
-            let headers = columns
-                .filter_map(|header| header.split_once(':'))
-                .collect();
-            Known {
-                root,
-                key_variable,
-                headers,
-            }
-        })
-}
-
-/// The provider `src/model_urls.txt` knows at `base_url`: the one whose
-/// root the base URL is at or under, if any.
-fn known(base_url: &str) -> Option<Known> {
+/// The provider `src/models.toml` knows at `base_url`: the one whose root
+/// the base URL is at or under, if any.
+fn known(base_url: &str) -> Option<&'static Known> {
     let base_url = base_url.trim_end_matches('/');
-    knowns().find(|known| {
-        base_url == known.root
+    KNOWLEDGE.providers.iter().find(|known| {
+        let root = known.base_url.trim_end_matches('/');
+        base_url == root
             || base_url
-                .strip_prefix(known.root)
+                .strip_prefix(root)
                 .is_some_and(|rest| rest.starts_with('/'))
     })
 }
 
-/// The providers `src/model_urls.txt` knows, each as the root of its API
-/// and the environment variable conventionally holding its key, if any,
-/// in the file's order, for telling the user.
+/// The providers `src/models.toml` knows, each as the root of its API and
+/// the environment variable conventionally holding its key, if any, in
+/// the file's order, for telling the user.
 pub fn known_providers() -> Vec<(&'static str, Option<&'static str>)> {
-    knowns()
-        .map(|known| (known.root, known.key_variable))
+    KNOWLEDGE
+        .providers
+        .iter()
+        .map(|known| (known.base_url.as_str(), known.api_key_env.as_deref()))
         .collect()
 }
 
 /// The environment variable conventionally holding the API key for the
-/// provider at `base_url`, when `src/model_urls.txt` knows the provider and
+/// provider at `base_url`, when `src/models.toml` knows the provider and
 /// it wants one.
 pub fn known_key_variable(base_url: &str) -> Option<&'static str> {
-    known(base_url)?.key_variable
+    known(base_url)?.api_key_env.as_deref()
 }
 
 /// The environment variable holding the API key for the provider at
@@ -226,15 +219,21 @@ struct Listed {
 impl Provider {
     /// The provider at `base_url`, sent `api_key` as a bearer token when
     /// there is one, whose every request may take `request_timeout` and
-    /// carries the headers `src/model_urls.txt` says the provider needs.
+    /// carries the headers `src/models.toml` says the provider needs.
     pub fn new(
         base_url: impl Into<String>,
         api_key: Option<SecretString>,
         request_timeout: Duration,
     ) -> anyhow::Result<Self> {
         let base_url = base_url.into();
-        let headers = known(&base_url)
-            .map(|known| known.headers)
+        let headers: Vec<(&str, &str)> = known(&base_url)
+            .map(|known| {
+                known
+                    .headers
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str()))
+                    .collect()
+            })
             .unwrap_or_default();
         Self::with_headers(base_url, api_key, request_timeout, &headers)
     }
@@ -250,9 +249,9 @@ impl Provider {
         let mut sent = HeaderMap::new();
         for (name, value) in headers {
             let name = HeaderName::from_bytes(name.as_bytes())
-                .with_context(|| format!("the header {name} in src/model_urls.txt"))?;
+                .with_context(|| format!("the header {name} in src/models.toml"))?;
             let value = HeaderValue::from_str(value)
-                .with_context(|| format!("the header {name} in src/model_urls.txt"))?;
+                .with_context(|| format!("the header {name} in src/models.toml"))?;
             sent.insert(name, value);
         }
         let client = reqwest::Client::builder()
@@ -344,10 +343,16 @@ mod tests {
     }
 
     #[test]
+    fn the_file_parses_and_knows_at_least_one_model_and_one_provider() {
+        assert!(tool_models().next().is_some());
+        assert!(!KNOWLEDGE.providers.is_empty());
+    }
+
+    #[test]
     fn a_known_provider_s_headers_are_read_from_the_file() {
         assert_eq!(
             known("https://api.anthropic.com/v1").unwrap().headers,
-            [("anthropic-version", "2023-06-01")]
+            BTreeMap::from([("anthropic-version".to_string(), "2023-06-01".to_string())])
         );
         assert!(
             known("https://api.openai.com/v1")
@@ -377,7 +382,7 @@ mod tests {
         let error =
             Provider::with_headers("http://localhost/v1".into(), None, TIMEOUT, &bad).unwrap_err();
         assert!(
-            format!("{error:#}").contains("src/model_urls.txt"),
+            format!("{error:#}").contains("src/models.toml"),
             "{error:#}"
         );
     }
@@ -447,7 +452,7 @@ mod tests {
         let error = check_makes_tool_calls("gpt-0").unwrap_err();
         let shown = format!("{error:#}");
         assert!(shown.contains("gpt-0"), "{shown}");
-        assert!(shown.contains("src/tool_models.txt"), "{shown}");
+        assert!(shown.contains("src/models.toml"), "{shown}");
     }
 
     #[tokio::test]
