@@ -46,12 +46,10 @@ impl Serialize for Request {
         request.serialize_field("model", &self.model)?;
         request.serialize_field("messages", &self.messages)?;
         request.serialize_field("tools", &[&self.tool])?;
-        request.serialize_field(
-            "tool_choice",
-            &Function::new(Named {
-                name: &self.tool.name,
-            }),
-        )?;
+        let forced = Function::new(Named {
+            name: &self.tool.name,
+        });
+        request.serialize_field("tool_choice", &forced)?;
         request.end()
     }
 }

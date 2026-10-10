@@ -1635,16 +1635,15 @@ player2 = \"Cautious.\"
             between[0],
             Entry::Configuration(Box::new(configuration(&roles)))
         );
-        assert!(
-            matches!(
-                &between[1],
-                Entry::Sent {
-                    to,
-                    message: Message::Announce { seq: 1, .. },
-                } if to == "wolf"
-            ),
-            "{:?}",
-            between[1]
+        assert_eq!(
+            between[1],
+            Entry::Sent {
+                to: "wolf".to_string(),
+                message: Message::Announce {
+                    seq: 1,
+                    observation: seen(&["wolf", "ann", "bob"], &[("wolf", Role::Werewolf)]),
+                },
+            }
         );
         // The configuration is logged once.
         let configurations = between[1..]
