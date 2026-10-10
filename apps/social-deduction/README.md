@@ -61,24 +61,33 @@ file that names the model, how to reach it, and the prompts each role is
 given. The [examples](examples/werewolf/llm) show how one is written.
 
 ```sh
-social-deduction werewolf llm --config game.toml [role counts] [--night-limit 30s] [--day-limit 2m]
+social-deduction werewolf llm game.toml [role counts] [--night-limit 30s] [--day-limit 2m] [--model-base-url URL] [--model-id ID]
 ```
 
 A setting comes from the command line if it is given there, otherwise from
-the file, otherwise from a default in the code. The file names the
+the file, otherwise from a default in the code. The model and its provider
+may be given on the command line too, for trying another without editing
+the file. The file names the
 environment variable that holds the provider's API key, never the key
-itself. A model player makes its choices with tool calls, so the model must
-be one known to make them, listed in `src/tool_models.txt` and compiled in,
+itself, and may leave it unnamed for a provider whose variable is known,
+such as OpenAI's `OPENAI_API_KEY` and Anthropic's `ANTHROPIC_API_KEY`,
+listed in `src/models.toml` and compiled in. A model player makes its choices with tool calls, so the model must
+be one known to make them, listed in `src/models.toml` and compiled in,
 and its provider must serve it. For now `llm` checks its configuration and
 its model, prints the settings that took effect, and says the game is not
 playable yet.
 
 ## Models
 
-The `models` command belongs to no game. It asks the provider a
-configuration file names for the models it serves and lists them, marking
-with `*` those known to make tool calls:
+The `models` command belongs to no game. It asks a provider, named by the
+root of its OpenAI-compatible API, for the models it serves and lists them,
+marking with `*` those known to make tool calls. A provider whose API key
+variable is known is read with it; any other provider that wants a key is
+told the environment variable holding it. `models --help` tables the
+providers known:
 
 ```sh
-social-deduction models --config game.toml
+social-deduction models http://localhost:1234/v1
+social-deduction models https://api.openai.com/v1
+social-deduction models https://example.com/v1 --api-key-env EXAMPLE_API_KEY
 ```

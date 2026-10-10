@@ -140,7 +140,7 @@ fn the_scripted_variant_takes_the_limits_and_needs_no_configuration_file() {
         "1m",
     ]);
     assert_usage_error(&["werewolf", "scripted", "--night-limit", "soon"]);
-    assert_usage_error(&["werewolf", "scripted", "--config", "game.toml"]);
+    assert_usage_error(&["werewolf", "scripted", "game.toml"]);
 }
 
 #[test]
@@ -216,7 +216,7 @@ fn configured(test: &str, name: &str, base_url: &str, id: &str) -> String {
 fn the_llm_variant_prints_its_settings_then_every_prompt_and_is_not_playable_yet() {
     let base_url = serving(&[EXAMPLE_MODEL]);
     let config = configured("prints", "personas.toml", &base_url, EXAMPLE_MODEL);
-    let printed = printed(&["werewolf", "llm", "--config", &config]);
+    let printed = printed(&["werewolf", "llm", &config]);
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
         lines[0],
@@ -249,7 +249,7 @@ fn a_template_that_cannot_render_is_an_error_before_anything_is_printed() {
         "[model]\nbase_url = \"http://localhost:1234/v1\"\nid = \"m\"\n[prompt]\nsystem = \"{{ rulez }}\"\n",
     )
     .unwrap();
-    let stderr = refused(&["werewolf", "llm", "--config", &path]);
+    let stderr = refused(&["werewolf", "llm", &path]);
     for expected in ["player1", "werewolf", "rulez"] {
         assert!(stderr.contains(expected), "{stderr}");
     }
@@ -257,34 +257,40 @@ fn a_template_that_cannot_render_is_an_error_before_anything_is_printed() {
 
 #[test]
 fn the_llm_variant_hears_the_command_line_over_the_file() {
-    let base_url = serving(&[EXAMPLE_MODEL]);
+    let base_url = serving(&[EXAMPLE_MODEL, "gpt-5.5"]);
     let config = configured("hears", "personas.toml", &base_url, EXAMPLE_MODEL);
     let printed = printed(&[
         "werewolf",
         "llm",
-        "--config",
         &config,
         "--werewolves",
         "1",
         "--day-limit",
         "2m",
+        "--model-id",
+        "gpt-5.5",
     ]);
     assert!(
         printed.contains("roles: 1 werewolf, 3 villagers"),
         "{printed}"
     );
     assert!(printed.contains("day limit: 2m\n"), "{printed}");
+    assert!(
+        printed.contains(&format!("model: gpt-5.5 at {base_url}\n")),
+        "{printed}"
+    );
 }
 
 #[test]
 fn the_llm_variant_needs_a_configuration_file() {
     assert_usage_error(&["werewolf", "llm"]);
     assert_usage_error(&["werewolf", "llm", "--werewolves", "1"]);
+    assert!(printed(&["werewolf", "llm", "--help"]).contains("<CONFIG>"));
 }
 
 #[test]
 fn a_configuration_file_that_cannot_be_read_is_an_error_naming_it() {
-    let stderr = refused(&["werewolf", "llm", "--config", "no-such-file.toml"]);
+    let stderr = refused(&["werewolf", "llm", "no-such-file.toml"]);
     assert!(stderr.contains("no-such-file.toml"), "{stderr}");
 }
 
@@ -293,16 +299,16 @@ fn the_llm_variant_refuses_a_model_not_known_to_make_tool_calls_before_asking_an
     // The example provider is not there, which goes unnoticed: the check
     // needs no network.
     let config = configured("unknown", "minimal.toml", EXAMPLE_BASE_URL, "gpt-0");
-    let stderr = refused(&["werewolf", "llm", "--config", &config]);
+    let stderr = refused(&["werewolf", "llm", &config]);
     assert!(stderr.contains("gpt-0"), "{stderr}");
-    assert!(stderr.contains("src/tool_models.txt"), "{stderr}");
+    assert!(stderr.contains("src/models.toml"), "{stderr}");
 }
 
 #[test]
 fn the_llm_variant_refuses_a_model_its_provider_does_not_serve() {
     let base_url = serving(&["llama-3.1-8b-instruct"]);
     let config = configured("unserved", "minimal.toml", &base_url, EXAMPLE_MODEL);
-    let stderr = refused(&["werewolf", "llm", "--config", &config]);
+    let stderr = refused(&["werewolf", "llm", &config]);
     assert!(stderr.contains(&base_url), "{stderr}");
     assert!(stderr.contains(EXAMPLE_MODEL), "{stderr}");
 }
@@ -310,8 +316,7 @@ fn the_llm_variant_refuses_a_model_its_provider_does_not_serve() {
 #[test]
 fn the_models_command_lists_the_provider_s_models_sorted_and_marks_those_that_make_tool_calls() {
     let base_url = serving(&["zephyr-7b", EXAMPLE_MODEL, "llama-3.1-8b-instruct"]);
-    let config = configured("models", "minimal.toml", &base_url, EXAMPLE_MODEL);
-    let printed = printed(&["models", "--config", &config]);
+    let printed = printed(&["models", &base_url]);
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
         lines,
@@ -319,6 +324,7 @@ fn the_models_command_lists_the_provider_s_models_sorted_and_marks_those_that_ma
             "  llama-3.1-8b-instruct",
             "* qwen2.5-7b-instruct",
             "  zephyr-7b",
+            "",
             "* marks a model known to make tool calls.",
         ],
         "{printed}"
@@ -326,23 +332,23 @@ fn the_models_command_lists_the_provider_s_models_sorted_and_marks_those_that_ma
 }
 
 #[test]
-fn the_models_command_reads_only_the_model_table() {
-    // A file the game would refuse, for a misspelled key outside [model].
-    let base_url = serving(&[EXAMPLE_MODEL]);
-    let config = configured("only-model", "minimal.toml", &base_url, EXAMPLE_MODEL);
-    let mut file = std::fs::read_to_string(&config).unwrap();
-    file.push_str("\n[roles.seer]\nsytem = \"\"\n");
-    std::fs::write(&config, file).unwrap();
-    assert!(refused(&["werewolf", "llm", "--config", &config]).contains("sytem"));
-    assert!(printed(&["models", "--config", &config]).contains(EXAMPLE_MODEL));
+fn the_models_command_needs_a_base_url_and_names_a_provider_it_cannot_reach() {
+    assert_usage_error(&["models"]);
+    let help = printed(&["models", "--help"]);
+    assert!(help.contains("BASE_URL"), "{help}");
+    assert!(help.contains("--api-key-env"), "{help}");
+    assert!(help.contains("https://api.openai.com"), "{help}");
+    assert!(help.contains("OPENAI_API_KEY"), "{help}");
+    let base_url = unreachable();
+    let stderr = refused(&["models", &base_url]);
+    assert!(stderr.contains(&base_url), "{stderr}");
 }
 
 #[test]
-fn the_models_command_needs_a_configuration_file_and_names_a_provider_it_cannot_reach() {
-    assert_usage_error(&["models"]);
-    assert!(printed(&["models", "--help"]).contains("--config"));
+fn the_models_command_refuses_a_key_variable_that_is_not_set_before_asking_anyone() {
     let base_url = unreachable();
-    let config = configured("nobody", "minimal.toml", &base_url, EXAMPLE_MODEL);
-    let stderr = refused(&["models", "--config", &config]);
-    assert!(stderr.contains(&base_url), "{stderr}");
+    let name = "SOCIAL_DEDUCTION_NO_SUCH_KEY";
+    let stderr = refused(&["models", &base_url, "--api-key-env", name]);
+    assert!(stderr.contains(name), "{stderr}");
+    assert!(!stderr.contains(&base_url), "{stderr}");
 }

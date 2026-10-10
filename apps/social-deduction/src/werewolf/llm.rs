@@ -18,23 +18,20 @@
 //! a [`SecretString`], which is redacted wherever it is shown.
 
 use super::{PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table};
-use crate::model::Provider;
+use crate::model::{Provider, REQUEST_TIMEOUT, api_key, key_variable};
 use anyhow::{Context, anyhow, bail};
 use clap::Args;
 use minijinja::{Environment, UndefinedBehavior, Value, context};
 use secrecy::SecretString;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
-/// How long a request may take unless the file says otherwise.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// What the command line may say over the file: the role counts and the
-/// phase limits. Each is unset unless given, so that the file can be heard.
+/// What the command line may say over the file: the role counts, the
+/// phase limits, and the model. Each is unset unless given, so that the
+/// file can be heard.
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 pub struct Overrides {
     /// How many of each role sit at the table.
@@ -43,6 +40,23 @@ pub struct Overrides {
     /// How long each phase waits for the players.
     #[command(flatten)]
     pub limits: PhaseLimits,
+    /// The model and where it is.
+    #[command(flatten)]
+    pub model: ModelOverrides,
+}
+
+/// What the command line may say over the file's `[model]` table, for
+/// trying another model or provider without editing the file. Each is
+/// unset unless given. The help lists them under a heading of their own.
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+#[command(next_help_heading = "Model")]
+pub struct ModelOverrides {
+    /// The root of the provider's OpenAI-compatible API, ending in /v1
+    #[arg(long = "model-base-url", value_name = "BASE_URL")]
+    pub base_url: Option<String>,
+    /// The model's id, exactly as the provider lists it
+    #[arg(long = "model-id", value_name = "ID")]
+    pub id: Option<String>,
 }
 
 /// The configuration file, as written. Every table but `[model]` may be
@@ -79,8 +93,8 @@ pub struct Model {
     pub base_url: String,
     /// The model's id, exactly as the provider lists it.
     pub id: String,
-    /// The environment variable holding the API key, for a provider that
-    /// wants one.
+    /// The environment variable holding the API key, over the one known
+    /// for the provider.
     pub api_key_env: Option<String>,
     /// How long a request may take.
     #[serde(default = "request_timeout", with = "humantime_serde")]
@@ -88,31 +102,17 @@ pub struct Model {
 }
 
 impl Model {
-    /// Read and parse the `[model]` table alone from the file at `path`,
-    /// for a command that plays no game and need not hear about the rest
-    /// of the file. An unknown key in the table is still an error.
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
-        Self::parse(&read(path)?).with_context(|| format!("in {}", path.display()))
+    /// The environment variable holding the API key: `api_key_env` when
+    /// the file names one, else the one known for the provider, if any.
+    pub fn key_variable(&self) -> Option<&str> {
+        key_variable(&self.base_url, self.api_key_env.as_deref())
     }
 
-    /// Parse the `[model]` table of `file`, the text of a configuration
-    /// file, and nothing else in it.
-    pub fn parse(file: &str) -> anyhow::Result<Self> {
-        #[derive(Deserialize)]
-        struct Just {
-            model: Model,
-        }
-        Ok(toml::from_str::<Just>(file)?.model)
-    }
-
-    /// The API key, read from the environment variable `api_key_env`
-    /// names. A variable that is named but not set is an error. When none
-    /// is named there is no key, which is what a local server expects.
+    /// The API key, read from the variable [`Model::key_variable`] names.
+    /// A variable that is named but not set is an error. When none is
+    /// named there is no key, which is what a local server expects.
     pub fn api_key(&self) -> anyhow::Result<Option<SecretString>> {
-        self.api_key_env
-            .as_deref()
-            .map(|name| key(name, std::env::var_os(name)))
-            .transpose()
+        self.key_variable().map(api_key).transpose()
     }
 
     /// The provider the table is reached through, with its key read from
@@ -120,17 +120,6 @@ impl Model {
     pub fn provider(&self) -> anyhow::Result<Provider> {
         Provider::new(&self.base_url, self.api_key()?, self.request_timeout)
     }
-}
-
-/// The key the environment variable `name` holds as `value`: an error
-/// that names the variable when it is not set, or is set to something
-/// that is not UTF-8.
-fn key(name: &str, value: Option<OsString>) -> anyhow::Result<SecretString> {
-    let value = value.ok_or_else(|| anyhow!("api_key_env names {name}, which is not set"))?;
-    let value = value
-        .into_string()
-        .map_err(|_| anyhow!("api_key_env names {name}, whose value is not UTF-8"))?;
-    Ok(SecretString::from(value))
 }
 
 /// The text of the configuration file at `path`.
@@ -200,11 +189,13 @@ pub struct Prompt {
     pub system: Option<String>,
 }
 
-/// The settings that took effect: the file as written, and the settings
-/// the command line and the code have a say in, decided.
+/// The settings that took effect: the file, with whatever the command
+/// line said over its model, and the settings the command line and the
+/// code have a say in, decided.
 #[derive(Debug)]
 pub struct Settings {
-    /// The file as written.
+    /// The file as written, but for the model, which is as the command
+    /// line said if it said anything.
     pub config: Config,
     /// How many of each role sit at the table.
     pub table: Table,
@@ -237,8 +228,16 @@ impl Config {
 
     /// The settings that take effect with `overrides` from the command
     /// line: each role count and phase limit from the command line if
-    /// given there, otherwise from the file, otherwise from the code.
-    pub fn settle(self, overrides: Overrides) -> Settings {
+    /// given there, otherwise from the file, otherwise from the code, and
+    /// the model's provider and id from the command line if given there,
+    /// otherwise from the file.
+    pub fn settle(mut self, overrides: Overrides) -> Settings {
+        if let Some(base_url) = overrides.model.base_url {
+            self.model.base_url = base_url;
+        }
+        if let Some(id) = overrides.model.id {
+            self.model.id = id;
+        }
         let file = RoleCounts {
             werewolves: self.roles.werewolf.count,
             villagers: self.roles.villager.count,
@@ -364,7 +363,7 @@ impl fmt::Display for Settings {
         let day = humantime::format_duration(self.day_limit);
         writeln!(f, "model: {} at {}", model.id, model.base_url)?;
         writeln!(f, "request timeout: {timeout}")?;
-        match &model.api_key_env {
+        match model.key_variable() {
             Some(name) => writeln!(f, "API key: from {name}")?,
             None => writeln!(f, "API key: none")?,
         }
@@ -438,6 +437,31 @@ id = "qwen2.5-7b-instruct"
     #[test]
     fn the_model_section_is_required() {
         assert!(Config::parse("[phases]\nnight_limit = \"1s\"\n").is_err());
+    }
+
+    #[test]
+    fn the_model_and_its_provider_fall_back_from_the_command_line_to_the_file() {
+        let settings = settle(MODEL, Overrides::default());
+        assert_eq!(settings.config.model.base_url, "http://localhost:1234/v1");
+        assert_eq!(settings.config.model.id, "qwen2.5-7b-instruct");
+        let args = [
+            "llm",
+            "--model-base-url",
+            "https://api.openai.com/v1",
+            "--model-id",
+            "gpt-5.5",
+        ];
+        let settings = settle(MODEL, Variant::parse_from(args).overrides);
+        assert_eq!(settings.config.model.base_url, "https://api.openai.com/v1");
+        assert_eq!(settings.config.model.id, "gpt-5.5");
+        // With everything that follows from the provider.
+        assert_eq!(settings.config.model.key_variable(), Some("OPENAI_API_KEY"));
+        assert!(
+            settings
+                .to_string()
+                .starts_with("model: gpt-5.5 at https://api.openai.com/v1\n"),
+            "{settings}"
+        );
     }
 
     #[test]
@@ -826,26 +850,6 @@ system = \"{{{{ rules }}}} {{{{ wolf }}}}\"
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn a_named_key_variable_whose_value_is_not_utf_8_is_an_error_naming_it() {
-        use std::os::unix::ffi::OsStringExt;
-        let error = key("SOCIAL_DEDUCTION_KEY", Some(OsString::from_vec(vec![0xff]))).unwrap_err();
-        let shown = format!("{error:#}");
-        assert!(shown.contains("SOCIAL_DEDUCTION_KEY"), "{shown}");
-        assert!(!shown.contains("not set"), "{shown}");
-    }
-
-    #[test]
-    fn the_model_table_is_read_on_its_own_whatever_the_rest_of_the_file_says() {
-        let file = format!("{MODEL}[prompt]\nsytem = \"\"\n");
-        assert!(Config::parse(&file).is_err());
-        assert_eq!(Model::parse(&file).unwrap().id, "qwen2.5-7b-instruct");
-        // Though not whatever the table itself says.
-        assert!(Model::parse(&format!("{MODEL}temperature = 0.5\n")).is_err());
-        assert!(Model::parse("[prompt]\n").is_err());
-    }
-
     #[test]
     fn the_key_is_read_from_the_named_variable_and_never_shown() {
         // A variable Cargo sets for every test, since setting one is unsafe.
@@ -881,5 +885,20 @@ day limit: 1m 30s
             settings.to_string().contains("API key: none\n"),
             "{settings}"
         );
+    }
+
+    #[test]
+    fn a_known_provider_s_key_variable_is_filled_in_unless_the_file_names_one() {
+        let openai = MODEL.replace("http://localhost:1234/v1", "https://api.openai.com/v1");
+        let settings = settle(&openai, Overrides::default());
+        assert_eq!(settings.config.model.key_variable(), Some("OPENAI_API_KEY"));
+        assert!(
+            settings
+                .to_string()
+                .contains("API key: from OPENAI_API_KEY\n")
+        );
+        let named = format!("{openai}api_key_env = \"MY_KEY\"\n");
+        let settings = settle(&named, Overrides::default());
+        assert_eq!(settings.config.model.key_variable(), Some("MY_KEY"));
     }
 }
