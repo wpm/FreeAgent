@@ -41,7 +41,7 @@ fn episode(
     player: impl FnMut(&PlayerId) -> Builder<Actor>,
 ) -> Episode<Actor> {
     let players: Vec<PlayerId> = roles.keys().cloned().collect();
-    let environment = announced::init(roles, rules, winner, Actor::Environment);
+    let environment = announced::init(roles, rules, None, winner, Actor::Environment);
     super::episode(environment, players, player, logger)
 }
 
@@ -99,9 +99,9 @@ impl Behavior for Actor {
     }
 }
 
-/// A player who answers each announcement at once, selecting at random
-/// among the living whose role it does not know, as the uniform-random
-/// player chooses. It has no think loop.
+/// A player who answers each announcement at once, selecting one of its
+/// [candidates](super::candidates) at random, as the uniform-random player
+/// chooses. It has no think loop.
 pub struct Player {
     context: Context<Message, Entry>,
 }
@@ -136,12 +136,12 @@ impl Behavior for Player {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::werewolf::tests::{between_the_deal_and_the_end, one_wolf_against, village};
+    use crate::werewolf::tests::{
+        Played, between_the_deal_and_the_end, one_wolf_against, received, run, selection, village,
+    };
     use crate::werewolf::{Observation, Phase};
-    use free_agent::Event;
     use std::time::Duration;
-    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
-    use tokio::time::Instant;
+    use tokio::sync::mpsc::unbounded_channel;
 
     /// What a puppet says to the environment on being announced a phase,
     /// given its own name, the phase's number, and what it may see.
@@ -180,39 +180,9 @@ mod tests {
         }
     }
 
-    /// A selection of `target` by `from` in the phase numbered `seq`.
-    fn select(seq: u64, from: &PlayerId, target: &str) -> Message {
-        Message::Select {
-            seq,
-            from: from.clone(),
-            target: target.to_string(),
-        }
-    }
-
     /// A player who never selects.
     fn mute() -> Builder<Actor> {
         Actor::puppet(Box::new(|_, _, _| vec![]))
-    }
-
-    /// What a game reports: the winner, everything the environment
-    /// logged, and how long the game took.
-    type Played = (Team, Vec<Entry>, Duration);
-
-    /// Run `episode`, whose winner comes on `won` and whose log on `log`.
-    async fn run(
-        episode: Episode<Actor>,
-        won: oneshot::Receiver<Team>,
-        mut log: UnboundedReceiver<Event<Entry>>,
-    ) -> anyhow::Result<Played> {
-        let started = Instant::now();
-        episode.run(Duration::from_secs(60 * 60)).await?;
-        let took = started.elapsed();
-
-        let mut logged = Vec::new();
-        while let Some(event) = log.recv().await {
-            logged.push(event.payload);
-        }
-        Ok((won.await?, logged, took))
     }
 
     /// Run a game of `roles` under `rules`, each player scripted except
@@ -251,17 +221,6 @@ mod tests {
                 _ => None,
             })
             .unwrap()
-    }
-
-    /// The selections the environment logged as received.
-    fn received(logged: &[Entry]) -> Vec<&Message> {
-        logged
-            .iter()
-            .filter_map(|entry| match entry {
-                Entry::Received { message, .. } => Some(message),
-                _ => None,
-            })
-            .collect()
     }
 
     #[tokio::test(start_paused = true)]
@@ -331,10 +290,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_selection_with_an_old_number_is_logged_but_not_counted() {
         let roles = one_wolf_against(&["ann"]);
-        let stale: Script = Box::new(|me, seq, _| vec![select(seq - 1, me, "ann")]);
+        let stale: Script = Box::new(|me, seq, _| vec![selection(seq - 1, me, "ann")]);
         let puppets = HashMap::from([("wolf", Actor::puppet(stale))]);
         let (_, logged, took) = play(roles, quick(), puppets).await.unwrap();
-        assert_eq!(received(&logged), [&select(0, &"wolf".to_string(), "ann")]);
+        assert_eq!(received(&logged), [&selection(0, "wolf", "ann")]);
         // Not counted: the night waits out its limit and kills nobody.
         assert_eq!(took, quick().night_limit);
         assert_eq!(survivors(&logged).len(), 2);
@@ -348,13 +307,13 @@ mod tests {
         let mut roles = one_wolf_against(&["ann"]);
         roles.insert("doctor".to_string(), Role::Doctor);
         let twice: Script =
-            Box::new(|me, seq, _| vec![select(seq, me, "ann"), select(seq, me, "doctor")]);
+            Box::new(|me, seq, _| vec![selection(seq, me, "ann"), selection(seq, me, "doctor")]);
         let puppets = HashMap::from([("wolf", Actor::puppet(twice)), ("doctor", mute())]);
         let (winner, logged, took) = play(roles, quick(), puppets).await.unwrap();
         let wolf = "wolf".to_string();
         assert_eq!(
             received(&logged),
-            [&select(1, &wolf, "ann"), &select(1, &wolf, "doctor")]
+            [&selection(1, &wolf, "ann"), &selection(1, &wolf, "doctor")]
         );
         assert_eq!(took, quick().night_limit);
         assert_eq!(winner, Team::Werewolves);
@@ -381,9 +340,9 @@ mod tests {
                 Phase::Night => "bob",
                 Phase::Day => "ann",
             };
-            vec![select(seq, me, target)]
+            vec![selection(seq, me, target)]
         });
-        let cat: Script = Box::new(|me, seq, _| vec![select(seq, me, "ann")]);
+        let cat: Script = Box::new(|me, seq, _| vec![selection(seq, me, "ann")]);
         let puppets = HashMap::from([
             ("wolf", Actor::puppet(wolf)),
             ("ann", mute()),

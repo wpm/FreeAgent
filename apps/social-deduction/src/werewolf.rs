@@ -27,7 +27,7 @@ pub mod scripted;
 pub mod uniform_random;
 
 use clap::Args;
-use free_agent::{ActorId, ActorInit, Behavior, Builder, Episode, Logger};
+use free_agent::{ActorId, ActorInit, Behavior, Builder, Episode, Logger, ThinkBuilder};
 use rand::seq::{IndexedRandom, SliceRandom};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -54,14 +54,29 @@ pub fn episode<A>(
 where
     A: Behavior<Message = Message, Log = Entry>,
 {
+    thinking_episode(environment, players, |id| (player(id), None), logger)
+}
+
+/// The episode of [`episode`], whose players may think: `player` builds
+/// each player's behavior and its think loop, if it has one. A player may
+/// send to the environment alone, stops nobody, and has no logger.
+pub fn thinking_episode<A>(
+    environment: ActorInit<A>,
+    players: impl IntoIterator<Item = PlayerId>,
+    mut player: impl FnMut(&PlayerId) -> (Builder<A>, Option<ThinkBuilder<Message, Entry>>),
+    logger: Logger<Entry>,
+) -> Episode<A>
+where
+    A: Behavior<Message = Message, Log = Entry>,
+{
     let mut init = HashMap::from([(ENVIRONMENT.to_string(), environment)]);
     for id in players {
-        let behavior = player(&id);
+        let (behavior, think) = player(&id);
         init.insert(
             id,
             ActorInit {
                 behavior,
-                think: None,
+                think,
                 can_send_to: HashSet::from([ENVIRONMENT.to_string()]),
                 can_shut_down: HashSet::new(),
                 has_logger: false,
@@ -92,8 +107,8 @@ impl fmt::Display for Team {
     }
 }
 
-/// What a player is.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
+/// What a player is. The roles are ordered as they are dealt.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Role {
     /// Kills by night, and knows the other werewolves.
     Werewolf,
@@ -511,9 +526,10 @@ pub enum Message {
 }
 impl free_agent::Message for Message {}
 
-/// What the environment writes to the log: the deal, every message to or
-/// from a player as it was, and the result. Only the result summarizes
-/// anything; the rest is kept whole for whatever reads the log later.
+/// What the environment writes to the log: the deal, the configuration of
+/// a model-played game, every message to or from a player as it was, and
+/// the result. Only the result summarizes anything; the rest is kept whole
+/// for whatever reads the log later.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Entry {
     /// The game begins: who plays what, under which variation.
@@ -523,6 +539,9 @@ pub enum Entry {
         /// Every player's role.
         roles: HashMap<PlayerId, Role>,
     },
+    /// The configuration a model-played game ran under, logged right after
+    /// the deal.
+    Configuration(Box<llm::Configuration>),
     /// The environment sent `message` to `to`.
     Sent {
         /// Who was sent to.
@@ -618,9 +637,35 @@ pub struct Observation {
     alive: HashSet<PlayerId>,
 }
 
+/// The players `me` may choose from what it sees in `observation`. By
+/// night, the living other than `me` whose roles `me` does not know: a
+/// werewolf does not kill a werewolf, the seer does not ask about anyone
+/// twice, and the doctor does not protect itself. By day, everyone living
+/// other than `me`, since the vote is about who the werewolves are, and a
+/// player who knows is the one with the most reason to vote. Sorted by
+/// name, so that a random choice among them depends on the random number
+/// alone.
+pub fn candidates(me: &PlayerId, observation: &Observation) -> Vec<PlayerId> {
+    let eligible = |player: &PlayerId| {
+        observation.phase == Phase::Day || !observation.roles.contains_key(player)
+    };
+    let mut candidates: Vec<PlayerId> = observation
+        .alive
+        .iter()
+        .filter(|player| *player != me && eligible(player))
+        .cloned()
+        .collect();
+    candidates.sort();
+    candidates
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use free_agent::Event;
+    use tokio::sync::mpsc::UnboundedReceiver;
+    use tokio::sync::oneshot;
+    use tokio::time::Instant;
 
     #[test]
     fn a_limit_given_replaces_the_rules_own_and_one_left_unset_keeps_it() {
@@ -787,6 +832,47 @@ mod tests {
         &logged[1..logged.len() - 1]
     }
 
+    /// What a game reports: the winner, everything the environment
+    /// logged, and how long the game took.
+    pub(super) type Played = (Team, Vec<Entry>, Duration);
+
+    /// Run `episode`, whose winner comes on `won` and whose log on `log`.
+    pub(super) async fn run<A: Behavior<Message = Message, Log = Entry> + 'static>(
+        episode: Episode<A>,
+        won: oneshot::Receiver<Team>,
+        mut log: UnboundedReceiver<Event<Entry>>,
+    ) -> anyhow::Result<Played> {
+        let started = Instant::now();
+        episode.run(Duration::from_secs(60 * 60)).await?;
+        let took = started.elapsed();
+
+        let mut logged = Vec::new();
+        while let Some(event) = log.recv().await {
+            logged.push(event.payload);
+        }
+        Ok((won.await?, logged, took))
+    }
+
+    /// The selections the environment logged as received.
+    pub(super) fn received(logged: &[Entry]) -> Vec<&Message> {
+        logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Received { message, .. } => Some(message),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A selection of `target` by `from` in the phase numbered `seq`.
+    pub(super) fn selection(seq: u64, from: &str, target: &str) -> Message {
+        Message::Select {
+            seq,
+            from: from.to_string(),
+            target: target.to_string(),
+        }
+    }
+
     /// One werewolf against `villagers`.
     pub(super) fn one_wolf_against(villagers: &[&str]) -> HashMap<PlayerId, Role> {
         let mut roles = HashMap::from([("wolf".to_string(), Role::Werewolf)]);
@@ -794,6 +880,28 @@ mod tests {
             roles.insert(villager.to_string(), Role::Villager);
         }
         roles
+    }
+
+    /// What a player sees of a village on the first night, where everyone
+    /// in `alive` lives and the player knows the roles in `known`.
+    pub(super) fn seen(alive: &[&str], known: &[(&str, Role)]) -> Observation {
+        Observation {
+            round: NonZero::new(1).unwrap(),
+            phase: Phase::Night,
+            roles: known
+                .iter()
+                .map(|(name, role)| (name.to_string(), *role))
+                .collect(),
+            alive: alive.iter().map(|name| name.to_string()).collect(),
+        }
+    }
+
+    /// What a player sees of a village on the first day: [`seen`], by day.
+    pub(super) fn seen_by_day(alive: &[&str], known: &[(&str, Role)]) -> Observation {
+        Observation {
+            phase: Phase::Day,
+            ..seen(alive, known)
+        }
     }
 
     fn seen_by(observer: &str) -> Vec<String> {
@@ -1033,5 +1141,58 @@ mod tests {
         state.alive.remove("wolf1");
         state.alive.remove("wolf2");
         assert_eq!(state.winner(), Some(Team::Villagers));
+    }
+
+    #[test]
+    fn by_night_the_candidates_are_the_living_whose_role_is_unknown_in_name_order() {
+        let observation = seen(
+            &["wolf1", "wolf2", "bob", "ann"],
+            &[("wolf1", Role::Werewolf), ("wolf2", Role::Werewolf)],
+        );
+        assert_eq!(
+            candidates(&"wolf1".to_string(), &observation),
+            ["ann".to_string(), "bob".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_player_is_never_its_own_candidate() {
+        let observation = seen(&["ann", "bob"], &[("ann", Role::Villager)]);
+        assert_eq!(
+            candidates(&"ann".to_string(), &observation),
+            ["bob".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_player_who_knows_everyone_alive_has_no_candidates_by_night() {
+        let observation = seen(
+            &["seer", "wolf"],
+            &[("seer", Role::Seer), ("wolf", Role::Werewolf)],
+        );
+        assert!(candidates(&"seer".to_string(), &observation).is_empty());
+    }
+
+    #[test]
+    fn by_day_the_candidates_are_everyone_living_but_oneself_whatever_their_roles() {
+        let observation = seen_by_day(
+            &["seer", "wolf", "ann"],
+            &[("seer", Role::Seer), ("wolf", Role::Werewolf)],
+        );
+        assert_eq!(
+            candidates(&"seer".to_string(), &observation),
+            ["ann".to_string(), "wolf".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_dead_are_not_candidates() {
+        let mut state = village();
+        state.kill(&"villager".to_string());
+        let observation = state.observation("seer".to_string()).unwrap();
+        assert_eq!(
+            candidates(&"seer".to_string(), &observation),
+            ["wolf1".to_string(), "wolf2".to_string()]
+        );
     }
 }

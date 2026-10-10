@@ -15,8 +15,9 @@ workflow takes a version's notes from here.
   dealt at random.
 - `social-deduction werewolf llm`, in which every player is a language
   model set up by a TOML configuration file: the model, how to reach it, and
-  the prompt templates each role is given. For now it checks the file and
-  the model and says the game is not playable yet.
+  the prompt templates each role is given. It checks the file and the model
+  before the game begins, and its log opens with the configuration the game
+  was played under.
 - `social-deduction models`, which lists the models a provider serves,
   marking those known to make tool calls.
 - `social-deduction werewolf scripted`, which plays the model-played game
@@ -38,5 +39,8 @@ workflow takes a version's notes from here.
   and then its variant, each a subcommand with its own `--help`. The role
   counts `--werewolves`, `--villagers`, `--doctors` and `--seers` belong to
   the variant; the 0.1.0 top-level flags are gone.
+- By day a player may vote against anyone living but itself, whatever it
+  knows them to be, so a seer can vote out a werewolf it has found. By
+  night it still chooses among those whose roles it does not know.
 
 [Unreleased]: https://github.com/wpm/FreeAgent/compare/main...HEAD
