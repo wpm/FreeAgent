@@ -110,10 +110,12 @@ behavior and tests are unchanged.
 
 ```sh
 social-deduction werewolf uniform-random [--werewolves N] [--villagers N] [--doctors N] [--seers N]
-social-deduction werewolf llm --config game.toml
+social-deduction werewolf llm --config game.toml [role counts] [--night-limit 30s] [--day-limit 2m]
+social-deduction models --config game.toml
 ```
 
-The first level names the game, the second the variant. Each level is a
+The first level names a game, or one of the few commands that belong to no
+game, and the second level names the game's variant. Each level is a
 `clap` subcommand enum, so each variant declares its own arguments and its
 own `--help`. There is only one game today, but the game level exists from
 the start, so that a second game is a new subcommand rather than a breaking
@@ -121,8 +123,13 @@ change.
 
 - `werewolf uniform-random` takes the role counts that 0.1.0 took at the top
   level, with the same defaults.
-- `werewolf llm` takes `--config`, the path to a TOML file. What goes in the
-  file is not decided here.
+- `werewolf llm` takes `--config`, the path to a TOML file, the same
+  role-count options as `uniform-random`, and `--night-limit` and
+  `--day-limit`. The role counts are one shared `clap` argument group, so
+  both variants spell them the same way.
+- `models` takes `--config`, asks the provider the file names for its
+  `GET /v1/models` listing, and prints each model id, marking those on the
+  tool-call whitelist. It plays no game.
 
 The subcommand names `uniform-random` and `llm` are working names. Renaming
 them is a change to this record's command line, not to its structure.
@@ -130,6 +137,52 @@ them is a change to this record's command line, not to its structure.
 Every variant keeps 0.1.0's output convention: the game's log goes to
 standard error as JSON Lines, and the narration of the game goes to standard
 output as it happens.
+
+### The model-played variant's configuration
+
+**Precedence.** A setting comes from the command line if it is given there,
+otherwise from the configuration file, otherwise from a default in the code.
+Role counts and phase limits can be given in all three places. Phase limits
+are written as durations, such as `30s` or `2m`.
+
+**One model for the whole table.** Every model player uses the same model
+from the same provider. The file names it once.
+
+**Prompts are written inline in the file,** one for each role, as TOML
+strings. A user changes how the game is played by rewriting them.
+
+**Providers.** Every model is reached through the OpenAI chat completions
+protocol: OpenAI itself, Anthropic's OpenAI-compatible endpoint, and a local
+LM Studio server among them. A provider is a base URL and the name of the
+environment variable that holds its API key.
+
+**API keys come from the environment, never the file.** The file names the
+variable (`api_key_env = "OPENAI_API_KEY"`); the key is read from it once at
+startup into a `secrecy::SecretString` and exposed only where a request is
+built, so it never appears in `Debug` output, the log or an error message.
+A variable that is not set is an error at startup.
+
+**A configured model must pass two checks before the game starts:**
+
+1. **Its provider serves it.** The model's id appears in the provider's
+   `GET /v1/models` listing. This catches a misspelled id and a local model
+   that is not loaded.
+2. **It is known to make tool calls.** A model player makes its selection
+   with a tool call, and a model that cannot make one would never select,
+   silently, since a failed thought is not logged
+   ([ADR-0002](0002-actors-perceive-think-and-act.md)). So the id must be
+   on a whitelist of models known to make tool calls.
+
+Either failure stops the program before any actor is built.
+
+**The whitelist is a text file compiled into the binary.** It is not
+particular to Werewolf, since `models` reads it too, so it lives at the root
+of the crate's source, `src/tool_models.txt`, and is read with
+`include_str!`: one model id per line, exactly as `/v1/models` lists it,
+with blank lines and lines starting with `#` ignored. An id is matched
+exactly, across every provider. Adding a model is an edit to the file and a
+rebuild, which is acceptable while this is a command line program with one
+user. A test checks that the file parses and is not empty.
 
 ## Alternatives considered
 
@@ -153,6 +206,18 @@ check for free.
 Every variant reads a TOML file that says which variant it is. Rejected
 because the uniform-random game needs nothing a file would hold, and making
 the simplest game the hardest to run is backwards.
+
+### Discovering tool support
+
+Ask each model at startup whether it can make tool calls, with a small
+probe request, rather than keeping a list. Put off in favor of the
+whitelist, which is simpler and good enough for one user; something cleverer
+comes later.
+
+### The whitelist in the configuration file
+
+Easy to edit without a rebuild, but a list anyone can add to at run time is
+not a whitelist. Rejected.
 
 ### A crate per game or per variant
 
@@ -183,9 +248,17 @@ for a better split.
   sent messages that only another variant uses. Actors in Werewolf cooperate
   with the rules, so this is accepted.
 
+- **A new model needs a rebuild.** Until the whitelist moves out of the
+  binary, trying a model that is not on it means editing
+  `src/tool_models.txt` and building again. `models` shows which of a
+  provider's models are on it.
+
 ## Deliberately deferred
 
-1. **The contents of the `llm` configuration file.**
+1. **Models that differ by role or by player,** and prompts kept in files of
+   their own.
 2. **A second game,** and with it whether games keep sharing one crate.
 3. **Mixed tables,** in which players of different kinds play in one game.
 4. **Final names for the variant subcommands.**
+5. **A cleverer way to know which models make tool calls,** probably when
+   this stops being a command line program.
