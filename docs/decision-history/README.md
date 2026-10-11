@@ -36,3 +36,4 @@ are not part of this repository's history.
 | [0002](0002-actors-perceive-think-and-act.md) | Actors perceive, think, and act | Accepted |
 | [0003](0003-the-model-player.md) | The model player | Accepted |
 | [0004](0004-the-model-is-asked-to-select-before-a-game.md) | The model is asked to select before a game | Accepted |
+| [0005](0005-actors-talk-by-sending-messages-alone.md) | Actors talk by sending messages alone | Accepted |

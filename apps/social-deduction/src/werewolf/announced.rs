@@ -1,6 +1,6 @@
-//! The announcing environment, shared by the scripted and model-played
-//! variants: it opens each phase with a statement to every awake player,
-//! takes their selections as statements as they come, and ends the phase
+//! The announcing environment, shared by every variant: it opens each
+//! phase with a message to every awake player, takes their selections as
+//! they come, and ends the phase
 //! once everyone awake has selected or at its limit, whichever comes
 //! first. Players who take seconds to decide hold nothing up.
 

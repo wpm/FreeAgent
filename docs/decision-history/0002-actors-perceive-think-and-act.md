@@ -1,6 +1,6 @@
 # ADR-0002: Actors perceive, think, and act
 
-**Status:** Accepted
+**Status:** Accepted, amended by [ADR-0005](0005-actors-talk-by-sending-messages-alone.md)
 **Date:** 2026-10-09
 **Deciders:** Bill McNeill
 

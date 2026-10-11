@@ -10,7 +10,7 @@ workflow takes a version's notes from here.
 ### Added
 
 - The `free-agent` library: episodes of actors that talk to each other by
-  statement, request, and reply on the Tokio runtime.
+  sending messages on the Tokio runtime.
 - The `social-deduction` application, which plays Werewolf with the roles
   dealt at random.
 - `social-deduction werewolf llm`, in which every player is a language
@@ -20,11 +20,9 @@ workflow takes a version's notes from here.
   log opens with the configuration the game was played under.
 - `social-deduction models`, which lists the models a provider serves.
   `--check` asks each model for a selection and marks those that give one.
-- `social-deduction werewolf scripted`, which plays the model-played game
-  with no model: the environment announces each phase and waits for
-  selections, and every player is a script that selects at once at random.
-  It takes the role counts, `--night-limit` and `--day-limit`, with defaults
-  in the code and no configuration file.
+- `--night-limit` and `--day-limit` on `social-deduction werewolf
+  uniform-random`, how long each phase waits for the players' selections,
+  with defaults in the code.
 - `--log` and `--no-log` on every Werewolf variant, saying whether the game
   is logged to standard error. It is unless `--no-log` says otherwise, and
   the last one given wins.
@@ -48,6 +46,13 @@ workflow takes a version's notes from here.
 
 ### Changed
 
+- Actors talk by sending messages alone: `Context::request`,
+  `Behavior::answer` and the reply are gone, so a behavior handles
+  everything in `receive`. The uniform-random variant plays the announcing
+  environment as the model-played variant does: it announces each phase
+  and waits for selections, and every player selects at once at random. Its
+  log has `Announce` and `Select` messages in `Sent` and `Received`
+  entries, with no `Observation`, `Action` or `Replied`.
 - The command line is `social-deduction werewolf uniform-random`, a game
   and then its variant, each a subcommand with its own `--help`. The role
   counts `--werewolves`, `--villagers`, `--doctors` and `--seers` belong to

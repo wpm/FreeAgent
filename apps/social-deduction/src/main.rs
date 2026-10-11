@@ -10,8 +10,8 @@ use social_deduction::model::{
 };
 use social_deduction::werewolf::llm::{self, Config, Probed};
 use social_deduction::werewolf::report::Narrator;
+use social_deduction::werewolf::uniform_random;
 use social_deduction::werewolf::{Entry, PhaseLimits, RoleCounts, Rules, Table, Team};
-use social_deduction::werewolf::{scripted, uniform_random};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -49,16 +49,9 @@ enum CommandLine {
 /// The variants of Werewolf, each with its own arguments.
 #[derive(Subcommand, Debug, PartialEq)]
 enum Werewolf {
-    /// Every player chooses uniformly at random.
+    /// Every player answers each announcement at once with a choice made
+    /// uniformly at random: the model-played game, without a model.
     UniformRandom {
-        #[command(flatten)]
-        roles: RoleCounts,
-        #[command(flatten)]
-        logging: Logging,
-    },
-    /// Every player is a script that answers each announcement at once with
-    /// a choice made at random: the model-played game, without a model.
-    Scripted {
         #[command(flatten)]
         roles: RoleCounts,
         #[command(flatten)]
@@ -104,24 +97,15 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match CommandLine::parse() {
-        CommandLine::Werewolf(Werewolf::UniformRandom { roles, logging }) => {
-            let roles = roles.or(Table::default()).deal();
-            play(logging.enabled(), |winner, logger| {
-                uniform_random::game(roles, Rules::default(), winner, logger, |_| {
-                    uniform_random::Actor::player()
-                })
-            })
-            .await
-        }
-        CommandLine::Werewolf(Werewolf::Scripted {
+        CommandLine::Werewolf(Werewolf::UniformRandom {
             roles,
             limits,
             logging,
         }) => {
             let roles = roles.or(Table::default()).deal();
-            let rules = limits.or(scripted::rules());
+            let rules = limits.or(Rules::default());
             play(logging.enabled(), |winner, logger| {
-                scripted::game(roles, rules, winner, logger)
+                uniform_random::game(roles, rules, winner, logger)
             })
             .await
         }
@@ -336,6 +320,7 @@ mod tests {
                     werewolves: Some(1),
                     ..RoleCounts::default()
                 },
+                limits: PhaseLimits::default(),
                 logging: Logging::default(),
             })
         );
@@ -355,12 +340,13 @@ mod tests {
             parsed(&["werewolf", "uniform-random", "--no-log"]),
             CommandLine::Werewolf(Werewolf::UniformRandom {
                 roles: RoleCounts::default(),
+                limits: PhaseLimits::default(),
                 logging: off(),
             })
         );
         assert_eq!(
-            parsed(&["werewolf", "scripted", "--no-log", "--log"]),
-            CommandLine::Werewolf(Werewolf::Scripted {
+            parsed(&["werewolf", "uniform-random", "--no-log", "--log"]),
+            CommandLine::Werewolf(Werewolf::UniformRandom {
                 roles: RoleCounts::default(),
                 limits: PhaseLimits::default(),
                 logging: on(),
@@ -449,10 +435,10 @@ mod tests {
     }
 
     #[test]
-    fn the_scripted_variant_takes_the_role_counts_and_the_limits() {
+    fn the_uniform_random_variant_takes_the_role_counts_and_the_limits() {
         let args = [
             "werewolf",
-            "scripted",
+            "uniform-random",
             "--villagers",
             "4",
             "--day-limit",
@@ -460,7 +446,7 @@ mod tests {
         ];
         assert_eq!(
             parsed(&args),
-            CommandLine::Werewolf(Werewolf::Scripted {
+            CommandLine::Werewolf(Werewolf::UniformRandom {
                 roles: RoleCounts {
                     villagers: Some(4),
                     ..RoleCounts::default()
@@ -489,13 +475,8 @@ mod tests {
             ("--day-limit", rules.day_limit),
         ]
         .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()));
-        let limited = [counts.clone(), limits.to_vec()].concat();
-        let variants = [
-            ("uniform-random", counts),
-            ("scripted", limited.clone()),
-            ("llm", limited),
-        ];
-        for (variant, defaults) in variants {
+        let defaults = [counts, limits.to_vec()].concat();
+        for variant in ["uniform-random", "llm"] {
             let help = CommandLine::command()
                 .find_subcommand_mut("werewolf")
                 .unwrap()
@@ -503,7 +484,7 @@ mod tests {
                 .unwrap()
                 .render_help()
                 .to_string();
-            for (option, default) in defaults {
+            for (option, default) in &defaults {
                 let line = help.lines().find(|line| line.contains(option)).unwrap();
                 assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
             }

@@ -23,7 +23,6 @@
 pub mod announced;
 pub mod llm;
 pub mod report;
-pub mod scripted;
 pub mod uniform_random;
 
 use clap::Args;
@@ -528,10 +527,6 @@ impl Default for Rules {
 /// What the environment and the players say to one another.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Message {
-    /// What a player may see, from the environment.
-    Observation(Observation),
-    /// A player's choice of another player, to the environment.
-    Action(PlayerId),
     /// The environment opens a phase for one awake player. Phases are
     /// numbered from 1 for the first night, one up for each phase.
     Announce {
@@ -544,7 +539,7 @@ pub enum Message {
     Select {
         /// The number of the phase.
         seq: u64,
-        /// Who selected, since a statement does not carry its sender.
+        /// Who selected, since a message does not carry its sender.
         from: PlayerId,
         /// Whom they selected.
         target: PlayerId,
@@ -591,14 +586,7 @@ pub enum Entry {
         /// What was sent.
         message: Message,
     },
-    /// `from` replied with `message`.
-    Replied {
-        /// Who replied.
-        from: PlayerId,
-        /// What they said.
-        message: Message,
-    },
-    /// The environment received `message` from `from` as a statement.
+    /// The environment received `message` from `from`.
     Received {
         /// Who sent it.
         from: PlayerId,
@@ -851,7 +839,10 @@ mod tests {
         let entries = [
             Entry::Sent {
                 to: "seer".to_string(),
-                message: Message::Observation(state.observation("seer".to_string()).unwrap()),
+                message: Message::Announce {
+                    seq: 1,
+                    observation: state.observation("seer".to_string()).unwrap(),
+                },
             },
             Entry::Failed {
                 player: "seer".to_string(),
