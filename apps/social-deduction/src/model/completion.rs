@@ -14,7 +14,8 @@ use serde_json::Value;
 /// shown, and the one tool it is offered and must call.
 ///
 /// It serializes as the protocol has it: the tool in `tools`, and a
-/// `tool_choice` naming it.
+/// `tool_choice` of `"required"`, which, with the one tool offered, forces
+/// a call to it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Request {
     /// The model's id, exactly as the provider lists it.
@@ -38,18 +39,11 @@ impl Request {
 
 impl Serialize for Request {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        #[derive(Serialize)]
-        struct Named<'a> {
-            name: &'a str,
-        }
         let mut request = serializer.serialize_struct("Request", 4)?;
         request.serialize_field("model", &self.model)?;
         request.serialize_field("messages", &self.messages)?;
         request.serialize_field("tools", &[&self.tool])?;
-        let forced = Function::new(Named {
-            name: &self.tool.name,
-        });
-        request.serialize_field("tool_choice", &forced)?;
+        request.serialize_field("tool_choice", "required")?;
         request.end()
     }
 }
@@ -133,8 +127,7 @@ impl Serialize for Tool {
 }
 
 /// A function in the protocol's shape, `{"type": "function", "function":
-/// …}`: a [`Tool`] offered, when `function` describes one, or a
-/// `tool_choice`, when it only names one.
+/// …}`: a [`Tool`] offered, which `function` describes.
 #[derive(Serialize)]
 struct Function<F> {
     #[serde(rename = "type")]
@@ -249,7 +242,7 @@ mod tests {
                         },
                     },
                 }],
-                "tool_choice": {"type": "function", "function": {"name": "select"}},
+                "tool_choice": "required",
             })
         );
     }
