@@ -4,7 +4,9 @@
 //! once everyone awake has selected or at its limit, whichever comes
 //! first. Players who take seconds to decide hold nothing up.
 
-use super::{Choices, Entry, Message, Observation, Phase, PlayerId, Role, Rules, State, Team};
+use super::{
+    Choices, Entry, Hunt, Message, Observation, Phase, PlayerId, Role, Rules, State, Team,
+};
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Context, Think};
 use std::collections::{HashMap, HashSet};
@@ -122,24 +124,32 @@ impl Game {
         if seq != self.seq {
             return None;
         }
-        let dead = match self.state.phase {
-            Phase::Night => self
-                .state
-                .resolve_night(&self.selections, self.rules.night_vote.as_ref()),
-            Phase::Day => self
-                .state
-                .resolve_day(&self.selections, self.rules.day_vote.as_ref()),
+        let (hunt, dead) = match self.state.phase {
+            Phase::Night => {
+                let hunt = self
+                    .state
+                    .resolve_night(&self.selections, self.rules.night_vote.as_ref());
+                let dead = hunt.as_ref().and_then(|hunt| hunt.dead().cloned());
+                (hunt, dead)
+            }
+            Phase::Day => (
+                None,
+                self.state
+                    .resolve_day(&self.selections, self.rules.day_vote.as_ref()),
+            ),
         };
         let winner = self.state.winner();
         if winner.is_none() {
             self.state.next();
         }
-        Some(Ended { dead, winner })
+        Some(Ended { hunt, dead, winner })
     }
 }
 
-/// How a phase ended: who died in it, and who won the game if anyone.
+/// How a phase ended: the hunt, if it was a night in which the werewolves
+/// elected anyone, who died in it, and who won the game if anyone.
 struct Ended {
+    hunt: Option<Hunt>,
     dead: Option<PlayerId>,
     winner: Option<Team>,
 }
@@ -187,12 +197,16 @@ impl Environment {
         self.context.think_after(limit, Message::EndPhase { seq })
     }
 
-    /// End the phase numbered `seq`, unless it has already ended: stop
-    /// whoever died in it, and then end the game or open the next phase.
+    /// End the phase numbered `seq`, unless it has already ended: log the
+    /// hunt if there was one, stop whoever died, and then end the game or
+    /// open the next phase.
     fn end_phase(&self, seq: u64) -> anyhow::Result<()> {
-        let Some(Ended { dead, winner }) = self.game().end(seq) else {
+        let Some(Ended { hunt, dead, winner }) = self.game().end(seq) else {
             return Ok(());
         };
+        if let Some(hunt) = hunt {
+            self.context.log(Entry::Hunted(hunt));
+        }
         if let Some(player) = &dead {
             self.context.stop(player)?;
         }
@@ -356,6 +370,9 @@ mod tests {
         game.select(seq, &id("wolf"), &id("ann"));
         let night = game.end(seq).unwrap();
         assert_eq!(night.dead, Some(id("ann")));
+        let hunt = night.hunt.unwrap();
+        assert_eq!(hunt.victim, id("ann"));
+        assert!(hunt.protectors.is_empty());
         assert_eq!(night.winner, None);
         // The game goes on, so the next phase is the day.
         let day = game.open().unwrap();
@@ -364,6 +381,7 @@ mod tests {
         game.select(day.seq, &id("wolf"), &id("bob"));
         game.select(day.seq, &id("bob"), &id("wolf"));
         let tied = game.end(day.seq).unwrap();
+        assert_eq!(tied.hunt, None);
         assert_eq!(tied.dead, None);
         assert_eq!(tied.winner, None);
     }

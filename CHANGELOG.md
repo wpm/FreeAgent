@@ -28,6 +28,9 @@ workflow takes a version's notes from here.
 - `--log` and `--no-log` on every Werewolf variant, saying whether the game
   is logged to standard error. It is unless `--no-log` says otherwise, and
   the last one given wins.
+- The log records each night's hunt: whom the werewolves elected and which
+  doctors protected them. The narration tells it before who dies, so a
+  night in which nobody dies says why.
 - An optional think loop for actors: `Think`, `ThinkBuilder` and
   `ActorInit::think`, with `Context::think` to hand a message to it from
   either loop. It runs in a task of its own, so an actor keeps perceiving

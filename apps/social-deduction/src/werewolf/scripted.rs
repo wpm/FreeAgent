@@ -231,37 +231,49 @@ mod tests {
         let episode = game(roles.clone(), rules(), winner, logger);
         let (winner, logged, _) = run(episode, won, log).await.unwrap();
 
-        // Everything between is a message to or from a player, as it was.
+        // Everything between is a message to or from a player, as it was,
+        // or a night's hunt.
+        let between = between_the_deal_and_the_end(&logged, "Scripted", &roles, winner);
         let mut announced = 0;
-        for entry in between_the_deal_and_the_end(&logged, "Scripted", &roles, winner) {
-            match entry {
-                Entry::Sent {
-                    to,
-                    message: Message::Announce { seq, .. },
-                } => {
-                    assert!(roles.contains_key(to), "{to}");
-                    assert!(*seq >= 1, "{seq}");
-                    announced += 1;
-                }
-                Entry::Received {
-                    from,
-                    message:
-                        Message::Select {
-                            seq,
-                            from: said,
-                            target,
-                        },
-                } => {
-                    assert_eq!(from, said);
-                    assert!(roles.contains_key(from), "{from}");
-                    assert!(roles.contains_key(target), "{target}");
-                    assert!(*seq >= 1, "{seq}");
-                }
-                other => panic!("not a message to or from a player: {other:?}"),
+        let mut selected = 0;
+        let mut hunts = 0;
+        for entry in between {
+            if let Entry::Sent {
+                to,
+                message: Message::Announce { seq, .. },
+            } = entry
+            {
+                assert!(roles.contains_key(to), "{to}");
+                assert!(*seq >= 1, "{seq}");
+                announced += 1;
+            }
+            if let Entry::Received {
+                from,
+                message:
+                    Message::Select {
+                        seq,
+                        from: said,
+                        target,
+                    },
+            } = entry
+            {
+                assert_eq!(from, said);
+                assert!(roles.contains_key(from), "{from}");
+                assert!(roles.contains_key(target), "{target}");
+                assert!(*seq >= 1, "{seq}");
+                selected += 1;
+            }
+            if let Entry::Hunted(hunt) = entry {
+                assert!(roles.contains_key(&hunt.victim), "{hunt:?}");
+                hunts += 1;
             }
         }
-        // By the first night three players are announced the game.
+        // Nothing else is logged between.
+        assert_eq!(announced + selected + hunts, between.len(), "{logged:?}");
+        // By the first night three players are announced the game, and the
+        // werewolves, who always select, hunt.
         assert!(announced >= 3, "{logged:?}");
+        assert!(hunts >= 1, "{logged:?}");
     }
 
     #[tokio::test(start_paused = true)]

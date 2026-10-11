@@ -142,12 +142,18 @@ pub struct Environment {
 
 impl Environment {
     /// The werewolves, the doctor, and the seer each choose, and the night
-    /// is resolved from what they chose.
+    /// is resolved from what they chose. The hunt is logged, if the
+    /// werewolves elected anyone.
     async fn night(&mut self) -> anyhow::Result<()> {
         let choices = self.gather(self.rules.night_limit).await?;
-        let dead = self
+        let Some(hunt) = self
             .state
-            .resolve_night(&choices, self.rules.night_vote.as_ref());
+            .resolve_night(&choices, self.rules.night_vote.as_ref())
+        else {
+            return Ok(());
+        };
+        let dead = hunt.dead().cloned();
+        self.context.log(Entry::Hunted(hunt));
         self.bury(dead)
     }
 
@@ -380,29 +386,48 @@ mod tests {
         let roles = village().roles;
         let (winner, logged) = play(roles.clone(), Rules::default(), &[]).await.unwrap();
 
-        // Everything between is a message to or from a player, as it was.
+        // Everything between is a message to or from a player, as it was,
+        // or a night's hunt.
+        let doctors: HashSet<&PlayerId> = roles
+            .iter()
+            .filter(|(_, role)| **role == Role::Doctor)
+            .map(|(player, _)| player)
+            .collect();
+        let between = between_the_deal_and_the_end(&logged, "Uniform Random", &roles, winner);
         let mut shown = 0;
-        for entry in between_the_deal_and_the_end(&logged, "Uniform Random", &roles, winner) {
-            match entry {
-                Entry::Sent {
-                    to,
-                    message: Message::Observation(_),
-                } => {
-                    assert!(roles.contains_key(to), "{to}");
-                    shown += 1;
-                }
-                Entry::Replied {
-                    from,
-                    message: Message::Action(chosen),
-                } => {
-                    assert!(roles.contains_key(from), "{from}");
-                    assert!(roles.contains_key(chosen), "{chosen}");
-                }
-                other => panic!("not a message to or from a player: {other:?}"),
+        let mut chosen = 0;
+        let mut hunts = 0;
+        for entry in between {
+            if let Entry::Sent {
+                to,
+                message: Message::Observation(_),
+            } = entry
+            {
+                assert!(roles.contains_key(to), "{to}");
+                shown += 1;
+            }
+            if let Entry::Replied {
+                from,
+                message: Message::Action(choice),
+            } = entry
+            {
+                assert!(roles.contains_key(from), "{from}");
+                assert!(roles.contains_key(choice), "{choice}");
+                chosen += 1;
+            }
+            if let Entry::Hunted(hunt) = entry {
+                assert!(roles.contains_key(&hunt.victim), "{hunt:?}");
+                let protectors: HashSet<&PlayerId> = hunt.protectors.iter().collect();
+                assert!(protectors.is_subset(&doctors), "{hunt:?}");
+                hunts += 1;
             }
         }
-        // By the first night three players are shown the game.
+        // Nothing else is logged between.
+        assert_eq!(shown + chosen + hunts, between.len(), "{logged:?}");
+        // By the first night three players are shown the game, and the
+        // werewolves, who always choose, hunt.
         assert!(shown >= 3, "{logged:?}");
+        assert!(hunts >= 1, "{logged:?}");
     }
 
     #[tokio::test]
