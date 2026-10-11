@@ -3,9 +3,16 @@
 //! they come, and ends the phase
 //! once everyone awake has selected or at its limit, whichever comes
 //! first. Players who take seconds to decide hold nothing up.
+//!
+//! The environment logs the deal, then the configuration if there is one;
+//! an [`Entry::Action`] for each announcement it sends, numbered in one
+//! series from 1; an [`Entry::Observation`] for each selection it
+//! receives, stale or not, with the phase it was in when the selection
+//! arrived; each night's hunt as [`Entry::Hunted`]; and the result. The
+//! reminder it sends itself to end a phase is not logged.
 
 use super::{
-    Choices, Entry, Hunt, Message, Observation, Phase, PlayerId, Role, Rules, State, Team,
+    Choices, Entry, Hunt, Message, Phase, PlayerId, Role, Rules, State, Team, act, observe,
 };
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Context, Think};
@@ -38,7 +45,7 @@ where
             wrap(Environment {
                 context,
                 game,
-                configuration,
+                configuration: configuration.map(Box::new),
             })
         }),
         think: Some(Box::new(move |context| {
@@ -61,6 +68,9 @@ struct Game {
     rules: Rules,
     /// The number of the current phase. The first night is 1.
     seq: u64,
+    /// The number of the last message the environment sent to a player.
+    /// Each announcement is a message of its own.
+    n: u64,
     /// The players awake in the current phase.
     awake: HashSet<PlayerId>,
     /// The first selection each awake player made in the current phase.
@@ -79,6 +89,7 @@ impl Game {
             state: State::new(roles),
             rules,
             seq: 0,
+            n: 0,
             awake: HashSet::new(),
             selections: Choices::new(),
             winner: Some(winner),
@@ -86,24 +97,30 @@ impl Game {
         }
     }
 
-    /// Open the next phase: number it, wake its players, and clear the
-    /// selections.
+    /// Open the next phase: number it, wake its players, write each one
+    /// its announcement, numbered in turn, and clear the selections.
     fn open(&mut self) -> anyhow::Result<Opened> {
         self.seq += 1;
         self.awake = self.state.awake();
         self.selections.clear();
-        let shown = self
-            .awake
-            .iter()
-            .map(|player| Ok((player.clone(), self.state.observation(player.clone())?)))
-            .collect::<anyhow::Result<Vec<_>>>()?;
         let limit = match self.state.phase {
             Phase::Night => self.rules.night_limit,
             Phase::Day => self.rules.day_limit,
         };
+        let mut announcements = Vec::new();
+        for player in &self.awake {
+            self.n += 1;
+            let message = Message::Announce {
+                seq: self.seq,
+                n: self.n,
+                view: self.state.view(player.clone())?,
+                limit,
+            };
+            announcements.push((player.clone(), message));
+        }
         Ok(Opened {
             seq: self.seq,
-            shown,
+            announcements,
             limit,
         })
     }
@@ -158,11 +175,11 @@ struct Ended {
     winner: Option<Team>,
 }
 
-/// A phase just opened: its number, what each awake player may see of it,
-/// and how long it waits for them.
+/// A phase just opened: its number, the announcement for each awake
+/// player, and how long it waits for them.
 struct Opened {
     seq: u64,
-    shown: Vec<(PlayerId, Observation)>,
+    announcements: Vec<(PlayerId, Message)>,
     limit: Duration,
 }
 
@@ -175,8 +192,9 @@ pub struct Environment {
     context: Context<Message, Entry>,
     game: Arc<Mutex<Game>>,
     /// The entry the perceive loop logs right after the deal, if any.
-    /// Taken when logged.
-    configuration: Option<Entry>,
+    /// Taken when logged. Boxed to keep the environment no larger than a
+    /// player in a variant's actor enum.
+    configuration: Option<Box<Entry>>,
 }
 
 impl Environment {
@@ -186,17 +204,17 @@ impl Environment {
         self.game.lock().unwrap()
     }
 
-    /// Open the next phase: show each awake player what it may see of it,
-    /// and set the timer that ends it at its limit.
+    /// Open the next phase: show each awake player what it may see of it
+    /// and how long it lasts, each announcement an action of its own, and
+    /// set the timer that ends it at its limit.
     fn open_phase(&self) -> anyhow::Result<()> {
-        let Opened { seq, shown, limit } = self.game().open()?;
-        for (to, observation) in shown {
-            let message = Message::Announce { seq, observation };
-            self.context.log(Entry::Sent {
-                to: to.clone(),
-                message: message.clone(),
-            });
-            self.context.send(message, HashSet::from([to]))?;
+        let Opened {
+            seq,
+            announcements,
+            limit,
+        } = self.game().open()?;
+        for (to, message) in announcements {
+            act(&self.context, message, HashSet::from([to]), None)?;
         }
         self.context.think_after(limit, Message::EndPhase { seq })
     }
@@ -209,7 +227,7 @@ impl Environment {
             return Ok(());
         };
         if let Some(hunt) = hunt {
-            self.context.log(Entry::Hunted(hunt));
+            self.context.log(Entry::Hunted { seq, hunt });
         }
         if let Some(player) = &dead {
             self.context.stop(player)?;
@@ -260,15 +278,22 @@ impl Behavior for Environment {
         &self.context
     }
 
-    /// Log a selection, stale or not, and record it if it counts. The last
-    /// selection a phase is waiting for ends it. Anything else is ignored.
+    /// Log a selection as observed in the current phase, stale or not, and
+    /// record it if it counts. The last selection a phase is waiting for
+    /// ends it. Anything else is ignored.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        if let Message::Select { seq, from, target } = message {
-            self.context.log(Entry::Received {
-                from: from.clone(),
-                message: message.clone(),
-            });
-            let last = self.game().select(*seq, from, target);
+        if let Message::Select {
+            seq,
+            from,
+            n,
+            target,
+        } = message
+        {
+            let (current, last) = {
+                let mut game = self.game();
+                (game.seq, game.select(*seq, from, target))
+            };
+            observe(&self.context, from.clone(), *n, current);
             if last {
                 self.context.think(Message::EndPhase { seq: *seq })?;
             }
@@ -285,7 +310,7 @@ impl Behavior for Environment {
         };
         self.context.log(start);
         if let Some(configuration) = self.configuration.take() {
-            self.context.log(configuration);
+            self.context.log(*configuration);
         }
         self.open_phase()
     }
@@ -322,19 +347,48 @@ mod tests {
         (game, night)
     }
 
+    /// Whom `opened` announces to, in name order, and the numbers of its
+    /// announcements, in order.
+    fn announced(opened: &Opened) -> (Vec<&PlayerId>, Vec<u64>) {
+        let mut to: Vec<&PlayerId> = opened.announcements.iter().map(|(to, _)| to).collect();
+        to.sort();
+        let mut numbers: Vec<u64> = opened
+            .announcements
+            .iter()
+            .map(|(_, message)| message.number().unwrap())
+            .collect();
+        numbers.sort_unstable();
+        (to, numbers)
+    }
+
     #[test]
-    fn opening_a_phase_numbers_it_from_one_and_shows_it_to_the_awake() {
+    fn opening_a_phase_numbers_it_from_one_and_announces_it_to_the_awake() {
         let (mut game, night) = opened();
         assert_eq!(night.seq, 1);
-        let mut shown: Vec<PlayerId> = night.shown.into_iter().map(|(player, _)| player).collect();
-        shown.sort();
-        assert_eq!(shown, ["seer", "wolf1", "wolf2"]);
+        let (to, _) = announced(&night);
+        assert_eq!(to, ["seer", "wolf1", "wolf2"]);
         assert_eq!(night.limit, Rules::default().night_limit);
         game.state.next();
         let day = game.open().unwrap();
         assert_eq!(day.seq, 2);
-        assert_eq!(day.shown.len(), 4);
+        assert_eq!(day.announcements.len(), 4);
         assert_eq!(day.limit, Rules::default().day_limit);
+    }
+
+    #[test]
+    fn each_announcement_is_numbered_in_one_series_from_one_and_carries_its_phase_and_limit() {
+        let (mut game, night) = opened();
+        assert_eq!(announced(&night).1, [1, 2, 3]);
+        game.state.next();
+        let day = game.open().unwrap();
+        assert_eq!(announced(&day).1, [4, 5, 6, 7]);
+        for (_, message) in &day.announcements {
+            assert!(
+                matches!(message, Message::Announce { seq: 2, limit, .. }
+                    if *limit == Rules::default().day_limit),
+                "{message:?}"
+            );
+        }
     }
 
     #[test]
