@@ -6,6 +6,7 @@
 tool_models = [
   # Local
   "qwen2.5-7b-instruct",
+  "qwen2.5-7b-instruct-1m",
 
   # Anthropic, through its OpenAI-compatible endpoint
   "claude-fable-5-1",
