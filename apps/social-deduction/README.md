@@ -41,7 +41,9 @@ social-deduction werewolf uniform-random [--werewolves N] [--villagers N] [--doc
 
 The table seats two werewolves, three villagers, a doctor and a seer unless
 the counts say otherwise. The game is told on standard output as it happens
-and logged to standard error as JSON Lines.
+and logged to standard error as JSON Lines. Every variant takes `--no-log`,
+which leaves the log out, and `--log`, which keeps it; the last one given
+wins.
 
 In `scripted` the environment announces each phase and waits for the
 players' selections, as it does for language models, and every player is a

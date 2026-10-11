@@ -25,6 +25,9 @@ workflow takes a version's notes from here.
   selections, and every player is a script that selects at once at random.
   It takes the role counts, `--night-limit` and `--day-limit`, with defaults
   in the code and no configuration file.
+- `--log` and `--no-log` on every Werewolf variant, saying whether the game
+  is logged to standard error. It is unless `--no-log` says otherwise, and
+  the last one given wins.
 - An optional think loop for actors: `Think`, `ThinkBuilder` and
   `ActorInit::think`, with `Context::think` to hand a message to it from
   either loop. It runs in a task of its own, so an actor keeps perceiving
