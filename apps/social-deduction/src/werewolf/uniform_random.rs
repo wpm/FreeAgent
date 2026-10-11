@@ -393,33 +393,37 @@ mod tests {
             .filter(|(_, role)| **role == Role::Doctor)
             .map(|(player, _)| player)
             .collect();
+        let between = between_the_deal_and_the_end(&logged, "Uniform Random", &roles, winner);
         let mut shown = 0;
+        let mut chosen = 0;
         let mut hunts = 0;
-        for entry in between_the_deal_and_the_end(&logged, "Uniform Random", &roles, winner) {
-            match entry {
-                Entry::Hunted(hunt) => {
-                    assert!(roles.contains_key(&hunt.victim), "{hunt:?}");
-                    let protectors: HashSet<&PlayerId> = hunt.protectors.iter().collect();
-                    assert!(protectors.is_subset(&doctors), "{hunt:?}");
-                    hunts += 1;
-                }
-                Entry::Sent {
-                    to,
-                    message: Message::Observation(_),
-                } => {
-                    assert!(roles.contains_key(to), "{to}");
-                    shown += 1;
-                }
-                Entry::Replied {
-                    from,
-                    message: Message::Action(chosen),
-                } => {
-                    assert!(roles.contains_key(from), "{from}");
-                    assert!(roles.contains_key(chosen), "{chosen}");
-                }
-                other => panic!("not a message to or from a player: {other:?}"),
+        for entry in between {
+            if let Entry::Sent {
+                to,
+                message: Message::Observation(_),
+            } = entry
+            {
+                assert!(roles.contains_key(to), "{to}");
+                shown += 1;
+            }
+            if let Entry::Replied {
+                from,
+                message: Message::Action(choice),
+            } = entry
+            {
+                assert!(roles.contains_key(from), "{from}");
+                assert!(roles.contains_key(choice), "{choice}");
+                chosen += 1;
+            }
+            if let Entry::Hunted(hunt) = entry {
+                assert!(roles.contains_key(&hunt.victim), "{hunt:?}");
+                let protectors: HashSet<&PlayerId> = hunt.protectors.iter().collect();
+                assert!(protectors.is_subset(&doctors), "{hunt:?}");
+                hunts += 1;
             }
         }
+        // Nothing else is logged between.
+        assert_eq!(shown + chosen + hunts, between.len(), "{logged:?}");
         // By the first night three players are shown the game, and the
         // werewolves, who always choose, hunt.
         assert!(shown >= 3, "{logged:?}");
