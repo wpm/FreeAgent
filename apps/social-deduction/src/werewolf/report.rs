@@ -19,8 +19,8 @@ enum Voice {
 
 /// Turns the log's entries, one at a time, into lines of prose. The
 /// omniscient narrator tells the table, a player to a line, then each
-/// night and day with what
-/// every player did and how it ended, then who won. A player's narrator
+/// night and day with what every player did and how it ended, then who
+/// won and the survivors, a player to a line. A player's narrator
 /// tells the same nights and days from what that player was shown, in the
 /// second person, with no table. Each names a player with its role in
 /// parentheses whenever it knows the role, except in reporting its death,
@@ -106,16 +106,17 @@ impl Narrator {
                 survivors,
             } => {
                 let mut lines = self.outcome(survivors, false);
-                let seats: Vec<String> = in_order(survivors)
-                    .into_iter()
-                    .map(|player| self.seat(player).to_string())
-                    .collect();
                 lines.push(String::new());
                 lines.push(format!(
-                    "The {winner} win after {days} {}. Survivors: {}.",
-                    if *days == 1 { "day" } else { "days" },
-                    seats.join(", ")
+                    "The {winner} win after {days} {}.",
+                    if *days == 1 { "day" } else { "days" }
                 ));
+                lines.push("Survivors:".to_string());
+                lines.extend(
+                    in_order(survivors)
+                        .into_iter()
+                        .map(|player| self.seat(player).to_string()),
+                );
                 lines
             }
             _ => vec![],
@@ -585,7 +586,9 @@ mod tests {
                 "player10 (villager) votes against player2 (werewolf).",
                 "player1 and player10 are voted out.",
                 "",
-                "The werewolves win after 1 day. Survivors: player2 (werewolf)."
+                "The werewolves win after 1 day.",
+                "Survivors:",
+                "player2 (werewolf)"
             ]
         );
     }
@@ -663,7 +666,10 @@ mod tests {
             [
                 "wolf is voted out.",
                 "",
-                "The villagers win after 1 day. Survivors: doctor (doctor), seer (seer)."
+                "The villagers win after 1 day.",
+                "Survivors:",
+                "doctor (doctor)",
+                "seer (seer)"
             ]
         );
     }
@@ -705,7 +711,10 @@ mod tests {
                 "seer (seer) votes against wolf (werewolf).",
                 "wolf is voted out.",
                 "",
-                "The villagers win after 1 day. Survivors: doctor (doctor), seer (seer)."
+                "The villagers win after 1 day.",
+                "Survivors:",
+                "doctor (doctor)",
+                "seer (seer)"
             ]
         );
     }
@@ -806,7 +815,12 @@ mod tests {
         narrator.narrate(&start());
         assert_eq!(
             narrator.narrate(&ended(Team::Villagers, 1, &["stranger"])),
-            ["", "The villagers win after 1 day. Survivors: stranger."]
+            [
+                "",
+                "The villagers win after 1 day.",
+                "Survivors:",
+                "stranger"
+            ]
         );
     }
 
@@ -825,7 +839,10 @@ mod tests {
             [
                 "doctor and seer die.",
                 "",
-                "The werewolves win after 0 days. Survivors: ann (villager), wolf (werewolf)."
+                "The werewolves win after 0 days.",
+                "Survivors:",
+                "ann (villager)",
+                "wolf (werewolf)"
             ]
         );
     }
@@ -845,7 +862,10 @@ mod tests {
             [
                 "doctor and seer are voted out.",
                 "",
-                "The werewolves win after 1 day. Survivors: ann (villager), wolf (werewolf)."
+                "The werewolves win after 1 day.",
+                "Survivors:",
+                "ann (villager)",
+                "wolf (werewolf)"
             ]
         );
     }
@@ -1080,7 +1100,11 @@ mod tests {
             [
                 "ann dies.",
                 "",
-                "The werewolves win after 0 days. Survivors: doctor, seer (seer), wolf (werewolf)."
+                "The werewolves win after 0 days.",
+                "Survivors:",
+                "doctor",
+                "seer (seer)",
+                "wolf (werewolf)"
             ]
         );
     }

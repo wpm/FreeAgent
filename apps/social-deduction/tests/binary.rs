@@ -85,7 +85,8 @@ fn assert_plays_the_default_table(
         panic!("{events:?}");
     };
     // The account opens with the table, a player to a line, goes through
-    // the first night, set off by a blank line, and closes with the winner.
+    // the first night, set off by a blank line, and closes with the winner
+    // and the survivors, a player to a line.
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
         lines[0],
@@ -100,13 +101,19 @@ fn assert_plays_the_default_table(
     }
     assert_eq!(lines[8], "", "{printed}");
     assert_eq!(lines[9], "Night 1.", "{printed}");
-    assert!(
-        lines
-            .last()
-            .unwrap()
-            .starts_with(&format!("The {winner} win after ")),
-        "{printed}"
-    );
+    let won = lines
+        .iter()
+        .position(|line| line.starts_with(&format!("The {winner} win after ")))
+        .unwrap_or_else(|| panic!("{printed}"));
+    assert_eq!(lines[won - 1], "", "{printed}");
+    assert_eq!(lines[won + 1], "Survivors:", "{printed}");
+    assert!(!lines[won + 2..].is_empty(), "{printed}");
+    for seat in &lines[won + 2..] {
+        assert!(
+            seat.starts_with("player") && seat.ends_with(')'),
+            "{printed}"
+        );
+    }
     events
 }
 
