@@ -237,10 +237,6 @@ fn help_lists_the_games_the_variants_and_the_role_counts() {
     }
 }
 
-/// The base URL the examples name. Something may well be listening there,
-/// so no test asks it anything.
-const EXAMPLE_BASE_URL: &str = "http://localhost:1234/v1";
-
 /// The model the examples name.
 const EXAMPLE_MODEL: &str = "qwen2.5-7b-instruct";
 
@@ -253,17 +249,28 @@ fn example(name: &str) -> String {
 }
 
 /// A configuration file written for this test: the example `name` with its
-/// provider replaced by one at `base_url` and its model by `id`, in the
-/// target directory, at a path of its own so the tests do not collide.
+/// provider replaced by one at `base_url` and its model by `id`, each on
+/// the line of the `[model]` table that names it, in the target directory,
+/// at a path of its own so the tests do not collide.
 fn configured(test: &str, name: &str, base_url: &str, id: &str) -> String {
     let path = format!("{}/{test}.toml", env!("CARGO_TARGET_TMPDIR"));
     let example = std::fs::read_to_string(example(name)).unwrap();
-    for named in [EXAMPLE_BASE_URL, EXAMPLE_MODEL] {
-        assert!(example.contains(named), "{name} no longer names {named}");
+    let mut file = String::new();
+    for line in example.lines() {
+        let line = match line.split_once(" = ") {
+            Some(("base_url", _)) => format!("base_url = \"{base_url}\""),
+            Some(("id", _)) => format!("id = \"{id}\""),
+            _ => line.to_string(),
+        };
+        file.push_str(&line);
+        file.push('\n');
     }
-    let file = example
-        .replace(EXAMPLE_BASE_URL, base_url)
-        .replace(EXAMPLE_MODEL, id);
+    for named in [base_url, id] {
+        assert!(
+            file.contains(named),
+            "{name} has no line to name {named} on"
+        );
+    }
     std::fs::write(&path, file).unwrap();
     path
 }
@@ -369,7 +376,7 @@ fn a_configuration_file_that_cannot_be_read_is_an_error_naming_it() {
 #[test]
 fn the_llm_variant_refuses_a_model_that_does_not_select_when_asked_in_the_provider_s_words() {
     let base_url = refusing(&[EXAMPLE_MODEL]);
-    let config = configured("unselecting", "personas.toml", &base_url, EXAMPLE_MODEL);
+    let config = configured("unselecting", "minimal.toml", &base_url, EXAMPLE_MODEL);
     let stderr = refused(&["werewolf", "llm", &config]);
     assert!(stderr.contains(EXAMPLE_MODEL), "{stderr}");
     assert!(
@@ -431,7 +438,7 @@ fn the_models_command_with_check_asks_each_model_for_a_selection_and_marks_its_a
 
 #[test]
 fn the_models_command_with_ids_to_check_asks_only_those_and_needs_each_to_be_listed() {
-    let base_url = playing_only(&["zephyr-7b", EXAMPLE_MODEL, "llama-3.1-8b-instruct"], &[]);
+    let base_url = refusing(&["zephyr-7b", EXAMPLE_MODEL, "llama-3.1-8b-instruct"]);
     let output = succeeded(&["models", &base_url, "--check", EXAMPLE_MODEL]);
     let printed = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = printed.lines().collect();

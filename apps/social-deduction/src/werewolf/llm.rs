@@ -788,14 +788,10 @@ pub async fn check_selects(model: &dyn model::Model, model_id: &str) -> anyhow::
         ],
         select(&candidates),
     );
-    let checked = async {
-        let response = model.complete(&request).await?;
-        selected(&response, &candidates)
-    };
-    checked
-        .await
-        .map(drop)
-        .with_context(|| format!("{model_id} did not select when asked"))
+    let context = || format!("{model_id} did not select when asked");
+    let response = model.complete(&request).await.with_context(context)?;
+    selected(&response, &candidates).with_context(context)?;
+    Ok(())
 }
 
 /// The name of the one tool a player is offered.
@@ -2002,9 +1998,8 @@ player2 = \"Cautious.\"
 
     #[tokio::test]
     async fn the_probe_names_the_url_and_what_the_server_said_when_the_request_is_refused() {
-        let said = r#"{"error": {"message": "This model does not support tools"}}"#;
-        let (base_url, _served) = canned::answering("400 Bad Request", said);
-        let provider = Provider::new(base_url.clone(), None, REQUEST_TIMEOUT).unwrap();
+        let base_url = canned::refusing(&[MODEL_ID]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
         let error = check_selects(&provider, MODEL_ID).await.unwrap_err();
         let shown = format!("{error:#}");
         assert!(shown.starts_with(MODEL_ID), "{shown}");
@@ -2014,10 +2009,7 @@ player2 = \"Cautious.\"
             )),
             "{shown}"
         );
-        assert!(
-            shown.ends_with("This model does not support tools"),
-            "{shown}"
-        );
+        assert!(shown.ends_with(&canned::refusal(MODEL_ID)), "{shown}");
     }
 
     #[test]

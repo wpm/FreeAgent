@@ -328,11 +328,17 @@ impl Provider {
     /// Check that the provider serves the model `id`: that it is in the
     /// provider's listing. The error names the provider and the model.
     pub async fn check_serves(&self, id: &str) -> anyhow::Result<()> {
-        if self.models().await?.iter().any(|served| served == id) {
-            Ok(())
-        } else {
-            bail!("{} does not serve a model with the id {id}", self.base_url)
-        }
+        check_listed(&self.base_url, &self.models().await?, id)
+    }
+}
+
+/// Check that `listing`, the ids the provider at `base_url` serves, has the
+/// model `id`. The error names the provider and the model.
+pub fn check_listed(base_url: &str, listing: &[String], id: &str) -> anyhow::Result<()> {
+    if listing.iter().any(|served| served == id) {
+        Ok(())
+    } else {
+        bail!("{base_url} does not serve a model with the id {id}")
     }
 }
 

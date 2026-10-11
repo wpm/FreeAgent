@@ -3,11 +3,10 @@
 //! on standard output as it happens. Or list the models a provider serves,
 //! which belongs to no game.
 
-use anyhow::bail;
 use clap::{Args, Parser, Subcommand};
 use free_agent::{Behavior, Episode, Logger};
 use social_deduction::model::{
-    Model, Provider, REQUEST_TIMEOUT, api_key, key_variable, known_providers,
+    Model, Provider, REQUEST_TIMEOUT, api_key, check_listed, key_variable, known_providers,
 };
 use social_deduction::werewolf::llm::{self, Config};
 use social_deduction::werewolf::report::Narrator;
@@ -167,7 +166,12 @@ async fn main() -> anyhow::Result<()> {
             ids.sort();
             let listing = match check {
                 None => plain(&ids),
-                Some(check) => marked(&checked(&provider, &base_url, ids, &check).await?),
+                Some(check) => {
+                    for id in &check {
+                        check_listed(&base_url, &ids, id)?;
+                    }
+                    marked(&checked(&provider, ids, &check).await?)
+                }
             };
             print!("{listing}");
             Ok(())
@@ -206,33 +210,16 @@ enum Mark {
     Unchecked,
 }
 
-impl Mark {
-    /// The mark as the listing shows it before the id: `* `, `! `, or two
-    /// spaces, so the ids line up.
-    fn shown(self) -> &'static str {
-        match self {
-            Mark::Selected => "* ",
-            Mark::DidNotSelect => "! ",
-            Mark::Unchecked => "  ",
-        }
-    }
-}
-
 /// Each of `ids`, in order, with its mark: those in `check`, or every one
 /// of them when `check` is empty, are asked by `model` for a selection one
 /// at a time, since a local server loads each model it is asked for. The
 /// reason a model that did not select failed goes to standard error, one
-/// line per model. An id in `check` that is not in `ids` is an error
-/// naming it and `base_url`, before anything is asked.
+/// line per model.
 async fn checked(
     model: &dyn Model,
-    base_url: &str,
     ids: Vec<String>,
     check: &[String],
 ) -> anyhow::Result<Vec<(String, Mark)>> {
-    if let Some(id) = check.iter().find(|id| !ids.contains(id)) {
-        bail!("{base_url} does not serve a model with the id {id}");
-    }
     let mut marked = Vec::new();
     for id in ids {
         let mark = if check.is_empty() || check.contains(&id) {
@@ -257,12 +244,17 @@ fn plain(ids: &[String]) -> String {
 }
 
 /// The listing `models --check` prints: one id per line, in order, each
-/// after its mark, then, set off by an empty line, a line saying what the
-/// marks mean.
+/// after its mark, `* `, `! ` or two spaces, so the ids line up, then, set
+/// off by an empty line, a line saying what the marks mean.
 fn marked(models: &[(String, Mark)]) -> String {
     let mut listing = String::new();
     for (id, mark) in models {
-        writeln!(listing, "{}{id}", mark.shown()).unwrap();
+        let shown = match mark {
+            Mark::Selected => "* ",
+            Mark::DidNotSelect => "! ",
+            Mark::Unchecked => "  ",
+        };
+        writeln!(listing, "{shown}{id}").unwrap();
     }
     if !models.is_empty() {
         listing.push('\n');
@@ -310,6 +302,7 @@ async fn play<A: Behavior<Log = Entry> + 'static>(
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    use social_deduction::model::canned::refusal;
     use social_deduction::model::fake::{FakeModel, choosing_first};
     use std::collections::HashSet;
 
@@ -599,7 +592,7 @@ mod tests {
             if request.model == id {
                 choosing_first(request)
             } else {
-                Err(anyhow::anyhow!("{} does not support tools", request.model))
+                Err(anyhow::anyhow!("{}", refusal(&request.model)))
             }
         })
     }
@@ -607,9 +600,8 @@ mod tests {
     #[tokio::test]
     async fn every_model_listed_is_checked_unless_ids_are_given_and_then_only_those() {
         let ids = ["gpt-0", "llama", "qwen2.5-7b-instruct"].map(String::from);
-        let base_url = "http://localhost:1234/v1";
         let model = selecting_only_as("qwen2.5-7b-instruct");
-        let marked = checked(&model, base_url, ids.to_vec(), &[]).await.unwrap();
+        let marked = checked(&model, ids.to_vec(), &[]).await.unwrap();
         assert_eq!(
             marked,
             [
@@ -623,9 +615,7 @@ mod tests {
         // Only the ids given, in the listing's order.
         let model = selecting_only_as("qwen2.5-7b-instruct");
         let check = ["qwen2.5-7b-instruct", "gpt-0"].map(String::from);
-        let marked = checked(&model, base_url, ids.to_vec(), &check)
-            .await
-            .unwrap();
+        let marked = checked(&model, ids.to_vec(), &check).await.unwrap();
         assert_eq!(
             marked,
             [
@@ -636,19 +626,5 @@ mod tests {
         );
         let asked: Vec<String> = model.requests().into_iter().map(|r| r.model).collect();
         assert_eq!(asked, ["gpt-0", "qwen2.5-7b-instruct"]);
-    }
-
-    #[tokio::test]
-    async fn an_id_to_check_that_is_not_listed_is_an_error_naming_it_before_anything_is_asked() {
-        let ids = ["qwen2.5-7b-instruct"].map(String::from);
-        let model = selecting_only_as("qwen2.5-7b-instruct");
-        let check = ["qwen2.5-7b-instruct", "gpt-0"].map(String::from);
-        let error = checked(&model, "http://localhost:1234/v1", ids.to_vec(), &check)
-            .await
-            .unwrap_err();
-        let shown = format!("{error:#}");
-        assert!(shown.contains("gpt-0"), "{shown}");
-        assert!(shown.contains("http://localhost:1234/v1"), "{shown}");
-        assert!(model.requests().is_empty());
     }
 }
