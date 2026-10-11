@@ -2,7 +2,9 @@
 //! standard output, and logs it to standard error as JSON lines.
 
 use free_agent::Event;
-use social_deduction::model::canned::{playing, serving, unreachable};
+use social_deduction::model::canned::{
+    playing, playing_only, refusal, refusing, serving, unreachable, wanting_a_key,
+};
 use social_deduction::werewolf::llm::Configuration;
 use social_deduction::werewolf::{Entry, PlayerId, Role};
 use std::collections::HashMap;
@@ -51,7 +53,10 @@ fn played(variant: &str, args: &[&str]) -> (Vec<Event<Entry>>, String) {
 
 /// The variation and the deal the log opens with.
 fn start(events: &[Event<Entry>]) -> (&str, &HashMap<PlayerId, Role>) {
-    let Some(Entry::Start { variation, roles }) = events.first().map(|event| &event.payload) else {
+    let Some(Entry::Start {
+        variation, roles, ..
+    }) = events.first().map(|event| &event.payload)
+    else {
         panic!("{events:?}");
     };
     (variation, roles)
@@ -84,9 +89,10 @@ fn assert_plays_the_default_table(
     let Some(Entry::End { winner, .. }) = events.last().map(|event| &event.payload) else {
         panic!("{events:?}");
     };
-    // The account opens with the table, a player to a line, goes through
-    // the first night, set off by a blank line, and closes with the winner
-    // and the survivors, a player to a line.
+    // The account opens with the table, a player to a line, then the
+    // limits, goes through the first night, set off by a blank line, tells
+    // how long the last phase took, and closes with the winner and the
+    // survivors, a player to a line.
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
         lines[0],
@@ -99,12 +105,21 @@ fn assert_plays_the_default_table(
             "{printed}"
         );
     }
-    assert_eq!(lines[8], "", "{printed}");
-    assert_eq!(lines[9], "Night 1.", "{printed}");
+    assert!(
+        lines[8].starts_with("A night waits ") && lines[8].contains(" and a day "),
+        "{printed}"
+    );
+    assert_eq!(lines[9], "", "{printed}");
+    assert_eq!(lines[10], "Night 1.", "{printed}");
     let won = lines
         .iter()
         .position(|line| line.starts_with(&format!("The {winner} win after ")))
         .unwrap_or_else(|| panic!("{printed}"));
+    let took = lines[won - 2];
+    assert!(
+        (took.starts_with("Night ") || took.starts_with("Day ")) && took.contains(" took "),
+        "{printed}"
+    );
     assert_eq!(lines[won - 1], "", "{printed}");
     assert_eq!(lines[won + 1], "Survivors:", "{printed}");
     assert!(!lines[won + 2..].is_empty(), "{printed}");
@@ -222,11 +237,7 @@ fn help_lists_the_games_the_variants_and_the_role_counts() {
     }
 }
 
-/// The base URL the examples name. Something may well be listening there,
-/// so no test asks it anything.
-const EXAMPLE_BASE_URL: &str = "http://localhost:1234/v1";
-
-/// The model the examples name, which is known to make tool calls.
+/// The model the examples name.
 const EXAMPLE_MODEL: &str = "qwen2.5-7b-instruct";
 
 /// An example configuration file, by its name in the examples directory.
@@ -238,17 +249,35 @@ fn example(name: &str) -> String {
 }
 
 /// A configuration file written for this test: the example `name` with its
-/// provider replaced by one at `base_url` and its model by `id`, in the
+/// provider replaced by one at `base_url` and its model by `id`, each on
+/// the line of the `[model]` table that names it and nowhere else, in the
 /// target directory, at a path of its own so the tests do not collide.
 fn configured(test: &str, name: &str, base_url: &str, id: &str) -> String {
     let path = format!("{}/{test}.toml", env!("CARGO_TARGET_TMPDIR"));
     let example = std::fs::read_to_string(example(name)).unwrap();
-    for named in [EXAMPLE_BASE_URL, EXAMPLE_MODEL] {
-        assert!(example.contains(named), "{name} no longer names {named}");
+    let replacements = [
+        ("base_url", format!("base_url = \"{base_url}\"")),
+        ("id", format!("id = \"{id}\"")),
+    ];
+    let mut table = "";
+    let mut file = String::new();
+    for line in example.lines() {
+        if line.starts_with('[') {
+            table = line;
+        }
+        let key = line.split_once(" = ").map(|(key, _)| key);
+        let replacement = replacements
+            .iter()
+            .find(|(named, _)| table == "[model]" && key == Some(named));
+        file.push_str(replacement.map_or(line, |(_, written)| written));
+        file.push('\n');
     }
-    let file = example
-        .replace(EXAMPLE_BASE_URL, base_url)
-        .replace(EXAMPLE_MODEL, id);
+    for (_, line) in &replacements {
+        assert!(
+            file.lines().any(|written| written == line),
+            "{name} has no line of its [model] table to write {line} on"
+        );
+    }
     std::fs::write(&path, file).unwrap();
     path
 }
@@ -352,13 +381,18 @@ fn a_configuration_file_that_cannot_be_read_is_an_error_naming_it() {
 }
 
 #[test]
-fn the_llm_variant_refuses_a_model_not_known_to_make_tool_calls_before_asking_anyone() {
-    // The example provider is not there, which goes unnoticed: the check
-    // needs no network.
-    let config = configured("unknown", "minimal.toml", EXAMPLE_BASE_URL, "gpt-0");
+fn the_llm_variant_refuses_a_model_that_does_not_select_when_asked_in_the_provider_s_words() {
+    let base_url = refusing(&[EXAMPLE_MODEL]);
+    let config = configured("unselecting", "minimal.toml", &base_url, EXAMPLE_MODEL);
     let stderr = refused(&["werewolf", "llm", &config]);
-    assert!(stderr.contains("gpt-0"), "{stderr}");
-    assert!(stderr.contains("src/models.toml"), "{stderr}");
+    assert!(stderr.contains(EXAMPLE_MODEL), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "POST {base_url}/chat/completions was answered 400"
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&refusal(EXAMPLE_MODEL)), "{stderr}");
 }
 
 #[test]
@@ -371,21 +405,89 @@ fn the_llm_variant_refuses_a_model_its_provider_does_not_serve() {
 }
 
 #[test]
-fn the_models_command_lists_the_provider_s_models_sorted_and_marks_those_that_make_tool_calls() {
+fn the_models_command_lists_the_provider_s_models_sorted_and_plain() {
     let base_url = serving(&["zephyr-7b", EXAMPLE_MODEL, "llama-3.1-8b-instruct"]);
-    let printed = printed(&["models", &base_url]);
+    let output = succeeded(&["models", &base_url]);
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "llama-3.1-8b-instruct\nqwen2.5-7b-instruct\nzephyr-7b\n"
+    );
+}
+
+/// The legend the `--check` listing ends with.
+const LEGEND: &str = "* marks a model that selected when asked, and ! one that did not.";
+
+#[test]
+fn the_models_command_with_check_asks_each_model_for_a_selection_and_marks_its_answer() {
+    let base_url = playing_only(&["zephyr-7b", EXAMPLE_MODEL], &[EXAMPLE_MODEL]);
+    let output = succeeded(&["models", &base_url, "--check"]);
+    let printed = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(
+        lines,
+        ["* qwen2.5-7b-instruct", "! zephyr-7b", "", LEGEND],
+        "{printed}"
+    );
+    // The reason, on standard error: a line naming the model as the
+    // listing marks it, then the probe's words, a cause per indented line.
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let reasons: Vec<&str> = stderr.lines().collect();
+    assert_eq!(reasons.len(), 3, "{stderr}");
+    assert_eq!(reasons[0], "! zephyr-7b");
+    assert_eq!(reasons[1], "  zephyr-7b did not select when asked");
+    assert_eq!(
+        reasons[2],
+        format!(
+            "  POST {base_url}/chat/completions was answered 400 Bad Request. \
+             The provider said: {}",
+            refusal("zephyr-7b")
+        )
+    );
+}
+
+#[test]
+fn the_models_command_with_check_stops_at_a_model_that_could_not_be_asked() {
+    // A provider that wants a key answers nothing about any model.
+    let base_url = wanting_a_key(&["zephyr-7b", EXAMPLE_MODEL]);
+    let stderr = refused(&["models", &base_url, "--check"]);
+    assert!(
+        stderr.starts_with("Error: qwen2.5-7b-instruct could not be asked to select"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("401 Unauthorized"), "{stderr}");
+    assert!(!stderr.contains("zephyr-7b"), "{stderr}");
+}
+
+#[test]
+fn the_models_command_with_ids_to_check_asks_only_those_and_needs_each_to_be_listed() {
+    let base_url = refusing(&["zephyr-7b", EXAMPLE_MODEL, "llama-3.1-8b-instruct"]);
+    let output = succeeded(&["models", &base_url, "--check", EXAMPLE_MODEL]);
+    let printed = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
         lines,
         [
             "  llama-3.1-8b-instruct",
-            "* qwen2.5-7b-instruct",
+            "! qwen2.5-7b-instruct",
             "  zephyr-7b",
             "",
-            "* marks a model known to make tool calls.",
+            LEGEND,
         ],
         "{printed}"
     );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.starts_with(&format!("! {EXAMPLE_MODEL}\n  ")),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&refusal(EXAMPLE_MODEL)), "{stderr}");
+    // The ids end with -- when the base URL follows them.
+    let output = succeeded(&["models", "--check", EXAMPLE_MODEL, "--", &base_url]);
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), printed);
+    let stderr = refused(&["models", &base_url, "--check", EXAMPLE_MODEL, "gpt-0"]);
+    assert!(stderr.contains("gpt-0"), "{stderr}");
+    assert!(stderr.contains(&base_url), "{stderr}");
 }
 
 #[test]

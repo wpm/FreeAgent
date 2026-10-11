@@ -6,10 +6,9 @@
 use clap::{Args, Parser, Subcommand};
 use free_agent::{Behavior, Episode, Logger};
 use social_deduction::model::{
-    Provider, REQUEST_TIMEOUT, api_key, check_makes_tool_calls, key_variable, known_providers,
-    makes_tool_calls,
+    Model, Provider, REQUEST_TIMEOUT, api_key, check_listed, key_variable, known_providers,
 };
-use social_deduction::werewolf::llm::{self, Config};
+use social_deduction::werewolf::llm::{self, Config, Probed};
 use social_deduction::werewolf::report::Narrator;
 use social_deduction::werewolf::{Entry, PhaseLimits, RoleCounts, Rules, Table, Team};
 use social_deduction::werewolf::{scripted, uniform_random};
@@ -29,8 +28,8 @@ enum CommandLine {
     /// Werewolf: werewolves against villagers, by night and by day.
     #[command(subcommand)]
     Werewolf(Werewolf),
-    /// List the models a provider serves, marking those known to make tool
-    /// calls.
+    /// List the models a provider serves, and which of them select when
+    /// asked.
     #[command(after_help = known_providers_help())]
     Models {
         /// The root of the provider's OpenAI-compatible API, ending in /v1
@@ -39,6 +38,11 @@ enum CommandLine {
         /// for the provider
         #[arg(long)]
         api_key_env: Option<String>,
+        /// Ask every model listed, or only the IDs given, for a selection
+        /// as a player would, and mark those that select. End the IDs with
+        /// -- when the base URL follows them
+        #[arg(long, num_args = 0.., value_name = "ID", value_terminator = "--")]
+        check: Option<Vec<String>>,
     },
 }
 
@@ -127,15 +131,17 @@ async fn main() -> anyhow::Result<()> {
             logging,
         }) => {
             let settings = Config::load(&config)?.settle(overrides);
-            // The key is read, every prompt rendered, and the model checked
-            // before any actor is built, so that a variable that is not
-            // set, a template that is broken, or a model that cannot play
-            // fails before anything else.
+            // The key is read, every prompt rendered, and the model asked
+            // for a selection before any actor is built, so that a
+            // variable that is not set, a template that is broken, or a
+            // model that does not select fails before anything else.
             let model = &settings.config.model;
             let provider = model.provider()?;
             let prompts = settings.prompts()?;
-            check_makes_tool_calls(&model.id)?;
             provider.check_serves(&model.id).await?;
+            if let Probed::DidNotSelect(error) = llm::check_selects(&provider, &model.id).await? {
+                return Err(error);
+            }
             let roles = settings.table.deal();
             let configuration = settings.configuration(&roles, &prompts)?;
             let rules = settings.rules();
@@ -154,11 +160,23 @@ async fn main() -> anyhow::Result<()> {
         CommandLine::Models {
             base_url,
             api_key_env,
+            check,
         } => {
             let variable = key_variable(&base_url, api_key_env.as_deref());
             let api_key = variable.map(api_key).transpose()?;
-            let provider = Provider::new(base_url, api_key, REQUEST_TIMEOUT)?;
-            print!("{}", marked(provider.models().await?));
+            let provider = Provider::new(&base_url, api_key, REQUEST_TIMEOUT)?;
+            let mut ids = provider.models().await?;
+            ids.sort();
+            let models = match check {
+                None => ids.into_iter().map(|id| (id, None)).collect(),
+                Some(check) => {
+                    for id in &check {
+                        check_listed(&base_url, &ids, id)?;
+                    }
+                    checked(&provider, ids, &check, &mut io::stderr()).await?
+                }
+            };
+            print!("{}", listing(&models));
             Ok(())
         }
     }
@@ -183,21 +201,84 @@ fn known_providers_help() -> String {
     help
 }
 
-/// The listing the `models` command prints: one id per line in sorted
-/// order, those known to make tool calls marked `*` and the rest indented
-/// to line up, then, set off by an empty line, a line saying what the
-/// mark means.
-fn marked(mut ids: Vec<String>) -> String {
-    ids.sort();
+/// How a model is marked in the `models --check` listing: by whether it
+/// selected when asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mark {
+    /// Asked for a selection, it selected a candidate.
+    Selected,
+    /// Asked for a selection, it did not.
+    DidNotSelect,
+}
+
+/// Each of `ids`, in order, with its mark: those in `check`, or every one
+/// of them when `check` is empty, are asked by `model` for a selection one
+/// at a time, since a local server loads each model it is asked for, and
+/// the rest are unmarked. Why a model that did not select failed goes to
+/// `reasons`, as [`reason`] writes it. A model that could not be asked
+/// stops the listing with the error, since nothing it would say about
+/// the rest would be true.
+async fn checked(
+    model: &dyn Model,
+    ids: Vec<String>,
+    check: &[String],
+    reasons: &mut impl Write,
+) -> anyhow::Result<Vec<(String, Option<Mark>)>> {
+    let mut marked = Vec::new();
+    for id in ids {
+        let mark = if check.is_empty() || check.contains(&id) {
+            match llm::check_selects(model, &id).await? {
+                Probed::Selected => Some(Mark::Selected),
+                Probed::DidNotSelect(error) => {
+                    reason(reasons, &id, &error)?;
+                    Some(Mark::DidNotSelect)
+                }
+            }
+        } else {
+            None
+        };
+        marked.push((id, mark));
+    }
+    Ok(marked)
+}
+
+/// Write why the model `id` did not select: a line `! id` naming it as
+/// the listing marks it, then `error`'s causes, each on its own indented
+/// line, so a provider's words may run to several lines and still be read
+/// as one model's.
+fn reason(out: &mut impl Write, id: &str, error: &anyhow::Error) -> io::Result<()> {
+    writeln!(out, "! {id}")?;
+    for cause in error.chain() {
+        for line in cause.to_string().lines() {
+            writeln!(out, "  {line}")?;
+        }
+    }
+    Ok(())
+}
+
+/// The listing `models` prints: one id per line, in order. When any model
+/// is marked, each id comes after its mark, `* ` or `! `, or two spaces
+/// when it has none, so the ids line up, and the listing ends, set off by
+/// an empty line, with a line saying what the marks mean.
+fn listing(models: &[(String, Option<Mark>)]) -> String {
+    let any_marked = models.iter().any(|(_, mark)| mark.is_some());
     let mut listing = String::new();
-    for id in &ids {
-        let mark = if makes_tool_calls(id) { "*" } else { " " };
-        writeln!(listing, "{mark} {id}").unwrap();
+    for (id, mark) in models {
+        let shown = match mark {
+            Some(Mark::Selected) => "* ",
+            Some(Mark::DidNotSelect) => "! ",
+            None if any_marked => "  ",
+            None => "",
+        };
+        writeln!(listing, "{shown}{id}").unwrap();
     }
-    if !ids.is_empty() {
-        listing.push('\n');
+    if any_marked {
+        writeln!(
+            listing,
+            "\n* marks a model that selected when asked, and ! one that did not."
+        )
+        .unwrap();
     }
-    writeln!(listing, "* marks a model known to make tool calls.").unwrap();
     listing
 }
 
@@ -220,7 +301,7 @@ async fn play<A: Behavior<Log = Entry> + 'static>(
             if logging {
                 event.write(io::stderr())?;
             }
-            for line in narrator.narrate(&event.payload) {
+            for line in narrator.narrate(&event) {
                 writeln!(stdout, "{line}")?;
             }
         }
@@ -236,6 +317,8 @@ async fn play<A: Behavior<Log = Entry> + 'static>(
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    use social_deduction::model::canned::{self, refusal};
+    use social_deduction::model::fake::{FakeModel, choosing_first};
     use std::collections::HashSet;
 
     /// The command line `args` parse to, after the binary's name.
@@ -434,6 +517,7 @@ mod tests {
             CommandLine::Models {
                 base_url: "http://localhost:1234/v1".to_string(),
                 api_key_env: None,
+                check: None,
             }
         );
         let args = [
@@ -447,9 +531,46 @@ mod tests {
             CommandLine::Models {
                 base_url: "https://api.openai.com/v1".to_string(),
                 api_key_env: Some("OPENAI_API_KEY".to_string()),
+                check: None,
             }
         );
         assert!(CommandLine::try_parse_from(["social-deduction", "werewolf", "models"]).is_err());
+    }
+
+    #[test]
+    fn the_models_command_takes_check_alone_or_with_the_ids_to_check() {
+        let models = |check| CommandLine::Models {
+            base_url: "http://localhost:1234/v1".to_string(),
+            api_key_env: None,
+            check,
+        };
+        assert_eq!(
+            parsed(&["models", "http://localhost:1234/v1", "--check"]),
+            models(Some(vec![]))
+        );
+        assert_eq!(
+            parsed(&["models", "http://localhost:1234/v1", "--check", "a", "b"]),
+            models(Some(vec!["a".to_string(), "b".to_string()]))
+        );
+        // The ids end with -- when the base URL follows them; without it,
+        // the URL would be read as an id.
+        assert_eq!(
+            parsed(&["models", "--check", "a", "--", "http://localhost:1234/v1"]),
+            models(Some(vec!["a".to_string()]))
+        );
+        assert_eq!(
+            parsed(&["models", "--check", "--", "http://localhost:1234/v1"]),
+            models(Some(vec![]))
+        );
+        assert!(
+            CommandLine::try_parse_from([
+                "social-deduction",
+                "models",
+                "--check",
+                "http://localhost:1234/v1"
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -476,15 +597,99 @@ mod tests {
     }
 
     #[test]
-    fn the_listing_is_sorted_marks_the_models_known_to_make_tool_calls_and_says_so() {
-        let ids = ["qwen2.5-7b-instruct", "gpt-0"].map(String::from).to_vec();
+    fn the_listing_is_one_id_per_line_and_when_any_is_marked_lines_them_up_and_says_what_the_marks_mean()
+     {
+        let ids = ["gpt-0", "qwen2.5-7b-instruct"].map(String::from);
+        let plain: Vec<(String, Option<Mark>)> = ids.iter().map(|id| (id.clone(), None)).collect();
+        assert_eq!(listing(&plain), "gpt-0\nqwen2.5-7b-instruct\n");
+        assert_eq!(listing(&[]), "");
+        let models = [
+            ("gpt-0".to_string(), Some(Mark::DidNotSelect)),
+            ("llama".to_string(), None),
+            ("qwen2.5-7b-instruct".to_string(), Some(Mark::Selected)),
+        ];
         assert_eq!(
-            marked(ids),
-            "  gpt-0\n* qwen2.5-7b-instruct\n\n* marks a model known to make tool calls.\n"
+            listing(&models),
+            "! gpt-0\n  llama\n* qwen2.5-7b-instruct\n\n\
+             * marks a model that selected when asked, and ! one that did not.\n"
         );
+    }
+
+    /// A model that selects as `id` and refuses as anything else, over two
+    /// lines.
+    fn selecting_only_as(id: &'static str) -> FakeModel {
+        FakeModel::answering(move |request| {
+            if request.model == id {
+                choosing_first(request)
+            } else {
+                Err(anyhow::anyhow!("{}\nin two lines", refusal(&request.model)))
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn every_model_listed_is_checked_unless_ids_are_given_and_then_only_those() {
+        let ids = ["gpt-0", "llama", "qwen2.5-7b-instruct"].map(String::from);
+        let model = selecting_only_as("qwen2.5-7b-instruct");
+        let mut reasons = Vec::new();
+        let marked = checked(&model, ids.to_vec(), &[], &mut reasons)
+            .await
+            .unwrap();
         assert_eq!(
-            marked(vec![]),
-            "* marks a model known to make tool calls.\n"
+            marked,
+            [
+                ("gpt-0".to_string(), Some(Mark::DidNotSelect)),
+                ("llama".to_string(), Some(Mark::DidNotSelect)),
+                ("qwen2.5-7b-instruct".to_string(), Some(Mark::Selected)),
+            ]
         );
+        let asked: Vec<String> = model.requests().into_iter().map(|r| r.model).collect();
+        assert_eq!(asked, ids);
+        // Each reason under a line naming its model as the listing marks
+        // it, the error's causes one per indented line, a cause of several
+        // lines indented on each.
+        assert_eq!(
+            String::from_utf8(reasons).unwrap(),
+            "! gpt-0\n  gpt-0 did not select when asked\n  gpt-0 does not support tools\n  in two lines\n\
+             ! llama\n  llama did not select when asked\n  llama does not support tools\n  in two lines\n"
+        );
+        // Only the ids given, in the listing's order.
+        let model = selecting_only_as("qwen2.5-7b-instruct");
+        let check = ["qwen2.5-7b-instruct", "gpt-0"].map(String::from);
+        let mut reasons = Vec::new();
+        let marked = checked(&model, ids.to_vec(), &check, &mut reasons)
+            .await
+            .unwrap();
+        assert_eq!(
+            marked,
+            [
+                ("gpt-0".to_string(), Some(Mark::DidNotSelect)),
+                ("llama".to_string(), None),
+                ("qwen2.5-7b-instruct".to_string(), Some(Mark::Selected)),
+            ]
+        );
+        let asked: Vec<String> = model.requests().into_iter().map(|r| r.model).collect();
+        assert_eq!(asked, ["gpt-0", "qwen2.5-7b-instruct"]);
+        assert!(String::from_utf8(reasons).unwrap().starts_with("! gpt-0\n"));
+    }
+
+    #[tokio::test]
+    async fn a_model_that_could_not_be_asked_stops_the_listing_with_the_error() {
+        // A provider answering anything but the model's answer says nothing
+        // about this model or the rest.
+        let (base_url, _served) = canned::answering("429 Too Many Requests", "{}");
+        let provider = Provider::new(base_url.clone(), None, REQUEST_TIMEOUT).unwrap();
+        let ids = ["gpt-0", "llama"].map(String::from);
+        let mut reasons = Vec::new();
+        let error = checked(&provider, ids.to_vec(), &[], &mut reasons)
+            .await
+            .unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(
+            shown.starts_with("gpt-0 could not be asked to select"),
+            "{shown}"
+        );
+        assert!(shown.contains("429 Too Many Requests"), "{shown}");
+        assert!(reasons.is_empty());
     }
 }

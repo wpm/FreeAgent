@@ -18,15 +18,19 @@
 //!
 //! The game is the announcing environment's, with a model [`Player`] in
 //! every seat. A player remembers what it is shown and what it does, as
-//! the entries the environment logs about it. Announced a phase, it tells
+//! events like those the environment logs about it. Announced a phase, it tells
 //! the model that history as a story from its own point of view and where
 //! the game stands, and has it select one of the player's [candidates]
 //! with one forced tool call. The call is made in the player's think loop,
-//! so the player keeps perceiving while the model works. An answer that is
-//! not a selection is no selection. [`game`] builds the episode from the
-//! deal, the rules, the model, and the [`Configuration`] the log opens
-//! with, which [`Settings::configuration`] records from the settings, the
-//! deal and the rendered prompts.
+//! so the player keeps perceiving while the model works. A model that is
+//! not reached, or an answer that is not a selection, is no selection: the
+//! player logs the failure and the game goes on. Before a game begins,
+//! [`check_selects`] asks the model for one selection as a player would,
+//! so a model that does not select fails at launch, in the provider's
+//! words. [`game`] builds the episode from the deal, the rules, the model,
+//! and the [`Configuration`] the log opens with, which
+//! [`Settings::configuration`] records from the settings, the deal and the
+//! rendered prompts.
 
 use super::announced;
 use super::report::Narrator;
@@ -40,7 +44,7 @@ use crate::model::{
 use anyhow::{Context as _, anyhow, bail};
 use async_trait::async_trait;
 use clap::Args;
-use free_agent::{Behavior, Builder, Context, Episode, Logger, Think, ThinkBuilder};
+use free_agent::{Behavior, Builder, Context, Episode, Event, Logger, Think, ThinkBuilder};
 use minijinja::{Environment, UndefinedBehavior, Value, context};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -553,10 +557,11 @@ impl Behavior for Actor {
 /// What a player's two loops share: what it has been shown and what it has
 /// done, what it is told, and whom it asks.
 struct Mind {
-    /// The history, in order, as the entries the environment logs about
-    /// the player: an announcement sent to it, and a selection received
-    /// from it. Never locked across an await.
-    history: Mutex<Vec<Entry>>,
+    /// The history, in order, as events like those the environment logs
+    /// about the player: an announcement sent to it, and a selection
+    /// received from it, each stamped when the player remembered it. Never
+    /// locked across an await.
+    history: Mutex<Vec<Event<Entry>>>,
     /// Its system prompt, rendered for its seat and role.
     prompt: String,
     /// The model's id, as each request names it.
@@ -566,14 +571,14 @@ struct Mind {
 }
 
 impl Mind {
-    /// Add `entry` to the history. An announcement goes at the end. A
+    /// Add `event` to the history. An announcement goes at the end. A
     /// selection goes right after the announcement it answers, which is
     /// where it belongs in the story: one made after a later phase was
     /// announced, which the environment has dropped, was still made in its
     /// own phase, and is not told as a deed of the phase that followed.
-    fn remember(&self, entry: Entry) {
+    fn remember(&self, event: Event<Entry>) {
         let mut history = self.history.lock().unwrap();
-        let at = match &entry {
+        let at = match &event.payload {
             Entry::Received {
                 message: Message::Select { seq, .. },
                 ..
@@ -581,7 +586,7 @@ impl Mind {
                 .iter()
                 .rposition(|remembered| {
                     matches!(
-                        remembered,
+                        &remembered.payload,
                         Entry::Sent {
                             message: Message::Announce { seq: announced, .. },
                             ..
@@ -591,7 +596,7 @@ impl Mind {
                 .map_or(history.len(), |announced| announced + 1),
             _ => history.len(),
         };
-        history.insert(at, entry);
+        history.insert(at, event);
     }
 }
 
@@ -633,9 +638,10 @@ impl Player {
         (behavior, Some(think))
     }
 
-    /// Add `entry` to the history, where it belongs in the story.
+    /// Add `entry` to the history, stamped now, where it belongs in the
+    /// story.
     fn remember(&self, entry: Entry) {
-        self.mind.remember(entry);
+        self.mind.remember(Event::now(self.context.episode, entry));
     }
 
     /// The request for a selection from `candidates` in the phase
@@ -655,7 +661,7 @@ impl Player {
             .lock()
             .unwrap()
             .iter()
-            .flat_map(|entry| narrator.narrate(entry))
+            .flat_map(|event| narrator.narrate(event))
             .collect();
         let asked = format!("{}\n\n{}", story.join("\n"), situation(me, observation)?);
         Ok(Request::new(
@@ -666,6 +672,34 @@ impl Player {
             ],
             select(candidates),
         ))
+    }
+
+    /// Ask the model to select one of `candidates` in the phase numbered
+    /// `seq`, which `observation` shows, remember what it selects, and
+    /// send the selection to the environment. The model's failure to
+    /// select, as [`selection`] judges it, is an error, and no selection;
+    /// so is a request that cannot be put together or a selection that
+    /// cannot be sent, which are the player's own doing, and they read so
+    /// in the error.
+    async fn ask(
+        &self,
+        seq: u64,
+        observation: &Observation,
+        candidates: &[PlayerId],
+    ) -> anyhow::Result<()> {
+        let me = &self.context.id;
+        let request = self.request(observation, candidates)?;
+        let selection = Message::Select {
+            seq,
+            from: me.clone(),
+            target: selection(self.mind.model.as_ref(), &request, candidates).await?,
+        };
+        self.remember(Entry::Received {
+            from: me.clone(),
+            message: selection.clone(),
+        });
+        self.context
+            .send(selection, HashSet::from([ENVIRONMENT.to_string()]))
     }
 }
 
@@ -696,33 +730,30 @@ impl Behavior for Player {
 impl Think for Player {
     type Message = Message;
 
-    /// Announced a phase, select someone in it: ask the model, remember
-    /// what it selects, and send the selection to the environment. With
-    /// nobody to select, the model is not asked. An answer that is not a
-    /// selection of a candidate is an error, and no selection. Nothing
-    /// else is thought about.
+    /// Announced a phase, select someone in it: ask the model, and if that
+    /// fails, log the failure with the phase and what went wrong, causes
+    /// included, which is all there is to do about it: the player has not
+    /// selected, and the game goes on. The think loop drops an error a
+    /// thought returns, so the log is the one place a failure shows,
+    /// whether the model's or the player's own. The failure is not
+    /// remembered, so the model is never told of it. With nobody to
+    /// select, the model is not asked. Nothing else is thought about.
     async fn think(&mut self, message: &Message) -> anyhow::Result<()> {
         let Message::Announce { seq, observation } = message else {
             return Ok(());
         };
-        let me = &self.context.id;
-        let candidates = candidates(me, observation);
+        let candidates = candidates(&self.context.id, observation);
         if candidates.is_empty() {
             return Ok(());
         }
-        let request = self.request(observation, &candidates)?;
-        let response = self.mind.model.complete(&request).await?;
-        let selection = Message::Select {
-            seq: *seq,
-            from: me.clone(),
-            target: selected(&response, &candidates)?,
-        };
-        self.remember(Entry::Received {
-            from: me.clone(),
-            message: selection.clone(),
-        });
-        self.context
-            .send(selection, HashSet::from([ENVIRONMENT.to_string()]))
+        if let Err(error) = self.ask(*seq, observation, &candidates).await {
+            self.context.log(Entry::Failed {
+                player: self.context.id.clone(),
+                seq: *seq,
+                error: format!("{error:#}"),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -742,6 +773,57 @@ fn situation(me: &PlayerId, observation: &Observation) -> anyhow::Result<String>
         (Phase::Night, None) => bail!("{me} is not shown its own role"),
     };
     Ok(format!("It is {phase} {}. {asked}", observation.round))
+}
+
+/// Whom `model` selects from `candidates` when sent `request`: its
+/// response, judged by [`selected`]. A model that cannot be reached, or
+/// answers with something that is not a selection of a candidate, is an
+/// error. This is the one way a player asks, and the one way the probe
+/// does, so they agree on what a selection is.
+async fn selection(
+    model: &dyn model::Model,
+    request: &Request,
+    candidates: &[PlayerId],
+) -> anyhow::Result<PlayerId> {
+    let response = model.complete(request).await?;
+    selected(&response, candidates)
+}
+
+/// What [`check_selects`] found.
+#[derive(Debug)]
+pub enum Probed {
+    /// Asked for a selection, the model selected a candidate.
+    Selected,
+    /// Asked for a selection, the model did not: the provider refused the
+    /// request as bad, or the answer was no selection. The error names the
+    /// model and carries the cause beneath it.
+    DidNotSelect(anyhow::Error),
+}
+
+/// Check that `model`, asked as a player is, selects a candidate: one
+/// request of a player's shape, a short system prompt, a line asking for
+/// a selection, and the `select` tool over two placeholder candidates,
+/// judged as a player's answer is. A model that could not be asked at
+/// all, because the provider was not reached or answered with anything
+/// but the model's answer, is an error naming the model, with the cause
+/// beneath it.
+pub async fn check_selects(model: &dyn model::Model, model_id: &str) -> anyhow::Result<Probed> {
+    let candidates = ["player1".to_string(), "player2".to_string()];
+    let request = Request::new(
+        model_id,
+        vec![
+            model::Message::system("You are a player in a game, about to be asked to select."),
+            model::Message::user("Select one of the candidates."),
+        ],
+        select(&candidates),
+    );
+    match selection(model, &request, &candidates).await {
+        Ok(_) => Ok(Probed::Selected),
+        Err(error) if model::concerns_the_model(&error) => Ok(Probed::DidNotSelect(
+            error.context(format!("{model_id} did not select when asked")),
+        )),
+        Err(error) => Err(error.context(format!("{model_id} could not be asked to select"))),
+    }
 }
 
 /// The name of the one tool a player is offered.
@@ -795,10 +877,11 @@ fn selected(response: &Response, candidates: &[PlayerId]) -> anyhow::Result<Play
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::canned;
     use crate::model::fake::{FakeModel, choosing_first};
     use crate::werewolf::tests::{
-        Played, between_the_deal_and_the_end, one_wolf_against, received, run, seen, seen_by_day,
-        selection,
+        Played, between_the_deal_and_the_end, logged, one_wolf_against, received, run, seen,
+        seen_by_day, selection,
     };
     use clap::Parser;
     use secrecy::ExposeSecret;
@@ -825,7 +908,7 @@ id = "qwen2.5-7b-instruct"
     }
 
     #[test]
-    fn the_examples_parse_and_render_and_name_a_model_known_to_make_tool_calls() {
+    fn the_examples_parse_and_render() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/werewolf/llm");
         let files: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
@@ -836,8 +919,6 @@ id = "qwen2.5-7b-instruct"
         for file in files {
             let name = file.display().to_string();
             let config = Config::load(&file).unwrap_or_else(|e| panic!("{name}: {e:#}"));
-            let id = &config.model.id;
-            assert!(crate::model::makes_tool_calls(id), "{name}: {id}");
             let prompts = config
                 .settle(Overrides::default())
                 .prompts()
@@ -1527,9 +1608,37 @@ player2 = \"Cautious.\"
         Ok(Response::tool_call(SELECT, &json!({"target": "wolf"})))
     }
 
-    /// The answer of a model that is down.
+    /// A response as a provider sends it, for the shapes `Response::tool_call`
+    /// cannot make.
+    fn answered(said: serde_json::Value) -> Response {
+        serde_json::from_value(said).unwrap()
+    }
+
+    /// The answer that makes no tool call.
+    fn saying_nothing(_: &Request) -> anyhow::Result<Response> {
+        Ok(answered(
+            json!({"choices": [{"message": {"content": "bob"}}]}),
+        ))
+    }
+
+    /// The answer of a model that is down: a request that failed, and why.
     fn down(_: &Request) -> anyhow::Result<Response> {
-        Err(anyhow!("the model is down"))
+        Err(anyhow!("connection refused")
+            .context("POST http://localhost:1234/v1/chat/completions failed"))
+    }
+
+    /// The failures the players logged, each as who failed, in which
+    /// phase, and what went wrong, in the log's order.
+    fn failed(logged: &[Entry]) -> Vec<(&str, u64, &str)> {
+        logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Failed { player, seq, error } => {
+                    Some((player.as_str(), *seq, error.as_str()))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     #[tokio::test(start_paused = true)]
@@ -1561,11 +1670,6 @@ player2 = \"Cautious.\"
                     }),
                 ),
             )]
-        );
-        let sent = serde_json::to_value(&requests[0]).unwrap();
-        assert_eq!(
-            sent["tool_choice"],
-            json!({"type": "function", "function": {"name": "select"}})
         );
     }
 
@@ -1620,17 +1724,21 @@ player2 = \"Cautious.\"
         };
         let everyone = ["wolf", "ann", "bob"];
         let pack = [("wolf", Role::Werewolf)];
-        let announced = |seq, observation| Entry::Sent {
-            to: "wolf".to_string(),
-            message: Message::Announce { seq, observation },
+        let announced = |seq, observation| {
+            logged(Entry::Sent {
+                to: "wolf".to_string(),
+                message: Message::Announce { seq, observation },
+            })
         };
-        let selected = |seq| Entry::Received {
-            from: "wolf".to_string(),
-            message: Message::Select {
-                seq,
+        let selected = |seq| {
+            logged(Entry::Received {
                 from: "wolf".to_string(),
-                target: "ann".to_string(),
-            },
+                message: Message::Select {
+                    seq,
+                    from: "wolf".to_string(),
+                    target: "ann".to_string(),
+                },
+            })
         };
         let night = announced(1, seen(&everyone, &pack));
         let day = announced(2, seen_by_day(&everyone, &pack));
@@ -1644,7 +1752,7 @@ player2 = \"Cautious.\"
         let mut narrator = Narrator::for_player("wolf".to_string());
         let story: Vec<String> = history
             .iter()
-            .flat_map(|entry| narrator.narrate(entry))
+            .flat_map(|event| narrator.narrate(event))
             .collect();
         assert_eq!(
             story,
@@ -1662,13 +1770,20 @@ player2 = \"Cautious.\"
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_bad_answer_by_night_is_no_selection_and_the_day_is_played_normally() {
+    async fn a_failure_by_night_is_logged_as_no_selection_and_the_day_is_played_normally() {
         // Nobody dies the night the werewolf fails to select, which waits
         // out its limit. By day everyone selects its first candidate, and
         // ann dies by day, bringing the werewolf to parity.
-        for by_night in [
-            naming_itself as fn(&Request) -> anyhow::Result<Response>,
-            down,
+        for (by_night, error) in [
+            (
+                down as fn(&Request) -> anyhow::Result<Response>,
+                "POST http://localhost:1234/v1/chat/completions failed: connection refused",
+            ),
+            (saying_nothing, "the model made no tool call"),
+            (
+                naming_itself,
+                "the model selected wolf, who is not a candidate",
+            ),
         ] {
             let model = answering(move |request| {
                 if request.messages[1].content.contains("It is night") {
@@ -1682,6 +1797,7 @@ player2 = \"Cautious.\"
             assert_eq!(winner, Team::Werewolves);
             assert_eq!(took, quick().night_limit);
             assert_eq!(model.requests().len(), 4);
+            assert_eq!(failed(&logged), [("wolf", 1, error)]);
             let mut received = received(&logged);
             received.sort_by_key(|message| format!("{message:?}"));
             assert_eq!(
@@ -1692,7 +1808,66 @@ player2 = \"Cautious.\"
                     &selection(2, "wolf", "ann")
                 ]
             );
+            // The werewolf's story is what it was shown and what it did,
+            // and nothing of the failure.
+            let asked = asked_of(&model, "wolf");
+            assert_eq!(
+                story(&asked[1]),
+                "You are wolf, the only werewolf.\n\
+                 \n\
+                 Night 1.\n\
+                 Nobody dies.\n\
+                 \n\
+                 Day 1."
+            );
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_game_whose_model_always_fails_is_told_failure_by_failure_and_still_ends() {
+        // Two werewolves against two villagers are at parity once the first
+        // night ends, so the game ends with nobody selecting anything.
+        let roles = HashMap::from([
+            ("wolf1".to_string(), Role::Werewolf),
+            ("wolf2".to_string(), Role::Werewolf),
+            ("ann".to_string(), Role::Villager),
+            ("bob".to_string(), Role::Villager),
+        ]);
+        let model = Arc::new(FakeModel::failing("the model is down"));
+        let (winner, entries, took) = play(roles, quick(), model).await.unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        assert_eq!(took, quick().night_limit);
+        assert!(received(&entries).is_empty());
+        let mut narrator = Narrator::default();
+        let mut told: Vec<String> = entries
+            .into_iter()
+            .flat_map(|entry| narrator.narrate(&logged(entry)))
+            .collect();
+        // The werewolves fail side by side, in no particular order. The
+        // night takes no time because every event is stamped at the epoch.
+        told[8..10].sort();
+        assert_eq!(
+            told.join("\n"),
+            "LLM with 4 players:\n\
+             ann (villager)\n\
+             bob (villager)\n\
+             wolf1 (werewolf)\n\
+             wolf2 (werewolf)\n\
+             A night waits 10s and a day 10s.\n\
+             \n\
+             Night 1.\n\
+             wolf1 (werewolf) fails to select: the model is down\n\
+             wolf2 (werewolf) fails to select: the model is down\n\
+             Nobody dies.\n\
+             Night 1 took 0s.\n\
+             \n\
+             The werewolves win after 0 days.\n\
+             Survivors:\n\
+             ann (villager)\n\
+             bob (villager)\n\
+             wolf1 (werewolf)\n\
+             wolf2 (werewolf)"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1716,7 +1891,7 @@ player2 = \"Cautious.\"
         let (winner, logged, _) = play(roles.clone(), rules(), answering(choosing_first))
             .await
             .unwrap();
-        let between = between_the_deal_and_the_end(&logged, "LLM", &roles, winner);
+        let between = between_the_deal_and_the_end(&logged, &rules(), &roles, winner);
         assert_eq!(
             between[0],
             Entry::Configuration(Box::new(configuration(&roles)))
@@ -1747,7 +1922,7 @@ player2 = \"Cautious.\"
             .await
             .unwrap();
         assert_eq!(winner, Team::Werewolves);
-        let announced = between_the_deal_and_the_end(&logged, "LLM", &roles, winner)
+        let announced = between_the_deal_and_the_end(&logged, &rules(), &roles, winner)
             .iter()
             .filter(|entry| {
                 matches!(
@@ -1810,6 +1985,92 @@ player2 = \"Cautious.\"
         assert!(situation(&me("ann"), &night(&[])).is_err());
     }
 
+    #[tokio::test]
+    async fn the_probe_asks_for_one_selection_as_a_player_does_and_passes_when_the_model_selects() {
+        let model = FakeModel::answering(choosing_first);
+        assert!(not_selecting(check_selects(&model, MODEL_ID).await).is_none());
+        let requests = model.requests();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request.model, MODEL_ID);
+        assert_eq!(request.messages.len(), 2);
+        assert_eq!(request.messages[0].role, model::Role::System);
+        assert_eq!(request.messages[1].role, model::Role::User);
+        assert_eq!(
+            request.tool,
+            select(&["player1".to_string(), "player2".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn the_probe_s_error_names_the_model_and_carries_the_failure() {
+        let model = FakeModel::failing("the model is down");
+        let error = not_selecting(check_selects(&model, MODEL_ID).await).unwrap();
+        assert_eq!(
+            format!("{error:#}"),
+            format!("{MODEL_ID} did not select when asked: the model is down")
+        );
+    }
+
+    /// The error of a probe that found the model did not select, if it
+    /// found so.
+    fn not_selecting(probed: anyhow::Result<Probed>) -> Option<anyhow::Error> {
+        match probed.unwrap() {
+            Probed::Selected => None,
+            Probed::DidNotSelect(error) => Some(error),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_probe_tells_a_model_that_could_not_be_asked_from_one_that_did_not_select() {
+        // A provider that answers anything but success or a refusal of the
+        // request as bad never put the question to the model.
+        let (base_url, _served) = canned::answering("429 Too Many Requests", "{}");
+        let provider = Provider::new(base_url.clone(), None, REQUEST_TIMEOUT).unwrap();
+        let error = check_selects(&provider, MODEL_ID).await.unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(
+            shown.starts_with(&format!(
+                "{MODEL_ID} could not be asked to select: POST {base_url}/chat/completions \
+                 was answered 429 Too Many Requests"
+            )),
+            "{shown}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_probe_judges_the_answer_as_a_player_s_is_judged() {
+        let candidates = ["player1".to_string(), "player2".to_string()];
+        let prose: Response =
+            serde_json::from_value(json!({"choices": [{"message": {"content": "player1"}}]}))
+                .unwrap();
+        let elsewhere = Response::tool_call(SELECT, &json!({"target": "player3"}));
+        for response in [prose, elsewhere] {
+            let judged = selected(&response, &candidates).unwrap_err();
+            let model = FakeModel::responding(response);
+            let error = not_selecting(check_selects(&model, MODEL_ID).await).unwrap();
+            let shown = format!("{error:#}");
+            assert!(shown.starts_with(MODEL_ID), "{shown}");
+            assert!(shown.ends_with(&format!("{judged:#}")), "{shown}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_probe_names_the_url_and_what_the_server_said_when_the_request_is_refused() {
+        let base_url = canned::refusing(&[MODEL_ID]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        let error = not_selecting(check_selects(&provider, MODEL_ID).await).unwrap();
+        let shown = format!("{error:#}");
+        assert!(shown.starts_with(MODEL_ID), "{shown}");
+        assert!(
+            shown.contains(&format!(
+                "POST {base_url}/chat/completions was answered 400"
+            )),
+            "{shown}"
+        );
+        assert!(shown.ends_with(&canned::refusal(MODEL_ID)), "{shown}");
+    }
+
     #[test]
     fn an_answer_selects_only_by_a_select_call_whose_target_is_a_candidate() {
         let candidates = ["ann".to_string(), "bob".to_string()];
@@ -1821,9 +2082,6 @@ player2 = \"Cautious.\"
             .unwrap(),
             "bob"
         );
-        // A response as a provider sends it, for the shapes `tool_call`
-        // cannot make.
-        let answered = |said: serde_json::Value| serde_json::from_value::<Response>(said).unwrap();
         let wrong = [
             ("no choice", answered(json!({"choices": []}))),
             (

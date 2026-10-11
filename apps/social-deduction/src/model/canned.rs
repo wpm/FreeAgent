@@ -129,6 +129,46 @@ pub fn unreachable() -> String {
 /// parameter allows, as a player's `select` tool asks for a `target` from
 /// an `enum` of candidates. Anything else asked of it is not found.
 pub fn playing(ids: &[&str]) -> String {
+    playing_only(ids, ids)
+}
+
+/// A provider that serves `ids` but plays only `selecting` of them, kept
+/// for the rest of the process: it answers every listing request with
+/// `ids`; every completion request for a model in `selecting` as
+/// [`playing`] does; every other completion request 400 Bad Request,
+/// saying what [`refusal`] says, as a server that cannot use the tools a
+/// request offers does; and a completion request naming no model 400 Bad
+/// Request too, saying so. Anything else asked of it is not found.
+pub fn playing_only(ids: &[&str], selecting: &[&str]) -> String {
+    let selecting: Vec<String> = selecting.iter().map(|id| id.to_string()).collect();
+    serving_and(ids, move |request| {
+        let Some(model) = request["model"].as_str() else {
+            return response("400 Bad Request", &error("the request names no model"));
+        };
+        if selecting.iter().any(|id| id == model) {
+            response("200 OK", &selecting_first(request))
+        } else {
+            response("400 Bad Request", &error(&refusal(model)))
+        }
+    })
+}
+
+/// A provider that serves `ids` but answers every completion request 401
+/// Unauthorized, as one that wants an API key does, kept for the rest of
+/// the process.
+pub fn wanting_a_key(ids: &[&str]) -> String {
+    serving_and(ids, |_| {
+        response("401 Unauthorized", &error("an API key is required"))
+    })
+}
+
+/// A provider kept for the rest of the process that answers every listing
+/// request with `ids` and every completion request, parsed as JSON, with
+/// what `completing` makes of it. Anything else asked of it is not found.
+fn serving_and(
+    ids: &[&str],
+    completing: impl Fn(&serde_json::Value) -> String + Send + 'static,
+) -> String {
     let (listener, base_url) = bound();
     let listing = listing(ids);
     std::thread::spawn(move || {
@@ -139,15 +179,31 @@ pub fn playing(ids: &[&str]) -> String {
             };
             let answer = match served.asked() {
                 ("get", "/v1/models") => response("200 OK", &listing),
-                ("post", "/v1/chat/completions") => {
-                    response("200 OK", &selecting_first(&served.json()))
-                }
+                ("post", "/v1/chat/completions") => completing(&served.json()),
                 _ => response("404 Not Found", "{}"),
             };
             let _ = stream.write_all(answer.as_bytes());
         }
     });
     base_url
+}
+
+/// A provider that serves `ids` and plays none of them: every completion
+/// request is answered 400 Bad Request, as [`playing_only`] answers one for
+/// a model it does not play.
+pub fn refusing(ids: &[&str]) -> String {
+    playing_only(ids, &[])
+}
+
+/// What a canned provider says when asked for a completion from `model`,
+/// which it does not play.
+pub fn refusal(model: &str) -> String {
+    format!("{model} does not support tools")
+}
+
+/// An error in OpenAI's shape saying `message`.
+fn error(message: &str) -> String {
+    serde_json::json!({"error": {"message": message, "type": "invalid_request_error"}}).to_string()
 }
 
 /// The completion that calls the one tool `request`, a completion request
@@ -207,6 +263,71 @@ mod tests {
                 Response::tool_call("select", &json!({"target": candidates[0]}))
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_provider_playing_only_some_models_refuses_a_completion_from_the_others() {
+        let base_url = playing_only(&["qwen2.5-7b-instruct", "gpt-0"], &["qwen2.5-7b-instruct"]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        assert_eq!(
+            provider.models().await.unwrap(),
+            ["qwen2.5-7b-instruct", "gpt-0"]
+        );
+        assert_eq!(
+            provider.complete(&selecting(&["player2"])).await.unwrap(),
+            Response::tool_call("select", &json!({"target": "player2"}))
+        );
+        let mut request = selecting(&["player2"]);
+        request.model = "gpt-0".to_string();
+        let error = provider.complete(&request).await.unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("400 Bad Request"), "{shown}");
+        assert!(shown.contains(&refusal("gpt-0")), "{shown}");
+        // The refusing provider plays nothing.
+        let base_url = refusing(&["qwen2.5-7b-instruct"]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        provider.check_serves("qwen2.5-7b-instruct").await.unwrap();
+        let error = provider
+            .complete(&selecting(&["player2"]))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains(&refusal("qwen2.5-7b-instruct")),
+            "{error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_playing_provider_refuses_a_completion_naming_no_model_and_goes_on_serving() {
+        let base_url = playing(&["qwen2.5-7b-instruct"]);
+        let client = reqwest::Client::new();
+        let answer = client
+            .post(format!("{base_url}/chat/completions"))
+            .json(&json!({"messages": []}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(answer.status(), 400);
+        assert!(
+            answer.text().await.unwrap().contains("names no model"),
+            "{base_url}"
+        );
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        assert_eq!(provider.models().await.unwrap(), ["qwen2.5-7b-instruct"]);
+    }
+
+    #[tokio::test]
+    async fn the_provider_wanting_a_key_lists_its_models_and_answers_every_completion_401() {
+        let base_url = wanting_a_key(&["qwen2.5-7b-instruct"]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        assert_eq!(provider.models().await.unwrap(), ["qwen2.5-7b-instruct"]);
+        let error = provider
+            .complete(&selecting(&["player2"]))
+            .await
+            .unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("401 Unauthorized"), "{shown}");
+        assert!(shown.contains("an API key is required"), "{shown}");
     }
 
     #[tokio::test]

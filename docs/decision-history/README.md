@@ -35,3 +35,4 @@ are not part of this repository's history.
 | [0001](0001-games-and-variants-are-modules-and-subcommands.md) | Games and their variants are modules and subcommands | Accepted |
 | [0002](0002-actors-perceive-think-and-act.md) | Actors perceive, think, and act | Accepted |
 | [0003](0003-the-model-player.md) | The model player | Accepted |
+| [0004](0004-the-model-is-asked-to-select-before-a-game.md) | The model is asked to select before a game | Accepted |

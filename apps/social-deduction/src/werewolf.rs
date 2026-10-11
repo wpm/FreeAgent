@@ -41,10 +41,9 @@ pub type PlayerId = ActorId;
 /// The environment's name in the episode.
 pub const ENVIRONMENT: &str = "environment";
 
-/// An episode of a game: `environment`, which runs it and holds `logger`,
-/// and a player for each of `players` built by `player`. A player may send
-/// to the environment alone, stops nobody, has no logger, and does not
-/// think.
+/// An episode of a game: `environment`, which runs it, and a player for
+/// each of `players` built by `player`. Everyone holds `logger`. A player
+/// may send to the environment alone, stops nobody, and does not think.
 pub fn episode<A>(
     environment: ActorInit<A>,
     players: impl IntoIterator<Item = PlayerId>,
@@ -58,8 +57,9 @@ where
 }
 
 /// The episode of [`episode`], whose players may think: `player` builds
-/// each player's behavior and its think loop, if it has one. A player may
-/// send to the environment alone, stops nobody, and has no logger.
+/// each player's behavior and its think loop, if it has one. Everyone
+/// holds `logger`. A player may send to the environment alone and stops
+/// nobody.
 pub fn thinking_episode<A>(
     environment: ActorInit<A>,
     players: impl IntoIterator<Item = PlayerId>,
@@ -79,7 +79,7 @@ where
                 think,
                 can_send_to: HashSet::from([ENVIRONMENT.to_string()]),
                 can_shut_down: HashSet::new(),
-                has_logger: false,
+                has_logger: true,
             },
         );
     }
@@ -498,6 +498,19 @@ pub struct Rules {
     pub day_limit: Duration,
 }
 
+impl Rules {
+    /// The entry that opens a game of `roles` under these rules: the
+    /// variation, the deal, and the phase limits.
+    pub fn start(&self, roles: HashMap<PlayerId, Role>) -> Entry {
+        Entry::Start {
+            variation: self.variation.clone(),
+            roles,
+            night_limit: self.night_limit,
+            day_limit: self.day_limit,
+        }
+    }
+}
+
 impl Default for Rules {
     /// Uniform Random: the werewolves break ties at random, the village
     /// does not, and each phase waits a minute.
@@ -545,18 +558,28 @@ pub enum Message {
 }
 impl free_agent::Message for Message {}
 
-/// What the environment writes to the log: the deal, the configuration of
-/// a model-played game, every message to or from a player as it was, and
-/// the result. Only the result summarizes anything; the rest is kept whole
-/// for whatever reads the log later.
+/// What the log holds: the deal, the configuration of a model-played game,
+/// every message to or from a player as it was, each failure of a model
+/// player to select, and the result. The environment writes all but the
+/// failures, which the player that failed writes. Only the result
+/// summarizes anything; the rest is kept whole for whatever reads the log
+/// later.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Entry {
-    /// The game begins: who plays what, under which variation.
+    /// The game begins: who plays what, under which variation, and how
+    /// long each phase waits for the players. The limits are written as
+    /// `humantime` writes them, such as `"60s"`.
     Start {
         /// The name of the variation played, such as "Uniform Random".
         variation: String,
         /// Every player's role.
         roles: HashMap<PlayerId, Role>,
+        /// How long a night waits for the players.
+        #[serde(with = "humantime_serde")]
+        night_limit: Duration,
+        /// How long a day waits for the players.
+        #[serde(with = "humantime_serde")]
+        day_limit: Duration,
     },
     /// The configuration a model-played game ran under, logged right after
     /// the deal.
@@ -581,6 +604,16 @@ pub enum Entry {
         from: PlayerId,
         /// What they said.
         message: Message,
+    },
+    /// `player` failed to select in the phase numbered `seq`: the model was
+    /// not reached, or answered with something that is not a selection.
+    Failed {
+        /// Who failed.
+        player: PlayerId,
+        /// The phase it was selecting in.
+        seq: u64,
+        /// What went wrong, as the error says it, causes included.
+        error: String,
     },
     /// The night was resolved: whom the werewolves elected, and which
     /// doctors protected them. A night in which the werewolves elected
@@ -793,15 +826,45 @@ mod tests {
     }
 
     #[test]
+    fn the_start_carries_the_limits_as_humantime_writes_them_and_survives_a_trip_through_json() {
+        let rules = Rules {
+            night_limit: Duration::from_secs(90),
+            day_limit: Duration::from_secs(40),
+            ..Rules::default()
+        };
+        let start = rules.start(village().roles);
+        assert!(
+            matches!(&start, Entry::Start { variation, roles, .. }
+                if variation == "Uniform Random" && roles.len() == 4),
+            "{start:?}"
+        );
+        let json = serde_json::to_value(&start).unwrap();
+        assert_eq!(json["Start"]["night_limit"], "1m 30s");
+        assert_eq!(json["Start"]["day_limit"], "40s");
+        let back: Entry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, start);
+    }
+
+    #[test]
     fn an_entry_survives_a_trip_through_json() {
         let state = village();
-        let entry = Entry::Sent {
-            to: "seer".to_string(),
-            message: Message::Observation(state.observation("seer".to_string()).unwrap()),
-        };
-        let json = serde_json::to_string(&entry).unwrap();
-        let back: Entry = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, entry);
+        let entries = [
+            Entry::Sent {
+                to: "seer".to_string(),
+                message: Message::Observation(state.observation("seer".to_string()).unwrap()),
+            },
+            Entry::Failed {
+                player: "seer".to_string(),
+                seq: 3,
+                error: "POST http://localhost:1234/v1/chat/completions: connection refused"
+                    .to_string(),
+            },
+        ];
+        for entry in entries {
+            let json = serde_json::to_string(&entry).unwrap();
+            let back: Entry = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, entry);
+        }
     }
 
     #[test]
@@ -826,21 +889,16 @@ mod tests {
     }
 
     /// Everything `logged` between the deal and the end of the game,
-    /// checking that the deal is of `roles` under `variation`, and that
-    /// the end names `winner` and survivors from among the players.
+    /// checking that the deal is of `roles` under `rules`, whose variation
+    /// and limits it carries, and that the end names `winner` and survivors
+    /// from among the players.
     pub(super) fn between_the_deal_and_the_end<'a>(
         logged: &'a [Entry],
-        variation: &str,
+        rules: &Rules,
         roles: &HashMap<PlayerId, Role>,
         winner: Team,
     ) -> &'a [Entry] {
-        assert_eq!(
-            logged.first(),
-            Some(&Entry::Start {
-                variation: variation.to_string(),
-                roles: roles.clone(),
-            })
-        );
+        assert_eq!(logged.first(), Some(&rules.start(roles.clone())));
         let last = logged.last();
         assert!(
             matches!(
@@ -874,6 +932,16 @@ mod tests {
             logged.push(event.payload);
         }
         Ok((won.await?, logged, took))
+    }
+
+    /// `entry` as an event logged when the game began, in no episode in
+    /// particular.
+    pub(super) fn logged(entry: Entry) -> Event<Entry> {
+        Event {
+            time: std::time::UNIX_EPOCH,
+            episode: Default::default(),
+            payload: entry,
+        }
     }
 
     /// The selections the environment logged as received.

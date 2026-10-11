@@ -15,11 +15,11 @@ workflow takes a version's notes from here.
   dealt at random.
 - `social-deduction werewolf llm`, in which every player is a language
   model set up by a TOML configuration file: the model, how to reach it, and
-  the prompt templates each role is given. It checks the file and the model
-  before the game begins, and its log opens with the configuration the game
-  was played under.
-- `social-deduction models`, which lists the models a provider serves,
-  marking those known to make tool calls.
+  the prompt templates each role is given. It checks the file, and asks the
+  model for a selection as a player would, before the game begins, and its
+  log opens with the configuration the game was played under.
+- `social-deduction models`, which lists the models a provider serves.
+  `--check` asks each model for a selection and marks those that give one.
 - `social-deduction werewolf scripted`, which plays the model-played game
   with no model: the environment announces each phase and waits for
   selections, and every player is a script that selects at once at random.
@@ -31,6 +31,9 @@ workflow takes a version's notes from here.
 - The log records each night's hunt: whom the werewolves elected and which
   doctors protected them. The narration tells it before who dies, so a
   night in which nobody dies says why.
+- The log's start entry carries how long a night and a day wait for the
+  players, and the narration tells the limits after the deal and, as each
+  phase ends, how long it took.
 - An optional think loop for actors: `Think`, `ThinkBuilder` and
   `ActorInit::think`, with `Context::think` to hand a message to it from
   either loop. It runs in a task of its own, so an actor keeps perceiving
@@ -38,6 +41,10 @@ workflow takes a version's notes from here.
 - Timers: `Context::think_after` hands a message to the think loop once a
   delay has passed. A due timer is thought about ahead of whatever is
   waiting on the think queue.
+- A model player's failure to select, whether the model was not reached
+  or answered with something that is not a selection, is logged as
+  `Failed` with the phase and the error, and narrated as it happens. The
+  player has not selected, and the game goes on.
 
 ### Changed
 

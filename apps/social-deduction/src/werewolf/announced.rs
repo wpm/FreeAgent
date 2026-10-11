@@ -216,7 +216,9 @@ impl Environment {
         }
     }
 
-    /// Log the result, stop the survivors, send the winner, and shut down.
+    /// Stop the survivors, log the result, send the winner, and shut down.
+    /// The survivors stop first: a player still waiting on its model is
+    /// dropped at that wait, and logs nothing after the end.
     fn end_game(&self, winner: Team) -> anyhow::Result<()> {
         let (days, survivors, report) = {
             let mut game = self.game();
@@ -226,14 +228,14 @@ impl Environment {
                 game.winner.take(),
             )
         };
-        self.context.log(Entry::End {
-            winner,
-            days,
-            survivors: survivors.clone(),
-        });
         for player in &survivors {
             self.context.stop(player)?;
         }
+        self.context.log(Entry::End {
+            winner,
+            days,
+            survivors,
+        });
         if let Some(report) = report {
             // The owner of the episode may have stopped listening.
             let _ = report.send(winner);
@@ -268,14 +270,14 @@ impl Behavior for Environment {
         Ok(())
     }
 
-    /// Log the deal, then the configuration if there is one, and open the
-    /// first night.
+    /// Log the deal and the limits, then the configuration if there is
+    /// one, and open the first night.
     async fn start(&mut self) -> anyhow::Result<()> {
-        let (variation, roles) = {
+        let start = {
             let game = self.game();
-            (game.rules.variation.clone(), game.state.roles.clone())
+            game.rules.start(game.state.roles.clone())
         };
-        self.context.log(Entry::Start { variation, roles });
+        self.context.log(start);
         if let Some(configuration) = self.configuration.take() {
             self.context.log(configuration);
         }
