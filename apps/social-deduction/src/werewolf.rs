@@ -63,8 +63,8 @@ where
 
 /// The episode of [`episode`], whose players may think: `player` builds
 /// each player's behavior and its think loop, if it has one. Everyone
-/// holds `logger`. A player may send to the environment alone and stops
-/// nobody.
+/// holds `logger`. A player may send to the environment and to every other
+/// player, and stops nobody.
 pub fn thinking_episode<A>(
     environment: ActorInit<A>,
     players: impl IntoIterator<Item = PlayerId>,
@@ -74,15 +74,16 @@ pub fn thinking_episode<A>(
 where
     A: Behavior<Message = Message, Log = Entry>,
 {
+    let players: Vec<PlayerId> = players.into_iter().collect();
     let mut init = HashMap::from([(ENVIRONMENT.to_string(), environment)]);
-    for id in players {
-        let (behavior, think) = player(&id);
+    for id in &players {
+        let (behavior, think) = player(id);
         init.insert(
-            id,
+            id.clone(),
             ActorInit {
                 behavior,
                 think,
-                can_send_to: to_the_environment(),
+                can_send_to: to_everyone_but(id, &players),
                 can_shut_down: HashSet::new(),
                 has_logger: true,
             },
@@ -486,8 +487,8 @@ impl State {
     }
 }
 
-/// How a game is played: the vote each phase is decided by and how long
-/// each phase waits for the players.
+/// How a game is played: the vote each phase is decided by, how long each
+/// phase waits for the players, and whether the day's vote is ratified.
 pub struct Rules {
     /// The name of the variation played, for the log.
     pub variation: String,
@@ -501,24 +502,33 @@ pub struct Rules {
     /// How long the day waits for a player. A choice that comes later is
     /// ignored.
     pub day_limit: Duration,
+    /// How long the day's votes must stand for the player they select to
+    /// be voted out. With a ratify limit, a player may change its vote
+    /// while the day is open, its latest vote counts, and the day ends one
+    /// ratify limit after the votes stop moving, or at the day limit with
+    /// nobody voted out. Without one, the first vote counts and the day
+    /// ends when everyone has voted or at its limit.
+    pub ratify_limit: Option<Duration>,
 }
 
 impl Rules {
     /// The entry that opens a game of `roles` under these rules: the
-    /// variation, the deal, and the phase limits.
+    /// variation, the deal, and the limits.
     pub fn start(&self, roles: HashMap<PlayerId, Role>) -> Entry {
         Entry::Start {
             variation: self.variation.clone(),
             roles,
             night_limit: self.night_limit,
             day_limit: self.day_limit,
+            ratify_limit: self.ratify_limit,
         }
     }
 }
 
 impl Default for Rules {
     /// Uniform Random: the werewolves break ties at random, the village
-    /// does not, and each phase waits a minute.
+    /// does not, each phase waits a minute, and the day's vote is not
+    /// ratified.
     fn default() -> Self {
         Self {
             variation: "Uniform Random".to_string(),
@@ -526,6 +536,7 @@ impl Default for Rules {
             day_vote: Box::new(NoTieBreak),
             night_limit: Duration::from_secs(60),
             day_limit: Duration::from_secs(60),
+            ratify_limit: None,
         }
     }
 }
@@ -533,10 +544,10 @@ impl Default for Rules {
 /// What the environment and the players say to one another. Every message
 /// an actor sends to others is numbered by its sender, from 1, so that the
 /// pair of sender and number names a message in an episode: the
-/// environment numbers its announcements, each player its selections. A
-/// message to several actors has one number, but each announcement is a
-/// message of its own, since each player is shown a different view. A
-/// reminder an actor sends itself is not numbered.
+/// environment numbers its announcements and tentative decisions, each
+/// player its selections. A message to several actors has one number, but
+/// each announcement is a message of its own, since each player is shown a
+/// different view. A reminder an actor sends itself is not numbered.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Message {
     /// The environment opens a phase for one awake player. Phases are
@@ -554,7 +565,9 @@ pub enum Message {
         #[serde(with = "humantime_serde")]
         limit: Duration,
     },
-    /// A player's selection for the phase numbered `seq`.
+    /// A player's selection for the phase numbered `seq`. By night it goes
+    /// to the environment alone; by day, when the vote is ratified, to every
+    /// other living player as well.
     Select {
         /// The number of the phase.
         seq: u64,
@@ -565,11 +578,36 @@ pub enum Message {
         /// Whom they selected.
         target: PlayerId,
     },
+    /// The environment's tentative decision for the day numbered `seq`,
+    /// sent to every living player whenever it changes: the player the
+    /// votes select, or nobody, and how long the votes must stand for it to
+    /// be ratified.
+    Tentative {
+        /// The number of the day.
+        seq: u64,
+        /// The environment's number for this message.
+        n: u64,
+        /// The player the votes select, if they select anyone.
+        target: Option<PlayerId>,
+        /// How long the votes must stand, written as `humantime` writes it.
+        #[serde(with = "humantime_serde")]
+        ratify: Duration,
+    },
     /// The environment's own message to itself that the phase numbered
     /// `seq` is over.
     EndPhase {
         /// The number of the phase.
         seq: u64,
+    },
+    /// The environment's own message to itself that the ratify timer set at
+    /// the `count`th counting selection of the day numbered `seq` has run
+    /// out. A timer cannot be cancelled, so one whose `count` is not the
+    /// day's latest is ignored.
+    Ratify {
+        /// The number of the day.
+        seq: u64,
+        /// Which counting selection of the day set the timer.
+        count: u64,
     },
 }
 impl free_agent::Message for Message {}
@@ -579,16 +617,41 @@ impl Message {
     /// does not have.
     pub fn number(&self) -> Option<u64> {
         match self {
-            Message::Announce { n, .. } | Message::Select { n, .. } => Some(*n),
-            Message::EndPhase { .. } => None,
+            Message::Announce { n, .. }
+            | Message::Select { n, .. }
+            | Message::Tentative { n, .. } => Some(*n),
+            Message::EndPhase { .. } | Message::Ratify { .. } => None,
+        }
+    }
+
+    /// Who sent this message: the environment, unless it is a player's
+    /// selection, which carries its sender.
+    pub fn sender(&self) -> ActorId {
+        match self {
+            Message::Select { from, .. } => from.clone(),
+            _ => ENVIRONMENT.to_string(),
         }
     }
 }
 
 /// The environment alone, as the receivers of a message: whom a player
-/// sends to.
+/// sends to by night.
 pub fn to_the_environment() -> HashSet<ActorId> {
     HashSet::from([ENVIRONMENT.to_string()])
+}
+
+/// The environment and everyone in `players` but `me`, as the receivers of
+/// a message: whom a player sends to when what it says is public.
+pub fn to_everyone_but<'a>(
+    me: &PlayerId,
+    players: impl IntoIterator<Item = &'a PlayerId>,
+) -> HashSet<ActorId> {
+    players
+        .into_iter()
+        .filter(|player| *player != me)
+        .cloned()
+        .chain(to_the_environment())
+        .collect()
 }
 
 /// Send `message` from the actor of `context` to everyone in `to`, logging
@@ -627,17 +690,19 @@ pub fn observe(context: &Context<Message, Entry>, from: ActorId, n: u64, seq: u6
 /// What the log holds: the deal, the configuration of a model-played game,
 /// every message sent as the action of its sender and the observation of
 /// its receiver, each failure of a model player to select, each night's
-/// hunt, and the result. Every actor logs its own actions and observations:
-/// the environment logs the deal, the configuration, the hunts and the
-/// result besides, and a player its failures. Only the result summarizes
-/// anything; the rest is kept whole for whatever reads the log later. Every
-/// entry made during a phase names the phase in a field, so nothing about
-/// phases depends on the order entries reach the log or on their times.
+/// hunt, each day's vote, and the result. Every actor logs its own actions
+/// and observations: the environment logs the deal, the configuration, the
+/// hunts, the votes and the result besides, and a player its failures. Only
+/// the result summarizes anything; the rest is kept whole for whatever
+/// reads the log later. Every entry made during a phase names the phase in
+/// a field, so nothing about phases depends on the order entries reach the
+/// log or on their times.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Entry {
-    /// The game begins: who plays what, under which variation, and how
-    /// long each phase waits for the players. The limits are written as
-    /// `humantime` writes them, such as `"60s"`.
+    /// The game begins: who plays what, under which variation, how long
+    /// each phase waits for the players, and how long a day's votes must
+    /// stand, if they are ratified. The limits are written as `humantime`
+    /// writes them, such as `"60s"`.
     Start {
         /// The name of the variation played, such as "Uniform Random".
         variation: String,
@@ -649,6 +714,14 @@ pub enum Entry {
         /// How long a day waits for the players.
         #[serde(with = "humantime_serde")]
         day_limit: Duration,
+        /// How long a day's votes must stand to be ratified, if they are.
+        /// Left out when they are not.
+        #[serde(
+            default,
+            with = "humantime_serde",
+            skip_serializing_if = "Option::is_none"
+        )]
+        ratify_limit: Option<Duration>,
     },
     /// The configuration a model-played game ran under, logged right after
     /// the deal.
@@ -705,6 +778,17 @@ pub enum Entry {
         /// How the hunt came out.
         hunt: Hunt,
     },
+    /// The day numbered `seq` ended: who was voted out, if anyone, and how
+    /// it ended. Logged for every day, so that a day ended by its limit is
+    /// told apart from one that was ratified.
+    Voted {
+        /// The number of the day.
+        seq: u64,
+        /// Who was voted out, if anyone.
+        out: Option<PlayerId>,
+        /// How the day ended.
+        by: Ending,
+    },
     /// The game is over.
     End {
         /// Who won.
@@ -718,6 +802,17 @@ pub enum Entry {
         #[serde(with = "humantime_serde")]
         took: Duration,
     },
+}
+
+/// How a day ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Ending {
+    /// A selected player's votes stood for the ratify limit.
+    Ratified,
+    /// The day limit came first.
+    DayLimit,
+    /// Everyone awake had selected, in a day without a ratify limit.
+    AllSelected,
 }
 
 /// How a phase's ballots, each voter's choice of a player, become one
@@ -929,6 +1024,21 @@ mod tests {
         let json = serde_json::to_value(&start).unwrap();
         assert_eq!(json["Start"]["night_limit"], "1m 30s");
         assert_eq!(json["Start"]["day_limit"], "40s");
+        // Without a ratify limit, the start is written as it always was.
+        assert!(json["Start"].get("ratify_limit").is_none(), "{json}");
+        let back: Entry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, start);
+    }
+
+    #[test]
+    fn the_start_carries_the_ratify_limit_when_there_is_one() {
+        let rules = Rules {
+            ratify_limit: Some(Duration::from_secs(20)),
+            ..Rules::default()
+        };
+        let start = rules.start(village().roles);
+        let json = serde_json::to_value(&start).unwrap();
+        assert_eq!(json["Start"]["ratify_limit"], "20s");
         let back: Entry = serde_json::from_value(json).unwrap();
         assert_eq!(back, start);
     }
@@ -969,6 +1079,28 @@ mod tests {
                     protectors: HashSet::new(),
                 },
             },
+            Entry::Voted {
+                seq: 2,
+                out: Some("wolf1".to_string()),
+                by: Ending::Ratified,
+            },
+            Entry::Voted {
+                seq: 4,
+                out: None,
+                by: Ending::DayLimit,
+            },
+            Entry::Voted {
+                seq: 6,
+                out: None,
+                by: Ending::AllSelected,
+            },
+            Entry::Action {
+                from: ENVIRONMENT.to_string(),
+                n: 5,
+                to: HashSet::from(["seer".to_string(), "villager".to_string()]),
+                message: tentative(2, 5, Some("wolf1")),
+                seen: None,
+            },
             Entry::Failed {
                 player: "seer".to_string(),
                 seq: 3,
@@ -998,11 +1130,53 @@ mod tests {
     }
 
     #[test]
+    fn a_tentative_decision_carries_its_ratify_limit_as_humantime_writes_it_and_may_name_nobody() {
+        let message = tentative(2, 5, Some("wolf"));
+        let json = serde_json::to_value(&message).unwrap();
+        assert_eq!(json["Tentative"]["ratify"], "20s");
+        assert_eq!(json["Tentative"]["target"], "wolf");
+        let back: Message = serde_json::from_value(json).unwrap();
+        assert_eq!(back, message);
+        let nobody = tentative(2, 6, None);
+        let json = serde_json::to_value(&nobody).unwrap();
+        assert_eq!(json["Tentative"]["target"], serde_json::Value::Null);
+        let back: Message = serde_json::from_value(json).unwrap();
+        assert_eq!(back, nobody);
+    }
+
+    #[test]
     fn a_message_to_others_is_numbered_and_a_reminder_is_not() {
         let view = seen(&["wolf"], &[("wolf", Role::Werewolf)]);
         assert_eq!(announcement(2, view).number(), Some(2));
         assert_eq!(selection(1, "wolf", 3, "ann").number(), Some(3));
+        assert_eq!(tentative(2, 4, None).number(), Some(4));
         assert_eq!(Message::EndPhase { seq: 1 }.number(), None);
+        assert_eq!(Message::Ratify { seq: 2, count: 3 }.number(), None);
+    }
+
+    #[test]
+    fn a_selection_is_sent_by_its_player_and_everything_else_by_the_environment() {
+        let view = seen(&["wolf"], &[("wolf", Role::Werewolf)]);
+        assert_eq!(selection(1, "wolf", 3, "ann").sender(), "wolf");
+        assert_eq!(announcement(2, view).sender(), ENVIRONMENT);
+        assert_eq!(tentative(2, 4, None).sender(), ENVIRONMENT);
+    }
+
+    #[test]
+    fn everyone_but_me_is_the_environment_and_the_other_players() {
+        let players = ["ann".to_string(), "bob".to_string(), "cat".to_string()];
+        assert_eq!(
+            to_everyone_but(&"bob".to_string(), &players),
+            HashSet::from([
+                ENVIRONMENT.to_string(),
+                "ann".to_string(),
+                "cat".to_string()
+            ])
+        );
+        assert_eq!(
+            to_everyone_but(&"dan".to_string(), &[]),
+            to_the_environment()
+        );
     }
 
     #[test]
@@ -1132,6 +1306,18 @@ mod tests {
             from: from.to_string(),
             n,
             target: target.to_string(),
+        }
+    }
+
+    /// The environment's tentative decision for the day numbered `seq`,
+    /// the `n`th message it sent: `target`, or nobody, to be ratified
+    /// after twenty seconds.
+    pub(super) fn tentative(seq: u64, n: u64, target: Option<&str>) -> Message {
+        Message::Tentative {
+            seq,
+            n,
+            target: target.map(str::to_string),
+            ratify: Duration::from_secs(20),
         }
     }
 

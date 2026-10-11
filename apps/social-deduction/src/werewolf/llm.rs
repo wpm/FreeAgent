@@ -17,7 +17,9 @@
 //! a [`SecretString`], which is redacted wherever it is shown.
 //!
 //! The game is the announcing environment's, with a model [`Player`] in
-//! every seat. A player remembers what it is shown and what it does, as a
+//! every seat, and the day's vote is ratified: a day ends one ratify limit
+//! after its votes stop changing, or at the day limit with nobody voted
+//! out. A player remembers what it is shown and what it does, as a
 //! [`Memory`] of each message stamped when it was received or sent.
 //! Announced a phase, it tells the model that history as a story from its
 //! own point of view and where the game stands, with how long the phase
@@ -25,11 +27,15 @@
 //! forced tool call. The call is made in the player's think loop, so the
 //! player keeps perceiving while the model works. A model that is not
 //! reached, or an answer that is not a selection, is no selection: the
-//! player logs the failure and the game goes on. The player logs an
-//! [`Entry::Observation`] for each announcement it receives and an
-//! [`Entry::Action`] for each selection it sends, numbering its selections
-//! from 1, with how many memories the model was shown when it made the
-//! call that produced the selection. Before a game begins,
+//! player logs the failure and the game goes on. By day a selection goes to
+//! every other living player as well as to the environment, so the votes
+//! are public, and a player remembers the others' selections and the
+//! environment's tentative decisions as it hears them, without asking the
+//! model about them. The player logs an [`Entry::Observation`] for each
+//! message it receives and an [`Entry::Action`] for each selection it
+//! sends, numbering its selections from 1, with how many memories the model
+//! was shown when it made the call that produced the selection. Before a
+//! game begins,
 //! [`check_selects`] asks the model for one selection as a player would,
 //! so a model that does not select fails at launch, in the provider's
 //! words. [`game`] builds the episode from the deal, the rules, the model,
@@ -40,8 +46,8 @@
 use super::announced;
 use super::report::Narrator;
 use super::{
-    ENVIRONMENT, Entry, Message, Phase, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table,
-    Team, View, act, candidates, observe, to_the_environment,
+    Entry, Message, Phase, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table, Team, View, act,
+    candidates, observe, to_everyone_but, to_the_environment,
 };
 use crate::model::{
     self, Provider, REQUEST_TIMEOUT, Request, Response, Tool, api_key, key_variable,
@@ -65,8 +71,8 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 /// What the command line may say over the file: the role counts, the
-/// phase limits, and the model. Each is unset unless given, so that the
-/// file can be heard.
+/// phase limits, the ratify limit, and the model. Each is unset unless
+/// given, so that the file can be heard.
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 pub struct Overrides {
     /// How many of each role sit at the table.
@@ -75,9 +81,20 @@ pub struct Overrides {
     /// How long each phase waits for the players.
     #[command(flatten)]
     pub limits: PhaseLimits,
+    /// How long a day's votes must stand to be ratified.
+    #[arg(long, value_parser = humantime::parse_duration, help = ratify_help())]
+    pub ratify_limit: Option<Duration>,
     /// The model and where it is.
     #[command(flatten)]
     pub model: ModelOverrides,
+}
+
+/// The help for `--ratify-limit`, naming the default the code fills in.
+fn ratify_help() -> String {
+    format!(
+        "How long a day's votes must stand to be ratified [default: {}]",
+        format_duration(RATIFY_LIMIT)
+    )
 }
 
 /// What the command line may say over the file's `[model]` table, for
@@ -162,8 +179,8 @@ fn read(path: &Path) -> anyhow::Result<String> {
     std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
 }
 
-/// The `[phases]` table: how long each phase waits for the players, for
-/// the phases that say.
+/// The `[phases]` table: how long each phase waits for the players, and
+/// how long a day's votes must stand, for those that say.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Phases {
@@ -173,6 +190,9 @@ pub struct Phases {
     /// How long the day waits for a player.
     #[serde(default, with = "humantime_serde")]
     pub day_limit: Option<Duration>,
+    /// How long a day's votes must stand to be ratified.
+    #[serde(default, with = "humantime_serde")]
+    pub ratify_limit: Option<Duration>,
 }
 
 /// The `[roles]` tables, one per role. A role the file does not mention
@@ -238,6 +258,8 @@ pub struct Settings {
     pub night_limit: Duration,
     /// How long the day waits for a player.
     pub day_limit: Duration,
+    /// How long a day's votes must stand to be ratified.
+    pub ratify_limit: Duration,
 }
 
 impl Config {
@@ -262,11 +284,13 @@ impl Config {
     }
 
     /// The settings that take effect with `overrides` from the command
-    /// line: each role count and phase limit from the command line if
-    /// given there, otherwise from the file, otherwise from the code, and
-    /// the model's provider and id from the command line if given there,
-    /// otherwise from the file.
-    pub fn settle(mut self, overrides: Overrides) -> Settings {
+    /// line: each role count and limit from the command line if given
+    /// there, otherwise from the file, otherwise from the code, and the
+    /// model's provider and id from the command line if given there,
+    /// otherwise from the file. A ratify limit longer than the day limit
+    /// is an error naming both, since the day would run out before any
+    /// vote stood.
+    pub fn settle(mut self, overrides: Overrides) -> anyhow::Result<Settings> {
         if let Some(base_url) = overrides.model.base_url {
             self.model.base_url = base_url;
         }
@@ -280,20 +304,33 @@ impl Config {
             seers: self.roles.seer.count,
         };
         let rules = Rules::default();
-        Settings {
+        let day_limit = overrides
+            .limits
+            .day_limit
+            .or(self.phases.day_limit)
+            .unwrap_or(rules.day_limit);
+        let ratify_limit = overrides
+            .ratify_limit
+            .or(self.phases.ratify_limit)
+            .unwrap_or(RATIFY_LIMIT);
+        if ratify_limit > day_limit {
+            bail!(
+                "the ratify limit ({}) is longer than the day limit ({})",
+                format_duration(ratify_limit),
+                format_duration(day_limit)
+            );
+        }
+        Ok(Settings {
             table: overrides.roles.or(file.or(Table::default())),
             night_limit: overrides
                 .limits
                 .night_limit
                 .or(self.phases.night_limit)
                 .unwrap_or(rules.night_limit),
-            day_limit: overrides
-                .limits
-                .day_limit
-                .or(self.phases.day_limit)
-                .unwrap_or(rules.day_limit),
+            day_limit,
+            ratify_limit,
             config: self,
-        }
+        })
     }
 }
 
@@ -412,6 +449,7 @@ impl Settings {
             role_counts: counts.into_iter().collect(),
             night_limit: self.night_limit,
             day_limit: self.day_limit,
+            ratify_limit: self.ratify_limit,
             request_timeout: model.request_timeout,
             base_url: model.base_url.clone(),
             model: model.id.clone(),
@@ -428,12 +466,13 @@ impl Settings {
         })
     }
 
-    /// The rules a game is played under: the variant's, with the phase
-    /// limits that took effect.
+    /// The rules a game is played under: the variant's, with the limits
+    /// that took effect.
     pub fn rules(&self) -> Rules {
         Rules {
             night_limit: self.night_limit,
             day_limit: self.day_limit,
+            ratify_limit: Some(self.ratify_limit),
             ..rules()
         }
     }
@@ -444,11 +483,17 @@ fn request_timeout() -> Duration {
     REQUEST_TIMEOUT
 }
 
+/// How long a day's votes must stand to be ratified, unless the file or
+/// the command line says otherwise.
+pub const RATIFY_LIMIT: Duration = Duration::from_secs(20);
+
 /// The rules of the model-played variant: the uniform-random variant's,
-/// played as "LLM".
+/// played as "LLM", with the day's vote ratified once it has stood for
+/// [`RATIFY_LIMIT`].
 pub fn rules() -> Rules {
     Rules {
         variation: "LLM".to_string(),
+        ratify_limit: Some(RATIFY_LIMIT),
         ..Rules::default()
     }
 }
@@ -468,6 +513,9 @@ pub struct Configuration {
     /// How long the day waited for a player.
     #[serde(with = "humantime_serde")]
     pub day_limit: Duration,
+    /// How long a day's votes had to stand to be ratified.
+    #[serde(with = "humantime_serde")]
+    pub ratify_limit: Duration,
     /// How long each model request could take.
     #[serde(with = "humantime_serde")]
     pub request_timeout: Duration,
@@ -492,12 +540,13 @@ pub struct Configuration {
 
 /// An episode of a game of `roles` under `rules`: the announcing
 /// environment, which may reach and stop every player and holds `logger`,
-/// and a model player for each role, who may send to the environment. The
-/// environment logs `configuration` right after the deal. Each player is
-/// told its system prompt, which `configuration` has for every player in
-/// `roles`, and makes each selection by asking `model` as the model
-/// `configuration` names. The winning team is sent on `winner` when the
-/// game ends.
+/// and a model player for each role, who may send to the environment and
+/// to every other player. The environment logs `configuration` right after
+/// the deal. Each player is told its system prompt, which `configuration`
+/// has for every player in `roles`, and makes each selection by asking
+/// `model` as the model `configuration` names; when `rules` ratify the
+/// day's vote, it sends each day selection to every other living player
+/// too. The winning team is sent on `winner` when the game ends.
 pub fn game(
     roles: HashMap<PlayerId, Role>,
     rules: Rules,
@@ -509,6 +558,7 @@ pub fn game(
     let mut prompts = configuration.prompts.clone();
     let model_id = configuration.model.clone();
     let players: Vec<PlayerId> = roles.keys().cloned().collect();
+    let ratifies = rules.ratify_limit.is_some();
     let environment = announced::init(
         roles,
         rules,
@@ -520,7 +570,7 @@ pub fn game(
         let prompt = prompts
             .remove(id)
             .unwrap_or_else(|| panic!("no system prompt for {id}"));
-        Player::init(prompt, model_id.clone(), Arc::clone(&model))
+        Player::init(prompt, model_id.clone(), Arc::clone(&model), ratifies)
     };
     super::thinking_episode(environment, players, player, logger)
 }
@@ -581,38 +631,47 @@ pub enum Memory {
 }
 
 /// What a player's two loops share: what it has been shown and what it has
-/// done, what it is told, and whom it asks.
+/// done, what it is told, whom it asks, and whether its votes are public.
 struct Mind {
-    /// The history, in order: each announcement received and each
-    /// selection sent, stamped when the player remembered it. Never locked
-    /// across an await.
+    /// The history, in order: each message received and each selection
+    /// sent, stamped when the player remembered it. Never locked across an
+    /// await.
     history: Mutex<Vec<Event<Memory>>>,
     /// The number of the last selection the player sent.
     n: AtomicU64,
+    /// The number of the latest phase the player was announced: the phase
+    /// it is in, so far as it knows.
+    seq: AtomicU64,
     /// Its system prompt, rendered for its seat and role.
     prompt: String,
     /// The model's id, as each request names it.
     model_id: String,
     /// The model asked for each selection.
     model: Arc<dyn model::Model>,
+    /// Whether the day's vote is ratified, in which case a day selection
+    /// goes to every other living player as well as to the environment.
+    ratifies: bool,
 }
 
 impl Mind {
     /// A mind with nothing in its history yet, told `prompt`, asking
-    /// `model` as the model `model_id`.
-    fn new(prompt: String, model_id: String, model: Arc<dyn model::Model>) -> Self {
+    /// `model` as the model `model_id`, voting publicly by day if the rules
+    /// ratify the vote.
+    fn new(prompt: String, model_id: String, model: Arc<dyn model::Model>, ratifies: bool) -> Self {
         Self {
             history: Mutex::new(Vec::new()),
             n: AtomicU64::new(0),
+            seq: AtomicU64::new(0),
             prompt,
             model_id,
             model,
+            ratifies,
         }
     }
 
-    /// Add `event` to the history. An announcement goes at the end. A
-    /// selection goes right after the announcement it answers, which is
-    /// where it belongs in the story: one made after a later phase was
+    /// Add `event` to the history. A message received goes at the end. A
+    /// selection sent goes right after the announcement it answers, which
+    /// is where it belongs in the story: one made after a later phase was
     /// announced, which the environment has dropped, was still made in its
     /// own phase, and is not told as a deed of the phase that followed.
     fn remember(&self, event: Event<Memory>) {
@@ -645,10 +704,11 @@ impl Mind {
 
 /// A player whose selections are made by a language model. Its perceive
 /// loop and its think loop are each a `Player` with a context of its own
-/// over one shared mind: the perceive loop remembers each announcement and
-/// hands it to the think loop, which tells the model the history as a story
-/// and sends the environment what the model selects. A variant's actor
-/// enum holds the perceive loop's, built by [`Player::init`].
+/// over one shared mind: the perceive loop remembers each message it is
+/// sent and hands each announcement to the think loop, which tells the
+/// model the history as a story and sends what the model selects. A
+/// variant's actor enum holds the perceive loop's, built by
+/// [`Player::init`].
 pub struct Player {
     context: Context<Message, Entry>,
     mind: Arc<Mind>,
@@ -657,13 +717,15 @@ pub struct Player {
 impl Player {
     /// Builds a player's two loops once the episode has made their
     /// contexts: the perceive loop as the actor, and the think loop. The
-    /// player is told `prompt`, and asks `model` as the model `model_id`.
+    /// player is told `prompt`, asks `model` as the model `model_id`, and
+    /// votes publicly by day if the rules `ratify` the vote.
     pub fn init(
         prompt: String,
         model_id: String,
         model: Arc<dyn model::Model>,
+        ratifies: bool,
     ) -> (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>) {
-        let mind = Arc::new(Mind::new(prompt, model_id, model));
+        let mind = Arc::new(Mind::new(prompt, model_id, model, ratifies));
         let shared = Arc::clone(&mind);
         let behavior: Builder<Actor> =
             Box::new(move |context| Actor::Player(Player { context, mind }));
@@ -717,8 +779,9 @@ impl Player {
 
     /// Ask the model to select one of `candidates` in the phase numbered
     /// `seq`, which `view` shows and which lasts `limit`, remember what it
-    /// selects, and send the selection to the environment, logged as the
-    /// player's action with how many memories the model was shown. The
+    /// selects, and send the selection, logged as the player's action with
+    /// how many memories the model was shown: to the environment, and by
+    /// day when the vote is ratified to every other living player too. The
     /// model's failure to select, as [`selection`] judges it, is an error,
     /// and no selection; so is a request that cannot be put together or a
     /// selection that cannot be sent, which are the player's own doing,
@@ -743,7 +806,12 @@ impl Player {
         self.remember(Memory::Acted {
             message: selection.clone(),
         });
-        act(&self.context, selection, to_the_environment(), Some(seen))
+        let to = if self.mind.ratifies && view.phase == Phase::Day {
+            to_everyone_but(me, &view.alive)
+        } else {
+            to_the_environment()
+        };
+        act(&self.context, selection, to, Some(seen))
     }
 }
 
@@ -756,16 +824,30 @@ impl Behavior for Player {
         &self.context
     }
 
-    /// Announced a phase, log the announcement as observed in it, remember
-    /// it and think about it. Anything else is ignored.
+    /// Log a message from another actor, which is any numbered one, as
+    /// observed in the latest phase announced, and remember it. An
+    /// announcement is of a new phase, and is thought about; another
+    /// player's selection and the environment's tentative decision are
+    /// remembered and nothing more. Anything else is ignored.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        if let Message::Announce { seq, n, .. } = message {
-            observe(&self.context, ENVIRONMENT.to_string(), *n, *seq);
+        if let Some(n) = message.number() {
+            if let Message::Announce { seq, .. } = message {
+                self.mind.seq.store(*seq, Ordering::Relaxed);
+            }
+            let from = message.sender();
+            observe(
+                &self.context,
+                from.clone(),
+                n,
+                self.mind.seq.load(Ordering::Relaxed),
+            );
             self.remember(Memory::Observed {
-                from: ENVIRONMENT.to_string(),
+                from,
                 message: message.clone(),
             });
-            self.context.think(message.clone())?;
+            if let Message::Announce { .. } = message {
+                self.context.think(message.clone())?;
+            }
         }
         Ok(())
     }
@@ -931,9 +1013,10 @@ mod tests {
     use super::*;
     use crate::model::canned;
     use crate::model::fake::{FakeModel, choosing_first};
+    use crate::werewolf::ENVIRONMENT;
     use crate::werewolf::tests::{
         Played, announcement, between_the_deal_and_the_end, logged, one_wolf_against, run, seen,
-        seen_by_day, selection, selections,
+        seen_by_day, selection, selections, tentative,
     };
     use clap::Parser;
     use secrecy::ExposeSecret;
@@ -950,7 +1033,7 @@ id = "qwen2.5-7b-instruct"
 
     /// The settings `file` and `overrides` produce under the code defaults.
     fn settle(file: &str, overrides: Overrides) -> Settings {
-        Config::parse(file).unwrap().settle(overrides)
+        Config::parse(file).unwrap().settle(overrides).unwrap()
     }
 
     /// The command line of a variant that takes the overrides.
@@ -972,11 +1055,23 @@ id = "qwen2.5-7b-instruct"
         for file in files {
             let name = file.display().to_string();
             let config = Config::load(&file).unwrap_or_else(|e| panic!("{name}: {e:#}"));
-            let prompts = config
+            let settings = config
                 .settle(Overrides::default())
+                .unwrap_or_else(|e| panic!("{name}: {e:#}"));
+            let prompts = settings
                 .prompts()
                 .unwrap_or_else(|e| panic!("{name}: {e:#}"));
             assert!(!prompts.is_empty(), "{name}");
+            // Each example sets the ratify limit, and tells the players
+            // that a vote stands once nobody has changed theirs for that
+            // long.
+            let ratify = settings.config.phases.ratify_limit.unwrap();
+            assert_eq!(ratify, settings.ratify_limit, "{name}");
+            let rules = &settings.config.text["rules"];
+            assert!(
+                rules.contains(&format_duration(ratify).to_string()),
+                "{name}: {rules}"
+            );
         }
     }
 
@@ -1110,13 +1205,13 @@ count = 8
             Overrides {
                 limits: PhaseLimits {
                     night_limit: Some(Duration::from_secs(5)),
-                    day_limit: Some(Duration::from_secs(7)),
+                    day_limit: Some(Duration::from_secs(70)),
                 },
                 ..Overrides::default()
             },
         );
         assert_eq!(settings.night_limit, Duration::from_secs(5));
-        assert_eq!(settings.day_limit, Duration::from_secs(7));
+        assert_eq!(settings.day_limit, Duration::from_secs(70));
         // A limit the command line does not give still comes from the file.
         let settings = settle(
             &file,
@@ -1133,18 +1228,94 @@ count = 8
     }
 
     #[test]
+    fn the_ratify_limit_falls_back_from_the_command_line_to_the_file_to_the_code() {
+        let file = format!("{MODEL}\n[phases]\nratify_limit = \"15s\"\n");
+        // The code alone.
+        assert_eq!(
+            settle(MODEL, Overrides::default()).ratify_limit,
+            RATIFY_LIMIT
+        );
+        assert_eq!(RATIFY_LIMIT, Duration::from_secs(20));
+        // The file over the code.
+        assert_eq!(
+            settle(&file, Overrides::default()).ratify_limit,
+            Duration::from_secs(15)
+        );
+        // The command line over the file.
+        let overrides = Overrides {
+            ratify_limit: Some(Duration::from_secs(5)),
+            ..Overrides::default()
+        };
+        assert_eq!(
+            settle(&file, overrides).ratify_limit,
+            Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn a_ratify_limit_longer_than_the_day_limit_is_an_error_naming_both() {
+        let file = format!("{MODEL}\n[phases]\nday_limit = \"20s\"\nratify_limit = \"30s\"\n");
+        let error = Config::parse(&file)
+            .unwrap()
+            .settle(Overrides::default())
+            .unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            "the ratify limit (30s) is longer than the day limit (20s)"
+        );
+        // However the two are given.
+        let overrides = Overrides {
+            limits: PhaseLimits {
+                night_limit: None,
+                day_limit: Some(Duration::from_secs(10)),
+            },
+            ..Overrides::default()
+        };
+        let error = Config::parse(MODEL).unwrap().settle(overrides).unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            "the ratify limit (20s) is longer than the day limit (10s)"
+        );
+        // One as long as the day is allowed.
+        let overrides = Overrides {
+            limits: PhaseLimits {
+                night_limit: None,
+                day_limit: Some(Duration::from_secs(20)),
+            },
+            ..Overrides::default()
+        };
+        assert_eq!(
+            settle(MODEL, overrides).ratify_limit,
+            Duration::from_secs(20)
+        );
+    }
+
+    #[test]
     fn the_rules_are_the_variant_s_with_the_limits_that_took_effect() {
-        let file = format!("{MODEL}\n[phases]\nnight_limit = \"1m 30s\"\nday_limit = \"7s\"\n");
+        let file = format!(
+            "{MODEL}\n[phases]\nnight_limit = \"1m 30s\"\nday_limit = \"7s\"\nratify_limit = \"3s\"\n"
+        );
         let settings = settle(&file, Overrides::default());
-        let rules = settings.rules();
-        assert_eq!(rules.variation, "LLM");
-        assert_eq!(rules.night_limit, settings.night_limit);
-        assert_eq!(rules.day_limit, settings.day_limit);
+        let settled = settings.rules();
+        assert_eq!(settled.variation, "LLM");
+        assert_eq!(settled.night_limit, settings.night_limit);
+        assert_eq!(settled.day_limit, settings.day_limit);
+        assert_eq!(settled.ratify_limit, Some(Duration::from_secs(3)));
+        // The variant's own rules ratify the vote after the code's default.
+        assert_eq!(rules().ratify_limit, Some(RATIFY_LIMIT));
     }
 
     #[test]
     fn the_command_line_takes_durations_in_humantime_form() {
-        let variant = Variant::parse_from(["llm", "--night-limit", "30s", "--day-limit", "1m 30s"]);
+        let variant = Variant::parse_from([
+            "llm",
+            "--night-limit",
+            "30s",
+            "--day-limit",
+            "1m 30s",
+            "--ratify-limit",
+            "15s",
+        ]);
         assert_eq!(
             variant.overrides.limits,
             PhaseLimits {
@@ -1152,8 +1323,13 @@ count = 8
                 day_limit: Some(Duration::from_secs(90)),
             }
         );
+        assert_eq!(
+            variant.overrides.ratify_limit,
+            Some(Duration::from_secs(15))
+        );
         assert!(Variant::try_parse_from(["llm", "--night-limit", "soon"]).is_err());
         assert!(Variant::try_parse_from(["llm", "--day-limit", "30"]).is_err());
+        assert!(Variant::try_parse_from(["llm", "--ratify-limit", "soon"]).is_err());
     }
 
     #[test]
@@ -1429,6 +1605,7 @@ request_timeout = \"10s\"
 [phases]
 night_limit = \"30s\"
 day_limit = \"1m 30s\"
+ratify_limit = \"10s\"
 [roles.werewolf]
 count = 1
 [roles.villager]
@@ -1489,6 +1666,7 @@ player2 = \"Cautious.\"
                 ]),
                 night_limit: Duration::from_secs(5),
                 day_limit: Duration::from_secs(90),
+                ratify_limit: Duration::from_secs(10),
                 request_timeout: Duration::from_secs(10),
                 base_url: "http://localhost:1234/v1".to_string(),
                 model: MODEL_ID.to_string(),
@@ -1535,6 +1713,7 @@ player2 = \"Cautious.\"
         let configuration = &json["Configuration"];
         assert_eq!(configuration["night_limit"], json!("30s"));
         assert_eq!(configuration["day_limit"], json!("1m 30s"));
+        assert_eq!(configuration["ratify_limit"], json!("10s"));
         assert_eq!(configuration["request_timeout"], json!("10s"));
         // A role is a key by its name.
         assert_eq!(configuration["role_counts"]["Werewolf"], json!(1));
@@ -1634,11 +1813,22 @@ player2 = \"Cautious.\"
     }
 
     /// Short limits, so a phase that waits them out is told apart from
-    /// one that does not.
+    /// one that does not: the votes stand after five seconds.
     fn quick() -> Rules {
         Rules {
             night_limit: Duration::from_secs(10),
             day_limit: Duration::from_secs(10),
+            ratify_limit: Some(Duration::from_secs(5)),
+            ..rules()
+        }
+    }
+
+    /// The variant's rules without a ratify limit, under which a day ends
+    /// as soon as everyone has voted and nobody hears anyone else's vote,
+    /// so that a story does not depend on the order the votes arrived in.
+    fn unratified() -> Rules {
+        Rules {
+            ratify_limit: None,
             ..rules()
         }
     }
@@ -1759,7 +1949,9 @@ player2 = \"Cautious.\"
         // every announcement it has heard and every selection it has made,
         // so each is told from two memories more than the last.
         let model = answering(choosing_first);
-        let (_, logged, _) = play(doctored(), rules(), Arc::clone(&model)).await.unwrap();
+        let (_, logged, _) = play(doctored(), unratified(), Arc::clone(&model))
+            .await
+            .unwrap();
         assert_eq!(
             seen_by(&logged, "doc"),
             [Some(1), Some(3), Some(5), Some(7)]
@@ -1770,7 +1962,9 @@ player2 = \"Cautious.\"
     #[tokio::test(start_paused = true)]
     async fn each_request_begins_with_the_history_of_the_one_before() {
         let model = answering(choosing_first);
-        play(doctored(), rules(), Arc::clone(&model)).await.unwrap();
+        play(doctored(), unratified(), Arc::clone(&model))
+            .await
+            .unwrap();
         let asked = asked_of(&model, "doc");
         assert_eq!(
             asked.last().unwrap(),
@@ -1804,6 +1998,7 @@ player2 = \"Cautious.\"
             told("wolf"),
             MODEL_ID.to_string(),
             Arc::new(FakeModel::failing("down")),
+            true,
         );
         let everyone = ["wolf", "ann", "bob"];
         let pack = [("wolf", Role::Werewolf)];
@@ -1873,7 +2068,9 @@ player2 = \"Cautious.\"
             let roles = one_wolf_against(&["ann", "bob"]);
             let (winner, logged, took) = play(roles, quick(), Arc::clone(&model)).await.unwrap();
             assert_eq!(winner, Team::Werewolves);
-            assert_eq!(took, quick().night_limit);
+            // The night runs out, and the day's votes stand after five
+            // seconds.
+            assert_eq!(took, quick().night_limit + Duration::from_secs(5));
             assert_eq!(model.requests().len(), 4);
             assert_eq!(failed(&logged), [("wolf", 1, error)]);
             // A failure takes no number: the werewolf's vote is its first
@@ -1934,7 +2131,7 @@ player2 = \"Cautious.\"
              bob (villager)\n\
              wolf1 (werewolf)\n\
              wolf2 (werewolf)\n\
-             A night waits 10s and a day 10s.\n\
+             A night waits 10s and a day 10s, and a vote stands after 5s.\n\
              \n\
              Night 1.\n\
              wolf1 (werewolf) fails to select: the model is down\n\
@@ -2042,6 +2239,182 @@ player2 = \"Cautious.\"
                 "It is night 2, which lasts 1m. Choose whom to protect.".to_string(),
                 "It is day 2, which lasts 1m. Choose whom to vote out.".to_string(),
             ])
+        );
+    }
+
+    /// A werewolf against ann, bob, cat and dan, whose model answers only
+    /// `bob` by day 1: the werewolf kills ann the first night; by day only
+    /// bob votes, against cat, and cat is voted out when the vote stands;
+    /// the second night the werewolf kills bob and wins.
+    fn only_bob_votes_by_day_1() -> (HashMap<PlayerId, Role>, Arc<FakeModel>) {
+        let roles = one_wolf_against(&["ann", "bob", "cat", "dan"]);
+        let model = answering(|request| {
+            let by_day_1 = request.messages[1].content.contains("It is day 1");
+            if by_day_1 && request.messages[0] != model::Message::system(told("bob")) {
+                Err(anyhow!("asleep"))
+            } else {
+                choosing_first(request)
+            }
+        });
+        (roles, model)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn by_day_a_selection_goes_to_the_environment_and_every_other_living_player() {
+        let (roles, model) = only_bob_votes_by_day_1();
+        let (winner, logged, took) = play(roles, quick(), model).await.unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        // Night 1 ends at once, day 1 five seconds after bob's vote, and
+        // night 2 at once.
+        assert_eq!(took, Duration::from_secs(5));
+        let to: Vec<(&Message, &HashSet<ActorId>)> = logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Action {
+                    message: message @ Message::Select { .. },
+                    to,
+                    ..
+                } => Some((message, to)),
+                _ => None,
+            })
+            .collect();
+        let everyone_living = to_everyone_but(
+            &"bob".to_string(),
+            &["wolf", "cat", "dan"].map(String::from),
+        );
+        assert_eq!(
+            to,
+            [
+                (&selection(1, "wolf", 1, "ann"), &to_the_environment()),
+                (&selection(2, "bob", 1, "cat"), &everyone_living),
+                (&selection(3, "wolf", 2, "bob"), &to_the_environment()),
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_player_remembers_the_others_votes_and_the_tentative_decisions_without_asking_the_model()
+     {
+        let (roles, model) = only_bob_votes_by_day_1();
+        let (_, logged, _) = play(roles, quick(), Arc::clone(&model)).await.unwrap();
+        // Each player was asked once an announcement, and never about what
+        // it heard: the werewolf twice by night and once by day, bob, cat
+        // and dan once by day each.
+        assert_eq!(model.requests().len(), 6);
+        // The werewolf's second night is told from everything it heard by
+        // day: bob's vote and the decision it made, as well as its own
+        // failure to vote, which it is not told of.
+        let asked = asked_of(&model, "wolf");
+        assert_eq!(
+            asked[2],
+            "You are wolf, the only werewolf.\n\
+             \n\
+             Night 1.\n\
+             You vote to kill ann.\n\
+             ann dies.\n\
+             \n\
+             Day 1.\n\
+             bob votes against cat.\n\
+             cat will be voted out in 5s unless the votes change.\n\
+             cat dies.\n\
+             \n\
+             Night 2.\n\
+             \n\
+             It is night 2, which lasts 10s. Choose whom the werewolves should kill."
+        );
+        // What it heard counts among the memories it was shown.
+        assert_eq!(seen_by(&logged, "wolf"), [Some(1), Some(6)]);
+        // Every player logs observing bob's vote and the decision, in the
+        // phase it was in.
+        let decision = logged.iter().find_map(|entry| match entry {
+            Entry::Action {
+                n,
+                message: Message::Tentative { .. },
+                ..
+            } => Some(*n),
+            _ => None,
+        });
+        let decision = decision.unwrap();
+        for player in ["wolf", "cat", "dan"] {
+            let observed: Vec<(&str, u64)> = logged
+                .iter()
+                .filter_map(|entry| match entry {
+                    Entry::Observation {
+                        by,
+                        from,
+                        n,
+                        seq: 2,
+                    } if by == player => Some((from.as_str(), *n)),
+                    _ => None,
+                })
+                .collect();
+            let announcement = announced_to(&logged, player, 2);
+            assert_eq!(
+                observed,
+                [
+                    (ENVIRONMENT, announcement),
+                    ("bob", 1),
+                    (ENVIRONMENT, decision)
+                ]
+            );
+        }
+    }
+
+    /// The number of the environment's announcement of the phase numbered
+    /// `seq` to `player`.
+    fn announced_to(logged: &[Entry], player: &str, seq: u64) -> u64 {
+        logged
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Action {
+                    n,
+                    to,
+                    message: Message::Announce { seq: announced, .. },
+                    ..
+                } if *announced == seq && to.contains(player) => Some(*n),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn a_tentative_decision_and_anothers_vote_are_remembered_at_the_end_and_told_in_turn() {
+        let mind = Mind::new(
+            told("wolf"),
+            MODEL_ID.to_string(),
+            Arc::new(FakeModel::failing("down")),
+            true,
+        );
+        let everyone = ["wolf", "ann", "bob"];
+        let pack = [("wolf", Role::Werewolf)];
+        let heard = |message: Message| {
+            logged(Memory::Observed {
+                from: message.sender(),
+                message,
+            })
+        };
+        mind.remember(heard(announcement(2, seen_by_day(&everyone, &pack))));
+        mind.remember(heard(selection(2, "ann", 1, "bob")));
+        mind.remember(heard(tentative(2, 4, Some("bob"))));
+        mind.remember(heard(selection(2, "bob", 1, "ann")));
+        mind.remember(heard(tentative(2, 5, None)));
+        let history = mind.history.lock().unwrap();
+        let mut narrator = Narrator::for_player("wolf".to_string());
+        let story: Vec<String> = history
+            .iter()
+            .flat_map(|event| narrator.recall(event))
+            .collect();
+        assert_eq!(
+            story,
+            [
+                "You are wolf, the only werewolf.",
+                "",
+                "Day 1.",
+                "ann votes against bob.",
+                "bob will be voted out in 20s unless the votes change.",
+                "bob votes against ann.",
+                "Nobody is about to be voted out."
+            ]
         );
     }
 

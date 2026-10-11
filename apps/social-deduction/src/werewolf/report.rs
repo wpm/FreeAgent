@@ -9,7 +9,7 @@
 //! messages themselves, and its account reads them.
 
 use super::llm::Memory;
-use super::{Entry, Hunt, Message, Phase, PlayerId, Role, Team, View};
+use super::{Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Team, View};
 use free_agent::{ActorId, Event};
 use humantime::format_duration;
 use std::cmp::Ordering;
@@ -30,13 +30,14 @@ enum Voice {
 
 /// Turns the events of a game, one at a time, into lines of prose. The
 /// omniscient narrator reads the log's events through [`Narrator::narrate`]
-/// and tells the table, a player to a line, and how long a night and a day
-/// wait, then each night and day with what every player did, how it ended,
-/// and how long it took, then who won, how long the whole game took, and
-/// the survivors, a player to a line. A player's narrator reads the
-/// player's memory through [`Narrator::recall`] and tells the same nights
-/// and days from what that player was shown, in the second person, with no
-/// table, no limits, and no times.
+/// and tells the table, a player to a line, how long a night and a day
+/// wait, and how long a vote must stand if the day's vote is ratified, then
+/// each night and day with what every player did, how it ended, and how
+/// long it took, then who won, how long the whole game took, and the
+/// survivors, a player to a line. A player's narrator reads the player's
+/// memory through [`Narrator::recall`] and tells the same nights and days
+/// from what that player was shown, in the second person, with no table,
+/// no limits, and no times.
 /// Each names a player with its role in parentheses whenever it knows the
 /// role, except in reporting its death, and lists players in seat order.
 /// A blank line sets each phase off from what came before it, and another
@@ -45,20 +46,24 @@ enum Voice {
 /// result is told as the next one begins, and the omniscient narrator
 /// holds the phase's deeds until then too, to tell them in seat order,
 /// then whom the werewolves chose and who protected them, which no player
-/// is shown; a player's narrator tells the player's own deed as it is
-/// done. A phase begins at its first announcement and ends at the next
-/// phase's, or at the end of the game, and the omniscient narrator tells
-/// the time between, to the nearest second, after who died. The omniscient
-/// narrator tells a selection when the environment logs observing it,
-/// joined to the selection's own action by the player and its number for
-/// the message: it is a deed of the phase it was for, unless the
-/// environment observed it in a later phase, and then it is told as too
-/// late to count, for the phase it was for. A player's narrator tells the
-/// player's selection as too late when a later phase has been announced
-/// since. A player's failure to select is told
-/// by the omniscient narrator as it happens, with what went wrong, and for
-/// the phase it was for if that phase has ended; a player's narrator
-/// leaves it out, since the player is not told of it.
+/// is shown, or how a day's vote ended; a player's narrator tells the
+/// player's own deed as it is done. In a day whose vote is ratified, votes
+/// may change and their order matters, so the omniscient narrator tells
+/// each as the environment observes it, and both tell each tentative
+/// decision as it is announced, and a player's narrator tells the other
+/// players' votes as the player hears them. A phase begins at its first
+/// announcement and ends at the next phase's, or at the end of the game,
+/// and the omniscient narrator tells the time between, to the nearest
+/// second, after who died. The omniscient narrator tells a selection when
+/// the environment logs observing it, joined to the selection's own action
+/// by the player and its number for the message: it is a deed of the phase
+/// it was for, unless the environment observed it in a later phase, and
+/// then it is told as too late to count, for the phase it was for. A
+/// player's narrator tells a selection as too late when a later phase has
+/// been announced since. A player's failure to select is told by the
+/// omniscient narrator as it happens, with what went wrong, and for the
+/// phase it was for if that phase has ended; a player's narrator leaves it
+/// out, since the player is not told of it.
 #[derive(Debug, Default)]
 pub struct Narrator {
     /// Whose account this is.
@@ -70,12 +75,14 @@ pub struct Narrator {
     alive: HashSet<PlayerId>,
     /// The phase being told, once one has begun.
     phase: Option<Told>,
+    /// Whether the day's vote is ratified, which the deal says.
+    ratified: bool,
     /// The deeds of the phase being told, each with whose it is, held in
     /// the omniscient account until the phase ends.
     deeds: Vec<(PlayerId, String)>,
-    /// What came of the night's hunt, held in the omniscient account until
-    /// the night ends.
-    hunted: Option<String>,
+    /// What came of the phase, the night's hunt or how the day's vote
+    /// ended, held in the omniscient account until the phase ends.
+    resolution: Option<String>,
     /// Every phase announced so far, by its number.
     announced: BTreeMap<u64, (NonZero<u8>, Phase)>,
     /// Every selection logged as its player's action and not yet observed
@@ -129,10 +136,12 @@ impl Narrator {
                 roles,
                 night_limit,
                 day_limit,
+                ratify_limit,
             } => {
                 self.roles = roles.clone();
                 self.alive = roles.keys().cloned().collect();
-                self.table(variation, *night_limit, *day_limit)
+                self.ratified = ratify_limit.is_some();
+                self.table(variation, *night_limit, *day_limit, *ratify_limit)
             }
             Entry::Action {
                 message: Message::Announce { seq, view, .. },
@@ -148,6 +157,10 @@ impl Narrator {
                     .insert((from.clone(), *n), (*seq, target.clone()));
                 vec![]
             }
+            Entry::Action {
+                message: Message::Tentative { target, ratify, .. },
+                ..
+            } => vec![self.tentative(target.as_ref(), *ratify)],
             Entry::Observation { from, n, seq, .. } => {
                 match self.selections.remove(&(from.clone(), *n)) {
                     Some((sent_in, chosen)) if sent_in != *seq => {
@@ -158,7 +171,15 @@ impl Narrator {
                 }
             }
             Entry::Hunted { hunt, .. } => {
-                self.hunted = Some(self.hunt(hunt));
+                self.resolution = Some(self.hunt(hunt));
+                vec![]
+            }
+            Entry::Voted { by, .. } => {
+                self.resolution = match by {
+                    Ending::Ratified => Some("The votes stand.".to_string()),
+                    Ending::DayLimit => Some("The day runs out.".to_string()),
+                    Ending::AllSelected => None,
+                };
                 vec![]
             }
             Entry::Failed { player, seq, error } => {
@@ -203,25 +224,50 @@ impl Narrator {
     }
 
     /// The lines a player's memory `event` adds to its account, often
-    /// none: an announcement it heard begins a phase, and a selection it
-    /// made is its deed, or too late to count if a later phase has been
-    /// announced since.
+    /// none: an announcement it heard begins a phase; a selection it made,
+    /// or heard another player make, is a deed, or too late to count if a
+    /// later phase has been announced since; and a tentative decision it
+    /// heard is told as announced.
     pub fn recall(&mut self, event: &Event<Memory>) -> Vec<String> {
         match &event.payload {
             Memory::Observed {
                 message: Message::Announce { seq, view, .. },
                 ..
             } => self.announce(*seq, view, event.time),
+            Memory::Observed {
+                message: Message::Tentative { target, ratify, .. },
+                ..
+            } => vec![self.tentative(target.as_ref(), *ratify)],
             Memory::Acted {
                 message:
                     Message::Select {
                         seq, from, target, ..
                     },
+            }
+            | Memory::Observed {
+                message:
+                    Message::Select {
+                        seq, from, target, ..
+                    },
+                ..
             } => match self.late(*seq) {
                 Some(phase) => vec![self.lateness(from, target, Some(phase))],
                 None => self.did(from, target),
             },
             _ => vec![],
+        }
+    }
+
+    /// The environment's tentative decision: `target` will be voted out
+    /// once the votes have stood for `ratify`, or nobody is about to be.
+    fn tentative(&self, target: Option<&PlayerId>, ratify: Duration) -> String {
+        match target {
+            Some(target) => format!(
+                "{} will be voted out in {} unless the votes change.",
+                self.seat(target),
+                format_duration(ratify)
+            ),
+            None => "Nobody is about to be voted out.".to_string(),
         }
     }
 
@@ -233,17 +279,32 @@ impl Narrator {
     }
 
     /// The deal: how many players, then each with its role on a line of
-    /// its own, then how long a night and a day wait for them.
-    fn table(&self, variation: &str, night_limit: Duration, day_limit: Duration) -> Vec<String> {
+    /// its own, then how long a night and a day wait for them, and how long
+    /// a vote must stand if the day's vote is ratified.
+    fn table(
+        &self,
+        variation: &str,
+        night_limit: Duration,
+        day_limit: Duration,
+        ratify_limit: Option<Duration>,
+    ) -> Vec<String> {
         let heading = format!("{variation} with {} players:", self.roles.len());
         let seats = in_order(self.roles.keys())
             .into_iter()
             .map(|player| self.seat(player).to_string());
-        let limits = format!(
-            "A night waits {} and a day {}.",
-            format_duration(night_limit),
-            format_duration(day_limit)
-        );
+        let limits = match ratify_limit {
+            Some(ratify_limit) => format!(
+                "A night waits {} and a day {}, and a vote stands after {}.",
+                format_duration(night_limit),
+                format_duration(day_limit),
+                format_duration(ratify_limit)
+            ),
+            None => format!(
+                "A night waits {} and a day {}.",
+                format_duration(night_limit),
+                format_duration(day_limit)
+            ),
+        };
         std::iter::once(heading)
             .chain(seats)
             .chain(std::iter::once(limits))
@@ -309,11 +370,11 @@ impl Narrator {
     }
 
     /// How the phase being told ended at `time`, given who is alive after
-    /// it: the deeds held for it, the hunt if there was one, then who died,
-    /// by name alone and in the same words by night and by day, then in
-    /// the omniscient account how long the phase took. A player that
-    /// `slept` through phases since is told who died in the past tense.
-    /// Several dead take a plural verb.
+    /// it: the deeds held for it, the hunt if there was one or how the
+    /// day's vote ended, then who died, by name alone and in the same words
+    /// by night and by day, then in the omniscient account how long the
+    /// phase took. A player that `slept` through phases since is told who
+    /// died in the past tense. Several dead take a plural verb.
     fn outcome(
         &mut self,
         alive_after: &HashSet<PlayerId>,
@@ -321,7 +382,7 @@ impl Narrator {
         time: SystemTime,
     ) -> Vec<String> {
         let mut lines = self.done();
-        lines.extend(self.hunted.take());
+        lines.extend(self.resolution.take());
         let Some(told) = &self.phase else {
             return lines;
         };
@@ -347,16 +408,20 @@ impl Narrator {
         lines
     }
 
-    /// `player`'s deed of choosing `chosen`: told at once in the player's
-    /// own account, held for the end of the phase in the omniscient one.
+    /// `player`'s deed of choosing `chosen`: told at once in a player's
+    /// account, and in the omniscient one in a day whose vote is ratified,
+    /// since the votes may change and their order matters; otherwise held
+    /// for the end of the phase, to be told in seat order.
     fn did(&mut self, player: &PlayerId, chosen: &PlayerId) -> Vec<String> {
         let line = self.deed(player, chosen);
+        let by_ratified_day =
+            self.ratified && matches!(&self.phase, Some(told) if told.phase.1 == Phase::Day);
         match self.voice {
-            Voice::Omniscient => {
+            Voice::Omniscient if !by_ratified_day => {
                 self.deeds.push((player.clone(), line));
                 vec![]
             }
-            Voice::Player(_) => vec![line],
+            _ => vec![line],
         }
     }
 
@@ -381,34 +446,35 @@ impl Narrator {
     }
 
     /// What `player` did by choosing `chosen`, which depends on the phase
-    /// and, by night, on the player's role. In a player's account it is
-    /// always the player's own deed, told to it.
+    /// and, by night, on the player's role. A player's own deed is told to
+    /// it in the second person; anyone else's in the third.
     fn deed(&self, player: &PlayerId, chosen: &PlayerId) -> String {
+        let own = matches!(&self.voice, Voice::Player(me) if me == player);
         let role = self.roles.get(player).copied();
         let phase = self.phase.as_ref().map(|told| &told.phase.1);
         let (player, chosen) = (self.seat(player), self.seat(chosen));
-        match (&self.voice, phase, role) {
-            (Voice::Player(_), Some(Phase::Night), Some(Role::Werewolf)) => {
+        match (own, phase, role) {
+            (true, Some(Phase::Night), Some(Role::Werewolf)) => {
                 format!("You vote to kill {chosen}.")
             }
-            (Voice::Player(_), Some(Phase::Night), Some(Role::Doctor)) => {
+            (true, Some(Phase::Night), Some(Role::Doctor)) => {
                 format!("You protect {chosen}.")
             }
-            (Voice::Player(_), Some(Phase::Night), Some(Role::Seer)) => {
+            (true, Some(Phase::Night), Some(Role::Seer)) => {
                 format!("You ask about {chosen}.")
             }
-            (Voice::Player(_), _, _) => format!("You vote against {chosen}."),
-            (Voice::Omniscient, Some(Phase::Night), Some(Role::Werewolf)) => {
+            (true, _, _) => format!("You vote against {chosen}."),
+            (false, Some(Phase::Night), Some(Role::Werewolf)) => {
                 format!("{player} votes to kill {chosen}.")
             }
-            (Voice::Omniscient, Some(Phase::Night), Some(Role::Doctor)) => {
+            (false, Some(Phase::Night), Some(Role::Doctor)) => {
                 format!("{player} protects {chosen}.")
             }
-            (Voice::Omniscient, Some(Phase::Night), Some(Role::Seer)) => match chosen.role {
+            (false, Some(Phase::Night), Some(Role::Seer)) => match chosen.role {
                 Some(seen) => format!("{player} learns {} is a {seen}.", chosen.player),
                 None => format!("{player} asks about {chosen}."),
             },
-            (Voice::Omniscient, _, _) => format!("{player} votes against {chosen}."),
+            (false, _, _) => format!("{player} votes against {chosen}."),
         }
     }
 
@@ -422,7 +488,9 @@ impl Narrator {
 
     /// What `player`'s choice of `chosen` for `phase` came to once a later
     /// phase had begun: nothing. The phase is named when it is known, as
-    /// it is unless the choice was for a phase never announced.
+    /// it is unless the choice was for a phase never announced. A player's
+    /// own choice is told to it in the second person; anyone else's in the
+    /// third.
     fn lateness(
         &self,
         player: &PlayerId,
@@ -434,13 +502,13 @@ impl Narrator {
         });
         let chosen = self.seat(chosen);
         match &self.voice {
-            Voice::Player(_) => format!("You choose {chosen}{when} too late to count."),
-            Voice::Omniscient => {
-                format!(
-                    "{} chooses {chosen}{when} too late to count.",
-                    self.seat(player)
-                )
+            Voice::Player(me) if me == player => {
+                format!("You choose {chosen}{when} too late to count.")
             }
+            _ => format!(
+                "{} chooses {chosen}{when} too late to count.",
+                self.seat(player)
+            ),
         }
     }
 }
@@ -548,7 +616,7 @@ fn listed<'a>(seats: impl IntoIterator<Item = Seat<'a>>) -> String {
 mod tests {
     use super::*;
     use crate::werewolf::llm::Configuration;
-    use crate::werewolf::tests::{announcement, logged, selection};
+    use crate::werewolf::tests::{announcement, logged, selection, tentative};
     use crate::werewolf::{ENVIRONMENT, Rules, to_the_environment};
     use std::collections::BTreeMap;
     use std::time::{Duration, UNIX_EPOCH};
@@ -739,6 +807,39 @@ mod tests {
         dealt(roles())
     }
 
+    /// The deal of [`roles`] under rules that ratify the day's vote after
+    /// twenty seconds.
+    fn ratified() -> Event<Entry> {
+        let rules = Rules {
+            day_limit: Duration::from_secs(120),
+            ratify_limit: Some(Duration::from_secs(20)),
+            ..Rules::default()
+        };
+        logged(rules.start(roles()))
+    }
+
+    /// The environment's action of sending the tentative decision numbered
+    /// `n` for the day numbered `seq`, naming `target` or nobody, to
+    /// everyone in `to`.
+    fn decided(seq: u64, n: u64, target: Option<&str>, to: &[&str]) -> Event<Entry> {
+        logged(Entry::Action {
+            from: ENVIRONMENT.to_string(),
+            n,
+            to: to.iter().map(|name| id(name)).collect(),
+            message: tentative(seq, n, target),
+            seen: None,
+        })
+    }
+
+    /// The day numbered `seq` ended `by`, voting `out`.
+    fn voted(seq: u64, out: Option<&str>, by: Ending) -> Event<Entry> {
+        logged(Entry::Voted {
+            seq,
+            out: out.map(id),
+            by,
+        })
+    }
+
     #[test]
     fn the_table_is_told_first_then_the_limits() {
         let mut narrator = Narrator::default();
@@ -752,6 +853,193 @@ mod tests {
                 "wolf (werewolf)",
                 "A night waits 1m and a day 2m."
             ]
+        );
+    }
+
+    #[test]
+    fn the_limits_line_adds_the_ratify_limit_when_there_is_one() {
+        let mut narrator = Narrator::default();
+        assert_eq!(
+            narrator.narrate(&ratified())[5],
+            "A night waits 1m and a day 2m, and a vote stands after 20s."
+        );
+    }
+
+    #[test]
+    fn in_a_ratified_day_each_vote_is_told_as_it_comes_and_each_tentative_decision_as_announced() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&ratified());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
+        // Seat order is not kept: the votes are told in the order the
+        // environment observed them.
+        assert_eq!(
+            selected(&mut narrator, "wolf", 2, "ann"),
+            ["wolf (werewolf) votes against ann (villager)."]
+        );
+        assert_eq!(
+            narrator.narrate(&decided(2, 5, Some("ann"), &everyone)),
+            ["ann (villager) will be voted out in 20s unless the votes change."]
+        );
+        assert_eq!(
+            selected(&mut narrator, "ann", 2, "wolf"),
+            ["ann (villager) votes against wolf (werewolf)."]
+        );
+        assert_eq!(
+            narrator.narrate(&decided(2, 6, None, &everyone)),
+            ["Nobody is about to be voted out."]
+        );
+        // A change of vote is told again.
+        assert_eq!(
+            selected_in(&mut narrator, "ann", 2, "ann", 2),
+            ["ann (villager) votes against ann (villager)."]
+        );
+        assert_eq!(
+            narrator.narrate(&decided(2, 7, Some("ann"), &everyone)),
+            ["ann (villager) will be voted out in 20s unless the votes change."]
+        );
+    }
+
+    #[test]
+    fn a_ratified_vote_is_told_as_standing_before_who_dies() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&ratified());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
+        selected(&mut narrator, "wolf", 2, "ann");
+        assert!(
+            narrator
+                .narrate(&voted(2, Some("ann"), Ending::Ratified))
+                .is_empty()
+        );
+        assert_eq!(
+            narrator.narrate(&shown("wolf", 2, Phase::Night, &["wolf", "seer", "doctor"])),
+            [
+                "The votes stand.",
+                "ann dies.",
+                "Day 1 took 0s.",
+                "",
+                "Night 2."
+            ]
+        );
+    }
+
+    #[test]
+    fn a_day_that_runs_out_says_so_before_nobody_dies() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&ratified());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
+        narrator.narrate(&voted(2, None, Ending::DayLimit));
+        assert_eq!(
+            narrator.narrate(&ended(Team::Werewolves, 1, &everyone)),
+            [
+                "The day runs out.",
+                "Nobody dies.",
+                "Day 1 took 0s.",
+                "",
+                "The werewolves win after 1 day.",
+                "The game took 0s.",
+                "Survivors:",
+                "ann (villager)",
+                "doctor (doctor)",
+                "seer (seer)",
+                "wolf (werewolf)"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_day_in_which_everyone_selected_is_told_as_it_always_was() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        narrator.narrate(&shown("wolf", 1, Phase::Day, &["wolf", "seer", "doctor"]));
+        // Without a ratify limit the votes are held for seat order.
+        assert!(selected(&mut narrator, "wolf", 2, "seer").is_empty());
+        assert!(selected(&mut narrator, "seer", 2, "wolf").is_empty());
+        assert!(
+            narrator
+                .narrate(&voted(2, None, Ending::AllSelected))
+                .is_empty()
+        );
+        assert_eq!(
+            narrator.narrate(&shown("wolf", 2, Phase::Night, &["wolf", "seer", "doctor"])),
+            [
+                "seer (seer) votes against wolf (werewolf).",
+                "wolf (werewolf) votes against seer (seer).",
+                "Nobody dies.",
+                "Day 1 took 0s.",
+                "",
+                "Night 2."
+            ]
+        );
+    }
+
+    #[test]
+    fn in_a_ratified_game_the_nights_deeds_are_still_held_for_seat_order() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&ratified());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone));
+        assert!(selected(&mut narrator, "wolf", 1, "ann").is_empty());
+        assert!(selected(&mut narrator, "doctor", 1, "seer").is_empty());
+        assert_eq!(
+            narrator.narrate(&shown("wolf", 1, Phase::Day, &["wolf", "seer", "doctor"])),
+            [
+                "doctor (doctor) protects seer (seer).",
+                "wolf (werewolf) votes to kill ann (villager).",
+                "ann dies.",
+                "Night 1 took 0s.",
+                "",
+                "Day 1."
+            ]
+        );
+    }
+
+    #[test]
+    fn a_player_is_told_the_others_votes_and_each_tentative_decision() {
+        let mut narrator = Narrator::for_player(id("doctor"));
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        let known = [("doctor", Role::Doctor)];
+        narrator.recall(&heard(1, Phase::Day, &everyone, &known));
+        let overheard = |from: &str, target: &str| {
+            logged(Memory::Observed {
+                from: id(from),
+                message: choice(from, 2, target),
+            })
+        };
+        let told = |n, target: Option<&str>| {
+            logged(Memory::Observed {
+                from: ENVIRONMENT.to_string(),
+                message: tentative(2, n, target),
+            })
+        };
+        assert_eq!(
+            narrator.recall(&overheard("ann", "wolf")),
+            ["ann votes against wolf."]
+        );
+        assert_eq!(
+            narrator.recall(&told(5, Some("wolf"))),
+            ["wolf will be voted out in 20s unless the votes change."]
+        );
+        assert_eq!(
+            narrator.recall(&chose("doctor", 2, "wolf")),
+            ["You vote against wolf."]
+        );
+        assert_eq!(
+            narrator.recall(&overheard("wolf", "ann")),
+            ["wolf votes against ann."]
+        );
+        assert_eq!(
+            narrator.recall(&told(6, None)),
+            ["Nobody is about to be voted out."]
+        );
+        // Another player's vote heard once a later phase has begun was for
+        // the phase it names.
+        narrator.recall(&heard(2, Phase::Night, &everyone, &known));
+        assert_eq!(
+            narrator.recall(&overheard("ann", "wolf")),
+            ["ann chooses wolf for day 1 too late to count."]
         );
     }
 
@@ -1541,6 +1829,7 @@ mod tests {
             role_counts: BTreeMap::from([(Role::Werewolf, 1), (Role::Villager, 2)]),
             night_limit: Duration::from_secs(30),
             day_limit: Duration::from_secs(60),
+            ratify_limit: Duration::from_secs(20),
             request_timeout: Duration::from_secs(10),
             base_url: "http://localhost:1234/v1".to_string(),
             model: "qwen2.5-7b-instruct".to_string(),

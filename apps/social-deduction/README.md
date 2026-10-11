@@ -56,7 +56,7 @@ file that names the model, how to reach it, and the prompts each role is
 given. The [examples](examples/werewolf/llm) show how one is written.
 
 ```sh
-social-deduction werewolf llm game.toml [role counts] [limits] [--model-base-url URL] [--model-id ID]
+social-deduction werewolf llm game.toml [role counts] [limits] [--ratify-limit 20s] [--model-base-url URL] [--model-id ID]
 ```
 
 A setting comes from the command line if it is given there, otherwise from
@@ -75,6 +75,18 @@ answered with something that is not a selection, has not selected, and its
 phase ends at its limit. The failure is logged with the phase and the error
 and told as it happens, and the game goes on; the player is not told of it.
 
+By day the votes are public and ratified. Each vote goes to every other
+living player as well as to the environment, a player's latest vote counts,
+and whenever the votes change who they select, or come to select nobody,
+the environment tells every living player so. A day ends once the votes
+have stood unchanged for the ratify limit, and the selected player is voted
+out; or at the day limit, whatever is standing, and nobody is. The ratify
+limit is `ratify_limit` under `[phases]`, or `--ratify-limit` on the
+command line, twenty seconds unless either says, and may not be longer
+than the day limit. The night is unchanged: selections go to the
+environment alone, the first counts, and the night ends when everyone
+awake has selected or at its limit.
+
 ### The configuration file
 
 Every table but `[model]` may be left out, and a key the file does not know
@@ -86,8 +98,9 @@ is an error.
   known for the provider; and `request_timeout`, how long one request may
   take, a minute unless it says.
 - `[phases]`: `night_limit` and `day_limit`, how long each phase waits for
-  the players' selections, a minute each unless they say. Durations are
-  written as `30s` or `1m 30s`.
+  the players' selections, a minute each unless they say; and
+  `ratify_limit`, how long a day's votes must stand to be ratified, twenty
+  seconds unless it says. Durations are written as `30s` or `1m 30s`.
 - `[roles.werewolf]`, `[roles.villager]`, `[roles.doctor]` and
   `[roles.seer]`: `count`, how many of the role sit at the table, and
   `system`, the role's own system prompt template over the default.

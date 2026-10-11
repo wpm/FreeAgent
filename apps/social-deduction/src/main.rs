@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
             overrides,
             logging,
         }) => {
-            let settings = Config::load(&config)?.settle(overrides);
+            let settings = Config::load(&config)?.settle(overrides)?;
             // The key is read, every prompt rendered, and the model asked
             // for a selection before any actor is built, so that a
             // variable that is not set, a template that is broken, or a
@@ -405,6 +405,7 @@ mod tests {
                         night_limit: Some(Duration::from_secs(30)),
                         day_limit: None,
                     },
+                    ratify_limit: None,
                     model: llm::ModelOverrides {
                         base_url: None,
                         id: Some("gpt-5.5".to_string()),
@@ -412,6 +413,31 @@ mod tests {
                 },
                 logging: Logging::default(),
             })
+        );
+    }
+
+    #[test]
+    fn the_llm_variant_alone_takes_the_ratify_limit() {
+        assert_eq!(
+            parsed(&["werewolf", "llm", "game.toml", "--ratify-limit", "15s"]),
+            CommandLine::Werewolf(Werewolf::Llm {
+                config: PathBuf::from("game.toml"),
+                overrides: llm::Overrides {
+                    ratify_limit: Some(Duration::from_secs(15)),
+                    ..llm::Overrides::default()
+                },
+                logging: Logging::default(),
+            })
+        );
+        assert!(
+            CommandLine::try_parse_from([
+                "social-deduction",
+                "werewolf",
+                "uniform-random",
+                "--ratify-limit",
+                "15s"
+            ])
+            .is_err()
         );
     }
 
@@ -476,6 +502,10 @@ mod tests {
         ]
         .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()));
         let defaults = [counts, limits.to_vec()].concat();
+        let ratify = (
+            "--ratify-limit",
+            humantime::format_duration(llm::RATIFY_LIMIT).to_string(),
+        );
         for variant in ["uniform-random", "llm"] {
             let help = CommandLine::command()
                 .find_subcommand_mut("werewolf")
@@ -484,6 +514,10 @@ mod tests {
                 .unwrap()
                 .render_help()
                 .to_string();
+            let mut defaults = defaults.clone();
+            if variant == "llm" {
+                defaults.push(ratify.clone());
+            }
             for (option, default) in &defaults {
                 let line = help.lines().find(|line| line.contains(option)).unwrap();
                 assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
