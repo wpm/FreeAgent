@@ -29,6 +29,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::fmt;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -149,6 +150,43 @@ fn key(name: &str, value: Option<OsString>) -> anyhow::Result<SecretString> {
         .into_string()
         .map_err(|_| anyhow!("{name} is set to something that is not UTF-8"))?;
     Ok(SecretString::from(value))
+}
+
+/// A request the provider answered with anything but success: what was
+/// sent, the status, and what the provider said about it, in words. The
+/// status is kept so a reader can tell a request the provider would not
+/// put to the model from one that never got that far.
+#[derive(Debug)]
+pub struct Rejection {
+    /// What was sent, such as `POST {url}`.
+    sent: String,
+    /// The status it was answered with.
+    pub status: StatusCode,
+    /// The status in words, as [`explained`] puts it.
+    explained: String,
+}
+
+impl fmt::Display for Rejection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} was answered {}", self.sent, self.explained)
+    }
+}
+
+impl std::error::Error for Rejection {}
+
+/// Whether `error`, from a completion, concerns the model rather than the
+/// way to it. A request the provider refused as bad, 400, is one it would
+/// not put to the model, as a server that cannot use the tools a request
+/// offers answers, and an answer that is not a selection is the model's
+/// own. A request that never reached the provider, or that it answered
+/// with any other status, says nothing about the model.
+pub fn concerns_the_model(error: &anyhow::Error) -> bool {
+    error.chain().all(|cause| {
+        cause.downcast_ref::<reqwest::Error>().is_none()
+            && cause
+                .downcast_ref::<Rejection>()
+                .is_none_or(|rejection| rejection.status == StatusCode::BAD_REQUEST)
+    })
 }
 
 /// A status that is not success, in words: the status, what it is likely
@@ -302,10 +340,12 @@ impl Provider {
         let status = response.status();
         if !status.is_success() {
             let said = response.text().await.unwrap_or_default();
-            bail!(
-                "{sent} was answered {}",
-                explained(status, self.api_key.is_some(), &said)
-            );
+            return Err(Rejection {
+                sent: sent.to_string(),
+                status,
+                explained: explained(status, self.api_key.is_some(), &said),
+            }
+            .into());
         }
         response
             .json()
@@ -716,6 +756,45 @@ mod tests {
             )
         );
         assert!(!shown.contains("sk-secret"), "{shown}");
+    }
+
+    #[tokio::test]
+    async fn an_error_concerns_the_model_unless_the_provider_was_not_reached_or_answered_anything_but_400()
+     {
+        // An answer that is no selection is the model's own.
+        assert!(concerns_the_model(&anyhow!("the model made no tool call")));
+        // A request refused as bad is one the provider would not put to
+        // the model; any other status says nothing about it.
+        for (status, expected) in [
+            ("400 Bad Request", true),
+            ("401 Unauthorized", false),
+            ("429 Too Many Requests", false),
+            ("500 Internal Server Error", false),
+        ] {
+            let (base_url, _served) = answering(status, "{}");
+            let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
+            let error = provider
+                .complete(&selecting(&["player2"]))
+                .await
+                .unwrap_err();
+            let rejection = error.downcast_ref::<Rejection>().unwrap();
+            assert_eq!(
+                rejection.status.as_u16(),
+                status[..3].parse::<u16>().unwrap()
+            );
+            assert_eq!(
+                concerns_the_model(&error.context("asked")),
+                expected,
+                "{status}"
+            );
+        }
+        // Nor does a provider that was not reached.
+        let provider = Provider::new(unreachable(), None, TIMEOUT).unwrap();
+        let error = provider
+            .complete(&selecting(&["player2"]))
+            .await
+            .unwrap_err();
+        assert!(!concerns_the_model(&error), "{error:#}");
     }
 
     #[tokio::test]

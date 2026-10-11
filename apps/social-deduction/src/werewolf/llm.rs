@@ -676,9 +676,11 @@ impl Player {
 
     /// Ask the model to select one of `candidates` in the phase numbered
     /// `seq`, which `observation` shows, remember what it selects, and
-    /// send the selection to the environment. A model that cannot be
-    /// reached or answers with something that is not a selection of a
-    /// candidate is an error, and no selection.
+    /// send the selection to the environment. The model's failure to
+    /// select, as [`selection`] judges it, is an error, and no selection;
+    /// so is a request that cannot be put together or a selection that
+    /// cannot be sent, which are the player's own doing, and they read so
+    /// in the error.
     async fn ask(
         &self,
         seq: u64,
@@ -687,11 +689,10 @@ impl Player {
     ) -> anyhow::Result<()> {
         let me = &self.context.id;
         let request = self.request(observation, candidates)?;
-        let response = self.mind.model.complete(&request).await?;
         let selection = Message::Select {
             seq,
             from: me.clone(),
-            target: selected(&response, candidates)?,
+            target: selection(self.mind.model.as_ref(), &request, candidates).await?,
         };
         self.remember(Entry::Received {
             from: me.clone(),
@@ -732,9 +733,11 @@ impl Think for Player {
     /// Announced a phase, select someone in it: ask the model, and if that
     /// fails, log the failure with the phase and what went wrong, causes
     /// included, which is all there is to do about it: the player has not
-    /// selected, and the game goes on. The failure is not remembered, so
-    /// the model is never told of it. With nobody to select, the model is
-    /// not asked. Nothing else is thought about.
+    /// selected, and the game goes on. The think loop drops an error a
+    /// thought returns, so the log is the one place a failure shows,
+    /// whether the model's or the player's own. The failure is not
+    /// remembered, so the model is never told of it. With nobody to
+    /// select, the model is not asked. Nothing else is thought about.
     async fn think(&mut self, message: &Message) -> anyhow::Result<()> {
         let Message::Announce { seq, observation } = message else {
             return Ok(());
@@ -772,12 +775,29 @@ fn situation(me: &PlayerId, observation: &Observation) -> anyhow::Result<String>
     Ok(format!("It is {phase} {}. {asked}", observation.round))
 }
 
+/// Whom `model` selects from `candidates` when sent `request`: its
+/// response, judged by [`selected`]. A model that cannot be reached, or
+/// answers with something that is not a selection of a candidate, is an
+/// error. This is the one way a player asks, and the one way the probe
+/// does, so they agree on what a selection is.
+async fn selection(
+    model: &dyn model::Model,
+    request: &Request,
+    candidates: &[PlayerId],
+) -> anyhow::Result<PlayerId> {
+    let response = model.complete(request).await?;
+    selected(&response, candidates)
+}
+
 /// Check that `model`, asked as a player is, selects a candidate: one
 /// request of a player's shape, a short system prompt, a line asking for
 /// a selection, and the `select` tool over two placeholder candidates,
 /// judged as a player's answer is. The error names the model and says what
-/// went wrong, with the provider's error beneath it: that the request was
-/// refused and what the server said, or that the answer was no selection.
+/// went wrong, with the cause beneath it. A model that did not select when
+/// asked, whether the provider refused the request as bad or the answer
+/// was no selection, is told apart from one that could not be asked at
+/// all, because the provider was not reached or answered with anything
+/// but the model's answer, as [`model::concerns_the_model`] tells them.
 pub async fn check_selects(model: &dyn model::Model, model_id: &str) -> anyhow::Result<()> {
     let candidates = ["player1".to_string(), "player2".to_string()];
     let request = Request::new(
@@ -788,10 +808,17 @@ pub async fn check_selects(model: &dyn model::Model, model_id: &str) -> anyhow::
         ],
         select(&candidates),
     );
-    let context = || format!("{model_id} did not select when asked");
-    let response = model.complete(&request).await.with_context(context)?;
-    selected(&response, &candidates).with_context(context)?;
-    Ok(())
+    selection(model, &request, &candidates)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            let what = if model::concerns_the_model(&error) {
+                "did not select when asked"
+            } else {
+                "could not be asked to select"
+            };
+            error.context(format!("{model_id} {what}"))
+        })
 }
 
 /// The name of the one tool a player is offered.
@@ -1975,8 +2002,28 @@ player2 = \"Cautious.\"
         let model = FakeModel::failing("the model is down");
         let error = check_selects(&model, MODEL_ID).await.unwrap_err();
         let shown = format!("{error:#}");
-        assert!(shown.starts_with(MODEL_ID), "{shown}");
-        assert!(shown.ends_with("the model is down"), "{shown}");
+        assert_eq!(
+            shown,
+            format!("{MODEL_ID} did not select when asked: the model is down")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_probe_tells_a_model_that_could_not_be_asked_from_one_that_did_not_select() {
+        // A provider that answers anything but success or a refusal of the
+        // request as bad never put the question to the model.
+        let (base_url, _served) = canned::answering("429 Too Many Requests", "{}");
+        let provider = Provider::new(base_url.clone(), None, REQUEST_TIMEOUT).unwrap();
+        let error = check_selects(&provider, MODEL_ID).await.unwrap_err();
+        assert!(!model::concerns_the_model(&error), "{error:#}");
+        let shown = format!("{error:#}");
+        assert!(
+            shown.starts_with(&format!(
+                "{MODEL_ID} could not be asked to select: POST {base_url}/chat/completions \
+                 was answered 429 Too Many Requests"
+            )),
+            "{shown}"
+        );
     }
 
     #[tokio::test]
