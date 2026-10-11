@@ -102,7 +102,10 @@ own selections in it. That is all the game's messages carry until players
 talk.
 
 The `Narrator` is generalized to tell either account. The omniscient
-account it prints today does not change.
+account it prints today changes in one place: it is told as the log is
+written, so a selection that arrives after a later phase was announced is
+told as too late to count, for the phase it was for, rather than as a deed of
+the phase that followed.
 
 ### Each call is a fresh request
 
