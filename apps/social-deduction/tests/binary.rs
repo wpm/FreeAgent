@@ -84,27 +84,60 @@ fn assert_plays_the_default_table(
     let Some(Entry::End { winner, .. }) = events.last().map(|event| &event.payload) else {
         panic!("{events:?}");
     };
-    // The account opens with the table, goes through the first night, and
-    // closes with the winner.
+    // The account opens with the table, a player to a line, goes through
+    // the first night, set off by a blank line, and closes with the winner
+    // and the survivors, a player to a line.
     let lines: Vec<&str> = printed.lines().collect();
-    assert!(
-        lines[0].starts_with(&format!("{variation} with 7 players: ")),
+    assert_eq!(
+        lines[0],
+        format!("{variation} with 7 players:"),
         "{printed}"
     );
-    assert_eq!(lines[1], "Night 1.", "{printed}");
-    assert!(
-        lines
-            .last()
-            .unwrap()
-            .starts_with(&format!("The {winner} win after ")),
-        "{printed}"
-    );
+    for seat in &lines[1..8] {
+        assert!(
+            seat.starts_with("player") && seat.ends_with(')'),
+            "{printed}"
+        );
+    }
+    assert_eq!(lines[8], "", "{printed}");
+    assert_eq!(lines[9], "Night 1.", "{printed}");
+    let won = lines
+        .iter()
+        .position(|line| line.starts_with(&format!("The {winner} win after ")))
+        .unwrap_or_else(|| panic!("{printed}"));
+    assert_eq!(lines[won - 1], "", "{printed}");
+    assert_eq!(lines[won + 1], "Survivors:", "{printed}");
+    assert!(!lines[won + 2..].is_empty(), "{printed}");
+    for seat in &lines[won + 2..] {
+        assert!(
+            seat.starts_with("player") && seat.ends_with(')'),
+            "{printed}"
+        );
+    }
     events
 }
 
 #[test]
 fn the_log_runs_from_the_deal_to_the_result_under_one_episode_id() {
     assert_plays_the_default_table("uniform-random", "Uniform Random", &[]);
+}
+
+#[test]
+fn no_log_leaves_standard_error_empty_and_the_game_is_still_told() {
+    let output = succeeded(&["werewolf", "uniform-random", "--no-log"]);
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let printed = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        printed.starts_with("Uniform Random with 7 players:\n"),
+        "{printed}"
+    );
+    assert!(printed.contains("\nSurvivors:\n"), "{printed}");
+    // Given after --no-log, --log puts the log back.
+    let (events, _) = played("uniform-random", &["--no-log", "--log"]);
+    assert!(
+        matches!(events[0].payload, Entry::Start { .. }),
+        "{events:?}"
+    );
 }
 
 #[test]

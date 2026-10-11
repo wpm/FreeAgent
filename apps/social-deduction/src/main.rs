@@ -3,7 +3,7 @@
 //! on standard output as it happens. Or list the models a provider serves,
 //! which belongs to no game.
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use free_agent::{Behavior, Episode, Logger};
 use social_deduction::model::{
     Provider, REQUEST_TIMEOUT, api_key, check_makes_tool_calls, key_variable, known_providers,
@@ -49,6 +49,8 @@ enum Werewolf {
     UniformRandom {
         #[command(flatten)]
         roles: RoleCounts,
+        #[command(flatten)]
+        logging: Logging,
     },
     /// Every player is a script that answers each announcement at once with
     /// a choice made at random: the model-played game, without a model.
@@ -57,6 +59,8 @@ enum Werewolf {
         roles: RoleCounts,
         #[command(flatten)]
         limits: PhaseLimits,
+        #[command(flatten)]
+        logging: Logging,
     },
     /// Every player is a language model, set up by a configuration file.
     Llm {
@@ -64,7 +68,30 @@ enum Werewolf {
         config: PathBuf,
         #[command(flatten)]
         overrides: llm::Overrides,
+        #[command(flatten)]
+        logging: Logging,
     },
+}
+
+/// Whether the game is logged, for every variant to flatten into its
+/// command line arguments. It is logged unless `--no-log` says otherwise,
+/// and when both flags are given the last one wins, as `clap` has
+/// paired flags behave.
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+struct Logging {
+    /// Log the game to standard error as JSON Lines [default]
+    #[arg(long, overrides_with = "no_log")]
+    log: bool,
+    /// Do not log the game
+    #[arg(long)]
+    no_log: bool,
+}
+
+impl Logging {
+    /// Whether the game is logged.
+    fn enabled(&self) -> bool {
+        !self.no_log
+    }
 }
 
 /// How long a game may take before it is abandoned.
@@ -73,21 +100,32 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match CommandLine::parse() {
-        CommandLine::Werewolf(Werewolf::UniformRandom { roles }) => {
+        CommandLine::Werewolf(Werewolf::UniformRandom { roles, logging }) => {
             let roles = roles.or(Table::default()).deal();
-            play(|winner, logger| {
+            play(logging.enabled(), |winner, logger| {
                 uniform_random::game(roles, Rules::default(), winner, logger, |_| {
                     uniform_random::Actor::player()
                 })
             })
             .await
         }
-        CommandLine::Werewolf(Werewolf::Scripted { roles, limits }) => {
+        CommandLine::Werewolf(Werewolf::Scripted {
+            roles,
+            limits,
+            logging,
+        }) => {
             let roles = roles.or(Table::default()).deal();
             let rules = limits.or(scripted::rules());
-            play(|winner, logger| scripted::game(roles, rules, winner, logger)).await
+            play(logging.enabled(), |winner, logger| {
+                scripted::game(roles, rules, winner, logger)
+            })
+            .await
         }
-        CommandLine::Werewolf(Werewolf::Llm { config, overrides }) => {
+        CommandLine::Werewolf(Werewolf::Llm {
+            config,
+            overrides,
+            logging,
+        }) => {
             let settings = Config::load(&config)?.settle(overrides);
             // The key is read, every prompt rendered, and the model checked
             // before any actor is built, so that a variable that is not
@@ -101,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
             let roles = settings.table.deal();
             let configuration = settings.configuration(&roles, &prompts)?;
             let rules = settings.rules();
-            play(|winner, logger| {
+            play(logging.enabled(), |winner, logger| {
                 llm::game(
                     roles,
                     rules,
@@ -164,10 +202,11 @@ fn marked(mut ids: Vec<String>) -> String {
 }
 
 /// Play one game, the episode `game` builds once given where to send the
-/// winner and the logger the environment holds. The log goes to standard
-/// error as JSON lines and the narration to standard output as the game
-/// happens.
+/// winner and the logger the environment holds. The narration goes to
+/// standard output as the game happens, and so does the log to standard
+/// error as JSON lines when `logging` is on.
 async fn play<A: Behavior<Log = Entry> + 'static>(
+    logging: bool,
     game: impl FnOnce(oneshot::Sender<Team>, Logger<Entry>) -> Episode<A>,
 ) -> anyhow::Result<()> {
     // The winner reaches the log too, which is where it is read from here.
@@ -178,7 +217,9 @@ async fn play<A: Behavior<Log = Entry> + 'static>(
         let mut narrator = Narrator::default();
         let mut stdout = io::stdout();
         while let Some(event) = log.recv().await {
-            event.write(io::stderr())?;
+            if logging {
+                event.write(io::stderr())?;
+            }
             for line in narrator.narrate(&event.payload) {
                 writeln!(stdout, "{line}")?;
             }
@@ -211,8 +252,63 @@ mod tests {
                 roles: RoleCounts {
                     werewolves: Some(1),
                     ..RoleCounts::default()
-                }
+                },
+                logging: Logging::default(),
             })
+        );
+    }
+
+    #[test]
+    fn every_variant_takes_the_log_flags_and_the_last_of_the_two_wins() {
+        let off = || Logging {
+            log: false,
+            no_log: true,
+        };
+        let on = || Logging {
+            log: true,
+            no_log: false,
+        };
+        assert_eq!(
+            parsed(&["werewolf", "uniform-random", "--no-log"]),
+            CommandLine::Werewolf(Werewolf::UniformRandom {
+                roles: RoleCounts::default(),
+                logging: off(),
+            })
+        );
+        assert_eq!(
+            parsed(&["werewolf", "scripted", "--no-log", "--log"]),
+            CommandLine::Werewolf(Werewolf::Scripted {
+                roles: RoleCounts::default(),
+                limits: PhaseLimits::default(),
+                logging: on(),
+            })
+        );
+        assert_eq!(
+            parsed(&["werewolf", "llm", "game.toml", "--log", "--no-log"]),
+            CommandLine::Werewolf(Werewolf::Llm {
+                config: PathBuf::from("game.toml"),
+                overrides: llm::Overrides::default(),
+                logging: off(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_game_is_logged_unless_no_log_says_otherwise() {
+        assert!(Logging::default().enabled());
+        assert!(
+            Logging {
+                log: true,
+                no_log: false
+            }
+            .enabled()
+        );
+        assert!(
+            !Logging {
+                log: false,
+                no_log: true
+            }
+            .enabled()
         );
     }
 
@@ -245,6 +341,7 @@ mod tests {
                         id: Some("gpt-5.5".to_string()),
                     },
                 },
+                logging: Logging::default(),
             })
         );
     }
@@ -289,6 +386,7 @@ mod tests {
                     night_limit: None,
                     day_limit: Some(Duration::from_secs(120)),
                 },
+                logging: Logging::default(),
             })
         );
     }
