@@ -24,10 +24,13 @@
 //! with one forced tool call. The call is made in the player's think loop,
 //! so the player keeps perceiving while the model works. A model that is
 //! not reached, or an answer that is not a selection, is no selection: the
-//! player logs the failure and the game goes on. [`game`] builds the
-//! episode from the deal, the rules, the model, and the [`Configuration`]
-//! the log opens with, which [`Settings::configuration`] records from the
-//! settings, the deal and the rendered prompts.
+//! player logs the failure and the game goes on. Before a game begins,
+//! [`check_selects`] asks the model for one selection as a player would,
+//! so a model that does not select fails at launch, in the provider's
+//! words. [`game`] builds the episode from the deal, the rules, the model,
+//! and the [`Configuration`] the log opens with, which
+//! [`Settings::configuration`] records from the settings, the deal and the
+//! rendered prompts.
 
 use super::announced;
 use super::report::Narrator;
@@ -769,6 +772,28 @@ fn situation(me: &PlayerId, observation: &Observation) -> anyhow::Result<String>
     Ok(format!("It is {phase} {}. {asked}", observation.round))
 }
 
+/// Check that `model`, asked as a player is, selects a candidate: one
+/// request of a player's shape, a short system prompt, a line asking for
+/// a selection, and the `select` tool over two placeholder candidates,
+/// judged as a player's answer is. The error names the model and says what
+/// went wrong, with the provider's error beneath it: that the request was
+/// refused and what the server said, or that the answer was no selection.
+pub async fn check_selects(model: &dyn model::Model, model_id: &str) -> anyhow::Result<()> {
+    let candidates = ["player1".to_string(), "player2".to_string()];
+    let request = Request::new(
+        model_id,
+        vec![
+            model::Message::system("You are a player in a game, about to be asked to select."),
+            model::Message::user("Select one of the candidates."),
+        ],
+        select(&candidates),
+    );
+    let context = || format!("{model_id} did not select when asked");
+    let response = model.complete(&request).await.with_context(context)?;
+    selected(&response, &candidates).with_context(context)?;
+    Ok(())
+}
+
 /// The name of the one tool a player is offered.
 const SELECT: &str = "select";
 
@@ -820,6 +845,7 @@ fn selected(response: &Response, candidates: &[PlayerId]) -> anyhow::Result<Play
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::canned;
     use crate::model::fake::{FakeModel, choosing_first};
     use crate::werewolf::tests::{
         Played, between_the_deal_and_the_end, logged, one_wolf_against, received, run, seen,
@@ -850,7 +876,7 @@ id = "qwen2.5-7b-instruct"
     }
 
     #[test]
-    fn the_examples_parse_and_render_and_name_a_model_known_to_make_tool_calls() {
+    fn the_examples_parse_and_render() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/werewolf/llm");
         let files: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
@@ -861,8 +887,6 @@ id = "qwen2.5-7b-instruct"
         for file in files {
             let name = file.display().to_string();
             let config = Config::load(&file).unwrap_or_else(|e| panic!("{name}: {e:#}"));
-            let id = &config.model.id;
-            assert!(crate::model::makes_tool_calls(id), "{name}: {id}");
             let prompts = config
                 .settle(Overrides::default())
                 .prompts()
@@ -1927,6 +1951,65 @@ player2 = \"Cautious.\"
         // A villager sleeps by night, and a player is shown its own role.
         assert!(situation(&me("ann"), &night(&[("ann", Role::Villager)])).is_err());
         assert!(situation(&me("ann"), &night(&[])).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_probe_asks_for_one_selection_as_a_player_does_and_passes_when_the_model_selects() {
+        let model = FakeModel::answering(choosing_first);
+        check_selects(&model, MODEL_ID).await.unwrap();
+        let requests = model.requests();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request.model, MODEL_ID);
+        assert_eq!(request.messages.len(), 2);
+        assert_eq!(request.messages[0].role, model::Role::System);
+        assert_eq!(request.messages[1].role, model::Role::User);
+        assert_eq!(
+            request.tool,
+            select(&["player1".to_string(), "player2".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn the_probe_s_error_names_the_model_and_carries_the_failure() {
+        let model = FakeModel::failing("the model is down");
+        let error = check_selects(&model, MODEL_ID).await.unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.starts_with(MODEL_ID), "{shown}");
+        assert!(shown.ends_with("the model is down"), "{shown}");
+    }
+
+    #[tokio::test]
+    async fn the_probe_judges_the_answer_as_a_player_s_is_judged() {
+        let candidates = ["player1".to_string(), "player2".to_string()];
+        let prose: Response =
+            serde_json::from_value(json!({"choices": [{"message": {"content": "player1"}}]}))
+                .unwrap();
+        let elsewhere = Response::tool_call(SELECT, &json!({"target": "player3"}));
+        for response in [prose, elsewhere] {
+            let judged = selected(&response, &candidates).unwrap_err();
+            let model = FakeModel::responding(response);
+            let error = check_selects(&model, MODEL_ID).await.unwrap_err();
+            let shown = format!("{error:#}");
+            assert!(shown.starts_with(MODEL_ID), "{shown}");
+            assert!(shown.ends_with(&format!("{judged:#}")), "{shown}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_probe_names_the_url_and_what_the_server_said_when_the_request_is_refused() {
+        let base_url = canned::refusing(&[MODEL_ID]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        let error = check_selects(&provider, MODEL_ID).await.unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.starts_with(MODEL_ID), "{shown}");
+        assert!(
+            shown.contains(&format!(
+                "POST {base_url}/chat/completions was answered 400"
+            )),
+            "{shown}"
+        );
+        assert!(shown.ends_with(&canned::refusal(MODEL_ID)), "{shown}");
     }
 
     #[test]
