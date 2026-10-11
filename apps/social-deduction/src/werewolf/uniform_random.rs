@@ -388,18 +388,19 @@ mod tests {
 
         // Everything between is a message to or from a player, as it was,
         // or a night's hunt.
+        let doctors: HashSet<&PlayerId> = roles
+            .iter()
+            .filter(|(_, role)| **role == Role::Doctor)
+            .map(|(player, _)| player)
+            .collect();
         let mut shown = 0;
         let mut hunts = 0;
         for entry in between_the_deal_and_the_end(&logged, "Uniform Random", &roles, winner) {
             match entry {
                 Entry::Hunted(hunt) => {
                     assert!(roles.contains_key(&hunt.victim), "{hunt:?}");
-                    assert!(
-                        hunt.protectors
-                            .iter()
-                            .all(|doctor| roles.get(doctor) == Some(&Role::Doctor)),
-                        "{hunt:?}"
-                    );
+                    let protectors: HashSet<&PlayerId> = hunt.protectors.iter().collect();
+                    assert!(protectors.is_subset(&doctors), "{hunt:?}");
                     hunts += 1;
                 }
                 Entry::Sent {
