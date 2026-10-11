@@ -799,8 +799,8 @@ mod tests {
     use super::*;
     use crate::model::fake::{FakeModel, choosing_first};
     use crate::werewolf::tests::{
-        Played, between_the_deal_and_the_end, one_wolf_against, received, run, seen, seen_by_day,
-        selection,
+        Played, between_the_deal_and_the_end, logged, one_wolf_against, received, run, seen,
+        seen_by_day, selection,
     };
     use clap::Parser;
     use secrecy::ExposeSecret;
@@ -1617,15 +1617,14 @@ player2 = \"Cautious.\"
         };
         let everyone = ["wolf", "ann", "bob"];
         let pack = [("wolf", Role::Werewolf)];
-        let remembered = |entry| Event::now(Default::default(), entry);
         let announced = |seq, observation| {
-            remembered(Entry::Sent {
+            logged(Entry::Sent {
                 to: "wolf".to_string(),
                 message: Message::Announce { seq, observation },
             })
         };
         let selected = |seq| {
-            remembered(Entry::Received {
+            logged(Entry::Received {
                 from: "wolf".to_string(),
                 message: Message::Select {
                     seq,
@@ -1642,16 +1641,7 @@ player2 = \"Cautious.\"
         mind.remember(selected(1));
         mind.remember(selected(2));
         let history = mind.history.lock().unwrap();
-        let remembered: Vec<&Entry> = history.iter().map(|event| &event.payload).collect();
-        assert_eq!(
-            remembered,
-            [
-                &night.payload,
-                &selected(1).payload,
-                &day.payload,
-                &selected(2).payload
-            ]
-        );
+        assert_eq!(*history, [night, selected(1), day, selected(2)]);
         let mut narrator = Narrator::for_player("wolf".to_string());
         let story: Vec<String> = history
             .iter()

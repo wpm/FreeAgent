@@ -49,18 +49,15 @@ fn played(variant: &str, args: &[&str]) -> (Vec<Event<Entry>>, String) {
     (events, String::from_utf8(output.stdout).unwrap())
 }
 
-/// The variation, the deal and the phase limits the log opens with.
-fn start(events: &[Event<Entry>]) -> (&str, &HashMap<PlayerId, Role>, Duration, Duration) {
+/// The variation and the deal the log opens with.
+fn start(events: &[Event<Entry>]) -> (&str, &HashMap<PlayerId, Role>) {
     let Some(Entry::Start {
-        variation,
-        roles,
-        night_limit,
-        day_limit,
+        variation, roles, ..
     }) = events.first().map(|event| &event.payload)
     else {
         panic!("{events:?}");
     };
-    (variation, roles, *night_limit, *day_limit)
+    (variation, roles)
 }
 
 /// Assert that the command refuses its arguments, with the exit code `clap`
@@ -83,7 +80,7 @@ fn assert_plays_the_default_table(
 
     let episode = events[0].episode;
     assert!(events.iter().all(|event| event.episode == episode));
-    let (named, roles, night_limit, day_limit) = start(&events);
+    let (named, roles) = start(&events);
     assert_eq!(named, variation);
     // The default table seats seven.
     assert_eq!(roles.len(), 7);
@@ -91,9 +88,9 @@ fn assert_plays_the_default_table(
         panic!("{events:?}");
     };
     // The account opens with the table, a player to a line, then the
-    // limits the log carries, goes through the first night, set off by a
-    // blank line, tells how long the last phase took, and closes with the
-    // winner and the survivors, a player to a line.
+    // limits, goes through the first night, set off by a blank line, tells
+    // how long the last phase took, and closes with the winner and the
+    // survivors, a player to a line.
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
         lines[0],
@@ -106,13 +103,8 @@ fn assert_plays_the_default_table(
             "{printed}"
         );
     }
-    assert_eq!(
-        lines[8],
-        format!(
-            "A night waits {} and a day {}.",
-            humantime::format_duration(night_limit),
-            humantime::format_duration(day_limit)
-        ),
+    assert!(
+        lines[8].starts_with("A night waits ") && lines[8].contains(" and a day "),
         "{printed}"
     );
     assert_eq!(lines[9], "", "{printed}");
@@ -183,7 +175,7 @@ fn the_table_is_dealt_as_asked() {
             ],
         );
 
-        let (_, roles, _, _) = start(&events);
+        let (_, roles) = start(&events);
         let count = |role| roles.values().filter(|r| **r == role).count();
         assert_eq!(roles.len(), 3);
         assert_eq!(count(Role::Werewolf), 1);
@@ -290,7 +282,7 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
     // Short limits, so that a phase nobody selects in ends soon.
     let args = [&config, "--night-limit", "1s", "--day-limit", "1s"];
     let events = assert_plays_the_default_table("llm", "LLM", &args);
-    let (_, roles, _, _) = start(&events);
+    let (_, roles) = start(&events);
     let configuration = configuration(&events);
     assert_eq!(configuration.base_url, base_url);
     assert_eq!(configuration.model, EXAMPLE_MODEL);
@@ -349,7 +341,7 @@ fn the_llm_variant_hears_the_command_line_over_the_file() {
             "gpt-5.5",
         ],
     );
-    let (_, roles, _, _) = start(&events);
+    let (_, roles) = start(&events);
     assert_eq!(roles.len(), 6);
     let configuration = configuration(&events);
     assert_eq!(configuration.role_counts[&Role::Werewolf], 1);

@@ -273,12 +273,7 @@ impl Behavior for Environment {
     async fn start(&mut self) -> anyhow::Result<()> {
         let start = {
             let game = self.game();
-            Entry::Start {
-                variation: game.rules.variation.clone(),
-                roles: game.state.roles.clone(),
-                night_limit: game.rules.night_limit,
-                day_limit: game.rules.day_limit,
-            }
+            game.rules.start(game.state.roles.clone())
         };
         self.context.log(start);
         if let Some(configuration) = self.configuration.take() {

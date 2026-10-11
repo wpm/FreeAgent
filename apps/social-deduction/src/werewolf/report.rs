@@ -51,10 +51,7 @@ pub struct Narrator {
     /// Who was alive when the current phase began.
     alive: HashSet<PlayerId>,
     /// The phase being told, once one has begun.
-    phase: Option<(NonZero<u8>, Phase)>,
-    /// When the phase being told began: the time of its first
-    /// announcement.
-    began: Option<SystemTime>,
+    phase: Option<Told>,
     /// The deeds of the phase being told, each with whose it is, held in
     /// the omniscient account until the phase ends.
     deeds: Vec<(PlayerId, String)>,
@@ -63,6 +60,15 @@ pub struct Narrator {
     hunted: Option<String>,
     /// Every phase announced so far, by its number.
     announced: BTreeMap<u64, (NonZero<u8>, Phase)>,
+}
+
+/// The phase being told: which it is, and when it began.
+#[derive(Debug)]
+struct Told {
+    /// The round and its half.
+    phase: (NonZero<u8>, Phase),
+    /// When the phase was first announced.
+    began: SystemTime,
 }
 
 impl Narrator {
@@ -91,13 +97,7 @@ impl Narrator {
             } if matches!(self.voice, Voice::Omniscient) => {
                 self.roles = roles.clone();
                 self.alive = roles.keys().cloned().collect();
-                let mut lines = self.table(variation);
-                lines.push(format!(
-                    "A night waits {} and a day {}.",
-                    format_duration(*night_limit),
-                    format_duration(*day_limit)
-                ));
-                lines
+                self.table(variation, *night_limit, *day_limit)
             }
             Entry::Sent {
                 to,
@@ -164,13 +164,21 @@ impl Narrator {
     }
 
     /// The deal: how many players, then each with its role on a line of
-    /// its own.
-    fn table(&self, variation: &str) -> Vec<String> {
+    /// its own, then how long a night and a day wait for them.
+    fn table(&self, variation: &str, night_limit: Duration, day_limit: Duration) -> Vec<String> {
         let heading = format!("{variation} with {} players:", self.roles.len());
         let seats = in_order(self.roles.keys())
             .into_iter()
             .map(|player| self.seat(player).to_string());
-        std::iter::once(heading).chain(seats).collect()
+        let limits = format!(
+            "A night waits {} and a day {}.",
+            format_duration(night_limit),
+            format_duration(day_limit)
+        );
+        std::iter::once(heading)
+            .chain(seats)
+            .chain(std::iter::once(limits))
+            .collect()
     }
 
     /// `player` as this account names it: with its role when known.
@@ -216,19 +224,18 @@ impl Narrator {
     /// blank line sets the new phase off from what came before it.
     fn begin(&mut self, observation: &Observation, time: SystemTime) -> Vec<String> {
         let phase = (observation.round, observation.phase.clone());
-        if self.phase.as_ref() == Some(&phase) {
+        if self.phase.as_ref().is_some_and(|told| told.phase == phase) {
             return vec![];
         }
         let slept = self
             .phase
             .as_ref()
-            .is_some_and(|told| ordinal(&phase) != ordinal(told) + 1);
+            .is_some_and(|told| ordinal(&phase) != ordinal(&told.phase) + 1);
         let mut lines = self.outcome(&observation.alive, slept, time);
         self.alive = observation.alive.clone();
         lines.push(String::new());
         lines.push(format!("{}.", title(&phase)));
-        self.phase = Some(phase);
-        self.began = Some(time);
+        self.phase = Some(Told { phase, began: time });
         lines
     }
 
@@ -260,9 +267,13 @@ impl Narrator {
         };
         self.alive = alive_after.clone();
         lines.push(line);
-        if let (Voice::Omniscient, Some(began)) = (&self.voice, self.began) {
-            let took = time.duration_since(began).unwrap_or_default();
-            lines.push(format!("{} took {}.", title(told), whole_seconds(took)));
+        if matches!(self.voice, Voice::Omniscient) {
+            let took = time.duration_since(told.began).unwrap_or_default();
+            lines.push(format!(
+                "{} took {}.",
+                title(&told.phase),
+                whole_seconds(took)
+            ));
         }
         lines
     }
@@ -305,7 +316,7 @@ impl Narrator {
     /// always the player's own deed, told to it.
     fn deed(&self, player: &PlayerId, chosen: &PlayerId) -> String {
         let role = self.roles.get(player).copied();
-        let phase = self.phase.as_ref().map(|(_, phase)| phase);
+        let phase = self.phase.as_ref().map(|told| &told.phase.1);
         let (player, chosen) = (self.seat(player), self.seat(chosen));
         match (&self.voice, phase, role) {
             (Voice::Player(_), Some(Phase::Night), Some(Role::Werewolf)) => {
@@ -346,12 +357,9 @@ impl Narrator {
         &self,
         player: &PlayerId,
         chosen: &PlayerId,
-        (round, phase): &(NonZero<u8>, Phase),
+        phase: &(NonZero<u8>, Phase),
     ) -> String {
-        let when = match phase {
-            Phase::Night => format!("night {round}"),
-            Phase::Day => format!("day {round}"),
-        };
+        let when = title(phase).to_lowercase();
         let chosen = self.seat(chosen);
         match &self.voice {
             Voice::Player(_) => format!("You choose {chosen} for {when} too late to count."),
@@ -467,18 +475,14 @@ fn listed<'a>(seats: impl IntoIterator<Item = Seat<'a>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::werewolf::Team;
     use crate::werewolf::llm::Configuration;
+    use crate::werewolf::tests::logged;
+    use crate::werewolf::{Rules, Team};
     use std::collections::BTreeMap;
     use std::time::{Duration, UNIX_EPOCH};
 
     fn id(name: &str) -> PlayerId {
         name.to_string()
-    }
-
-    /// `entry` as logged when the game began.
-    fn logged(entry: Entry) -> Event<Entry> {
-        at(0.0, Event::now(Default::default(), entry))
     }
 
     /// `event`, logged `seconds` into the game.
@@ -583,12 +587,11 @@ mod tests {
 
     /// The deal of `roles`, with a night waiting a minute and a day two.
     fn dealt(roles: HashMap<PlayerId, Role>) -> Event<Entry> {
-        logged(Entry::Start {
-            variation: "Uniform Random".to_string(),
-            roles,
-            night_limit: Duration::from_secs(60),
+        let rules = Rules {
             day_limit: Duration::from_secs(120),
-        })
+            ..Rules::default()
+        };
+        logged(rules.start(roles))
     }
 
     fn start() -> Event<Entry> {

@@ -233,12 +233,7 @@ impl Behavior for Environment {
     /// the result, then stop the survivors, report the winner, and end the
     /// episode.
     async fn start(&mut self) -> anyhow::Result<()> {
-        self.context.log(Entry::Start {
-            variation: self.rules.variation.clone(),
-            roles: self.state.roles.clone(),
-            night_limit: self.rules.night_limit,
-            day_limit: self.rules.day_limit,
-        });
+        self.context.log(self.rules.start(self.state.roles.clone()));
         let winner = loop {
             self.night().await?;
             if let Some(team) = self.state.winner() {

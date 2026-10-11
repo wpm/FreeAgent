@@ -498,6 +498,19 @@ pub struct Rules {
     pub day_limit: Duration,
 }
 
+impl Rules {
+    /// The entry that opens a game of `roles` under these rules: the
+    /// variation, the deal, and the phase limits.
+    pub fn start(&self, roles: HashMap<PlayerId, Role>) -> Entry {
+        Entry::Start {
+            variation: self.variation.clone(),
+            roles,
+            night_limit: self.night_limit,
+            day_limit: self.day_limit,
+        }
+    }
+}
+
 impl Default for Rules {
     /// Uniform Random: the werewolves break ties at random, the village
     /// does not, and each phase waits a minute.
@@ -802,12 +815,17 @@ mod tests {
 
     #[test]
     fn the_start_carries_the_limits_as_humantime_writes_them_and_survives_a_trip_through_json() {
-        let start = Entry::Start {
-            variation: "Uniform Random".to_string(),
-            roles: village().roles,
+        let rules = Rules {
             night_limit: Duration::from_secs(90),
             day_limit: Duration::from_secs(40),
+            ..Rules::default()
         };
+        let start = rules.start(village().roles);
+        assert!(
+            matches!(&start, Entry::Start { variation, roles, .. }
+                if variation == "Uniform Random" && roles.len() == 4),
+            "{start:?}"
+        );
         let json = serde_json::to_value(&start).unwrap();
         assert_eq!(json["Start"]["night_limit"], "1m 30s");
         assert_eq!(json["Start"]["day_limit"], "40s");
@@ -858,15 +876,7 @@ mod tests {
         roles: &HashMap<PlayerId, Role>,
         winner: Team,
     ) -> &'a [Entry] {
-        assert_eq!(
-            logged.first(),
-            Some(&Entry::Start {
-                variation: rules.variation.clone(),
-                roles: roles.clone(),
-                night_limit: rules.night_limit,
-                day_limit: rules.day_limit,
-            })
-        );
+        assert_eq!(logged.first(), Some(&rules.start(roles.clone())));
         let last = logged.last();
         assert!(
             matches!(
@@ -900,6 +910,16 @@ mod tests {
             logged.push(event.payload);
         }
         Ok((won.await?, logged, took))
+    }
+
+    /// `entry` as an event logged when the game began, in no episode in
+    /// particular.
+    pub(super) fn logged(entry: Entry) -> Event<Entry> {
+        Event {
+            time: std::time::UNIX_EPOCH,
+            episode: Default::default(),
+            payload: entry,
+        }
     }
 
     /// The selections the environment logged as received.
