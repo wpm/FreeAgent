@@ -49,12 +49,18 @@ fn played(variant: &str, args: &[&str]) -> (Vec<Event<Entry>>, String) {
     (events, String::from_utf8(output.stdout).unwrap())
 }
 
-/// The variation and the deal the log opens with.
-fn start(events: &[Event<Entry>]) -> (&str, &HashMap<PlayerId, Role>) {
-    let Some(Entry::Start { variation, roles }) = events.first().map(|event| &event.payload) else {
+/// The variation, the deal and the phase limits the log opens with.
+fn start(events: &[Event<Entry>]) -> (&str, &HashMap<PlayerId, Role>, Duration, Duration) {
+    let Some(Entry::Start {
+        variation,
+        roles,
+        night_limit,
+        day_limit,
+    }) = events.first().map(|event| &event.payload)
+    else {
         panic!("{events:?}");
     };
-    (variation, roles)
+    (variation, roles, *night_limit, *day_limit)
 }
 
 /// Assert that the command refuses its arguments, with the exit code `clap`
@@ -77,16 +83,17 @@ fn assert_plays_the_default_table(
 
     let episode = events[0].episode;
     assert!(events.iter().all(|event| event.episode == episode));
-    let (named, roles) = start(&events);
+    let (named, roles, night_limit, day_limit) = start(&events);
     assert_eq!(named, variation);
     // The default table seats seven.
     assert_eq!(roles.len(), 7);
     let Some(Entry::End { winner, .. }) = events.last().map(|event| &event.payload) else {
         panic!("{events:?}");
     };
-    // The account opens with the table, a player to a line, goes through
-    // the first night, set off by a blank line, and closes with the winner
-    // and the survivors, a player to a line.
+    // The account opens with the table, a player to a line, then the
+    // limits the log carries, goes through the first night, set off by a
+    // blank line, tells how long the last phase took, and closes with the
+    // winner and the survivors, a player to a line.
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
         lines[0],
@@ -99,12 +106,26 @@ fn assert_plays_the_default_table(
             "{printed}"
         );
     }
-    assert_eq!(lines[8], "", "{printed}");
-    assert_eq!(lines[9], "Night 1.", "{printed}");
+    assert_eq!(
+        lines[8],
+        format!(
+            "A night waits {} and a day {}.",
+            humantime::format_duration(night_limit),
+            humantime::format_duration(day_limit)
+        ),
+        "{printed}"
+    );
+    assert_eq!(lines[9], "", "{printed}");
+    assert_eq!(lines[10], "Night 1.", "{printed}");
     let won = lines
         .iter()
         .position(|line| line.starts_with(&format!("The {winner} win after ")))
         .unwrap_or_else(|| panic!("{printed}"));
+    let took = lines[won - 2];
+    assert!(
+        (took.starts_with("Night ") || took.starts_with("Day ")) && took.contains(" took "),
+        "{printed}"
+    );
     assert_eq!(lines[won - 1], "", "{printed}");
     assert_eq!(lines[won + 1], "Survivors:", "{printed}");
     assert!(!lines[won + 2..].is_empty(), "{printed}");
@@ -162,7 +183,7 @@ fn the_table_is_dealt_as_asked() {
             ],
         );
 
-        let (_, roles) = start(&events);
+        let (_, roles, _, _) = start(&events);
         let count = |role| roles.values().filter(|r| **r == role).count();
         assert_eq!(roles.len(), 3);
         assert_eq!(count(Role::Werewolf), 1);
@@ -269,7 +290,7 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
     // Short limits, so that a phase nobody selects in ends soon.
     let args = [&config, "--night-limit", "1s", "--day-limit", "1s"];
     let events = assert_plays_the_default_table("llm", "LLM", &args);
-    let (_, roles) = start(&events);
+    let (_, roles, _, _) = start(&events);
     let configuration = configuration(&events);
     assert_eq!(configuration.base_url, base_url);
     assert_eq!(configuration.model, EXAMPLE_MODEL);
@@ -328,7 +349,7 @@ fn the_llm_variant_hears_the_command_line_over_the_file() {
             "gpt-5.5",
         ],
     );
-    let (_, roles) = start(&events);
+    let (_, roles, _, _) = start(&events);
     assert_eq!(roles.len(), 6);
     let configuration = configuration(&events);
     assert_eq!(configuration.role_counts[&Role::Werewolf], 1);

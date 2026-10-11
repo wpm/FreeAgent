@@ -236,6 +236,8 @@ impl Behavior for Environment {
         self.context.log(Entry::Start {
             variation: self.rules.variation.clone(),
             roles: self.state.roles.clone(),
+            night_limit: self.rules.night_limit,
+            day_limit: self.rules.day_limit,
         });
         let winner = loop {
             self.night().await?;
@@ -393,7 +395,7 @@ mod tests {
             .filter(|(_, role)| **role == Role::Doctor)
             .map(|(player, _)| player)
             .collect();
-        let between = between_the_deal_and_the_end(&logged, "Uniform Random", &roles, winner);
+        let between = between_the_deal_and_the_end(&logged, &Rules::default(), &roles, winner);
         let mut shown = 0;
         let mut chosen = 0;
         let mut hunts = 0;

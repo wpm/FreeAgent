@@ -268,14 +268,19 @@ impl Behavior for Environment {
         Ok(())
     }
 
-    /// Log the deal, then the configuration if there is one, and open the
-    /// first night.
+    /// Log the deal and the limits, then the configuration if there is
+    /// one, and open the first night.
     async fn start(&mut self) -> anyhow::Result<()> {
-        let (variation, roles) = {
+        let start = {
             let game = self.game();
-            (game.rules.variation.clone(), game.state.roles.clone())
+            Entry::Start {
+                variation: game.rules.variation.clone(),
+                roles: game.state.roles.clone(),
+                night_limit: game.rules.night_limit,
+                day_limit: game.rules.day_limit,
+            }
         };
-        self.context.log(Entry::Start { variation, roles });
+        self.context.log(start);
         if let Some(configuration) = self.configuration.take() {
             self.context.log(configuration);
         }

@@ -18,7 +18,7 @@
 //!
 //! The game is the announcing environment's, with a model [`Player`] in
 //! every seat. A player remembers what it is shown and what it does, as
-//! the entries the environment logs about it. Announced a phase, it tells
+//! events like those the environment logs about it. Announced a phase, it tells
 //! the model that history as a story from its own point of view and where
 //! the game stands, and has it select one of the player's [candidates]
 //! with one forced tool call. The call is made in the player's think loop,
@@ -40,7 +40,7 @@ use crate::model::{
 use anyhow::{Context as _, anyhow, bail};
 use async_trait::async_trait;
 use clap::Args;
-use free_agent::{Behavior, Builder, Context, Episode, Logger, Think, ThinkBuilder};
+use free_agent::{Behavior, Builder, Context, Episode, Event, Logger, Think, ThinkBuilder};
 use minijinja::{Environment, UndefinedBehavior, Value, context};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -553,10 +553,11 @@ impl Behavior for Actor {
 /// What a player's two loops share: what it has been shown and what it has
 /// done, what it is told, and whom it asks.
 struct Mind {
-    /// The history, in order, as the entries the environment logs about
-    /// the player: an announcement sent to it, and a selection received
-    /// from it. Never locked across an await.
-    history: Mutex<Vec<Entry>>,
+    /// The history, in order, as events like those the environment logs
+    /// about the player: an announcement sent to it, and a selection
+    /// received from it, each stamped when the player remembered it. Never
+    /// locked across an await.
+    history: Mutex<Vec<Event<Entry>>>,
     /// Its system prompt, rendered for its seat and role.
     prompt: String,
     /// The model's id, as each request names it.
@@ -566,14 +567,14 @@ struct Mind {
 }
 
 impl Mind {
-    /// Add `entry` to the history. An announcement goes at the end. A
+    /// Add `event` to the history. An announcement goes at the end. A
     /// selection goes right after the announcement it answers, which is
     /// where it belongs in the story: one made after a later phase was
     /// announced, which the environment has dropped, was still made in its
     /// own phase, and is not told as a deed of the phase that followed.
-    fn remember(&self, entry: Entry) {
+    fn remember(&self, event: Event<Entry>) {
         let mut history = self.history.lock().unwrap();
-        let at = match &entry {
+        let at = match &event.payload {
             Entry::Received {
                 message: Message::Select { seq, .. },
                 ..
@@ -581,7 +582,7 @@ impl Mind {
                 .iter()
                 .rposition(|remembered| {
                     matches!(
-                        remembered,
+                        &remembered.payload,
                         Entry::Sent {
                             message: Message::Announce { seq: announced, .. },
                             ..
@@ -591,7 +592,7 @@ impl Mind {
                 .map_or(history.len(), |announced| announced + 1),
             _ => history.len(),
         };
-        history.insert(at, entry);
+        history.insert(at, event);
     }
 }
 
@@ -633,9 +634,10 @@ impl Player {
         (behavior, Some(think))
     }
 
-    /// Add `entry` to the history, where it belongs in the story.
+    /// Add `entry` to the history, stamped now, where it belongs in the
+    /// story.
     fn remember(&self, entry: Entry) {
-        self.mind.remember(entry);
+        self.mind.remember(Event::now(self.context.episode, entry));
     }
 
     /// The request for a selection from `candidates` in the phase
@@ -655,7 +657,7 @@ impl Player {
             .lock()
             .unwrap()
             .iter()
-            .flat_map(|entry| narrator.narrate(entry))
+            .flat_map(|event| narrator.narrate(event))
             .collect();
         let asked = format!("{}\n\n{}", story.join("\n"), situation(me, observation)?);
         Ok(Request::new(
@@ -1615,17 +1617,22 @@ player2 = \"Cautious.\"
         };
         let everyone = ["wolf", "ann", "bob"];
         let pack = [("wolf", Role::Werewolf)];
-        let announced = |seq, observation| Entry::Sent {
-            to: "wolf".to_string(),
-            message: Message::Announce { seq, observation },
+        let remembered = |entry| Event::now(Default::default(), entry);
+        let announced = |seq, observation| {
+            remembered(Entry::Sent {
+                to: "wolf".to_string(),
+                message: Message::Announce { seq, observation },
+            })
         };
-        let selected = |seq| Entry::Received {
-            from: "wolf".to_string(),
-            message: Message::Select {
-                seq,
+        let selected = |seq| {
+            remembered(Entry::Received {
                 from: "wolf".to_string(),
-                target: "ann".to_string(),
-            },
+                message: Message::Select {
+                    seq,
+                    from: "wolf".to_string(),
+                    target: "ann".to_string(),
+                },
+            })
         };
         let night = announced(1, seen(&everyone, &pack));
         let day = announced(2, seen_by_day(&everyone, &pack));
@@ -1635,11 +1642,20 @@ player2 = \"Cautious.\"
         mind.remember(selected(1));
         mind.remember(selected(2));
         let history = mind.history.lock().unwrap();
-        assert_eq!(*history, [night, selected(1), day, selected(2)]);
+        let remembered: Vec<&Entry> = history.iter().map(|event| &event.payload).collect();
+        assert_eq!(
+            remembered,
+            [
+                &night.payload,
+                &selected(1).payload,
+                &day.payload,
+                &selected(2).payload
+            ]
+        );
         let mut narrator = Narrator::for_player("wolf".to_string());
         let story: Vec<String> = history
             .iter()
-            .flat_map(|entry| narrator.narrate(entry))
+            .flat_map(|event| narrator.narrate(event))
             .collect();
         assert_eq!(
             story,
@@ -1711,7 +1727,7 @@ player2 = \"Cautious.\"
         let (winner, logged, _) = play(roles.clone(), rules(), answering(choosing_first))
             .await
             .unwrap();
-        let between = between_the_deal_and_the_end(&logged, "LLM", &roles, winner);
+        let between = between_the_deal_and_the_end(&logged, &rules(), &roles, winner);
         assert_eq!(
             between[0],
             Entry::Configuration(Box::new(configuration(&roles)))
@@ -1742,7 +1758,7 @@ player2 = \"Cautious.\"
             .await
             .unwrap();
         assert_eq!(winner, Team::Werewolves);
-        let announced = between_the_deal_and_the_end(&logged, "LLM", &roles, winner)
+        let announced = between_the_deal_and_the_end(&logged, &rules(), &roles, winner)
             .iter()
             .filter(|entry| {
                 matches!(

@@ -233,7 +233,7 @@ mod tests {
 
         // Everything between is a message to or from a player, as it was,
         // or a night's hunt.
-        let between = between_the_deal_and_the_end(&logged, "Scripted", &roles, winner);
+        let between = between_the_deal_and_the_end(&logged, &rules(), &roles, winner);
         let mut announced = 0;
         let mut selected = 0;
         let mut hunts = 0;

@@ -551,12 +551,20 @@ impl free_agent::Message for Message {}
 /// for whatever reads the log later.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Entry {
-    /// The game begins: who plays what, under which variation.
+    /// The game begins: who plays what, under which variation, and how
+    /// long each phase waits for the players. The limits are written as
+    /// `humantime` writes them, such as `"60s"`.
     Start {
         /// The name of the variation played, such as "Uniform Random".
         variation: String,
         /// Every player's role.
         roles: HashMap<PlayerId, Role>,
+        /// How long a night waits for the players.
+        #[serde(with = "humantime_serde")]
+        night_limit: Duration,
+        /// How long a day waits for the players.
+        #[serde(with = "humantime_serde")]
+        day_limit: Duration,
     },
     /// The configuration a model-played game ran under, logged right after
     /// the deal.
@@ -793,6 +801,21 @@ mod tests {
     }
 
     #[test]
+    fn the_start_carries_the_limits_as_humantime_writes_them_and_survives_a_trip_through_json() {
+        let start = Entry::Start {
+            variation: "Uniform Random".to_string(),
+            roles: village().roles,
+            night_limit: Duration::from_secs(90),
+            day_limit: Duration::from_secs(40),
+        };
+        let json = serde_json::to_value(&start).unwrap();
+        assert_eq!(json["Start"]["night_limit"], "1m 30s");
+        assert_eq!(json["Start"]["day_limit"], "40s");
+        let back: Entry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, start);
+    }
+
+    #[test]
     fn an_entry_survives_a_trip_through_json() {
         let state = village();
         let entry = Entry::Sent {
@@ -826,19 +849,22 @@ mod tests {
     }
 
     /// Everything `logged` between the deal and the end of the game,
-    /// checking that the deal is of `roles` under `variation`, and that
-    /// the end names `winner` and survivors from among the players.
+    /// checking that the deal is of `roles` under `rules`, whose variation
+    /// and limits it carries, and that the end names `winner` and survivors
+    /// from among the players.
     pub(super) fn between_the_deal_and_the_end<'a>(
         logged: &'a [Entry],
-        variation: &str,
+        rules: &Rules,
         roles: &HashMap<PlayerId, Role>,
         winner: Team,
     ) -> &'a [Entry] {
         assert_eq!(
             logged.first(),
             Some(&Entry::Start {
-                variation: variation.to_string(),
+                variation: rules.variation.clone(),
                 roles: roles.clone(),
+                night_limit: rules.night_limit,
+                day_limit: rules.day_limit,
             })
         );
         let last = logged.last();
