@@ -8,11 +8,12 @@
 use super::announced::{self, Environment};
 use super::{
     ENVIRONMENT, Entry, Message, PlayerId, Role, Rules, Team, View, act, candidates, observe,
+    to_the_environment,
 };
 use async_trait::async_trait;
 use free_agent::{Behavior, Builder, Context, Episode, Logger};
 use rand::seq::IteratorRandom;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use tokio::sync::oneshot;
 
 /// An episode of a game of `roles` under `rules`: the announcing
@@ -124,16 +125,11 @@ impl Behavior for Player {
                     n: self.n,
                     target,
                 };
-                act(&self.context, self.n, selection, to_the_environment(), None)?;
+                act(&self.context, selection, to_the_environment(), None)?;
             }
         }
         Ok(())
     }
-}
-
-/// The environment alone, as the receivers of a message.
-fn to_the_environment() -> HashSet<PlayerId> {
-    HashSet::from([ENVIRONMENT.to_string()])
 }
 
 /// One of the [`candidates`] `me` sees in `view`, chosen
@@ -151,6 +147,7 @@ mod tests {
         one_wolf_against, run, seen, selection, selections, village,
     };
     use crate::werewolf::{Phase, View};
+    use std::collections::HashSet;
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -179,12 +176,7 @@ mod tests {
         async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
             if let Message::Announce { seq, view, .. } = message {
                 for said in (self.script)(&self.context.id, *seq, view) {
-                    match said {
-                        Message::Select { n, .. } => {
-                            act(&self.context, n, said, to_the_environment(), None)?;
-                        }
-                        other => self.context.send(other, to_the_environment())?,
-                    }
+                    act(&self.context, said, to_the_environment(), None)?;
                 }
             }
             Ok(())
@@ -281,15 +273,11 @@ mod tests {
                 from,
                 n,
                 to,
-                message:
-                    Message::Announce {
-                        seq, n: numbered, ..
-                    },
+                message: Message::Announce { seq, .. },
                 seen,
             } = entry
             {
                 assert_eq!(from, ENVIRONMENT);
-                assert_eq!(n, numbered);
                 assert_eq!(to.len(), 1, "{to:?}");
                 assert!(to.iter().all(|player| roles.contains_key(player)), "{to:?}");
                 assert!(*seq >= 1, "{seq}");
@@ -305,14 +293,13 @@ mod tests {
                     Message::Select {
                         seq,
                         from: said,
-                        n: numbered,
                         target,
+                        ..
                     },
                 seen,
             } = entry
             {
                 assert_eq!(from, said);
-                assert_eq!(n, numbered);
                 assert!(roles.contains_key(from), "{from}");
                 assert!(roles.contains_key(target), "{target}");
                 assert_eq!(*to, to_the_environment());

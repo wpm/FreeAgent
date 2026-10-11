@@ -41,7 +41,7 @@ use super::announced;
 use super::report::Narrator;
 use super::{
     ENVIRONMENT, Entry, Message, Phase, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table,
-    Team, View, act, candidates, observe,
+    Team, View, act, candidates, observe, to_the_environment,
 };
 use crate::model::{
     self, Provider, REQUEST_TIMEOUT, Request, Response, Tool, api_key, key_variable,
@@ -57,7 +57,7 @@ use minijinja::{Environment, UndefinedBehavior, Value, context};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -743,13 +743,7 @@ impl Player {
         self.remember(Memory::Acted {
             message: selection.clone(),
         });
-        act(
-            &self.context,
-            n,
-            selection,
-            HashSet::from([ENVIRONMENT.to_string()]),
-            Some(seen),
-        )
+        act(&self.context, selection, to_the_environment(), Some(seen))
     }
 }
 
@@ -938,11 +932,12 @@ mod tests {
     use crate::model::canned;
     use crate::model::fake::{FakeModel, choosing_first};
     use crate::werewolf::tests::{
-        Played, between_the_deal_and_the_end, logged, one_wolf_against, run, seen, seen_by_day,
-        selection, selections,
+        Played, announcement, between_the_deal_and_the_end, logged, one_wolf_against, run, seen,
+        seen_by_day, selection, selections,
     };
     use clap::Parser;
     use secrecy::ExposeSecret;
+    use std::collections::HashSet;
     use std::num::NonZero;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -1803,16 +1798,6 @@ player2 = \"Cautious.\"
         }
     }
 
-    /// `memory`, remembered when the game began, in no episode in
-    /// particular.
-    fn remembered(memory: Memory) -> Event<Memory> {
-        Event {
-            time: std::time::UNIX_EPOCH,
-            episode: Default::default(),
-            payload: memory,
-        }
-    }
-
     #[test]
     fn a_late_selection_is_remembered_in_its_own_phase_and_told_there() {
         let mind = Mind::new(
@@ -1823,18 +1808,13 @@ player2 = \"Cautious.\"
         let everyone = ["wolf", "ann", "bob"];
         let pack = [("wolf", Role::Werewolf)];
         let announced = |seq, view| {
-            remembered(Memory::Observed {
+            logged(Memory::Observed {
                 from: ENVIRONMENT.to_string(),
-                message: Message::Announce {
-                    seq,
-                    n: seq,
-                    view,
-                    limit: Duration::from_secs(60),
-                },
+                message: announcement(seq, view),
             })
         };
         let selected = |seq| {
-            remembered(Memory::Acted {
+            logged(Memory::Acted {
                 message: selection(seq, "wolf", seq, "ann"),
             })
         };

@@ -82,7 +82,7 @@ where
             ActorInit {
                 behavior,
                 think,
-                can_send_to: HashSet::from([ENVIRONMENT.to_string()]),
+                can_send_to: to_the_environment(),
                 can_shut_down: HashSet::new(),
                 has_logger: true,
             },
@@ -574,24 +574,42 @@ pub enum Message {
 }
 impl free_agent::Message for Message {}
 
-/// Send `message`, which the actor of `context` numbered `n`, to everyone
-/// in `to`, logging it first as the actor's action. `seen` is how many
+impl Message {
+    /// The sender's number for this message, which a reminder to itself
+    /// does not have.
+    pub fn number(&self) -> Option<u64> {
+        match self {
+            Message::Announce { n, .. } | Message::Select { n, .. } => Some(*n),
+            Message::EndPhase { .. } => None,
+        }
+    }
+}
+
+/// The environment alone, as the receivers of a message: whom a player
+/// sends to.
+pub fn to_the_environment() -> HashSet<ActorId> {
+    HashSet::from([ENVIRONMENT.to_string()])
+}
+
+/// Send `message` from the actor of `context` to everyone in `to`, logging
+/// it first as the actor's action if it is numbered. `seen` is how many
 /// history entries a model was shown when it made the call that produced
 /// the message, and `None` for a message no model made.
 pub fn act(
     context: &Context<Message, Entry>,
-    n: u64,
     message: Message,
     to: HashSet<ActorId>,
     seen: Option<usize>,
 ) -> anyhow::Result<()> {
-    context.log(Entry::Action {
-        from: context.id.clone(),
-        n,
-        to: to.clone(),
-        message: message.clone(),
-        seen,
-    });
+    if let Some(n) = message.number() {
+        context.log(Entry::Action {
+            from: context.id.clone(),
+            n,
+            to: to.clone(),
+            message: message.clone(),
+            seen,
+        });
+    }
     context.send(message, to)
 }
 
@@ -934,7 +952,7 @@ mod tests {
             Entry::Action {
                 from: "seer".to_string(),
                 n: 1,
-                to: HashSet::from([ENVIRONMENT.to_string()]),
+                to: to_the_environment(),
                 message: selection(1, "seer", 1, "wolf1"),
                 seen: Some(3),
             },
@@ -977,6 +995,14 @@ mod tests {
         assert_eq!(json["Announce"]["limit"], "1m 30s");
         let back: Message = serde_json::from_value(json).unwrap();
         assert_eq!(back, announce);
+    }
+
+    #[test]
+    fn a_message_to_others_is_numbered_and_a_reminder_is_not() {
+        let view = seen(&["wolf"], &[("wolf", Role::Werewolf)]);
+        assert_eq!(announcement(2, view).number(), Some(2));
+        assert_eq!(selection(1, "wolf", 3, "ann").number(), Some(3));
+        assert_eq!(Message::EndPhase { seq: 1 }.number(), None);
     }
 
     #[test]
@@ -1046,13 +1072,25 @@ mod tests {
         Ok((won.await?, logged, took))
     }
 
-    /// `entry` as an event logged when the game began, in no episode in
-    /// particular.
-    pub(super) fn logged(entry: Entry) -> Event<Entry> {
+    /// `payload`, an entry or a memory, as an event logged or remembered
+    /// when the game began, in no episode in particular.
+    pub(super) fn logged<L>(payload: L) -> Event<L> {
         Event {
             time: std::time::UNIX_EPOCH,
             episode: Default::default(),
-            payload: entry,
+            payload,
+        }
+    }
+
+    /// The environment's announcement of the phase numbered `seq`, showing
+    /// `view`, lasting a minute. The accounts do not read the number, so
+    /// it is the phase's.
+    pub(super) fn announcement(seq: u64, view: View) -> Message {
+        Message::Announce {
+            seq,
+            n: seq,
+            view,
+            limit: Duration::from_secs(60),
         }
     }
 

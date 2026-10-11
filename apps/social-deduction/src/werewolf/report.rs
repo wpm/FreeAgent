@@ -9,7 +9,7 @@
 //! messages themselves, and its account reads them.
 
 use super::llm::Memory;
-use super::{Entry, Hunt, Message, Phase, PlayerId, Role, View};
+use super::{Entry, Hunt, Message, Phase, PlayerId, Role, Team, View};
 use free_agent::{ActorId, Event};
 use humantime::format_duration;
 use std::cmp::Ordering;
@@ -111,13 +111,25 @@ impl Narrator {
     /// end of the game from it.
     pub fn narrate(&mut self, event: &Event<Entry>) -> Vec<String> {
         let time = event.time;
+        if let Entry::End {
+            winner,
+            days,
+            survivors,
+            took,
+        } = &event.payload
+        {
+            return self.end(*winner, *days, survivors, *took, time);
+        }
+        if let Voice::Player(_) = self.voice {
+            return vec![];
+        }
         match &event.payload {
             Entry::Start {
                 variation,
                 roles,
                 night_limit,
                 day_limit,
-            } if matches!(self.voice, Voice::Omniscient) => {
+            } => {
                 self.roles = roles.clone();
                 self.alive = roles.keys().cloned().collect();
                 self.table(variation, *night_limit, *day_limit)
@@ -125,18 +137,18 @@ impl Narrator {
             Entry::Action {
                 message: Message::Announce { seq, view, .. },
                 ..
-            } if matches!(self.voice, Voice::Omniscient) => self.announce(*seq, view, time),
+            } => self.announce(*seq, view, time),
             Entry::Action {
                 from,
                 n,
                 message: Message::Select { seq, target, .. },
                 ..
-            } if matches!(self.voice, Voice::Omniscient) => {
+            } => {
                 self.selections
                     .insert((from.clone(), *n), (*seq, target.clone()));
                 vec![]
             }
-            Entry::Observation { from, n, seq, .. } if matches!(self.voice, Voice::Omniscient) => {
+            Entry::Observation { from, n, seq, .. } => {
                 match self.selections.remove(&(from.clone(), *n)) {
                     Some((sent_in, chosen)) if sent_in != *seq => {
                         vec![self.lateness(from, &chosen, self.announced.get(&sent_in))]
@@ -145,11 +157,11 @@ impl Narrator {
                     None => vec![],
                 }
             }
-            Entry::Hunted { hunt, .. } if matches!(self.voice, Voice::Omniscient) => {
+            Entry::Hunted { hunt, .. } => {
                 self.hunted = Some(self.hunt(hunt));
                 vec![]
             }
-            Entry::Failed { player, seq, error } if matches!(self.voice, Voice::Omniscient) => {
+            Entry::Failed { player, seq, error } => {
                 let player = self.seat(player);
                 vec![match self.late(*seq) {
                     Some(phase) => format!(
@@ -159,29 +171,35 @@ impl Narrator {
                     None => format!("{player} fails to select: {error}"),
                 }]
             }
-            Entry::End {
-                winner,
-                days,
-                survivors,
-                took,
-            } => {
-                let mut lines = self.outcome(survivors, false, time);
-                lines.push(String::new());
-                lines.push(format!(
-                    "The {winner} win after {days} {}.",
-                    if *days == 1 { "day" } else { "days" }
-                ));
-                lines.push(format!("The game took {}.", whole_seconds(*took)));
-                lines.push("Survivors:".to_string());
-                lines.extend(
-                    in_order(survivors)
-                        .into_iter()
-                        .map(|player| self.seat(player).to_string()),
-                );
-                lines
-            }
             _ => vec![],
         }
+    }
+
+    /// The end of the game at `time`: how the last phase ended, then a
+    /// blank line, who won, how long the game took, and the survivors, a
+    /// player to a line.
+    fn end(
+        &mut self,
+        winner: Team,
+        days: u8,
+        survivors: &HashSet<PlayerId>,
+        took: Duration,
+        time: SystemTime,
+    ) -> Vec<String> {
+        let mut lines = self.outcome(survivors, false, time);
+        lines.push(String::new());
+        lines.push(format!(
+            "The {winner} win after {days} {}.",
+            if days == 1 { "day" } else { "days" }
+        ));
+        lines.push(format!("The game took {}.", whole_seconds(took)));
+        lines.push("Survivors:".to_string());
+        lines.extend(
+            in_order(survivors)
+                .into_iter()
+                .map(|player| self.seat(player).to_string()),
+        );
+        lines
     }
 
     /// The lines a player's memory `event` adds to its account, often
@@ -199,8 +217,8 @@ impl Narrator {
                     Message::Select {
                         seq, from, target, ..
                     },
-            } => match self.late(*seq).cloned() {
-                Some(phase) => vec![self.lateness(from, target, Some(&phase))],
+            } => match self.late(*seq) {
+                Some(phase) => vec![self.lateness(from, target, Some(phase))],
                 None => self.did(from, target),
             },
             _ => vec![],
@@ -530,8 +548,8 @@ fn listed<'a>(seats: impl IntoIterator<Item = Seat<'a>>) -> String {
 mod tests {
     use super::*;
     use crate::werewolf::llm::Configuration;
-    use crate::werewolf::tests::logged;
-    use crate::werewolf::{ENVIRONMENT, Rules, Team};
+    use crate::werewolf::tests::{announcement, logged, selection};
+    use crate::werewolf::{ENVIRONMENT, Rules, to_the_environment};
     use std::collections::BTreeMap;
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -547,38 +565,11 @@ mod tests {
         }
     }
 
-    /// `memory`, remembered when the game began, in no episode in
-    /// particular.
-    fn remembered(memory: Memory) -> Event<Memory> {
-        Event {
-            time: UNIX_EPOCH,
-            episode: Default::default(),
-            payload: memory,
-        }
-    }
-
-    /// The environment's announcement of the phase numbered `seq`, showing
-    /// `view`, as a message. The accounts do not read the number, so it is
-    /// the phase's.
-    fn announcement(seq: u64, view: View) -> Message {
-        Message::Announce {
-            seq,
-            n: seq,
-            view,
-            limit: Duration::from_secs(60),
-        }
-    }
-
     /// `from`'s selection of `target` for the phase numbered `seq`, as a
     /// message. A player selects once a phase in these accounts, so its
     /// number for the message is the phase's.
     fn choice(from: &str, seq: u64, target: &str) -> Message {
-        Message::Select {
-            seq,
-            from: id(from),
-            n: seq,
-            target: id(target),
-        }
+        selection(seq, from, seq, target)
     }
 
     fn roles() -> HashMap<PlayerId, Role> {
@@ -654,7 +645,7 @@ mod tests {
         logged(Entry::Action {
             from: id(from),
             n: seq,
-            to: HashSet::from([ENVIRONMENT.to_string()]),
+            to: to_the_environment(),
             message: choice(from, seq, target),
             seen: None,
         })
@@ -695,7 +686,7 @@ mod tests {
     /// `alive` alive and `known` roles shown.
     fn heard(round: u8, phase: Phase, alive: &[&str], known: &[(&str, Role)]) -> Event<Memory> {
         let seq = seq_of(round, &phase);
-        remembered(Memory::Observed {
+        logged(Memory::Observed {
             from: ENVIRONMENT.to_string(),
             message: announcement(seq, observed(round, phase, alive, known)),
         })
@@ -703,7 +694,7 @@ mod tests {
 
     /// `me`'s memory of selecting `target` for the phase numbered `seq`.
     fn chose(me: &str, seq: u64, target: &str) -> Event<Memory> {
-        remembered(Memory::Acted {
+        logged(Memory::Acted {
             message: choice(me, seq, target),
         })
     }
@@ -1113,7 +1104,7 @@ mod tests {
     #[test]
     fn a_memory_that_is_neither_an_announcement_heard_nor_a_selection_made_adds_nothing() {
         let mut narrator = Narrator::for_player(id("doctor"));
-        let reminder = remembered(Memory::Observed {
+        let reminder = logged(Memory::Observed {
             from: ENVIRONMENT.to_string(),
             message: Message::EndPhase { seq: 1 },
         });
@@ -1164,7 +1155,7 @@ mod tests {
         let reminder = logged(Entry::Action {
             from: id("wolf"),
             n: 1,
-            to: HashSet::from([ENVIRONMENT.to_string()]),
+            to: to_the_environment(),
             message: Message::EndPhase { seq: 1 },
             seen: None,
         });
