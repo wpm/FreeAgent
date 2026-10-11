@@ -676,9 +676,11 @@ impl Player {
 
     /// Ask the model to select one of `candidates` in the phase numbered
     /// `seq`, which `observation` shows, remember what it selects, and
-    /// send the selection to the environment. A model that cannot be
-    /// reached or answers with something that is not a selection of a
-    /// candidate is an error, and no selection.
+    /// send the selection to the environment. The model's failure to
+    /// select, as [`selection`] judges it, is an error, and no selection;
+    /// so is a request that cannot be put together or a selection that
+    /// cannot be sent, which are the player's own doing, and they read so
+    /// in the error.
     async fn ask(
         &self,
         seq: u64,
@@ -687,11 +689,10 @@ impl Player {
     ) -> anyhow::Result<()> {
         let me = &self.context.id;
         let request = self.request(observation, candidates)?;
-        let response = self.mind.model.complete(&request).await?;
         let selection = Message::Select {
             seq,
             from: me.clone(),
-            target: selected(&response, candidates)?,
+            target: selection(self.mind.model.as_ref(), &request, candidates).await?,
         };
         self.remember(Entry::Received {
             from: me.clone(),
@@ -732,9 +733,11 @@ impl Think for Player {
     /// Announced a phase, select someone in it: ask the model, and if that
     /// fails, log the failure with the phase and what went wrong, causes
     /// included, which is all there is to do about it: the player has not
-    /// selected, and the game goes on. The failure is not remembered, so
-    /// the model is never told of it. With nobody to select, the model is
-    /// not asked. Nothing else is thought about.
+    /// selected, and the game goes on. The think loop drops an error a
+    /// thought returns, so the log is the one place a failure shows,
+    /// whether the model's or the player's own. The failure is not
+    /// remembered, so the model is never told of it. With nobody to
+    /// select, the model is not asked. Nothing else is thought about.
     async fn think(&mut self, message: &Message) -> anyhow::Result<()> {
         let Message::Announce { seq, observation } = message else {
             return Ok(());
@@ -772,13 +775,39 @@ fn situation(me: &PlayerId, observation: &Observation) -> anyhow::Result<String>
     Ok(format!("It is {phase} {}. {asked}", observation.round))
 }
 
+/// Whom `model` selects from `candidates` when sent `request`: its
+/// response, judged by [`selected`]. A model that cannot be reached, or
+/// answers with something that is not a selection of a candidate, is an
+/// error. This is the one way a player asks, and the one way the probe
+/// does, so they agree on what a selection is.
+async fn selection(
+    model: &dyn model::Model,
+    request: &Request,
+    candidates: &[PlayerId],
+) -> anyhow::Result<PlayerId> {
+    let response = model.complete(request).await?;
+    selected(&response, candidates)
+}
+
+/// What [`check_selects`] found.
+#[derive(Debug)]
+pub enum Probed {
+    /// Asked for a selection, the model selected a candidate.
+    Selected,
+    /// Asked for a selection, the model did not: the provider refused the
+    /// request as bad, or the answer was no selection. The error names the
+    /// model and carries the cause beneath it.
+    DidNotSelect(anyhow::Error),
+}
+
 /// Check that `model`, asked as a player is, selects a candidate: one
 /// request of a player's shape, a short system prompt, a line asking for
 /// a selection, and the `select` tool over two placeholder candidates,
-/// judged as a player's answer is. The error names the model and says what
-/// went wrong, with the provider's error beneath it: that the request was
-/// refused and what the server said, or that the answer was no selection.
-pub async fn check_selects(model: &dyn model::Model, model_id: &str) -> anyhow::Result<()> {
+/// judged as a player's answer is. A model that could not be asked at
+/// all, because the provider was not reached or answered with anything
+/// but the model's answer, is an error naming the model, with the cause
+/// beneath it.
+pub async fn check_selects(model: &dyn model::Model, model_id: &str) -> anyhow::Result<Probed> {
     let candidates = ["player1".to_string(), "player2".to_string()];
     let request = Request::new(
         model_id,
@@ -788,10 +817,13 @@ pub async fn check_selects(model: &dyn model::Model, model_id: &str) -> anyhow::
         ],
         select(&candidates),
     );
-    let context = || format!("{model_id} did not select when asked");
-    let response = model.complete(&request).await.with_context(context)?;
-    selected(&response, &candidates).with_context(context)?;
-    Ok(())
+    match selection(model, &request, &candidates).await {
+        Ok(_) => Ok(Probed::Selected),
+        Err(error) if model::concerns_the_model(&error) => Ok(Probed::DidNotSelect(
+            error.context(format!("{model_id} did not select when asked")),
+        )),
+        Err(error) => Err(error.context(format!("{model_id} could not be asked to select"))),
+    }
 }
 
 /// The name of the one tool a player is offered.
@@ -1956,7 +1988,7 @@ player2 = \"Cautious.\"
     #[tokio::test]
     async fn the_probe_asks_for_one_selection_as_a_player_does_and_passes_when_the_model_selects() {
         let model = FakeModel::answering(choosing_first);
-        check_selects(&model, MODEL_ID).await.unwrap();
+        assert!(not_selecting(check_selects(&model, MODEL_ID).await).is_none());
         let requests = model.requests();
         assert_eq!(requests.len(), 1);
         let request = &requests[0];
@@ -1973,10 +2005,37 @@ player2 = \"Cautious.\"
     #[tokio::test]
     async fn the_probe_s_error_names_the_model_and_carries_the_failure() {
         let model = FakeModel::failing("the model is down");
-        let error = check_selects(&model, MODEL_ID).await.unwrap_err();
+        let error = not_selecting(check_selects(&model, MODEL_ID).await).unwrap();
+        assert_eq!(
+            format!("{error:#}"),
+            format!("{MODEL_ID} did not select when asked: the model is down")
+        );
+    }
+
+    /// The error of a probe that found the model did not select, if it
+    /// found so.
+    fn not_selecting(probed: anyhow::Result<Probed>) -> Option<anyhow::Error> {
+        match probed.unwrap() {
+            Probed::Selected => None,
+            Probed::DidNotSelect(error) => Some(error),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_probe_tells_a_model_that_could_not_be_asked_from_one_that_did_not_select() {
+        // A provider that answers anything but success or a refusal of the
+        // request as bad never put the question to the model.
+        let (base_url, _served) = canned::answering("429 Too Many Requests", "{}");
+        let provider = Provider::new(base_url.clone(), None, REQUEST_TIMEOUT).unwrap();
+        let error = check_selects(&provider, MODEL_ID).await.unwrap_err();
         let shown = format!("{error:#}");
-        assert!(shown.starts_with(MODEL_ID), "{shown}");
-        assert!(shown.ends_with("the model is down"), "{shown}");
+        assert!(
+            shown.starts_with(&format!(
+                "{MODEL_ID} could not be asked to select: POST {base_url}/chat/completions \
+                 was answered 429 Too Many Requests"
+            )),
+            "{shown}"
+        );
     }
 
     #[tokio::test]
@@ -1989,7 +2048,7 @@ player2 = \"Cautious.\"
         for response in [prose, elsewhere] {
             let judged = selected(&response, &candidates).unwrap_err();
             let model = FakeModel::responding(response);
-            let error = check_selects(&model, MODEL_ID).await.unwrap_err();
+            let error = not_selecting(check_selects(&model, MODEL_ID).await).unwrap();
             let shown = format!("{error:#}");
             assert!(shown.starts_with(MODEL_ID), "{shown}");
             assert!(shown.ends_with(&format!("{judged:#}")), "{shown}");
@@ -2000,7 +2059,7 @@ player2 = \"Cautious.\"
     async fn the_probe_names_the_url_and_what_the_server_said_when_the_request_is_refused() {
         let base_url = canned::refusing(&[MODEL_ID]);
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
-        let error = check_selects(&provider, MODEL_ID).await.unwrap_err();
+        let error = not_selecting(check_selects(&provider, MODEL_ID).await).unwrap();
         let shown = format!("{error:#}");
         assert!(shown.starts_with(MODEL_ID), "{shown}");
         assert!(

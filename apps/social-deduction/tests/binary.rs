@@ -3,7 +3,7 @@
 
 use free_agent::Event;
 use social_deduction::model::canned::{
-    playing, playing_only, refusal, refusing, serving, unreachable,
+    playing, playing_only, refusal, refusing, serving, unreachable, wanting_a_key,
 };
 use social_deduction::werewolf::llm::Configuration;
 use social_deduction::werewolf::{Entry, PlayerId, Role};
@@ -250,25 +250,32 @@ fn example(name: &str) -> String {
 
 /// A configuration file written for this test: the example `name` with its
 /// provider replaced by one at `base_url` and its model by `id`, each on
-/// the line of the `[model]` table that names it, in the target directory,
-/// at a path of its own so the tests do not collide.
+/// the line of the `[model]` table that names it and nowhere else, in the
+/// target directory, at a path of its own so the tests do not collide.
 fn configured(test: &str, name: &str, base_url: &str, id: &str) -> String {
     let path = format!("{}/{test}.toml", env!("CARGO_TARGET_TMPDIR"));
     let example = std::fs::read_to_string(example(name)).unwrap();
+    let replacements = [
+        ("base_url", format!("base_url = \"{base_url}\"")),
+        ("id", format!("id = \"{id}\"")),
+    ];
+    let mut table = "";
     let mut file = String::new();
     for line in example.lines() {
-        let line = match line.split_once(" = ") {
-            Some(("base_url", _)) => format!("base_url = \"{base_url}\""),
-            Some(("id", _)) => format!("id = \"{id}\""),
-            _ => line.to_string(),
-        };
-        file.push_str(&line);
+        if line.starts_with('[') {
+            table = line;
+        }
+        let key = line.split_once(" = ").map(|(key, _)| key);
+        let replacement = replacements
+            .iter()
+            .find(|(named, _)| table == "[model]" && key == Some(named));
+        file.push_str(replacement.map_or(line, |(_, written)| written));
         file.push('\n');
     }
-    for named in [base_url, id] {
+    for (_, line) in &replacements {
         assert!(
-            file.contains(named),
-            "{name} has no line to name {named} on"
+            file.lines().any(|written| written == line),
+            "{name} has no line of its [model] table to write {line} on"
         );
     }
     std::fs::write(&path, file).unwrap();
@@ -422,18 +429,34 @@ fn the_models_command_with_check_asks_each_model_for_a_selection_and_marks_its_a
         ["* qwen2.5-7b-instruct", "! zephyr-7b", "", LEGEND],
         "{printed}"
     );
-    // The reason, on standard error, in the probe's words.
+    // The reason, on standard error: a line naming the model as the
+    // listing marks it, then the probe's words, a cause per indented line.
     let stderr = String::from_utf8(output.stderr).unwrap();
     let reasons: Vec<&str> = stderr.lines().collect();
-    assert_eq!(reasons.len(), 1, "{stderr}");
-    assert!(reasons[0].starts_with("zephyr-7b"), "{stderr}");
+    assert_eq!(reasons.len(), 3, "{stderr}");
+    assert_eq!(reasons[0], "! zephyr-7b");
+    assert_eq!(reasons[1], "  zephyr-7b did not select when asked");
+    assert_eq!(
+        reasons[2],
+        format!(
+            "  POST {base_url}/chat/completions was answered 400 Bad Request. \
+             The provider said: {}",
+            refusal("zephyr-7b")
+        )
+    );
+}
+
+#[test]
+fn the_models_command_with_check_stops_at_a_model_that_could_not_be_asked() {
+    // A provider that wants a key answers nothing about any model.
+    let base_url = wanting_a_key(&["zephyr-7b", EXAMPLE_MODEL]);
+    let stderr = refused(&["models", &base_url, "--check"]);
     assert!(
-        reasons[0].contains(&format!(
-            "POST {base_url}/chat/completions was answered 400"
-        )),
+        stderr.starts_with("Error: qwen2.5-7b-instruct could not be asked to select"),
         "{stderr}"
     );
-    assert!(reasons[0].ends_with(&refusal("zephyr-7b")), "{stderr}");
+    assert!(stderr.contains("401 Unauthorized"), "{stderr}");
+    assert!(!stderr.contains("zephyr-7b"), "{stderr}");
 }
 
 #[test]
@@ -454,8 +477,14 @@ fn the_models_command_with_ids_to_check_asks_only_those_and_needs_each_to_be_lis
         "{printed}"
     );
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(
+        stderr.starts_with(&format!("! {EXAMPLE_MODEL}\n  ")),
+        "{stderr}"
+    );
     assert!(stderr.contains(&refusal(EXAMPLE_MODEL)), "{stderr}");
+    // The ids end with -- when the base URL follows them.
+    let output = succeeded(&["models", "--check", EXAMPLE_MODEL, "--", &base_url]);
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), printed);
     let stderr = refused(&["models", &base_url, "--check", EXAMPLE_MODEL, "gpt-0"]);
     assert!(stderr.contains("gpt-0"), "{stderr}");
     assert!(stderr.contains(&base_url), "{stderr}");

@@ -8,7 +8,7 @@ use free_agent::{Behavior, Episode, Logger};
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, api_key, check_listed, key_variable, known_providers,
 };
-use social_deduction::werewolf::llm::{self, Config};
+use social_deduction::werewolf::llm::{self, Config, Probed};
 use social_deduction::werewolf::report::Narrator;
 use social_deduction::werewolf::{Entry, PhaseLimits, RoleCounts, Rules, Table, Team};
 use social_deduction::werewolf::{scripted, uniform_random};
@@ -39,8 +39,9 @@ enum CommandLine {
         #[arg(long)]
         api_key_env: Option<String>,
         /// Ask every model listed, or only the IDs given, for a selection
-        /// as a player would, and mark those that select
-        #[arg(long, num_args = 0.., value_name = "ID")]
+        /// as a player would, and mark those that select. End the IDs with
+        /// -- when the base URL follows them
+        #[arg(long, num_args = 0.., value_name = "ID", value_terminator = "--")]
         check: Option<Vec<String>>,
     },
 }
@@ -138,7 +139,9 @@ async fn main() -> anyhow::Result<()> {
             let provider = model.provider()?;
             let prompts = settings.prompts()?;
             provider.check_serves(&model.id).await?;
-            llm::check_selects(&provider, &model.id).await?;
+            if let Probed::DidNotSelect(error) = llm::check_selects(&provider, &model.id).await? {
+                return Err(error);
+            }
             let roles = settings.table.deal();
             let configuration = settings.configuration(&roles, &prompts)?;
             let rules = settings.rules();
@@ -164,16 +167,16 @@ async fn main() -> anyhow::Result<()> {
             let provider = Provider::new(&base_url, api_key, REQUEST_TIMEOUT)?;
             let mut ids = provider.models().await?;
             ids.sort();
-            let listing = match check {
-                None => plain(&ids),
+            let models = match check {
+                None => ids.into_iter().map(|id| (id, None)).collect(),
                 Some(check) => {
                     for id in &check {
                         check_listed(&base_url, &ids, id)?;
                     }
-                    marked(&checked(&provider, ids, &check).await?)
+                    checked(&provider, ids, &check, &mut io::stderr()).await?
                 }
             };
-            print!("{listing}");
+            print!("{}", listing(&models));
             Ok(())
         }
     }
@@ -199,71 +202,83 @@ fn known_providers_help() -> String {
 }
 
 /// How a model is marked in the `models --check` listing: by whether it
-/// selected when asked, or not at all when it was not asked.
+/// selected when asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mark {
     /// Asked for a selection, it selected a candidate.
     Selected,
     /// Asked for a selection, it did not.
     DidNotSelect,
-    /// Not asked.
-    Unchecked,
 }
 
 /// Each of `ids`, in order, with its mark: those in `check`, or every one
 /// of them when `check` is empty, are asked by `model` for a selection one
-/// at a time, since a local server loads each model it is asked for. The
-/// reason a model that did not select failed goes to standard error, one
-/// line per model.
+/// at a time, since a local server loads each model it is asked for, and
+/// the rest are unmarked. Why a model that did not select failed goes to
+/// `reasons`, as [`reason`] writes it. A model that could not be asked
+/// stops the listing with the error, since nothing it would say about
+/// the rest would be true.
 async fn checked(
     model: &dyn Model,
     ids: Vec<String>,
     check: &[String],
-) -> anyhow::Result<Vec<(String, Mark)>> {
+    reasons: &mut impl Write,
+) -> anyhow::Result<Vec<(String, Option<Mark>)>> {
     let mut marked = Vec::new();
     for id in ids {
         let mark = if check.is_empty() || check.contains(&id) {
-            match llm::check_selects(model, &id).await {
-                Ok(()) => Mark::Selected,
-                Err(error) => {
-                    eprintln!("{error:#}");
-                    Mark::DidNotSelect
+            match llm::check_selects(model, &id).await? {
+                Probed::Selected => Some(Mark::Selected),
+                Probed::DidNotSelect(error) => {
+                    reason(reasons, &id, &error)?;
+                    Some(Mark::DidNotSelect)
                 }
             }
         } else {
-            Mark::Unchecked
+            None
         };
         marked.push((id, mark));
     }
     Ok(marked)
 }
 
-/// The listing `models` prints: one id per line, in order.
-fn plain(ids: &[String]) -> String {
-    ids.iter().map(|id| format!("{id}\n")).collect()
+/// Write why the model `id` did not select: a line `! id` naming it as
+/// the listing marks it, then `error`'s causes, each on its own indented
+/// line, so a provider's words may run to several lines and still be read
+/// as one model's.
+fn reason(out: &mut impl Write, id: &str, error: &anyhow::Error) -> io::Result<()> {
+    writeln!(out, "! {id}")?;
+    for cause in error.chain() {
+        for line in cause.to_string().lines() {
+            writeln!(out, "  {line}")?;
+        }
+    }
+    Ok(())
 }
 
-/// The listing `models --check` prints: one id per line, in order, each
-/// after its mark, `* `, `! ` or two spaces, so the ids line up, then, set
-/// off by an empty line, a line saying what the marks mean.
-fn marked(models: &[(String, Mark)]) -> String {
+/// The listing `models` prints: one id per line, in order. When any model
+/// is marked, each id comes after its mark, `* ` or `! `, or two spaces
+/// when it has none, so the ids line up, and the listing ends, set off by
+/// an empty line, with a line saying what the marks mean.
+fn listing(models: &[(String, Option<Mark>)]) -> String {
+    let any_marked = models.iter().any(|(_, mark)| mark.is_some());
     let mut listing = String::new();
     for (id, mark) in models {
         let shown = match mark {
-            Mark::Selected => "* ",
-            Mark::DidNotSelect => "! ",
-            Mark::Unchecked => "  ",
+            Some(Mark::Selected) => "* ",
+            Some(Mark::DidNotSelect) => "! ",
+            None if any_marked => "  ",
+            None => "",
         };
         writeln!(listing, "{shown}{id}").unwrap();
     }
-    if !models.is_empty() {
-        listing.push('\n');
+    if any_marked {
+        writeln!(
+            listing,
+            "\n* marks a model that selected when asked, and ! one that did not."
+        )
+        .unwrap();
     }
-    writeln!(
-        listing,
-        "* marks a model that selected when asked, and ! one that did not."
-    )
-    .unwrap();
     listing
 }
 
@@ -302,7 +317,7 @@ async fn play<A: Behavior<Log = Entry> + 'static>(
 mod tests {
     use super::*;
     use clap::CommandFactory;
-    use social_deduction::model::canned::refusal;
+    use social_deduction::model::canned::{self, refusal};
     use social_deduction::model::fake::{FakeModel, choosing_first};
     use std::collections::HashSet;
 
@@ -537,6 +552,25 @@ mod tests {
             parsed(&["models", "http://localhost:1234/v1", "--check", "a", "b"]),
             models(Some(vec!["a".to_string(), "b".to_string()]))
         );
+        // The ids end with -- when the base URL follows them; without it,
+        // the URL would be read as an id.
+        assert_eq!(
+            parsed(&["models", "--check", "a", "--", "http://localhost:1234/v1"]),
+            models(Some(vec!["a".to_string()]))
+        );
+        assert_eq!(
+            parsed(&["models", "--check", "--", "http://localhost:1234/v1"]),
+            models(Some(vec![]))
+        );
+        assert!(
+            CommandLine::try_parse_from([
+                "social-deduction",
+                "models",
+                "--check",
+                "http://localhost:1234/v1"
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -563,36 +597,32 @@ mod tests {
     }
 
     #[test]
-    fn the_plain_listing_is_one_id_per_line_with_no_legend() {
+    fn the_listing_is_one_id_per_line_and_when_any_is_marked_lines_them_up_and_says_what_the_marks_mean()
+     {
         let ids = ["gpt-0", "qwen2.5-7b-instruct"].map(String::from);
-        assert_eq!(plain(&ids), "gpt-0\nqwen2.5-7b-instruct\n");
-        assert_eq!(plain(&[]), "");
-    }
-
-    /// The legend the marked listing ends with.
-    const LEGEND: &str = "* marks a model that selected when asked, and ! one that did not.\n";
-
-    #[test]
-    fn the_marked_listing_marks_each_id_lines_them_up_and_says_what_the_marks_mean() {
+        let plain: Vec<(String, Option<Mark>)> = ids.iter().map(|id| (id.clone(), None)).collect();
+        assert_eq!(listing(&plain), "gpt-0\nqwen2.5-7b-instruct\n");
+        assert_eq!(listing(&[]), "");
         let models = [
-            ("gpt-0".to_string(), Mark::DidNotSelect),
-            ("llama".to_string(), Mark::Unchecked),
-            ("qwen2.5-7b-instruct".to_string(), Mark::Selected),
+            ("gpt-0".to_string(), Some(Mark::DidNotSelect)),
+            ("llama".to_string(), None),
+            ("qwen2.5-7b-instruct".to_string(), Some(Mark::Selected)),
         ];
         assert_eq!(
-            marked(&models),
-            format!("! gpt-0\n  llama\n* qwen2.5-7b-instruct\n\n{LEGEND}")
+            listing(&models),
+            "! gpt-0\n  llama\n* qwen2.5-7b-instruct\n\n\
+             * marks a model that selected when asked, and ! one that did not.\n"
         );
-        assert_eq!(marked(&[]), LEGEND);
     }
 
-    /// A model that selects as `id` and refuses as anything else.
+    /// A model that selects as `id` and refuses as anything else, over two
+    /// lines.
     fn selecting_only_as(id: &'static str) -> FakeModel {
         FakeModel::answering(move |request| {
             if request.model == id {
                 choosing_first(request)
             } else {
-                Err(anyhow::anyhow!("{}", refusal(&request.model)))
+                Err(anyhow::anyhow!("{}\nin two lines", refusal(&request.model)))
             }
         })
     }
@@ -601,30 +631,65 @@ mod tests {
     async fn every_model_listed_is_checked_unless_ids_are_given_and_then_only_those() {
         let ids = ["gpt-0", "llama", "qwen2.5-7b-instruct"].map(String::from);
         let model = selecting_only_as("qwen2.5-7b-instruct");
-        let marked = checked(&model, ids.to_vec(), &[]).await.unwrap();
+        let mut reasons = Vec::new();
+        let marked = checked(&model, ids.to_vec(), &[], &mut reasons)
+            .await
+            .unwrap();
         assert_eq!(
             marked,
             [
-                ("gpt-0".to_string(), Mark::DidNotSelect),
-                ("llama".to_string(), Mark::DidNotSelect),
-                ("qwen2.5-7b-instruct".to_string(), Mark::Selected),
+                ("gpt-0".to_string(), Some(Mark::DidNotSelect)),
+                ("llama".to_string(), Some(Mark::DidNotSelect)),
+                ("qwen2.5-7b-instruct".to_string(), Some(Mark::Selected)),
             ]
         );
         let asked: Vec<String> = model.requests().into_iter().map(|r| r.model).collect();
         assert_eq!(asked, ids);
+        // Each reason under a line naming its model as the listing marks
+        // it, the error's causes one per indented line, a cause of several
+        // lines indented on each.
+        assert_eq!(
+            String::from_utf8(reasons).unwrap(),
+            "! gpt-0\n  gpt-0 did not select when asked\n  gpt-0 does not support tools\n  in two lines\n\
+             ! llama\n  llama did not select when asked\n  llama does not support tools\n  in two lines\n"
+        );
         // Only the ids given, in the listing's order.
         let model = selecting_only_as("qwen2.5-7b-instruct");
         let check = ["qwen2.5-7b-instruct", "gpt-0"].map(String::from);
-        let marked = checked(&model, ids.to_vec(), &check).await.unwrap();
+        let mut reasons = Vec::new();
+        let marked = checked(&model, ids.to_vec(), &check, &mut reasons)
+            .await
+            .unwrap();
         assert_eq!(
             marked,
             [
-                ("gpt-0".to_string(), Mark::DidNotSelect),
-                ("llama".to_string(), Mark::Unchecked),
-                ("qwen2.5-7b-instruct".to_string(), Mark::Selected),
+                ("gpt-0".to_string(), Some(Mark::DidNotSelect)),
+                ("llama".to_string(), None),
+                ("qwen2.5-7b-instruct".to_string(), Some(Mark::Selected)),
             ]
         );
         let asked: Vec<String> = model.requests().into_iter().map(|r| r.model).collect();
         assert_eq!(asked, ["gpt-0", "qwen2.5-7b-instruct"]);
+        assert!(String::from_utf8(reasons).unwrap().starts_with("! gpt-0\n"));
+    }
+
+    #[tokio::test]
+    async fn a_model_that_could_not_be_asked_stops_the_listing_with_the_error() {
+        // A provider answering anything but the model's answer says nothing
+        // about this model or the rest.
+        let (base_url, _served) = canned::answering("429 Too Many Requests", "{}");
+        let provider = Provider::new(base_url.clone(), None, REQUEST_TIMEOUT).unwrap();
+        let ids = ["gpt-0", "llama"].map(String::from);
+        let mut reasons = Vec::new();
+        let error = checked(&provider, ids.to_vec(), &[], &mut reasons)
+            .await
+            .unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(
+            shown.starts_with("gpt-0 could not be asked to select"),
+            "{shown}"
+        );
+        assert!(shown.contains("429 Too Many Requests"), "{shown}");
+        assert!(reasons.is_empty());
     }
 }
