@@ -6,7 +6,7 @@ use social_deduction::model::canned::{
     playing, playing_only, refusal, refusing, serving, unreachable, wanting_a_key,
 };
 use social_deduction::werewolf::llm::Configuration;
-use social_deduction::werewolf::{Entry, PlayerId, Role};
+use social_deduction::werewolf::{Ending, Entry, PlayerId, Role};
 use std::collections::HashMap;
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -188,6 +188,7 @@ fn the_uniform_random_variant_takes_the_limits_and_needs_no_configuration_file()
     let Some(Entry::Start {
         night_limit,
         day_limit,
+        ratify_limit,
         ..
     }) = events.first().map(|event| &event.payload)
     else {
@@ -195,8 +196,25 @@ fn the_uniform_random_variant_takes_the_limits_and_needs_no_configuration_file()
     };
     assert_eq!(*night_limit, Duration::from_secs(5));
     assert_eq!(*day_limit, Duration::from_secs(60));
+    // The uniform-random variant has no ratify limit, and takes none.
+    assert_eq!(*ratify_limit, None);
     assert_usage_error(&["werewolf", "uniform-random", "--night-limit", "soon"]);
+    assert_usage_error(&["werewolf", "uniform-random", "--ratify-limit", "5s"]);
     assert_usage_error(&["werewolf", "uniform-random", "game.toml"]);
+}
+
+#[test]
+fn a_uniform_random_day_ends_once_everyone_has_voted_and_is_logged_as_such() {
+    let (events, printed) = played("uniform-random", &[]);
+    let endings = endings(&events);
+    assert!(
+        endings.iter().all(|by| *by == Ending::AllSelected),
+        "{endings:?}"
+    );
+    // Which the narration says nothing of.
+    assert!(!printed.contains("The votes stand."), "{printed}");
+    assert!(!printed.contains("The day runs out."), "{printed}");
+    assert!(!printed.contains("a vote stands after"), "{printed}");
 }
 
 #[test]
@@ -238,6 +256,7 @@ fn help_lists_the_games_the_variants_and_the_role_counts() {
         for option in options {
             assert!(help.contains(option), "{help}");
         }
+        assert_eq!(help.contains("--ratify-limit"), variant == "llm", "{help}");
     }
 }
 
@@ -286,6 +305,19 @@ fn configured(test: &str, name: &str, base_url: &str, id: &str) -> String {
     path
 }
 
+/// How each day in `events` ended, in order.
+fn endings(events: &[Event<Entry>]) -> Vec<Ending> {
+    let endings: Vec<Ending> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            Entry::Voted { by, .. } => Some(*by),
+            _ => None,
+        })
+        .collect();
+    assert!(!endings.is_empty(), "{events:?}");
+    endings
+}
+
 /// The configuration the log of `events` has right after the deal.
 fn configuration(events: &[Event<Entry>]) -> &Configuration {
     let Some(Entry::Configuration(configuration)) = events.get(1).map(|event| &event.payload)
@@ -299,14 +331,35 @@ fn configuration(events: &[Event<Entry>]) -> &Configuration {
 fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_to_the_result() {
     let base_url = playing(&[EXAMPLE_MODEL]);
     let config = configured("plays", "personas.toml", &base_url, EXAMPLE_MODEL);
-    // Short limits, so that a phase nobody selects in ends soon.
-    let args = [&config, "--night-limit", "1s", "--day-limit", "1s"];
+    // Short limits, so that a phase nobody selects in ends soon, and a
+    // day's votes stand sooner than the day runs out.
+    let args = [
+        &config,
+        "--night-limit",
+        "1s",
+        "--day-limit",
+        "2s",
+        "--ratify-limit",
+        "1s",
+    ];
     let events = assert_plays_the_default_table("llm", "LLM", &args);
     let (_, roles) = start(&events);
+    let Entry::Start { ratify_limit, .. } = &events[0].payload else {
+        panic!("{events:?}");
+    };
+    assert_eq!(*ratify_limit, Some(Duration::from_secs(1)));
     let configuration = configuration(&events);
     assert_eq!(configuration.base_url, base_url);
     assert_eq!(configuration.model, EXAMPLE_MODEL);
     assert_eq!(configuration.night_limit, Duration::from_secs(1));
+    assert_eq!(configuration.ratify_limit, Duration::from_secs(1));
+    // Everyone votes at once, so each day's votes stand after the ratify
+    // limit and the selected player is voted out.
+    let endings = endings(&events);
+    assert!(
+        endings.iter().all(|by| *by == Ending::Ratified),
+        "{endings:?}"
+    );
     // Each player was told the prompt for the role it was dealt.
     assert_eq!(configuration.prompts.len(), 7);
     for (player, role) in roles {
@@ -357,6 +410,8 @@ fn the_llm_variant_hears_the_command_line_over_the_file() {
             "1s",
             "--day-limit",
             "2s",
+            "--ratify-limit",
+            "1s",
             "--model-id",
             "gpt-5.5",
         ],
@@ -367,8 +422,20 @@ fn the_llm_variant_hears_the_command_line_over_the_file() {
     assert_eq!(configuration.role_counts[&Role::Werewolf], 1);
     assert_eq!(configuration.role_counts[&Role::Villager], 3);
     assert_eq!(configuration.day_limit, Duration::from_secs(2));
+    assert_eq!(configuration.ratify_limit, Duration::from_secs(1));
     assert_eq!(configuration.model, "gpt-5.5");
     assert_eq!(configuration.base_url, base_url);
+}
+
+#[test]
+fn a_ratify_limit_longer_than_the_day_limit_is_refused_before_anything_is_printed() {
+    let base_url = playing(&[EXAMPLE_MODEL]);
+    let config = configured("ratify", "minimal.toml", &base_url, EXAMPLE_MODEL);
+    let stderr = refused(&["werewolf", "llm", &config, "--day-limit", "10s"]);
+    assert!(
+        stderr.contains("the ratify limit (20s) is longer than the day limit (10s)"),
+        "{stderr}"
+    );
 }
 
 #[test]

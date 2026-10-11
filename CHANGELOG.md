@@ -45,6 +45,18 @@ workflow takes a version's notes from here.
   or answered with something that is not a selection, is logged as
   `Failed` with the phase and the error, and narrated as it happens. The
   player has not selected, and the game goes on.
+- In `social-deduction werewolf llm` the day's vote is ratified: a player
+  may change its vote while the day is open and its latest vote counts,
+  every vote goes to every other living player as well as to the
+  environment, and the environment sends every living player a
+  `Tentative` whenever the votes change whom they select. A day ends once
+  the votes have stood for the ratify limit, voting out the selected
+  player, or at the day limit with nobody voted out. The ratify limit is
+  `ratify_limit` under `[phases]` or `--ratify-limit`, twenty seconds by
+  default, and may not be longer than the day limit. The log records how
+  every day ended as `Voted`, the start entry and the configuration carry
+  the ratify limit, and the narration tells the votes as they come, each
+  tentative decision, and whether the votes stood or the day ran out.
 
 ### Changed
 

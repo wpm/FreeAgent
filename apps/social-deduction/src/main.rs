@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
             overrides,
             logging,
         }) => {
-            let settings = Config::load(&config)?.settle(overrides);
+            let settings = Config::load(&config)?.settle(overrides)?;
             // The key is read, every prompt rendered, and the model asked
             // for a selection before any actor is built, so that a
             // variable that is not set, a template that is broken, or a
@@ -405,6 +405,7 @@ mod tests {
                         night_limit: Some(Duration::from_secs(30)),
                         day_limit: None,
                     },
+                    ratify_limit: None,
                     model: llm::ModelOverrides {
                         base_url: None,
                         id: Some("gpt-5.5".to_string()),
@@ -463,19 +464,25 @@ mod tests {
     #[test]
     fn the_help_names_the_defaults_the_code_fills_in() {
         let table = Table::default();
-        let counts = vec![
+        let counts = [
             ("--werewolves", table.werewolves.to_string()),
             ("--villagers", table.villagers.to_string()),
             ("--doctors", table.doctors.to_string()),
             ("--seers", table.seers.to_string()),
         ];
         let rules = Rules::default();
-        let limits = [
-            ("--night-limit", rules.night_limit),
-            ("--day-limit", rules.day_limit),
-        ]
-        .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()));
-        let defaults = [counts, limits.to_vec()].concat();
+        let limits = |variant| {
+            let mut limits = vec![
+                ("--night-limit", rules.night_limit),
+                ("--day-limit", rules.day_limit),
+            ];
+            if variant == "llm" {
+                limits.push(("--ratify-limit", llm::RATIFY_LIMIT));
+            }
+            limits
+                .into_iter()
+                .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()))
+        };
         for variant in ["uniform-random", "llm"] {
             let help = CommandLine::command()
                 .find_subcommand_mut("werewolf")
@@ -484,7 +491,7 @@ mod tests {
                 .unwrap()
                 .render_help()
                 .to_string();
-            for (option, default) in &defaults {
+            for (option, default) in counts.iter().cloned().chain(limits(variant)) {
                 let line = help.lines().find(|line| line.contains(option)).unwrap();
                 assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
             }
