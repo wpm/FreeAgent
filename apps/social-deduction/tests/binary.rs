@@ -91,8 +91,8 @@ fn assert_plays_the_default_table(
     };
     // The account opens with the table, a player to a line, then the
     // limits, goes through the first night, set off by a blank line, tells
-    // how long the last phase took, and closes with the winner and the
-    // survivors, a player to a line.
+    // how long the last phase took, and closes with the winner, how long
+    // the game took, and the survivors, a player to a line.
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
         lines[0],
@@ -121,9 +121,10 @@ fn assert_plays_the_default_table(
         "{printed}"
     );
     assert_eq!(lines[won - 1], "", "{printed}");
-    assert_eq!(lines[won + 1], "Survivors:", "{printed}");
-    assert!(!lines[won + 2..].is_empty(), "{printed}");
-    for seat in &lines[won + 2..] {
+    assert!(lines[won + 1].starts_with("The game took "), "{printed}");
+    assert_eq!(lines[won + 2], "Survivors:", "{printed}");
+    assert!(!lines[won + 3..].is_empty(), "{printed}");
+    for seat in &lines[won + 3..] {
         assert!(
             seat.starts_with("player") && seat.ends_with(')'),
             "{printed}"

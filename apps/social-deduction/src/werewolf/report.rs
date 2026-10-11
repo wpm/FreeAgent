@@ -23,13 +23,14 @@ enum Voice {
 /// Turns the log's events, one at a time, into lines of prose. The
 /// omniscient narrator tells the table, a player to a line, and how long
 /// a night and a day wait, then each night and day with what every player
-/// did, how it ended, and how long it took, then who won and the
-/// survivors, a player to a line. A player's narrator tells the same
-/// nights and days from what that player was shown, in the second person,
-/// with no table, no limits, and no times. Each names a player with its
-/// role in parentheses whenever it knows the role, except in reporting its
-/// death, and lists players in seat order. A blank line sets each phase
-/// off from what came before it, and another the winner from the last.
+/// did, how it ended, and how long it took, then who won, how long the
+/// whole game took, and the survivors, a player to a line. A player's
+/// narrator tells the same nights and days from what that player was
+/// shown, in the second person, with no table, no limits, and no times.
+/// Each names a player with its role in parentheses whenever it knows the
+/// role, except in reporting its death, and lists players in seat order.
+/// A blank line sets each phase off from what came before it, and another
+/// the winner from the last.
 /// Both learn who died from who is shown as alive next, so a phase's
 /// result is told as the next one begins, and the omniscient narrator
 /// holds the phase's deeds until then too, to tell them in seat order,
@@ -140,6 +141,7 @@ impl Narrator {
                 winner,
                 days,
                 survivors,
+                took,
             } => {
                 let mut lines = self.outcome(survivors, false, time);
                 lines.push(String::new());
@@ -147,6 +149,7 @@ impl Narrator {
                     "The {winner} win after {days} {}.",
                     if *days == 1 { "day" } else { "days" }
                 ));
+                lines.push(format!("The game took {}.", whole_seconds(*took)));
                 lines.push("Survivors:".to_string());
                 lines.extend(
                     in_order(survivors)
@@ -584,11 +587,18 @@ mod tests {
         }))
     }
 
+    /// The game ended at once, so far as its log says.
     fn ended(winner: Team, days: u8, survivors: &[&str]) -> Event<Entry> {
+        ended_after(winner, days, survivors, Duration::ZERO)
+    }
+
+    /// The game ended, having `took` as long as it did.
+    fn ended_after(winner: Team, days: u8, survivors: &[&str], took: Duration) -> Event<Entry> {
         logged(Entry::End {
             winner,
             days,
             survivors: survivors.iter().map(|name| id(name)).collect(),
+            took,
         })
     }
 
@@ -789,8 +799,37 @@ mod tests {
                 "Day 1 took 0s.",
                 "",
                 "The werewolves win after 1 day.",
+                "The game took 0s.",
                 "Survivors:",
                 "player2 (werewolf)"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_end_tells_how_long_the_whole_game_took_to_the_nearest_second() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        narrator.narrate(&shown(
+            "wolf",
+            1,
+            Phase::Night,
+            &["wolf", "ann", "seer", "doctor"],
+        ));
+        let told = narrator.narrate(&ended_after(
+            Team::Werewolves,
+            0,
+            &["wolf", "ann"],
+            Duration::from_millis(95_400),
+        ));
+        assert_eq!(
+            told[told.len() - 5..],
+            [
+                "The werewolves win after 0 days.",
+                "The game took 1m 35s.",
+                "Survivors:",
+                "ann (villager)",
+                "wolf (werewolf)",
             ]
         );
     }
@@ -871,6 +910,7 @@ mod tests {
                 "Day 1 took 0s.",
                 "",
                 "The villagers win after 1 day.",
+                "The game took 0s.",
                 "Survivors:",
                 "doctor (doctor)",
                 "seer (seer)"
@@ -1022,6 +1062,7 @@ mod tests {
             [
                 "",
                 "The villagers win after 1 day.",
+                "The game took 0s.",
                 "Survivors:",
                 "stranger"
             ]
@@ -1045,6 +1086,7 @@ mod tests {
                 "Night 1 took 0s.",
                 "",
                 "The werewolves win after 0 days.",
+                "The game took 0s.",
                 "Survivors:",
                 "ann (villager)",
                 "wolf (werewolf)"
@@ -1069,6 +1111,7 @@ mod tests {
                 "Day 1 took 0s.",
                 "",
                 "The werewolves win after 1 day.",
+                "The game took 0s.",
                 "Survivors:",
                 "ann (villager)",
                 "wolf (werewolf)"
@@ -1280,6 +1323,7 @@ mod tests {
                 "ann dies.",
                 "",
                 "The werewolves win after 0 days.",
+                "The game took 0s.",
                 "Survivors:",
                 "doctor",
                 "seer (seer)",
@@ -1310,6 +1354,7 @@ mod tests {
                 "Day 1 took 1m 16s.",
                 "",
                 "The villagers win after 1 day.",
+                "The game took 0s.",
                 "Survivors:",
                 "ann (villager)",
                 "doctor (doctor)",
@@ -1366,6 +1411,7 @@ mod tests {
                 "doctor and seer die.",
                 "",
                 "The werewolves win after 1 day.",
+                "The game took 0s.",
                 "Survivors:",
                 "ann",
                 "wolf (werewolf)"

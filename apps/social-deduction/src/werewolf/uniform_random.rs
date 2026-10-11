@@ -210,6 +210,17 @@ mod tests {
         }
     }
 
+    /// How long the log says the game took.
+    fn game_took(logged: &[Entry]) -> Duration {
+        logged
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::End { took, .. } => Some(*took),
+                _ => None,
+            })
+            .unwrap()
+    }
+
     /// Who the log says survived.
     fn survivors(logged: &[Entry]) -> HashSet<PlayerId> {
         logged
@@ -311,6 +322,8 @@ mod tests {
         assert_eq!(winner, Team::Werewolves);
         assert!(received(&logged).is_empty());
         assert_eq!(took, quick().night_limit);
+        // The log says so too.
+        assert_eq!(game_took(&logged), quick().night_limit);
     }
 
     #[tokio::test(start_paused = true)]

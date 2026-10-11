@@ -1843,7 +1843,8 @@ player2 = \"Cautious.\"
             .flat_map(|entry| narrator.narrate(&logged(entry)))
             .collect();
         // The werewolves fail side by side, in no particular order. The
-        // night takes no time because every event is stamped at the epoch.
+        // night takes no time because every event is stamped at the epoch,
+        // while the game took its night limit by the environment's clock.
         told[8..10].sort();
         assert_eq!(
             told.join("\n"),
@@ -1861,6 +1862,7 @@ player2 = \"Cautious.\"
              Night 1 took 0s.\n\
              \n\
              The werewolves win after 0 days.\n\
+             The game took 10s.\n\
              Survivors:\n\
              ann (villager)\n\
              bob (villager)\n\
