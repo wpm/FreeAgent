@@ -18,7 +18,8 @@ enum Voice {
 }
 
 /// Turns the log's entries, one at a time, into lines of prose. The
-/// omniscient narrator tells the table, then each night and day with what
+/// omniscient narrator tells the table, a player to a line, then each
+/// night and day with what
 /// every player did and how it ended, then who won. A player's narrator
 /// tells the same nights and days from what that player was shown, in the
 /// second person, with no table. Each names a player with its role in
@@ -69,7 +70,7 @@ impl Narrator {
             Entry::Start { variation, roles } if matches!(self.voice, Voice::Omniscient) => {
                 self.roles = roles.clone();
                 self.alive = roles.keys().cloned().collect();
-                vec![self.table(variation)]
+                self.table(variation)
             }
             Entry::Sent {
                 to,
@@ -130,17 +131,14 @@ impl Narrator {
         }
     }
 
-    /// The deal, with every player's role.
-    fn table(&self, variation: &str) -> String {
-        let seats: Vec<String> = in_order(self.roles.keys())
+    /// The deal: how many players, then each with its role on a line of
+    /// its own.
+    fn table(&self, variation: &str) -> Vec<String> {
+        let heading = format!("{variation} with {} players:", self.roles.len());
+        let seats = in_order(self.roles.keys())
             .into_iter()
-            .map(|player| self.seat(player).to_string())
-            .collect();
-        format!(
-            "{variation} with {} players: {}.",
-            self.roles.len(),
-            seats.join(", ")
-        )
+            .map(|player| self.seat(player).to_string());
+        std::iter::once(heading).chain(seats).collect()
     }
 
     /// `player` as this account names it: with its role when known.
@@ -502,7 +500,11 @@ mod tests {
         assert_eq!(
             narrator.narrate(&start()),
             [
-                "Uniform Random with 4 players: ann (villager), doctor (doctor), seer (seer), wolf (werewolf)."
+                "Uniform Random with 4 players:",
+                "ann (villager)",
+                "doctor (doctor)",
+                "seer (seer)",
+                "wolf (werewolf)"
             ]
         );
     }
@@ -564,7 +566,10 @@ mod tests {
         assert_eq!(
             narrator.narrate(&start),
             [
-                "Uniform Random with 3 players: player1 (seer), player2 (werewolf), player10 (villager)."
+                "Uniform Random with 3 players:",
+                "player1 (seer)",
+                "player2 (werewolf)",
+                "player10 (villager)"
             ]
         );
         let everyone = ["player1", "player2", "player10"];
