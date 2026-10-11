@@ -23,13 +23,14 @@ enum Voice {
 /// tells the same nights and days from what that player was shown, in the
 /// second person, with no table. Each names a player with its role in
 /// parentheses whenever it knows the role, except in reporting its death,
-/// and lists players in seat order. Both learn who died from who is shown as alive next, so a
-/// phase's result is told as the next one begins, and the omniscient
-/// narrator holds the phase's deeds until then too, to tell them in seat
-/// order; a player's narrator tells the player's own deed as it is done. A
-/// phase announced is told as one requested, and a selection as a reply,
-/// unless a later phase has been announced since: then it is told as too
-/// late to count, for the phase it was for.
+/// and lists players in seat order. A blank line sets each phase off from
+/// what came before it. Both learn who died from who is shown as alive
+/// next, so a phase's result is told as the next one begins, and the
+/// omniscient narrator holds the phase's deeds until then too, to tell them
+/// in seat order; a player's narrator tells the player's own deed as it is
+/// done. A phase announced is told as one requested, and a selection as a
+/// reply, unless a later phase has been announced since: then it is told
+/// as too late to count, for the phase it was for.
 #[derive(Debug, Default)]
 pub struct Narrator {
     /// Whose account this is.
@@ -180,7 +181,8 @@ impl Narrator {
     }
 
     /// A phase begins when a player is first shown it. The phase before
-    /// it ends then, with whoever is no longer alive.
+    /// it ends then, with whoever is no longer alive, and a blank line sets
+    /// the new phase off from what came before it.
     fn begin(&mut self, observation: &Observation) -> Vec<String> {
         let phase = (observation.round, observation.phase.clone());
         if self.phase.as_ref() == Some(&phase) {
@@ -193,6 +195,7 @@ impl Narrator {
         let mut lines = self.outcome(&observation.alive, slept);
         self.alive = observation.alive.clone();
         self.phase = Some(phase);
+        lines.push(String::new());
         lines.push(match observation.phase {
             Phase::Night => format!("Night {}.", observation.round),
             Phase::Day => format!("Day {}.", observation.round),
@@ -510,7 +513,7 @@ mod tests {
         let everyone = ["wolf", "seer", "doctor", "ann"];
         assert_eq!(
             narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone)),
-            ["Night 1."]
+            ["", "Night 1."]
         );
         assert!(
             narrator
@@ -539,6 +542,7 @@ mod tests {
                 "seer (seer) learns wolf is a werewolf.",
                 "wolf (werewolf) votes to kill ann (villager).",
                 "ann dies.",
+                "",
                 "Day 1."
             ]
         );
@@ -591,7 +595,7 @@ mod tests {
         ));
         assert_eq!(
             narrator.narrate(&shown("wolf", 1, Phase::Day, &["wolf", "seer", "doctor"])),
-            ["ann dies.", "Day 1."]
+            ["ann dies.", "", "Day 1."]
         );
     }
 
@@ -603,7 +607,7 @@ mod tests {
         narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone));
         assert_eq!(
             narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone)),
-            ["Nobody dies.", "Day 1."]
+            ["Nobody dies.", "", "Day 1."]
         );
     }
 
@@ -620,6 +624,7 @@ mod tests {
                 "seer (seer) votes against wolf (werewolf).",
                 "wolf (werewolf) votes against seer (seer).",
                 "Nobody is voted out.",
+                "",
                 "Night 2."
             ]
         );
@@ -632,12 +637,12 @@ mod tests {
         narrator.narrate(&shown("wolf", 1, Phase::Day, &["wolf", "seer", "doctor"]));
         assert_eq!(
             narrator.narrate(&shown("wolf", 2, Phase::Night, &["wolf", "seer", "doctor"])),
-            ["Nobody is voted out.", "Night 2."]
+            ["Nobody is voted out.", "", "Night 2."]
         );
         narrator.narrate(&shown("wolf", 2, Phase::Day, &["wolf", "seer", "doctor"]));
         assert_eq!(
             narrator.narrate(&shown("wolf", 3, Phase::Night, &["seer", "doctor"])),
-            ["wolf is voted out.", "Night 3."]
+            ["wolf is voted out.", "", "Night 3."]
         );
     }
 
@@ -662,7 +667,7 @@ mod tests {
         let everyone = ["wolf", "seer", "doctor", "ann"];
         assert_eq!(
             narrator.narrate(&announced("wolf", 1, 1, Phase::Night, &everyone)),
-            ["Night 1."]
+            ["", "Night 1."]
         );
         assert!(
             narrator
@@ -681,6 +686,7 @@ mod tests {
             [
                 "wolf (werewolf) votes to kill ann (villager).",
                 "ann dies.",
+                "",
                 "Day 1."
             ]
         );
@@ -776,7 +782,12 @@ mod tests {
                 Phase::Day,
                 &["wolf", "seer", "doctor", "ann"]
             )),
-            ["seer (seer) asks about stranger.", "Nobody dies.", "Day 1."]
+            [
+                "seer (seer) asks about stranger.",
+                "Nobody dies.",
+                "",
+                "Day 1."
+            ]
         );
     }
 
@@ -843,6 +854,7 @@ mod tests {
             narrator.narrate(&told("wolf", 1, Phase::Night, &everyone, &pack)),
             [
                 "You are wolf, a werewolf. The werewolves are bob and wolf.",
+                "",
                 "Night 1."
             ]
         );
@@ -858,7 +870,7 @@ mod tests {
                 &["wolf", "bob", "seer", "doctor"],
                 &pack
             )),
-            ["ann dies.", "Day 1."]
+            ["ann dies.", "", "Day 1."]
         );
         assert_eq!(
             narrator.narrate(&chose("wolf", "seer")),
@@ -877,7 +889,7 @@ mod tests {
                 &["wolf", "ann"],
                 &[("wolf", Role::Werewolf)]
             )),
-            ["You are wolf, the only werewolf.", "Night 1."]
+            ["You are wolf, the only werewolf.", "", "Night 1."]
         );
     }
 
@@ -886,7 +898,7 @@ mod tests {
         let mut narrator = Narrator::for_player(id("ann"));
         assert_eq!(
             narrator.narrate(&shown("ann", 1, Phase::Day, &["wolf", "ann"])),
-            ["You are ann.", "Day 1."]
+            ["You are ann.", "", "Day 1."]
         );
     }
 
@@ -902,7 +914,7 @@ mod tests {
                 &everyone,
                 &[("seer", Role::Seer)]
             )),
-            ["You are seer, the seer.", "Night 1."]
+            ["You are seer, the seer.", "", "Night 1."]
         );
         assert_eq!(
             narrator.narrate(&chose("seer", "wolf")),
@@ -916,7 +928,7 @@ mod tests {
                 &["wolf", "seer", "doctor"],
                 &[("seer", Role::Seer), ("wolf", Role::Werewolf)]
             )),
-            ["You learn wolf is a werewolf.", "ann dies.", "Day 1."]
+            ["You learn wolf is a werewolf.", "ann dies.", "", "Day 1."]
         );
         assert_eq!(
             narrator.narrate(&chose("seer", "wolf")),
@@ -930,7 +942,7 @@ mod tests {
                 &["wolf", "seer", "doctor"],
                 &[("seer", Role::Seer), ("wolf", Role::Werewolf)]
             )),
-            ["Nobody is voted out.", "Night 2."]
+            ["Nobody is voted out.", "", "Night 2."]
         );
     }
 
@@ -941,7 +953,7 @@ mod tests {
         let known = [("doctor", Role::Doctor)];
         assert_eq!(
             narrator.narrate(&told("doctor", 1, Phase::Night, &everyone, &known)),
-            ["You are doctor, the doctor.", "Night 1."]
+            ["You are doctor, the doctor.", "", "Night 1."]
         );
         assert_eq!(
             narrator.narrate(&chose("doctor", "seer")),
@@ -949,7 +961,7 @@ mod tests {
         );
         assert_eq!(
             narrator.narrate(&told("doctor", 1, Phase::Day, &everyone, &known)),
-            ["Nobody dies.", "Day 1."]
+            ["Nobody dies.", "", "Day 1."]
         );
         assert_eq!(
             narrator.narrate(&chose("doctor", "wolf")),
@@ -969,7 +981,7 @@ mod tests {
                 &everyone,
                 &[("ann", Role::Villager)]
             )),
-            ["You are ann, a villager.", "Day 1."]
+            ["You are ann, a villager.", "", "Day 1."]
         );
         assert_eq!(
             narrator.narrate(&chose("ann", "wolf")),
@@ -983,7 +995,7 @@ mod tests {
                 &["seer", "doctor", "ann"],
                 &[("ann", Role::Villager)]
             )),
-            ["wolf died.", "Day 2."]
+            ["wolf died.", "", "Day 2."]
         );
         assert_eq!(
             narrator.narrate(&told(
@@ -993,7 +1005,7 @@ mod tests {
                 &["seer", "doctor", "ann"],
                 &[("ann", Role::Villager)]
             )),
-            ["Nobody died.", "Day 3."]
+            ["Nobody died.", "", "Day 3."]
         );
     }
 
@@ -1034,7 +1046,7 @@ mod tests {
         };
         assert_eq!(
             narrator.narrate(&announcement),
-            ["You are wolf, the only werewolf.", "Night 1."]
+            ["You are wolf, the only werewolf.", "", "Night 1."]
         );
         assert_eq!(
             narrator.narrate(&selected("wolf", 1, "ann")),

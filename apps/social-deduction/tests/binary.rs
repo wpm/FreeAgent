@@ -84,14 +84,15 @@ fn assert_plays_the_default_table(
     let Some(Entry::End { winner, .. }) = events.last().map(|event| &event.payload) else {
         panic!("{events:?}");
     };
-    // The account opens with the table, goes through the first night, and
-    // closes with the winner.
+    // The account opens with the table, goes through the first night, set
+    // off by a blank line, and closes with the winner.
     let lines: Vec<&str> = printed.lines().collect();
     assert!(
         lines[0].starts_with(&format!("{variation} with 7 players: ")),
         "{printed}"
     );
-    assert_eq!(lines[1], "Night 1.", "{printed}");
+    assert_eq!(lines[1], "", "{printed}");
+    assert_eq!(lines[2], "Night 1.", "{printed}");
     assert!(
         lines
             .last()

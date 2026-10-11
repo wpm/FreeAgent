@@ -1546,7 +1546,7 @@ player2 = \"Cautious.\"
                 vec![
                     model::Message::system("You are wolf."),
                     model::Message::user(
-                        "You are wolf, the only werewolf.\nNight 1.\n\n\
+                        "You are wolf, the only werewolf.\n\nNight 1.\n\n\
                          It is night 1. Choose whom the werewolves should kill."
                     ),
                 ],
@@ -1587,15 +1587,19 @@ player2 = \"Cautious.\"
         assert_eq!(
             asked.last().unwrap(),
             "You are doc, the doctor.\n\
+             \n\
              Night 1.\n\
              You protect ann.\n\
              Nobody dies.\n\
+             \n\
              Day 1.\n\
              You vote against ann.\n\
              ann is voted out.\n\
+             \n\
              Night 2.\n\
              You protect bob.\n\
              Nobody dies.\n\
+             \n\
              Day 2.\n\
              \n\
              It is day 2. Choose whom to vote out."
@@ -1646,9 +1650,11 @@ player2 = \"Cautious.\"
             story,
             [
                 "You are wolf, the only werewolf.",
+                "",
                 "Night 1.",
                 "You vote to kill ann.",
                 "Nobody dies.",
+                "",
                 "Day 1.",
                 "You vote against ann."
             ]
