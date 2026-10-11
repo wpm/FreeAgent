@@ -78,8 +78,10 @@ The API key is never logged.
 
 Each phase, a player is told its prompt and the story of the game so far
 from its own point of view, and selects one of the living with a tool call.
-A player whose model fails to select has not selected, and its phase ends at
-its limit.
+A player whose model fails to select, because the model was not reached or
+answered with something that is not a selection, has not selected, and its
+phase ends at its limit. The failure is logged with the phase and the error
+and told as it happens, and the game goes on; the player is not told of it.
 
 ### The configuration file
 
