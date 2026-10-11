@@ -3,19 +3,19 @@
 //! only by sending them messages.
 //!
 //! An actor perceives, thinks, and acts. It perceives in its message loop:
-//! a [`Behavior`] driven by a mailbox handles each statement and request as
-//! it comes. It thinks in an optional second loop, a [`Think`] in a task of
-//! its own, which takes the messages handed to it by [`Context::think`] and
-//! the timers set by [`Context::think_after`] one at a time, so that slow
-//! work such as a model call never holds up perceiving. It acts through
-//! every message either loop sends. Each loop reaches the rest of the
-//! episode through a [`Context`] of its own, which an
-//! [`Episode`](crate::Episode) builds from the actor's [`ActorInit`].
+//! a [`Behavior`] driven by a mailbox handles each message as it comes. It
+//! thinks in an optional second loop, a [`Think`] in a task of its own,
+//! which takes the messages handed to it by [`Context::think`] and the
+//! timers set by [`Context::think_after`] one at a time, so that slow work
+//! such as a model call never holds up perceiving. It acts through every
+//! message either loop sends. Each loop reaches the rest of the episode
+//! through a [`Context`] of its own, which an [`Episode`](crate::Episode)
+//! builds from the actor's [`ActorInit`].
 //!
 //! [actor model]: https://en.wikipedia.org/wiki/Actor_model
 
 use crate::log::{Event, Logger};
-use crate::message::{Message, Request};
+use crate::message::Message;
 use anyhow::{Context as _, bail};
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
@@ -49,7 +49,7 @@ pub struct ActorInit<B: Behavior> {
     /// Builds the actor's think loop, if it has one, from a [`Context`] of
     /// its own.
     pub think: Option<ThinkBuilder<B::Message, B::Log>>,
-    /// The actors this one may send to and request from.
+    /// The actors this one may send to.
     pub can_send_to: HashSet<ActorId>,
     /// The actors this one may stop.
     pub can_shut_down: HashSet<ActorId>,
@@ -73,7 +73,7 @@ pub(crate) struct Actor<B: Behavior> {
     /// The episode's one-time signal that every actor is running.
     pub(crate) start: oneshot::Receiver<()>,
     /// The channel on which this Actor receives incoming Messages.
-    pub(crate) mailbox: UnboundedReceiver<Envelope<B::Message>>,
+    pub(crate) mailbox: UnboundedReceiver<B::Message>,
 }
 
 impl<B: Behavior> Actor<B> {
@@ -83,7 +83,7 @@ impl<B: Behavior> Actor<B> {
     /// 2. Spawn the think loop, if there is one, in a task of its own.
     /// 3. Wait for the episode's start signal, which comes once every actor
     ///    is ready, and make the opening move.
-    /// 4. Deliver each envelope in the mailbox to the behavior, one at a
+    /// 4. Deliver each message in the mailbox to the behavior, one at a
     ///    time, until shut down.
     /// 5. Wait for the think loop to end, then clean up.
     ///
@@ -130,7 +130,7 @@ impl<B: Behavior> Actor<B> {
         let mut start_consumed = false;
         loop {
             // Wait for whichever happens first: shutdown, the start signal,
-            // or the next envelope. Each arm is `pattern = future => body`;
+            // or the next message. Each arm is `pattern = future => body`;
             // the body runs with the future's output bound to the pattern.
             // `biased` tries the arms in order, so shutdown wins a tie. The
             // start arm drops out once it has fired, because a oneshot
@@ -145,7 +145,7 @@ impl<B: Behavior> Actor<B> {
                     start_consumed = true;
                     self.open(signal).await?
                 }
-                Some(envelope) = self.mailbox.recv() => self.deliver(envelope).await?,
+                Some(message) = self.mailbox.recv() => self.deliver(message).await?,
             };
             if flow.is_break() {
                 break;
@@ -172,33 +172,17 @@ impl<B: Behavior> Actor<B> {
         Ok(Continue(()))
     }
 
-    /// Hand `envelope` to the behavior: either a statement to receive or a
-    /// request to answer and reply to.
+    /// Hand `message` to the behavior.
     ///
-    /// The message loop watches for shutdown only between envelopes, so each
+    /// The message loop watches for shutdown only between messages, so each
     /// step races shutdown on its own here.
-    async fn deliver(&mut self, envelope: Envelope<B::Message>) -> anyhow::Result<ControlFlow<()>> {
+    async fn deliver(&mut self, message: B::Message) -> anyhow::Result<ControlFlow<()>> {
         let shutdown = self.behavior.context().shutdown.mine.clone();
-        match envelope {
-            Envelope::Statement(message) => {
-                let Some(received) =
-                    run_unless_stopped(&shutdown, self.behavior.receive(&message)).await
-                else {
-                    return Ok(Break(()));
-                };
-                received?;
-            }
-            Envelope::Request(request) => {
-                let Some(answered) =
-                    run_unless_stopped(&shutdown, self.behavior.answer(request.message())).await
-                else {
-                    return Ok(Break(()));
-                };
-                // The asker may have stopped waiting, which is no fault of
-                // this actor.
-                let _ = request.reply(answered?);
-            }
-        }
+        let Some(received) = run_unless_stopped(&shutdown, self.behavior.receive(&message)).await
+        else {
+            return Ok(Break(()));
+        };
+        received?;
         Ok(Continue(()))
     }
 }
@@ -274,7 +258,7 @@ async fn run_unless_stopped<T>(
     }
 }
 
-/// The ways out of an actor: what a [`Behavior`] may do besides answer.
+/// The ways out of an actor: what a [`Behavior`] may do besides receive.
 ///
 /// A behavior owns one of these, and the actor keeps the mailbox, so messages
 /// reach the behavior one step at a time.
@@ -287,7 +271,7 @@ pub struct Context<M: Message, L = M> {
     /// The episode this actor is in, stamped on everything it logs.
     pub episode: Uuid,
     /// The sending ends of the mailboxes of the actors this one may send to.
-    pub(crate) mailboxes: HashMap<ActorId, UnboundedSender<Envelope<M>>>,
+    pub(crate) mailboxes: HashMap<ActorId, UnboundedSender<M>>,
     /// Tokens on which this Actor is shut down, and shuts down others.
     pub(crate) shutdown: Shutdown,
     /// Where this Actor's events go, when it has a logger.
@@ -330,9 +314,9 @@ impl<M: Message, L> Context<M, L> {
         }
     }
 
-    /// Send the statement `message` to every actor in `to`. An actor that
-    /// has already stopped is skipped. An actor never sends to itself:
-    /// nothing it says comes back to its own mailbox.
+    /// Send `message` to every actor in `to`. An actor that has already
+    /// stopped is skipped. An actor never sends to itself: nothing it says
+    /// comes back to its own mailbox.
     ///
     /// # Errors
     ///
@@ -345,43 +329,9 @@ impl<M: Message, L> Context<M, L> {
             .collect::<anyhow::Result<Vec<_>>>()?;
         for sender in senders {
             // A failed send means the recipient's mailbox is gone.
-            let _ = sender.send(Envelope::Statement(message.clone()));
+            let _ = sender.send(message.clone());
         }
         Ok(())
-    }
-
-    /// Ask every actor in `to` the same thing and collect their replies. A
-    /// recipient that has stopped, before or after receiving the request,
-    /// is left out of the result.
-    ///
-    /// # Errors
-    ///
-    /// Fails before anything is sent when `to` names this actor itself, or
-    /// an actor outside those this one may send to.
-    pub async fn request(
-        &self,
-        message: M,
-        to: HashSet<ActorId>,
-    ) -> anyhow::Result<HashMap<ActorId, Vec<M>>> {
-        let senders = to
-            .iter()
-            .map(|id| self.mailbox_of(id).map(|sender| (id, sender)))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        let mut pending = Vec::new();
-        for (id, sender) in senders {
-            let (request, reply) = Request::new(message.clone());
-            if sender.send(Envelope::Request(request)).is_ok() {
-                pending.push((id.clone(), reply));
-            }
-        }
-        let mut replies = HashMap::new();
-        for (id, reply) in pending {
-            // A dropped reply channel means the recipient stopped first.
-            if let Ok(reply) = reply.await {
-                replies.insert(id, reply.messages);
-            }
-        }
-        Ok(replies)
     }
 
     /// The sending end of the mailbox of `id`.
@@ -390,7 +340,7 @@ impl<M: Message, L> Context<M, L> {
     ///
     /// Fails when `id` is this actor itself, or not an actor this one may
     /// send to.
-    fn mailbox_of(&self, id: &ActorId) -> anyhow::Result<&UnboundedSender<Envelope<M>>> {
+    fn mailbox_of(&self, id: &ActorId) -> anyhow::Result<&UnboundedSender<M>> {
         if id == &self.id {
             bail!("{id} cannot send to itself");
         }
@@ -474,10 +424,9 @@ impl<M: Message, L> Context<M, L> {
 }
 
 /// What an actor does at each point in its life. It initializes, makes an
-/// opening move once every actor is running, then maps what it receives to
-/// what it does: a statement goes to [`receive`](Behavior::receive) and a
-/// request to [`answer`](Behavior::answer), whose result is the reply. On
-/// the way out it cleans up. Every method but [`context`](Behavior::context)
+/// opening move once every actor is running, then handles each message it
+/// receives in [`receive`](Behavior::receive). On the way out it cleans
+/// up. Every method but [`context`](Behavior::context)
 /// has an empty default, so the simplest behavior is a context and nothing
 /// else. Anything else the behavior wants to say, such as who it is, goes
 /// inside its messages.
@@ -538,14 +487,9 @@ pub trait Behavior: Send {
     async fn initialize(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    /// Handle the statement `message`. By default it is ignored.
+    /// Handle `message`. By default it is ignored.
     async fn receive(&mut self, _message: &Self::Message) -> anyhow::Result<()> {
         Ok(())
-    }
-    /// Answer the request `message`. The result is the reply, which by
-    /// default is nothing.
-    async fn answer(&mut self, _message: &Self::Message) -> anyhow::Result<Vec<Self::Message>> {
-        Ok(vec![])
     }
     /// Called once every actor in the episode is running. This is where an
     /// actor with an opening move makes it.
@@ -565,15 +509,14 @@ pub trait Behavior: Send {
 /// a delay has passed. A due timer is thought about before anything waiting
 /// on the think queue, so a deadline is never stuck behind a backlog. A slow
 /// await inside [`think`](Think::think), such as a model call, holds up only
-/// the next thought: the actor keeps receiving and answering in the
-/// meantime. An error from a thought is dropped, and the loop goes on to the
-/// next message.
+/// the next thought: the actor keeps receiving in the meantime. An error
+/// from a thought is dropped, and the loop goes on to the next message.
 ///
 /// The think loop keeps the [`Context`] it is built with, and the
 /// [`ThinkBuilder`] in the actor's [`ActorInit`] wraps the `Think` around
-/// it. Through it the loop does everything the behavior does except reply:
-/// it sends statements, makes requests and awaits their replies, stops
-/// actors, shuts its actor down, logs, thinks some more, and sets timers.
+/// it. Through it the loop does everything the behavior does: it sends
+/// messages, stops actors, shuts its actor down, logs, thinks some more,
+/// and sets timers.
 ///
 /// Both loops run at once, so state they share lives in an
 /// `Arc<std::sync::Mutex<_>>` held briefly and never across an await: a
@@ -589,12 +532,13 @@ pub trait Behavior: Send {
 /// #[derive(Debug, Clone, Serialize, Deserialize)]
 /// enum Note {
 ///     Question(String),
+///     Findings,
 ///     Answer(String),
 /// }
 /// impl Message for Note {}
 ///
-/// /// Hands each question off to be studied, and answers every request at
-/// /// once with the findings so far.
+/// /// Hands each question off to be studied, and logs the findings so far
+/// /// at once when asked for them.
 /// struct Scholar {
 ///     context: Context<Note>,
 ///     findings: Arc<Mutex<Vec<String>>>,
@@ -607,11 +551,17 @@ pub trait Behavior: Send {
 ///         &self.context
 ///     }
 ///     async fn receive(&mut self, message: &Note) -> anyhow::Result<()> {
-///         self.context.think(message.clone())
-///     }
-///     async fn answer(&mut self, _message: &Note) -> anyhow::Result<Vec<Note>> {
-///         let findings = self.findings.lock().unwrap();
-///         Ok(findings.iter().cloned().map(Note::Answer).collect())
+///         match message {
+///             Note::Question(_) => self.context.think(message.clone()),
+///             Note::Findings => {
+///                 let findings = self.findings.lock().unwrap();
+///                 for finding in findings.iter() {
+///                     self.context.log(Note::Answer(finding.clone()));
+///                 }
+///                 Ok(())
+///             }
+///             Note::Answer(_) => Ok(()),
+///         }
 ///     }
 /// }
 ///
@@ -629,8 +579,7 @@ pub trait Behavior: Send {
 ///         };
 ///         // The slow work runs with no lock held.
 ///         let answer = look_up(question).await;
-///         self.findings.lock().unwrap().push(answer.clone());
-///         self.context.log(Note::Answer(answer));
+///         self.findings.lock().unwrap().push(answer);
 ///         Ok(())
 ///     }
 /// }
@@ -670,15 +619,6 @@ pub(crate) struct Shutdown {
     pub(crate) others: HashMap<ActorId, CancellationToken>,
 }
 
-/// A message and what its recipient owes for it.
-#[derive(Debug)]
-pub(crate) enum Envelope<M: Message> {
-    /// A message that does not require a reply.
-    Statement(M),
-    /// A message whose sender is waiting for reply.
-    Request(Request<M>),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,29 +636,27 @@ mod tests {
         Note(text.to_string())
     }
 
-    /// A behavior that answers every request with the message it was sent,
-    /// after waiting for a permit from its gate if it has one, and waits at
-    /// the gate on statements too. Slow to start, it waits for a permit in
-    /// `start` as well. Broken, it fails every step.
-    struct Echo {
+    /// A behavior that reports every message it receives on `heard`, after
+    /// waiting for a permit from its gate if it has one. Slow to start, it
+    /// waits for a permit in `start` as well. Broken, it fails every step.
+    struct Reporter {
         context: Context<Note>,
+        heard: UnboundedSender<Note>,
         gate: Option<Arc<Semaphore>>,
         slow_start: bool,
         broken: bool,
     }
     #[async_trait]
-    impl Behavior for Echo {
+    impl Behavior for Reporter {
         type Message = Note;
         type Log = Note;
         fn context(&self) -> &Context<Note> {
             &self.context
         }
-        async fn receive(&mut self, _message: &Note) -> anyhow::Result<()> {
-            self.step().await
-        }
-        async fn answer(&mut self, message: &Note) -> anyhow::Result<Vec<Note>> {
+        async fn receive(&mut self, message: &Note) -> anyhow::Result<()> {
             self.step().await?;
-            Ok(vec![message.clone()])
+            self.heard.send(message.clone())?;
+            Ok(())
         }
         async fn start(&mut self) -> anyhow::Result<()> {
             if self.slow_start
@@ -730,21 +668,22 @@ mod tests {
         }
     }
 
-    impl Echo {
+    impl Reporter {
         /// Fail if broken, otherwise wait at the gate if there is one.
         async fn step(&self) -> anyhow::Result<()> {
             if self.broken {
-                bail!("echo is broken");
+                bail!("reporter is broken");
             }
-            if let Some(gate) = &self.gate {
-                gate.acquire().await?.forget();
-            }
+            let Some(gate) = &self.gate else {
+                return Ok(());
+            };
+            gate.acquire().await?.forget();
             Ok(())
         }
     }
 
-    /// A behavior with every default: no opening move, statements ignored,
-    /// and requests answered with nothing.
+    /// A behavior with every default: no opening move, and messages
+    /// ignored.
     struct Mute(Context<Note>);
     #[async_trait]
     impl Behavior for Mute {
@@ -755,21 +694,22 @@ mod tests {
         }
     }
 
-    /// A behavior that hands every statement to its think loop and answers
-    /// every request with the message it was sent.
-    struct Delegator(Context<Note>);
+    /// A behavior that reports every message it receives on `heard` and
+    /// hands it to its think loop.
+    struct Delegator {
+        context: Context<Note>,
+        heard: UnboundedSender<Note>,
+    }
     #[async_trait]
     impl Behavior for Delegator {
         type Message = Note;
         type Log = Note;
         fn context(&self) -> &Context<Note> {
-            &self.0
+            &self.context
         }
         async fn receive(&mut self, message: &Note) -> anyhow::Result<()> {
-            self.0.think(message.clone())
-        }
-        async fn answer(&mut self, message: &Note) -> anyhow::Result<Vec<Note>> {
-            Ok(vec![message.clone()])
+            self.heard.send(message.clone())?;
+            self.context.think(message.clone())
         }
     }
 
@@ -799,10 +739,11 @@ mod tests {
         }
     }
 
-    /// A behavior that counts the statements it has received and answers
-    /// every request with that many notes.
+    /// A behavior that counts the messages it has received and reports the
+    /// count on `heard` after each one.
     struct Tally {
         context: Context<Note>,
+        heard: UnboundedSender<Note>,
         seen: usize,
     }
     #[async_trait]
@@ -814,20 +755,19 @@ mod tests {
         }
         async fn receive(&mut self, _message: &Note) -> anyhow::Result<()> {
             self.seen += 1;
+            self.heard.send(note(&self.seen.to_string()))?;
             Ok(())
-        }
-        async fn answer(&mut self, _message: &Note) -> anyhow::Result<Vec<Note>> {
-            Ok(vec![note("seen"); self.seen])
         }
     }
 
-    /// An actor, along with what a test needs to feed it, start it, and stop
-    /// it from the outside.
-    struct Rig<B: Behavior = Echo> {
+    /// An actor, along with what a test needs to feed it, start it, stop it
+    /// from the outside, and hear what its behavior reports.
+    struct Rig<B: Behavior = Reporter> {
         actor: Actor<B>,
-        sender: UnboundedSender<Envelope<Note>>,
+        sender: UnboundedSender<Note>,
         start: oneshot::Sender<()>,
         stop: CancellationToken,
+        heard: UnboundedReceiver<Note>,
     }
 
     impl<B: Behavior<Message = Note, Log = Note>> Rig<B> {
@@ -836,31 +776,33 @@ mod tests {
         }
     }
 
-    /// A rig around an [`Echo`] with no gate.
+    /// A rig around a [`Reporter`] with no gate.
     fn rig(
         name: &str,
-        others: HashMap<ActorId, UnboundedSender<Envelope<Note>>>,
+        others: HashMap<ActorId, UnboundedSender<Note>>,
         can_stop: HashMap<ActorId, CancellationToken>,
     ) -> Rig {
-        rig_with(name, others, can_stop, |context| Echo {
+        rig_with(name, others, can_stop, |context, heard| Reporter {
             context,
+            heard,
             gate: None,
             slow_start: false,
             broken: false,
         })
     }
 
-    /// A rig around the behavior `build` makes from its context, which may
-    /// send to `others`.
+    /// A rig around the behavior `build` makes from its context and the
+    /// channel it reports on, which may send to `others`.
     fn rig_with<B: Behavior<Message = Note, Log = Note>>(
         name: &str,
-        others: HashMap<ActorId, UnboundedSender<Envelope<Note>>>,
+        others: HashMap<ActorId, UnboundedSender<Note>>,
         can_stop: HashMap<ActorId, CancellationToken>,
-        build: impl FnOnce(Context<Note>) -> B,
+        build: impl FnOnce(Context<Note>, UnboundedSender<Note>) -> B,
     ) -> Rig<B> {
         let (sender, mailbox) = unbounded_channel();
         let (ready, _) = oneshot::channel();
         let (start, started) = oneshot::channel();
+        let (report, heard) = unbounded_channel();
         let stop = CancellationToken::new();
         let context = Context {
             id: id(name),
@@ -874,7 +816,7 @@ mod tests {
             thoughts: None,
         };
         let actor = Actor {
-            behavior: build(context),
+            behavior: build(context, report),
             think: None,
             ready: Some(ready),
             start: started,
@@ -885,6 +827,7 @@ mod tests {
             sender,
             start,
             stop,
+            heard,
         }
     }
 
@@ -893,7 +836,9 @@ mod tests {
     /// what it has thought about.
     fn thinking_rig(name: &str, delay: Duration) -> (Rig<Delegator>, UnboundedReceiver<Note>) {
         let (thought, thoughts) = unbounded_channel();
-        let mut rig = rig_with(name, HashMap::new(), HashMap::new(), Delegator);
+        let mut rig = rig_with(name, HashMap::new(), HashMap::new(), |context, heard| {
+            Delegator { context, heard }
+        });
         let build = move |context| {
             let thinker = Thinker {
                 context,
@@ -902,7 +847,10 @@ mod tests {
             };
             Box::new(thinker) as Box<dyn Think<Message = Note>>
         };
-        rig.actor.think = Some(ThinkLoop::open(Box::new(build), &mut rig.actor.behavior.0));
+        rig.actor.think = Some(ThinkLoop::open(
+            Box::new(build),
+            &mut rig.actor.behavior.context,
+        ));
         (rig, thoughts)
     }
 
@@ -944,11 +892,7 @@ mod tests {
             .unwrap();
 
         for mailbox in [&mut bob_mailbox, &mut cat_mailbox] {
-            let heard = mailbox.recv().await.unwrap();
-            assert!(
-                matches!(&heard, Envelope::Statement(Note(text)) if text == "hello"),
-                "{heard:?}"
-            );
+            assert_eq!(mailbox.recv().await.unwrap(), note("hello"));
         }
         assert!(dan_mailbox.try_recv().is_err(), "nothing should reach dan");
     }
@@ -982,69 +926,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_collects_a_reply_from_every_recipient() {
-        let bob = rig("bob", HashMap::new(), HashMap::new());
-        let cat = rig("cat", HashMap::new(), HashMap::new());
+    async fn send_skips_a_recipient_that_has_stopped() {
+        let (bob, bob_mailbox) = unbounded_channel();
+        let (cat, mut cat_mailbox) = unbounded_channel();
         let ann = rig(
             "ann",
-            HashMap::from([
-                (id("bob"), bob.sender.clone()),
-                (id("cat"), cat.sender.clone()),
-            ]),
+            HashMap::from([(id("bob"), bob), (id("cat"), cat)]),
             HashMap::new(),
         );
-        let bob_running = tokio::spawn(bob.actor.run());
-        let cat_running = tokio::spawn(cat.actor.run());
-        bob.start.send(()).unwrap();
-        cat.start.send(()).unwrap();
+        drop(bob_mailbox);
 
-        let replies = ann
-            .context()
-            .request(note("who's there?"), HashSet::from([id("bob"), id("cat")]))
-            .await
+        ann.context()
+            .send(note("anyone?"), HashSet::from([id("bob"), id("cat")]))
             .unwrap();
 
-        let expected = HashMap::from([
-            (id("bob"), vec![note("who's there?")]),
-            (id("cat"), vec![note("who's there?")]),
-        ]);
-        assert_eq!(replies, expected);
+        assert_eq!(cat_mailbox.recv().await.unwrap(), note("anyone?"));
+    }
+
+    #[tokio::test]
+    async fn a_message_sent_to_a_running_actor_reaches_its_behavior() {
+        let mut bob = rig("bob", HashMap::new(), HashMap::new());
+        let ann = ann_beside(&bob);
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+
+        ann.context()
+            .send(note("hello"), HashSet::from([id("bob")]))
+            .unwrap();
+
+        assert_eq!(bob.heard.recv().await.unwrap(), note("hello"));
         bob.stop.cancel();
-        cat.stop.cancel();
-        bob_running.await.unwrap().unwrap();
-        cat_running.await.unwrap().unwrap();
+        running.await.unwrap().unwrap();
     }
 
     #[tokio::test]
     async fn a_behavior_keeps_its_state_between_steps() {
-        let bob = rig_with("bob", HashMap::new(), HashMap::new(), |context| Tally {
-            context,
-            seen: 0,
+        let mut bob = rig_with("bob", HashMap::new(), HashMap::new(), |context, heard| {
+            Tally {
+                context,
+                heard,
+                seen: 0,
+            }
         });
         let ann = ann_beside(&bob);
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
+
         for _ in 0..2 {
             ann.context()
                 .send(note("one more"), HashSet::from([id("bob")]))
                 .unwrap();
         }
 
-        let replies = ann
-            .context()
-            .request(note("how many?"), HashSet::from([id("bob")]))
-            .await
-            .unwrap();
-
-        let expected = HashMap::from([(id("bob"), vec![note("seen"), note("seen")])]);
-        assert_eq!(replies, expected);
+        assert_eq!(bob.heard.recv().await.unwrap(), note("1"));
+        assert_eq!(bob.heard.recv().await.unwrap(), note("2"));
         bob.stop.cancel();
         running.await.unwrap().unwrap();
     }
 
-    #[tokio::test]
-    async fn the_default_receive_ignores_the_statement() {
-        let bob = rig_with("bob", HashMap::new(), HashMap::new(), Mute);
+    #[tokio::test(start_paused = true)]
+    async fn the_default_receive_ignores_the_message() {
+        let mut bob = rig_with("bob", HashMap::new(), HashMap::new(), |context, _| {
+            Mute(context)
+        });
         let ann = ann_beside(&bob);
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
@@ -1053,76 +997,12 @@ mod tests {
             .send(note("whatever"), HashSet::from([id("bob")]))
             .unwrap();
 
-        // Bob is still running and answering afterward.
-        let replies = ann
-            .context()
-            .request(note("still there?"), HashSet::from([id("bob")]))
-            .await
-            .unwrap();
-        assert_eq!(replies, HashMap::from([(id("bob"), vec![])]));
+        // Bob is still running afterward, having said nothing of it.
+        sleep(Duration::from_secs(1)).await;
+        assert!(!running.is_finished(), "bob should still be running");
+        assert!(bob.heard.try_recv().is_err(), "bob should report nothing");
         bob.stop.cancel();
         running.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn the_default_answer_is_nothing() {
-        let bob = rig_with("bob", HashMap::new(), HashMap::new(), Mute);
-        let ann = ann_beside(&bob);
-        let running = tokio::spawn(bob.actor.run());
-        bob.start.send(()).unwrap();
-
-        let replies = ann
-            .context()
-            .request(note("anything?"), HashSet::from([id("bob")]))
-            .await
-            .unwrap();
-
-        assert_eq!(replies, HashMap::from([(id("bob"), vec![])]));
-        bob.stop.cancel();
-        running.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn request_fails_without_sending_if_a_recipient_may_not_be_addressed() {
-        let (bob, mut bob_mailbox) = unbounded_channel();
-        let ann = rig("ann", HashMap::from([(id("bob"), bob)]), HashMap::new());
-
-        let error = ann
-            .context()
-            .request(note("psst"), HashSet::from([id("bob"), id("zed")]))
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains("zed"), "{error}");
-        assert!(bob_mailbox.try_recv().is_err(), "nothing should reach bob");
-    }
-
-    #[tokio::test]
-    async fn request_refuses_to_ask_the_actor_itself() {
-        let ann = rig("ann", HashMap::new(), HashMap::new());
-
-        let error = ann
-            .context()
-            .request(note("hello me"), HashSet::from([id("ann")]))
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains("itself"), "{error}");
-    }
-
-    #[tokio::test]
-    async fn request_leaves_out_a_recipient_that_has_stopped() {
-        let (bob, bob_mailbox) = unbounded_channel();
-        let ann = rig("ann", HashMap::from([(id("bob"), bob)]), HashMap::new());
-        drop(bob_mailbox);
-
-        let replies = ann
-            .context()
-            .request(note("anyone?"), HashSet::from([id("bob")]))
-            .await
-            .unwrap();
-
-        assert!(replies.is_empty(), "{replies:?}");
     }
 
     #[tokio::test]
@@ -1178,13 +1058,31 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_step_in_progress_finishes_once_it_is_let_through() {
+        let (mut bob, gate) = gated_rig("bob");
+        let ann = ann_beside(&bob);
+        let running = tokio::spawn(bob.actor.run());
+        bob.start.send(()).unwrap();
+        ann.context()
+            .send(note("hello"), HashSet::from([id("bob")]))
+            .unwrap();
+        // Bob takes the message and blocks in `receive` until let through.
+        sleep(Duration::from_secs(1)).await;
+        assert!(bob.heard.try_recv().is_err(), "bob should still be busy");
+
+        gate.add_permits(1);
+
+        assert_eq!(bob.heard.recv().await.unwrap(), note("hello"));
+        bob.stop.cancel();
+        running.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_kill_stops_an_actor_in_the_middle_of_a_step() {
         let (bob, _gate) = gated_rig("bob");
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
-        bob.sender
-            .send(Envelope::Statement(note("take your time")))
-            .unwrap();
+        bob.sender.send(note("take your time")).unwrap();
         // Let Bob take the message and block in `receive`.
         sleep(Duration::from_secs(1)).await;
 
@@ -1211,7 +1109,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_behavior_with_no_opening_move_starts_and_waits() {
-        let bob = rig_with("bob", HashMap::new(), HashMap::new(), Mute);
+        let bob = rig_with("bob", HashMap::new(), HashMap::new(), |context, _| {
+            Mute(context)
+        });
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
         // Let Bob take the start signal and settle into waiting.
@@ -1249,76 +1149,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_behavior_that_fails_to_receive_a_statement_fails_the_actor() {
+    async fn a_behavior_that_fails_to_receive_a_message_fails_the_actor() {
         let mut bob = rig("bob", HashMap::new(), HashMap::new());
         bob.actor.behavior.broken = true;
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
 
-        bob.sender.send(Envelope::Statement(note("hello"))).unwrap();
+        bob.sender.send(note("hello")).unwrap();
 
         let error = running.await.unwrap().unwrap_err();
         assert!(error.to_string().contains("broken"), "{error}");
-    }
-
-    #[tokio::test]
-    async fn a_behavior_that_fails_to_answer_a_request_fails_the_actor() {
-        let mut bob = rig("bob", HashMap::new(), HashMap::new());
-        bob.actor.behavior.broken = true;
-        let running = tokio::spawn(bob.actor.run());
-        bob.start.send(()).unwrap();
-        let (request, _reply) = Request::new(note("well?"));
-
-        bob.sender.send(Envelope::Request(request)).unwrap();
-
-        let error = running.await.unwrap().unwrap_err();
-        assert!(error.to_string().contains("broken"), "{error}");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_recipient_killed_mid_step_is_left_out_of_the_replies() {
-        let (bob, _gate) = gated_rig("bob");
-        let ann = ann_beside(&bob);
-        let bob_running = tokio::spawn(bob.actor.run());
-        bob.start.send(()).unwrap();
-        let asking = tokio::spawn(async move {
-            ann.context()
-                .request(note("well?"), HashSet::from([id("bob")]))
-                .await
-        });
-        sleep(Duration::from_secs(1)).await;
-
-        bob.stop.cancel();
-
-        let replies = asking.await.unwrap().unwrap();
-        assert!(replies.is_empty(), "{replies:?}");
-        bob_running.await.unwrap().unwrap();
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_responder_whose_asker_gave_up_carries_on() {
-        let (bob, gate) = gated_rig("bob");
-        let ann = ann_beside(&bob);
-        let bob_running = tokio::spawn(bob.actor.run());
-        bob.start.send(()).unwrap();
-
-        // Ann gives up after a second, dropping her reply channel, and then
-        // Bob answers.
-        let asking = ann
-            .context()
-            .request(note("well?"), HashSet::from([id("bob")]));
-        let gave_up = tokio::time::timeout(Duration::from_secs(1), asking).await;
-        assert!(gave_up.is_err(), "{gave_up:?}");
-        gate.add_permits(1);
-        sleep(Duration::from_secs(1)).await;
-
-        bob.stop.cancel();
-        bob_running.await.unwrap().unwrap();
     }
 
     #[tokio::test(start_paused = true)]
     async fn an_actor_keeps_perceiving_while_it_thinks() {
-        let (bob, mut thoughts) = thinking_rig("bob", Duration::from_secs(3600));
+        let (mut bob, mut thoughts) = thinking_rig("bob", Duration::from_secs(3600));
         let ann = ann_beside(&bob);
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
@@ -1326,20 +1171,13 @@ mod tests {
             .send(note("ponder this"), HashSet::from([id("bob")]))
             .unwrap();
 
-        // With an hour of thinking ahead of him, Bob still hears and answers.
+        // With an hour of thinking ahead of him, Bob still hears.
         ann.context()
             .send(note("and this"), HashSet::from([id("bob")]))
             .unwrap();
-        let replies = ann
-            .context()
-            .request(note("still there?"), HashSet::from([id("bob")]))
-            .await
-            .unwrap();
 
-        assert_eq!(
-            replies,
-            HashMap::from([(id("bob"), vec![note("still there?")])])
-        );
+        assert_eq!(bob.heard.recv().await.unwrap(), note("ponder this"));
+        assert_eq!(bob.heard.recv().await.unwrap(), note("and this"));
         assert!(thoughts.try_recv().is_err(), "bob should still be thinking");
         assert_eq!(thoughts.recv().await.unwrap(), note("ponder this"));
         assert_eq!(thoughts.recv().await.unwrap(), note("and this"));
@@ -1437,7 +1275,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_panic_in_the_think_loop_is_the_actors_error_once_it_stops() {
-        let (bob, _thoughts) = thinking_rig("bob", Duration::from_secs(1));
+        let (mut bob, _thoughts) = thinking_rig("bob", Duration::from_secs(1));
         let ann = ann_beside(&bob);
         let running = tokio::spawn(bob.actor.run());
         bob.start.send(()).unwrap();
@@ -1446,15 +1284,11 @@ mod tests {
             .unwrap();
         // Bob's think loop has panicked, and Bob perceives on regardless.
         sleep(Duration::from_secs(2)).await;
-        let replies = ann
-            .context()
-            .request(note("still there?"), HashSet::from([id("bob")]))
-            .await
+        ann.context()
+            .send(note("still there?"), HashSet::from([id("bob")]))
             .unwrap();
-        assert_eq!(
-            replies,
-            HashMap::from([(id("bob"), vec![note("still there?")])])
-        );
+        assert_eq!(bob.heard.recv().await.unwrap(), note("panic"));
+        assert_eq!(bob.heard.recv().await.unwrap(), note("still there?"));
 
         bob.stop.cancel();
 
@@ -1601,30 +1435,5 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("no think loop"), "{error}");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_actor_without_a_think_loop_behaves_as_before() {
-        let bob = rig_with("bob", HashMap::new(), HashMap::new(), |context| Tally {
-            context,
-            seen: 0,
-        });
-        let ann = ann_beside(&bob);
-        let running = tokio::spawn(bob.actor.run());
-        bob.start.send(()).unwrap();
-
-        ann.context()
-            .send(note("one"), HashSet::from([id("bob")]))
-            .unwrap();
-        let replies = ann
-            .context()
-            .request(note("how many?"), HashSet::from([id("bob")]))
-            .await
-            .unwrap();
-
-        assert_eq!(replies, HashMap::from([(id("bob"), vec![note("seen")])]));
-        bob.stop.cancel();
-        let stopped = timeout(Duration::from_secs(5), running).await;
-        stopped.expect("bob should stop").unwrap().unwrap();
     }
 }

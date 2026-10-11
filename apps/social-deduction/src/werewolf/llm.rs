@@ -526,7 +526,6 @@ pub enum Actor {
     Player(Player),
 }
 
-// Nobody in this game requests, so the sides only receive and start.
 #[async_trait]
 impl Behavior for Actor {
     type Message = Message;

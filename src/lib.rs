@@ -1,5 +1,4 @@
-//! Episodes in which actors talk to each other by statement, request, and
-//! reply.
+//! Episodes in which actors talk to each other by sending messages.
 //!
 //! The crate-level documentation is the project README, included below so
 //! the two stay one document.

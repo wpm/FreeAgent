@@ -2,7 +2,7 @@
 //! one another as their inits allow, and runs them until every one has
 //! stopped.
 
-use crate::actor::{Actor, ActorId, ActorInit, Behavior, Context, Envelope, Shutdown, ThinkLoop};
+use crate::actor::{Actor, ActorId, ActorInit, Behavior, Context, Shutdown, ThinkLoop};
 use crate::log::Logger;
 use anyhow::{Context as _, bail};
 use std::collections::{HashMap, HashSet};
@@ -160,13 +160,7 @@ impl<B: Behavior> Episode<B> {
 
 /// Each actor's init, together with the receiving end of its mailbox, between
 /// the two passes of [`Episode::new`].
-type Staged<B> = HashMap<
-    ActorId,
-    (
-        ActorInit<B>,
-        UnboundedReceiver<Envelope<<B as Behavior>::Message>>,
-    ),
->;
+type Staged<B> = HashMap<ActorId, (ActorInit<B>, UnboundedReceiver<<B as Behavior>::Message>)>;
 
 /// Wait for every actor to report that it is ready. False once one of them
 /// drops its signal, which it does when it fails to initialize.

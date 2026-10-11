@@ -33,38 +33,30 @@ who is still alive. The villagers win when the last werewolf is dead. The
 werewolves win when they are at least as many as the villagers.
 
 The command line names the game, then its variant. In `uniform-random`
-every player chooses at random:
+the environment announces each phase and waits for the players'
+selections, as it does for language models, and every player selects at
+once, at random among those it may choose: by night the living whose roles
+it does not know, by day everyone else living. It plays the model-played
+game with no model, provider, API key or configuration file, so a game
+finishes in moments.
 
 ```sh
-social-deduction werewolf uniform-random [--werewolves N] [--villagers N] [--doctors N] [--seers N]
+social-deduction werewolf uniform-random [--werewolves N] [--villagers N] [--doctors N] [--seers N] [--night-limit 30s] [--day-limit 2m]
 ```
 
 The table seats two werewolves, three villagers, a doctor and a seer unless
-the counts say otherwise. The game is told on standard output as it happens
-and logged to standard error as JSON Lines. Every variant takes `--no-log`,
-which leaves the log out, and `--log`, which keeps it; the last one given
-wins.
-
-In `scripted` the environment announces each phase and waits for the
-players' selections, as it does for language models, and every player is a
-script that selects at once, at random among those it may choose: by night
-the living whose roles it does not know, by day everyone else living. It
-plays the model-played game with no model, provider, API key or
-configuration file, so a game finishes in moments.
-
-```sh
-social-deduction werewolf scripted [role counts] [--night-limit 30s] [--day-limit 2m]
-```
-
-The role counts are those of `uniform-random`, with the same defaults. Each
-phase waits a minute for its selections unless a limit says otherwise.
+the counts say otherwise, and each phase waits a minute for its selections
+unless a limit says otherwise. The game is told on standard output as it
+happens and logged to standard error as JSON Lines. Every variant takes
+`--no-log`, which leaves the log out, and `--log`, which keeps it; the last
+one given wins.
 
 In `llm` every player is a language model, set up by a TOML configuration
 file that names the model, how to reach it, and the prompts each role is
 given. The [examples](examples/werewolf/llm) show how one is written.
 
 ```sh
-social-deduction werewolf llm game.toml [role counts] [--night-limit 30s] [--day-limit 2m] [--model-base-url URL] [--model-id ID]
+social-deduction werewolf llm game.toml [role counts] [limits] [--model-base-url URL] [--model-id ID]
 ```
 
 A setting comes from the command line if it is given there, otherwise from

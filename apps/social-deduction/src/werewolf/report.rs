@@ -37,10 +37,10 @@ enum Voice {
 /// is shown; a player's narrator tells the player's own deed as it is
 /// done. A phase begins at its first announcement and ends at the next
 /// phase's, or at the end of the game, and the omniscient narrator tells
-/// the time between, to the nearest second, after who died. A phase
-/// announced is told as one requested, and a selection as a reply, unless
-/// a later phase has been announced since: then it is told as too late to
-/// count, for the phase it was for. A player's failure to select is told
+/// the time between, to the nearest second, after who died. A selection
+/// is a deed of the phase it was for, unless a later phase has been
+/// announced since: then it is told as too late to count, for the phase it
+/// was for. A player's failure to select is told
 /// by the omniscient narrator as it happens, with what went wrong, and for
 /// the phase it was for if that phase has ended; a player's narrator
 /// leaves it out, since the player is not told of it.
@@ -76,7 +76,7 @@ struct Told {
 
 impl Narrator {
     /// The account `me` would give of its own game. Feed it the events
-    /// about `me`: each observation `me` was sent, and each selection it
+    /// about `me`: each announcement `me` was sent, and each selection it
     /// made. Events about anyone else add nothing, so the whole log tells
     /// it the same account as `me`'s own history does. It opens with who
     /// `me` is, names the roles `me` knows and nobody else's, and tells
@@ -104,20 +104,12 @@ impl Narrator {
             }
             Entry::Sent {
                 to,
-                message: Message::Observation(observation),
-            } if self.concerns(to) => self.show(observation, time),
-            Entry::Sent {
-                to,
                 message: Message::Announce { seq, observation },
             } if self.concerns(to) => {
                 self.announced
                     .insert(*seq, (observation.round, observation.phase.clone()));
                 self.show(observation, time)
             }
-            Entry::Replied {
-                from,
-                message: Message::Action(chosen),
-            } if self.concerns(from) => self.did(from, chosen),
             Entry::Received {
                 from,
                 message:
@@ -529,16 +521,22 @@ mod tests {
         observed(round, phase, alive, &[])
     }
 
-    fn observation(round: u8, phase: Phase, alive: &[&str]) -> Message {
-        Message::Observation(seen(round, phase, alive))
+    /// The number of round `round`'s `phase`, counting from 1 for the first
+    /// night.
+    fn seq_of(round: u8, phase: &Phase) -> u64 {
+        let half = match phase {
+            Phase::Night => 0,
+            Phase::Day => 1,
+        };
+        u64::from(round - 1) * 2 + 1 + half
     }
 
     fn shown(to: &str, round: u8, phase: Phase, alive: &[&str]) -> Event<Entry> {
         told(to, round, phase, alive, &[])
     }
 
-    /// `to` was shown round `round`'s `phase` with `alive` alive and `known`
-    /// roles, as a player of a requesting environment is.
+    /// The environment announced round `round`'s `phase` to `to`, with
+    /// `alive` alive and `known` roles shown.
     fn told(
         to: &str,
         round: u8,
@@ -548,14 +546,10 @@ mod tests {
     ) -> Event<Entry> {
         logged(Entry::Sent {
             to: id(to),
-            message: Message::Observation(observed(round, phase, alive, known)),
-        })
-    }
-
-    fn chose(from: &str, chosen: &str) -> Event<Entry> {
-        logged(Entry::Replied {
-            from: id(from),
-            message: Message::Action(id(chosen)),
+            message: Message::Announce {
+                seq: seq_of(round, &phase),
+                observation: observed(round, phase, alive, known),
+            },
         })
     }
 
@@ -653,9 +647,9 @@ mod tests {
             Phase::Night,
             &["wolf", "seer", "doctor", "ann"],
         ));
-        assert!(narrator.narrate(&chose("wolf", "ann")).is_empty());
-        assert!(narrator.narrate(&chose("doctor", "seer")).is_empty());
-        assert!(narrator.narrate(&chose("seer", "wolf")).is_empty());
+        assert!(narrator.narrate(&selected("wolf", 1, "ann")).is_empty());
+        assert!(narrator.narrate(&selected("doctor", 1, "seer")).is_empty());
+        assert!(narrator.narrate(&selected("seer", 1, "wolf")).is_empty());
         assert_eq!(
             narrator.narrate(&shown("wolf", 1, Phase::Day, &["wolf", "seer", "doctor"])),
             [
@@ -676,7 +670,7 @@ mod tests {
         narrator.narrate(&start());
         let everyone = ["wolf", "seer", "doctor", "ann"];
         narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone));
-        narrator.narrate(&chose("wolf", "ann"));
+        narrator.narrate(&selected("wolf", 1, "ann"));
         assert!(narrator.narrate(&hunted("ann", &[])).is_empty());
         assert_eq!(
             narrator.narrate(&shown("wolf", 1, Phase::Day, &["wolf", "seer", "doctor"])),
@@ -697,8 +691,8 @@ mod tests {
         narrator.narrate(&start());
         let everyone = ["wolf", "seer", "doctor", "ann"];
         narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone));
-        narrator.narrate(&chose("wolf", "ann"));
-        narrator.narrate(&chose("doctor", "ann"));
+        narrator.narrate(&selected("wolf", 1, "ann"));
+        narrator.narrate(&selected("doctor", 1, "ann"));
         narrator.narrate(&hunted("ann", &["doctor"]));
         assert_eq!(
             narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone)),
@@ -782,9 +776,9 @@ mod tests {
         );
         let everyone = ["player1", "player2", "player10"];
         narrator.narrate(&shown("player1", 1, Phase::Day, &everyone));
-        narrator.narrate(&chose("player10", "player2"));
-        narrator.narrate(&chose("player2", "player10"));
-        narrator.narrate(&chose("player1", "player2"));
+        narrator.narrate(&selected("player10", 2, "player2"));
+        narrator.narrate(&selected("player2", 2, "player10"));
+        narrator.narrate(&selected("player1", 2, "player2"));
         assert_eq!(
             narrator.narrate(&ended(Team::Werewolves, 1, &["player2"])),
             [
@@ -834,8 +828,8 @@ mod tests {
         let mut narrator = Narrator::default();
         narrator.narrate(&start());
         narrator.narrate(&shown("wolf", 1, Phase::Day, &["wolf", "seer", "doctor"]));
-        assert!(narrator.narrate(&chose("wolf", "seer")).is_empty());
-        assert!(narrator.narrate(&chose("seer", "wolf")).is_empty());
+        assert!(narrator.narrate(&selected("wolf", 2, "seer")).is_empty());
+        assert!(narrator.narrate(&selected("seer", 2, "wolf")).is_empty());
         assert_eq!(
             narrator.narrate(&shown("wolf", 2, Phase::Night, &["wolf", "seer", "doctor"])),
             [
@@ -873,53 +867,6 @@ mod tests {
         assert_eq!(
             narrator.narrate(&ended(Team::Villagers, 1, &["seer", "doctor"])),
             [
-                "wolf dies.",
-                "Day 1 took 0s.",
-                "",
-                "The villagers win after 1 day.",
-                "Survivors:",
-                "doctor (doctor)",
-                "seer (seer)"
-            ]
-        );
-    }
-
-    #[test]
-    fn an_announced_game_is_told_as_a_requested_one_is() {
-        let mut narrator = Narrator::default();
-        narrator.narrate(&start());
-        let everyone = ["wolf", "seer", "doctor", "ann"];
-        assert_eq!(
-            narrator.narrate(&announced("wolf", 1, 1, Phase::Night, &everyone)),
-            ["", "Night 1."]
-        );
-        assert!(
-            narrator
-                .narrate(&announced("seer", 1, 1, Phase::Night, &everyone))
-                .is_empty()
-        );
-        assert!(narrator.narrate(&selected("wolf", 1, "ann")).is_empty());
-        assert_eq!(
-            narrator.narrate(&announced(
-                "wolf",
-                2,
-                1,
-                Phase::Day,
-                &["wolf", "seer", "doctor"]
-            )),
-            [
-                "wolf (werewolf) votes to kill ann (villager).",
-                "ann dies.",
-                "Night 1 took 0s.",
-                "",
-                "Day 1."
-            ]
-        );
-        assert!(narrator.narrate(&selected("seer", 2, "wolf")).is_empty());
-        assert_eq!(
-            narrator.narrate(&ended(Team::Villagers, 1, &["seer", "doctor"])),
-            [
-                "seer (seer) votes against wolf (werewolf).",
                 "wolf dies.",
                 "Day 1 took 0s.",
                 "",
@@ -1005,12 +952,12 @@ mod tests {
     }
 
     #[test]
-    fn a_statement_that_is_not_a_selection_is_passed_over() {
+    fn a_message_that_is_not_a_selection_is_passed_over() {
         let mut narrator = Narrator::default();
         narrator.narrate(&start());
         let received = logged(Entry::Received {
             from: id("wolf"),
-            message: Message::Action(id("ann")),
+            message: Message::EndPhase { seq: 1 },
         });
         assert!(narrator.narrate(&received).is_empty());
     }
@@ -1021,12 +968,19 @@ mod tests {
         narrator.narrate(&start());
         let backwards = logged(Entry::Sent {
             to: id("wolf"),
-            message: Message::Action(id("ann")),
+            message: Message::Select {
+                seq: 1,
+                from: id("wolf"),
+                target: id("ann"),
+            },
         });
         assert!(narrator.narrate(&backwards).is_empty());
-        let backwards = logged(Entry::Replied {
+        let backwards = logged(Entry::Received {
             from: id("wolf"),
-            message: observation(1, Phase::Night, &["wolf"]),
+            message: Message::Announce {
+                seq: 1,
+                observation: seen(1, Phase::Night, &["wolf"]),
+            },
         });
         assert!(narrator.narrate(&backwards).is_empty());
     }
@@ -1041,7 +995,7 @@ mod tests {
             Phase::Night,
             &["wolf", "seer", "doctor", "ann"],
         ));
-        narrator.narrate(&chose("seer", "stranger"));
+        narrator.narrate(&selected("seer", 1, "stranger"));
         assert_eq!(
             narrator.narrate(&shown(
                 "seer",
@@ -1142,7 +1096,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            narrator.narrate(&chose("wolf", "ann")),
+            narrator.narrate(&selected("wolf", 1, "ann")),
             ["You vote to kill ann."]
         );
         assert_eq!(
@@ -1156,7 +1110,7 @@ mod tests {
             ["ann dies.", "", "Day 1."]
         );
         assert_eq!(
-            narrator.narrate(&chose("wolf", "seer")),
+            narrator.narrate(&selected("wolf", 2, "seer")),
             ["You vote against seer."]
         );
     }
@@ -1200,7 +1154,7 @@ mod tests {
             ["You are seer, the seer.", "", "Night 1."]
         );
         assert_eq!(
-            narrator.narrate(&chose("seer", "wolf")),
+            narrator.narrate(&selected("seer", 1, "wolf")),
             ["You ask about wolf."]
         );
         assert_eq!(
@@ -1214,7 +1168,7 @@ mod tests {
             ["You learn wolf is a werewolf.", "ann dies.", "", "Day 1."]
         );
         assert_eq!(
-            narrator.narrate(&chose("seer", "wolf")),
+            narrator.narrate(&selected("seer", 2, "wolf")),
             ["You vote against wolf (werewolf)."]
         );
         assert_eq!(
@@ -1239,7 +1193,7 @@ mod tests {
             ["You are doctor, the doctor.", "", "Night 1."]
         );
         assert_eq!(
-            narrator.narrate(&chose("doctor", "seer")),
+            narrator.narrate(&selected("doctor", 1, "seer")),
             ["You protect seer."]
         );
         assert_eq!(
@@ -1247,7 +1201,7 @@ mod tests {
             ["Nobody dies.", "", "Day 1."]
         );
         assert_eq!(
-            narrator.narrate(&chose("doctor", "wolf")),
+            narrator.narrate(&selected("doctor", 2, "wolf")),
             ["You vote against wolf."]
         );
     }
@@ -1267,7 +1221,7 @@ mod tests {
             ["You are ann, a villager.", "", "Day 1."]
         );
         assert_eq!(
-            narrator.narrate(&chose("ann", "wolf")),
+            narrator.narrate(&selected("ann", 2, "wolf")),
             ["You vote against wolf."]
         );
         assert_eq!(
@@ -1307,34 +1261,7 @@ mod tests {
                 ))
                 .is_empty()
         );
-        assert!(narrator.narrate(&chose("seer", "wolf")).is_empty());
-        assert!(
-            narrator
-                .narrate(&announced("seer", 1, 1, Phase::Night, &everyone))
-                .is_empty()
-        );
         assert!(narrator.narrate(&selected("seer", 1, "wolf")).is_empty());
-    }
-
-    #[test]
-    fn an_announced_game_is_told_to_its_player_as_a_requested_one_is() {
-        let mut narrator = Narrator::for_player(id("wolf"));
-        let everyone = ["wolf", "seer", "doctor", "ann"];
-        let announcement = logged(Entry::Sent {
-            to: id("wolf"),
-            message: Message::Announce {
-                seq: 1,
-                observation: observed(1, Phase::Night, &everyone, &[("wolf", Role::Werewolf)]),
-            },
-        });
-        assert_eq!(
-            narrator.narrate(&announcement),
-            ["You are wolf, the only werewolf.", "", "Night 1."]
-        );
-        assert_eq!(
-            narrator.narrate(&selected("wolf", 1, "ann")),
-            ["You vote to kill ann."]
-        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 name = "free-agent"
 version.workspace = true
 edition.workspace = true
-description = "Episodes in which actors talk to each other by statement, request, and reply"
+description = "Episodes in which actors talk to each other by sending messages"
 readme = "README.md"
 license.workspace = true
 repository.workspace = true
