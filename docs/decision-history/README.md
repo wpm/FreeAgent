@@ -37,3 +37,4 @@ are not part of this repository's history.
 | [0003](0003-the-model-player.md) | The model player | Accepted |
 | [0004](0004-the-model-is-asked-to-select-before-a-game.md) | The model is asked to select before a game | Accepted |
 | [0005](0005-actors-talk-by-sending-messages-alone.md) | Actors talk by sending messages alone | Accepted |
+| [0006](0006-players-talk-by-day.md) | Players talk by day | Accepted |
