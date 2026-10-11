@@ -123,6 +123,24 @@ fn the_log_runs_from_the_deal_to_the_result_under_one_episode_id() {
 }
 
 #[test]
+fn no_log_leaves_standard_error_empty_and_the_game_is_still_told() {
+    let output = succeeded(&["werewolf", "uniform-random", "--no-log"]);
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let printed = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        printed.starts_with("Uniform Random with 7 players:\n"),
+        "{printed}"
+    );
+    assert!(printed.contains("\nSurvivors:\n"), "{printed}");
+    // Given after --no-log, --log puts the log back.
+    let (events, _) = played("uniform-random", &["--no-log", "--log"]);
+    assert!(
+        matches!(events[0].payload, Entry::Start { .. }),
+        "{events:?}"
+    );
+}
+
+#[test]
 fn the_scripted_variant_plays_the_announcing_environment_without_a_model() {
     assert_plays_the_default_table("scripted", "Scripted", &[]);
 }

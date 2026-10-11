@@ -259,22 +259,57 @@ mod tests {
     }
 
     #[test]
-    fn every_variant_logs_unless_no_log_is_given_and_the_last_of_the_two_flags_wins() {
-        let logs = |args: &[&str]| match parsed(args) {
-            CommandLine::Werewolf(
-                Werewolf::UniformRandom { logging, .. }
-                | Werewolf::Scripted { logging, .. }
-                | Werewolf::Llm { logging, .. },
-            ) => logging.enabled(),
-            models => panic!("{models:?}"),
+    fn every_variant_takes_the_log_flags_and_the_last_of_the_two_wins() {
+        let off = || Logging {
+            log: false,
+            no_log: true,
         };
-        assert!(logs(&["werewolf", "uniform-random"]));
-        assert!(logs(&["werewolf", "uniform-random", "--log"]));
-        assert!(!logs(&["werewolf", "uniform-random", "--no-log"]));
-        assert!(!logs(&["werewolf", "scripted", "--no-log"]));
-        assert!(!logs(&["werewolf", "llm", "game.toml", "--no-log"]));
-        assert!(logs(&["werewolf", "scripted", "--no-log", "--log"]));
-        assert!(!logs(&["werewolf", "scripted", "--log", "--no-log"]));
+        let on = || Logging {
+            log: true,
+            no_log: false,
+        };
+        assert_eq!(
+            parsed(&["werewolf", "uniform-random", "--no-log"]),
+            CommandLine::Werewolf(Werewolf::UniformRandom {
+                roles: RoleCounts::default(),
+                logging: off(),
+            })
+        );
+        assert_eq!(
+            parsed(&["werewolf", "scripted", "--no-log", "--log"]),
+            CommandLine::Werewolf(Werewolf::Scripted {
+                roles: RoleCounts::default(),
+                limits: PhaseLimits::default(),
+                logging: on(),
+            })
+        );
+        assert_eq!(
+            parsed(&["werewolf", "llm", "game.toml", "--log", "--no-log"]),
+            CommandLine::Werewolf(Werewolf::Llm {
+                config: PathBuf::from("game.toml"),
+                overrides: llm::Overrides::default(),
+                logging: off(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_game_is_logged_unless_no_log_says_otherwise() {
+        assert!(Logging::default().enabled());
+        assert!(
+            Logging {
+                log: true,
+                no_log: false
+            }
+            .enabled()
+        );
+        assert!(
+            !Logging {
+                log: false,
+                no_log: true
+            }
+            .enabled()
+        );
     }
 
     #[test]

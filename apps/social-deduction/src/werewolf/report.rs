@@ -379,7 +379,7 @@ fn in_order<'a>(players: impl IntoIterator<Item = &'a PlayerId>) -> Vec<&'a Play
 /// Seat order: by the number a name ends in, so that `player2` comes
 /// before `player10`, and by the name where that does not tell.
 fn seat_order(a: &PlayerId, b: &PlayerId) -> Ordering {
-    numbered(a).cmp(&numbered(b)).then_with(|| a.cmp(b))
+    (numbered(a), a).cmp(&(numbered(b), b))
 }
 
 /// `name` as what comes before its number and the number, when it ends in
