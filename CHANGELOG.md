@@ -41,6 +41,10 @@ workflow takes a version's notes from here.
 - Timers: `Context::think_after` hands a message to the think loop once a
   delay has passed. A due timer is thought about ahead of whatever is
   waiting on the think queue.
+- A model player's failure to select, whether the model was not reached
+  or answered with something that is not a selection, is logged as
+  `Failed` with the phase and the error, and narrated as it happens. The
+  player has not selected, and the game goes on.
 
 ### Changed
 

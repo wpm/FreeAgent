@@ -41,10 +41,9 @@ pub type PlayerId = ActorId;
 /// The environment's name in the episode.
 pub const ENVIRONMENT: &str = "environment";
 
-/// An episode of a game: `environment`, which runs it and holds `logger`,
-/// and a player for each of `players` built by `player`. A player may send
-/// to the environment alone, stops nobody, has no logger, and does not
-/// think.
+/// An episode of a game: `environment`, which runs it, and a player for
+/// each of `players` built by `player`. Everyone holds `logger`. A player
+/// may send to the environment alone, stops nobody, and does not think.
 pub fn episode<A>(
     environment: ActorInit<A>,
     players: impl IntoIterator<Item = PlayerId>,
@@ -58,8 +57,9 @@ where
 }
 
 /// The episode of [`episode`], whose players may think: `player` builds
-/// each player's behavior and its think loop, if it has one. A player may
-/// send to the environment alone, stops nobody, and has no logger.
+/// each player's behavior and its think loop, if it has one. Everyone
+/// holds `logger`. A player may send to the environment alone and stops
+/// nobody.
 pub fn thinking_episode<A>(
     environment: ActorInit<A>,
     players: impl IntoIterator<Item = PlayerId>,
@@ -79,7 +79,7 @@ where
                 think,
                 can_send_to: HashSet::from([ENVIRONMENT.to_string()]),
                 can_shut_down: HashSet::new(),
-                has_logger: false,
+                has_logger: true,
             },
         );
     }
@@ -558,10 +558,12 @@ pub enum Message {
 }
 impl free_agent::Message for Message {}
 
-/// What the environment writes to the log: the deal, the configuration of
-/// a model-played game, every message to or from a player as it was, and
-/// the result. Only the result summarizes anything; the rest is kept whole
-/// for whatever reads the log later.
+/// What the log holds: the deal, the configuration of a model-played game,
+/// every message to or from a player as it was, each failure of a model
+/// player to select, and the result. The environment writes all but the
+/// failures, which the player that failed writes. Only the result
+/// summarizes anything; the rest is kept whole for whatever reads the log
+/// later.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Entry {
     /// The game begins: who plays what, under which variation, and how
@@ -602,6 +604,16 @@ pub enum Entry {
         from: PlayerId,
         /// What they said.
         message: Message,
+    },
+    /// `player` failed to select in the phase numbered `seq`: the model was
+    /// not reached, or answered with something that is not a selection.
+    Failed {
+        /// Who failed.
+        player: PlayerId,
+        /// The phase it was selecting in.
+        seq: u64,
+        /// What went wrong, as the error says it, causes included.
+        error: String,
     },
     /// The night was resolved: whom the werewolves elected, and which
     /// doctors protected them. A night in which the werewolves elected
@@ -836,13 +848,23 @@ mod tests {
     #[test]
     fn an_entry_survives_a_trip_through_json() {
         let state = village();
-        let entry = Entry::Sent {
-            to: "seer".to_string(),
-            message: Message::Observation(state.observation("seer".to_string()).unwrap()),
-        };
-        let json = serde_json::to_string(&entry).unwrap();
-        let back: Entry = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, entry);
+        let entries = [
+            Entry::Sent {
+                to: "seer".to_string(),
+                message: Message::Observation(state.observation("seer".to_string()).unwrap()),
+            },
+            Entry::Failed {
+                player: "seer".to_string(),
+                seq: 3,
+                error: "POST http://localhost:1234/v1/chat/completions: connection refused"
+                    .to_string(),
+            },
+        ];
+        for entry in entries {
+            let json = serde_json::to_string(&entry).unwrap();
+            let back: Entry = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, entry);
+        }
     }
 
     #[test]

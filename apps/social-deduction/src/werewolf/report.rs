@@ -40,7 +40,10 @@ enum Voice {
 /// the time between, to the nearest second, after who died. A phase
 /// announced is told as one requested, and a selection as a reply, unless
 /// a later phase has been announced since: then it is told as too late to
-/// count, for the phase it was for.
+/// count, for the phase it was for. A player's failure to select is told
+/// by the omniscient narrator as it happens, with what went wrong, and for
+/// the phase it was for if that phase has ended; a player's narrator
+/// leaves it out, since the player is not told of it.
 #[derive(Debug, Default)]
 pub struct Narrator {
     /// Whose account this is.
@@ -130,6 +133,16 @@ impl Narrator {
             Entry::Hunted(hunt) if matches!(self.voice, Voice::Omniscient) => {
                 self.hunted = Some(self.hunt(hunt));
                 vec![]
+            }
+            Entry::Failed { player, seq, error } if matches!(self.voice, Voice::Omniscient) => {
+                let player = self.seat(player);
+                vec![match self.late(*seq) {
+                    Some(phase) => format!(
+                        "{player} fails to select for {}: {error}",
+                        title(phase).to_lowercase()
+                    ),
+                    None => format!("{player} fails to select: {error}"),
+                }]
             }
             Entry::End {
                 winner,
@@ -952,6 +965,43 @@ mod tests {
             narrator.narrate(&selected("doctor", 2, "ann")),
             ["You choose ann for day 1 too late to count."]
         );
+    }
+
+    /// `player` failed to select in the phase numbered `seq`, the server
+    /// having refused the request.
+    fn failed(player: &str, seq: u64) -> Event<Entry> {
+        logged(Entry::Failed {
+            player: id(player),
+            seq,
+            error: "POST http://localhost:1234/v1/chat/completions was answered 400 Bad Request"
+                .to_string(),
+        })
+    }
+
+    #[test]
+    fn a_failure_to_select_is_told_as_it_happens_with_what_went_wrong() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&announced("wolf", 1, 1, Phase::Night, &everyone));
+        assert_eq!(
+            narrator.narrate(&failed("wolf", 1)),
+            ["wolf (werewolf) fails to select: POST \
+              http://localhost:1234/v1/chat/completions was answered 400 Bad Request"]
+        );
+        // A failure that comes once a later phase has begun names its own.
+        narrator.narrate(&announced("wolf", 2, 1, Phase::Day, &everyone));
+        assert_eq!(
+            narrator.narrate(&failed("wolf", 1)),
+            ["wolf (werewolf) fails to select for night 1: POST \
+              http://localhost:1234/v1/chat/completions was answered 400 Bad Request"]
+        );
+    }
+
+    #[test]
+    fn a_player_is_not_told_of_its_own_failure_to_select() {
+        let mut narrator = Narrator::for_player(id("wolf"));
+        assert!(narrator.narrate(&failed("wolf", 1)).is_empty());
     }
 
     #[test]

@@ -22,11 +22,12 @@
 //! the model that history as a story from its own point of view and where
 //! the game stands, and has it select one of the player's [candidates]
 //! with one forced tool call. The call is made in the player's think loop,
-//! so the player keeps perceiving while the model works. An answer that is
-//! not a selection is no selection. [`game`] builds the episode from the
-//! deal, the rules, the model, and the [`Configuration`] the log opens
-//! with, which [`Settings::configuration`] records from the settings, the
-//! deal and the rendered prompts.
+//! so the player keeps perceiving while the model works. A model that is
+//! not reached, or an answer that is not a selection, is no selection: the
+//! player logs the failure and the game goes on. [`game`] builds the
+//! episode from the deal, the rules, the model, and the [`Configuration`]
+//! the log opens with, which [`Settings::configuration`] records from the
+//! settings, the deal and the rendered prompts.
 
 use super::announced;
 use super::report::Narrator;
@@ -669,6 +670,33 @@ impl Player {
             select(candidates),
         ))
     }
+
+    /// Ask the model to select one of `candidates` in the phase numbered
+    /// `seq`, which `observation` shows, remember what it selects, and
+    /// send the selection to the environment. A model that cannot be
+    /// reached or answers with something that is not a selection of a
+    /// candidate is an error, and no selection.
+    async fn ask(
+        &self,
+        seq: u64,
+        observation: &Observation,
+        candidates: &[PlayerId],
+    ) -> anyhow::Result<()> {
+        let me = &self.context.id;
+        let request = self.request(observation, candidates)?;
+        let response = self.mind.model.complete(&request).await?;
+        let selection = Message::Select {
+            seq,
+            from: me.clone(),
+            target: selected(&response, candidates)?,
+        };
+        self.remember(Entry::Received {
+            from: me.clone(),
+            message: selection.clone(),
+        });
+        self.context
+            .send(selection, HashSet::from([ENVIRONMENT.to_string()]))
+    }
 }
 
 #[async_trait]
@@ -698,33 +726,28 @@ impl Behavior for Player {
 impl Think for Player {
     type Message = Message;
 
-    /// Announced a phase, select someone in it: ask the model, remember
-    /// what it selects, and send the selection to the environment. With
-    /// nobody to select, the model is not asked. An answer that is not a
-    /// selection of a candidate is an error, and no selection. Nothing
-    /// else is thought about.
+    /// Announced a phase, select someone in it: ask the model, and if that
+    /// fails, log the failure with the phase and what went wrong, causes
+    /// included, which is all there is to do about it: the player has not
+    /// selected, and the game goes on. The failure is not remembered, so
+    /// the model is never told of it. With nobody to select, the model is
+    /// not asked. Nothing else is thought about.
     async fn think(&mut self, message: &Message) -> anyhow::Result<()> {
         let Message::Announce { seq, observation } = message else {
             return Ok(());
         };
-        let me = &self.context.id;
-        let candidates = candidates(me, observation);
+        let candidates = candidates(&self.context.id, observation);
         if candidates.is_empty() {
             return Ok(());
         }
-        let request = self.request(observation, &candidates)?;
-        let response = self.mind.model.complete(&request).await?;
-        let selection = Message::Select {
-            seq: *seq,
-            from: me.clone(),
-            target: selected(&response, &candidates)?,
-        };
-        self.remember(Entry::Received {
-            from: me.clone(),
-            message: selection.clone(),
-        });
-        self.context
-            .send(selection, HashSet::from([ENVIRONMENT.to_string()]))
+        if let Err(error) = self.ask(*seq, observation, &candidates).await {
+            self.context.log(Entry::Failed {
+                player: self.context.id.clone(),
+                seq: *seq,
+                error: format!("{error:#}"),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -1529,9 +1552,37 @@ player2 = \"Cautious.\"
         Ok(Response::tool_call(SELECT, &json!({"target": "wolf"})))
     }
 
-    /// The answer of a model that is down.
+    /// A response as a provider sends it, for the shapes `Response::tool_call`
+    /// cannot make.
+    fn answered(said: serde_json::Value) -> Response {
+        serde_json::from_value(said).unwrap()
+    }
+
+    /// The answer that makes no tool call.
+    fn saying_nothing(_: &Request) -> anyhow::Result<Response> {
+        Ok(answered(
+            json!({"choices": [{"message": {"content": "bob"}}]}),
+        ))
+    }
+
+    /// The answer of a model that is down: a request that failed, and why.
     fn down(_: &Request) -> anyhow::Result<Response> {
-        Err(anyhow!("the model is down"))
+        Err(anyhow!("connection refused")
+            .context("POST http://localhost:1234/v1/chat/completions failed"))
+    }
+
+    /// The failures the players logged, each as who failed, in which
+    /// phase, and what went wrong, in the log's order.
+    fn failed(logged: &[Entry]) -> Vec<(&str, u64, &str)> {
+        logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Failed { player, seq, error } => {
+                    Some((player.as_str(), *seq, error.as_str()))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     #[tokio::test(start_paused = true)]
@@ -1663,13 +1714,20 @@ player2 = \"Cautious.\"
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_bad_answer_by_night_is_no_selection_and_the_day_is_played_normally() {
+    async fn a_failure_by_night_is_logged_as_no_selection_and_the_day_is_played_normally() {
         // Nobody dies the night the werewolf fails to select, which waits
         // out its limit. By day everyone selects its first candidate, and
         // ann dies by day, bringing the werewolf to parity.
-        for by_night in [
-            naming_itself as fn(&Request) -> anyhow::Result<Response>,
-            down,
+        for (by_night, error) in [
+            (
+                down as fn(&Request) -> anyhow::Result<Response>,
+                "POST http://localhost:1234/v1/chat/completions failed: connection refused",
+            ),
+            (saying_nothing, "the model made no tool call"),
+            (
+                naming_itself,
+                "the model selected wolf, who is not a candidate",
+            ),
         ] {
             let model = answering(move |request| {
                 if request.messages[1].content.contains("It is night") {
@@ -1683,6 +1741,7 @@ player2 = \"Cautious.\"
             assert_eq!(winner, Team::Werewolves);
             assert_eq!(took, quick().night_limit);
             assert_eq!(model.requests().len(), 4);
+            assert_eq!(failed(&logged), [("wolf", 1, error)]);
             let mut received = received(&logged);
             received.sort_by_key(|message| format!("{message:?}"));
             assert_eq!(
@@ -1693,7 +1752,66 @@ player2 = \"Cautious.\"
                     &selection(2, "wolf", "ann")
                 ]
             );
+            // The werewolf's story is what it was shown and what it did,
+            // and nothing of the failure.
+            let asked = asked_of(&model, "wolf");
+            assert_eq!(
+                story(&asked[1]),
+                "You are wolf, the only werewolf.\n\
+                 \n\
+                 Night 1.\n\
+                 Nobody dies.\n\
+                 \n\
+                 Day 1."
+            );
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_game_whose_model_always_fails_is_told_failure_by_failure_and_still_ends() {
+        // Two werewolves against two villagers are at parity once the first
+        // night ends, so the game ends with nobody selecting anything.
+        let roles = HashMap::from([
+            ("wolf1".to_string(), Role::Werewolf),
+            ("wolf2".to_string(), Role::Werewolf),
+            ("ann".to_string(), Role::Villager),
+            ("bob".to_string(), Role::Villager),
+        ]);
+        let model = Arc::new(FakeModel::failing("the model is down"));
+        let (winner, entries, took) = play(roles, quick(), model).await.unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        assert_eq!(took, quick().night_limit);
+        assert!(received(&entries).is_empty());
+        let mut narrator = Narrator::default();
+        let mut told: Vec<String> = entries
+            .into_iter()
+            .flat_map(|entry| narrator.narrate(&logged(entry)))
+            .collect();
+        // The werewolves fail side by side, in no particular order. The
+        // night takes no time because every event is stamped at the epoch.
+        told[8..10].sort();
+        assert_eq!(
+            told.join("\n"),
+            "LLM with 4 players:\n\
+             ann (villager)\n\
+             bob (villager)\n\
+             wolf1 (werewolf)\n\
+             wolf2 (werewolf)\n\
+             A night waits 10s and a day 10s.\n\
+             \n\
+             Night 1.\n\
+             wolf1 (werewolf) fails to select: the model is down\n\
+             wolf2 (werewolf) fails to select: the model is down\n\
+             Nobody dies.\n\
+             Night 1 took 0s.\n\
+             \n\
+             The werewolves win after 0 days.\n\
+             Survivors:\n\
+             ann (villager)\n\
+             bob (villager)\n\
+             wolf1 (werewolf)\n\
+             wolf2 (werewolf)"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1822,9 +1940,6 @@ player2 = \"Cautious.\"
             .unwrap(),
             "bob"
         );
-        // A response as a provider sends it, for the shapes `tool_call`
-        // cannot make.
-        let answered = |said: serde_json::Value| serde_json::from_value::<Response>(said).unwrap();
         let wrong = [
             ("no choice", answered(json!({"choices": []}))),
             (
