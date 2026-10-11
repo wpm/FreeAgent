@@ -32,6 +32,8 @@ workflow takes a version's notes from here.
 - The log's start entry carries how long a night and a day wait for the
   players, and the narration tells the limits after the deal and, as each
   phase ends, how long it took.
+- The log's end entry carries how long the whole game took, from the deal
+  to the end, and the narration tells it after who won.
 - An optional think loop for actors: `Think`, `ThinkBuilder` and
   `ActorInit::think`, with `Context::think` to hand a message to it from
   either loop. It runs in a task of its own, so an actor keeps perceiving

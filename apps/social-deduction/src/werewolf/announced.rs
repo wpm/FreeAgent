@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::oneshot;
+use tokio::time::Instant;
 
 /// Everything the episode needs to run the environment for a game of
 /// `roles` under `rules`, as the actor `wrap` makes of it: it may send to
@@ -66,6 +67,8 @@ struct Game {
     selections: Choices,
     /// Where the winning team goes when the game ends. Taken when sent.
     winner: Option<oneshot::Sender<Team>>,
+    /// When the game was made, which is as good as when it was dealt.
+    started: Instant,
 }
 
 impl Game {
@@ -79,6 +82,7 @@ impl Game {
             awake: HashSet::new(),
             selections: Choices::new(),
             winner: Some(winner),
+            started: Instant::now(),
         }
     }
 
@@ -220,11 +224,12 @@ impl Environment {
     /// The survivors stop first: a player still waiting on its model is
     /// dropped at that wait, and logs nothing after the end.
     fn end_game(&self, winner: Team) -> anyhow::Result<()> {
-        let (days, survivors, report) = {
+        let (days, survivors, took, report) = {
             let mut game = self.game();
             (
                 game.state.days(),
                 game.state.alive.clone(),
+                game.started.elapsed(),
                 game.winner.take(),
             )
         };
@@ -235,6 +240,7 @@ impl Environment {
             winner,
             days,
             survivors,
+            took,
         });
         if let Some(report) = report {
             // The owner of the episode may have stopped listening.

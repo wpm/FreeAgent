@@ -615,6 +615,10 @@ pub enum Entry {
         days: u8,
         /// Who was still alive.
         survivors: HashSet<PlayerId>,
+        /// How long the whole game took, from the deal to the end, written
+        /// as `humantime` writes it.
+        #[serde(with = "humantime_serde")]
+        took: Duration,
     },
 }
 
