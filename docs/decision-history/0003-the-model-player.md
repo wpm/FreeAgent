@@ -1,6 +1,6 @@
 # ADR-0003: The model player
 
-**Status:** Accepted
+**Status:** Accepted, amended by [ADR-0006](0006-players-talk-by-day.md)
 **Date:** 2026-10-09
 **Deciders:** Bill McNeill
 **Depends on:** [ADR-0001](0001-games-and-variants-are-modules-and-subcommands.md),
