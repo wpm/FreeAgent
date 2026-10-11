@@ -417,31 +417,6 @@ mod tests {
     }
 
     #[test]
-    fn the_llm_variant_alone_takes_the_ratify_limit() {
-        assert_eq!(
-            parsed(&["werewolf", "llm", "game.toml", "--ratify-limit", "15s"]),
-            CommandLine::Werewolf(Werewolf::Llm {
-                config: PathBuf::from("game.toml"),
-                overrides: llm::Overrides {
-                    ratify_limit: Some(Duration::from_secs(15)),
-                    ..llm::Overrides::default()
-                },
-                logging: Logging::default(),
-            })
-        );
-        assert!(
-            CommandLine::try_parse_from([
-                "social-deduction",
-                "werewolf",
-                "uniform-random",
-                "--ratify-limit",
-                "15s"
-            ])
-            .is_err()
-        );
-    }
-
-    #[test]
     fn the_llm_help_lists_the_model_options_under_a_heading_of_their_own() {
         let help = CommandLine::command()
             .find_subcommand_mut("werewolf")
@@ -489,23 +464,25 @@ mod tests {
     #[test]
     fn the_help_names_the_defaults_the_code_fills_in() {
         let table = Table::default();
-        let counts = vec![
+        let counts = [
             ("--werewolves", table.werewolves.to_string()),
             ("--villagers", table.villagers.to_string()),
             ("--doctors", table.doctors.to_string()),
             ("--seers", table.seers.to_string()),
         ];
         let rules = Rules::default();
-        let limits = [
-            ("--night-limit", rules.night_limit),
-            ("--day-limit", rules.day_limit),
-        ]
-        .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()));
-        let defaults = [counts, limits.to_vec()].concat();
-        let ratify = (
-            "--ratify-limit",
-            humantime::format_duration(llm::RATIFY_LIMIT).to_string(),
-        );
+        let limits = |variant| {
+            let mut limits = vec![
+                ("--night-limit", rules.night_limit),
+                ("--day-limit", rules.day_limit),
+            ];
+            if variant == "llm" {
+                limits.push(("--ratify-limit", llm::RATIFY_LIMIT));
+            }
+            limits
+                .into_iter()
+                .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()))
+        };
         for variant in ["uniform-random", "llm"] {
             let help = CommandLine::command()
                 .find_subcommand_mut("werewolf")
@@ -514,11 +491,7 @@ mod tests {
                 .unwrap()
                 .render_help()
                 .to_string();
-            let mut defaults = defaults.clone();
-            if variant == "llm" {
-                defaults.push(ratify.clone());
-            }
-            for (option, default) in &defaults {
+            for (option, default) in counts.iter().cloned().chain(limits(variant)) {
                 let line = help.lines().find(|line| line.contains(option)).unwrap();
                 assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
             }

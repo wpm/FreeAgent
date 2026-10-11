@@ -206,16 +206,9 @@ fn the_uniform_random_variant_takes_the_limits_and_needs_no_configuration_file()
 #[test]
 fn a_uniform_random_day_ends_once_everyone_has_voted_and_is_logged_as_such() {
     let (events, printed) = played("uniform-random", &[]);
-    let endings: Vec<&Ending> = events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            Entry::Voted { by, .. } => Some(by),
-            _ => None,
-        })
-        .collect();
-    assert!(!endings.is_empty(), "{events:?}");
+    let endings = endings(&events);
     assert!(
-        endings.iter().all(|by| **by == Ending::AllSelected),
+        endings.iter().all(|by| *by == Ending::AllSelected),
         "{endings:?}"
     );
     // Which the narration says nothing of.
@@ -312,6 +305,19 @@ fn configured(test: &str, name: &str, base_url: &str, id: &str) -> String {
     path
 }
 
+/// How each day in `events` ended, in order.
+fn endings(events: &[Event<Entry>]) -> Vec<Ending> {
+    let endings: Vec<Ending> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            Entry::Voted { by, .. } => Some(*by),
+            _ => None,
+        })
+        .collect();
+    assert!(!endings.is_empty(), "{events:?}");
+    endings
+}
+
 /// The configuration the log of `events` has right after the deal.
 fn configuration(events: &[Event<Entry>]) -> &Configuration {
     let Some(Entry::Configuration(configuration)) = events.get(1).map(|event| &event.payload)
@@ -349,16 +355,9 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
     assert_eq!(configuration.ratify_limit, Duration::from_secs(1));
     // Everyone votes at once, so each day's votes stand after the ratify
     // limit and the selected player is voted out.
-    let endings: Vec<&Ending> = events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            Entry::Voted { by, .. } => Some(by),
-            _ => None,
-        })
-        .collect();
-    assert!(!endings.is_empty(), "{events:?}");
+    let endings = endings(&events);
     assert!(
-        endings.iter().all(|by| **by == Ending::Ratified),
+        endings.iter().all(|by| *by == Ending::Ratified),
         "{endings:?}"
     );
     // Each player was told the prompt for the role it was dealt.

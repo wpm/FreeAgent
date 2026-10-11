@@ -81,23 +81,30 @@ struct Game {
     /// The number of the last message the environment sent to a player.
     /// Each announcement is a message of its own.
     n: u64,
-    /// The players awake in the current phase. Emptied once the phase has
-    /// ended, so that nothing counts until the next one opens.
-    awake: HashSet<PlayerId>,
-    /// Each awake player's selection in the current phase: its latest in a
-    /// day with a ratify limit, its first otherwise.
-    selections: Choices,
-    /// In a day with a ratify limit, the tentative decision standing: the
-    /// player the votes select, if they select anyone.
-    tentative: Option<PlayerId>,
-    /// How many selections have counted in the current phase, which numbers
-    /// the ratify timers so that a stale one is known. Zero once the phase
-    /// has ended, so that none of its timers fires.
-    count: u64,
+    /// The phase underway, while one is: taken when it ends, so that
+    /// nothing more counts until the next one opens.
+    underway: Option<Underway>,
     /// Where the winning team goes when the game ends. Taken when sent.
     winner: Option<oneshot::Sender<Team>>,
     /// When the game was made, which is as good as when it was dealt.
     started: Instant,
+}
+
+/// The phase underway: whom the environment waits on and what they have
+/// said.
+#[derive(Default)]
+struct Underway {
+    /// The players awake in the phase.
+    awake: HashSet<PlayerId>,
+    /// Each awake player's selection: its latest in a day with a ratify
+    /// limit, its first otherwise.
+    selections: Choices,
+    /// In a day with a ratify limit, the tentative decision standing: the
+    /// player the votes select, if they select anyone.
+    tentative: Option<PlayerId>,
+    /// How many selections have counted, which numbers the ratify timers so
+    /// that a stale one is known.
+    count: u64,
 }
 
 /// What the environment does about a selection that counted.
@@ -122,29 +129,23 @@ impl Game {
             rules,
             seq: 0,
             n: 0,
-            awake: HashSet::new(),
-            selections: Choices::new(),
-            tentative: None,
-            count: 0,
+            underway: None,
             winner: Some(winner),
             started: Instant::now(),
         }
     }
 
-    /// Open the next phase: number it, wake its players, write each one
-    /// its announcement, numbered in turn, and clear the selections.
+    /// Open the next phase: number it, wake its players, and write each one
+    /// its announcement, numbered in turn.
     fn open(&mut self) -> anyhow::Result<Opened> {
         self.seq += 1;
-        self.awake = self.state.awake();
-        self.selections.clear();
-        self.tentative = None;
-        self.count = 0;
+        let awake = self.state.awake();
         let limit = match self.state.phase {
             Phase::Night => self.rules.night_limit,
             Phase::Day => self.rules.day_limit,
         };
         let mut announcements = Vec::new();
-        for player in &self.awake {
+        for player in &awake {
             self.n += 1;
             let message = Message::Announce {
                 seq: self.seq,
@@ -154,6 +155,10 @@ impl Game {
             };
             announcements.push((player.clone(), message));
         }
+        self.underway = Some(Underway {
+            awake,
+            ..Underway::default()
+        });
         Ok(Opened {
             seq: self.seq,
             announcements,
@@ -170,28 +175,33 @@ impl Game {
     }
 
     /// Record `from`'s selection of `target` in the phase numbered `seq`
-    /// if it counts: the phase is the current one and `from` is awake in
+    /// if it counts: the phase is the one underway and `from` is awake in
     /// it, and, unless the day's vote is ratified, this is its first
     /// selection. Returns what the environment does about a selection that
     /// counted, and nothing for one that did not.
     fn select(&mut self, seq: u64, from: &PlayerId, target: &PlayerId) -> Option<Counted> {
-        if seq != self.seq || !self.awake.contains(from) {
+        if seq != self.seq {
             return None;
         }
-        let Some(ratify) = self.ratifying() else {
-            if self.selections.contains_key(from) {
+        let ratifying = self.ratifying();
+        let underway = self.underway.as_mut()?;
+        if !underway.awake.contains(from) {
+            return None;
+        }
+        let Some(ratify) = ratifying else {
+            if underway.selections.contains_key(from) {
                 return None;
             }
-            self.selections.insert(from.clone(), target.clone());
+            underway.selections.insert(from.clone(), target.clone());
             return Some(Counted {
-                last: self.selections.len() == self.awake.len(),
+                last: underway.selections.len() == underway.awake.len(),
                 ..Counted::default()
             });
         };
-        self.selections.insert(from.clone(), target.clone());
-        self.count += 1;
-        let selected = self.rules.day_vote.elect(&self.selections);
-        let tentative = (selected != self.tentative).then(|| {
+        underway.selections.insert(from.clone(), target.clone());
+        underway.count += 1;
+        let selected = self.rules.day_vote.elect(&underway.selections);
+        let tentative = (selected != underway.tentative).then(|| {
             self.n += 1;
             let message = Message::Tentative {
                 seq: self.seq,
@@ -201,11 +211,11 @@ impl Game {
             };
             (message, self.state.alive.clone())
         });
-        self.tentative = selected;
-        let ratify = self.tentative.is_some().then(|| {
+        underway.tentative = selected;
+        let ratify = underway.tentative.is_some().then(|| {
             let reminder = Message::Ratify {
                 seq: self.seq,
-                count: self.count,
+                count: underway.count,
             };
             (ratify, reminder)
         });
@@ -217,19 +227,22 @@ impl Game {
     }
 
     /// End the phase numbered `seq` at its limit, or because everyone awake
-    /// has selected, unless it has already ended. Returns how it ended, or
-    /// nothing if it had.
+    /// has selected, unless it has already ended. At the limit of a day
+    /// whose vote is ratified nothing stands, whatever was. Returns how the
+    /// phase ended, or nothing if it had already.
     fn end(&mut self, seq: u64) -> Option<Ended> {
         if seq != self.seq {
             return None;
         }
-        let everyone = self.ratifying().is_none() && self.selections.len() == self.awake.len();
-        let by = if everyone {
-            Ending::AllSelected
-        } else {
-            Ending::DayLimit
+        let Underway {
+            awake, selections, ..
+        } = self.underway.take()?;
+        let (ballots, by) = match self.ratifying() {
+            Some(_) => (Choices::new(), Ending::DayLimit),
+            None if selections.len() == awake.len() => (selections, Ending::AllSelected),
+            None => (selections, Ending::DayLimit),
         };
-        Some(self.conclude(by))
+        Some(self.conclude(&ballots, by))
     }
 
     /// End the day numbered `seq` because its votes have stood for the
@@ -238,36 +251,29 @@ impl Game {
     /// has ended. Returns how it ended, or nothing if the reminder was
     /// stale.
     fn ratify(&mut self, seq: u64, count: u64) -> Option<Ended> {
-        if seq != self.seq || count != self.count {
+        if seq != self.seq || self.underway.as_ref()?.count != count {
             return None;
         }
-        Some(self.conclude(Ending::Ratified))
+        let Underway { selections, .. } = self.underway.take()?;
+        Some(self.conclude(&selections, Ending::Ratified))
     }
 
-    /// End the current phase: resolve it from its selections under its
-    /// vote, a day as ended `by`, put everyone to sleep so nothing more
-    /// counts, and move on to the next phase if the game goes on. A day
-    /// with a ratify limit that ran out votes nobody out, whatever was
-    /// standing.
-    fn conclude(&mut self, by: Ending) -> Ended {
+    /// End the current phase: resolve it from `ballots` under its vote, a
+    /// day as ended `by`, and move on to the next phase if the game goes
+    /// on.
+    fn conclude(&mut self, ballots: &Choices, by: Ending) -> Ended {
         let outcome = match self.state.phase {
             Phase::Night => Outcome::Night(
                 self.state
-                    .resolve_night(&self.selections, self.rules.night_vote.as_ref()),
+                    .resolve_night(ballots, self.rules.night_vote.as_ref()),
             ),
-            Phase::Day => {
-                let ran_out = self.ratifying().is_some() && by == Ending::DayLimit;
-                let out = if ran_out {
-                    None
-                } else {
-                    self.state
-                        .resolve_day(&self.selections, self.rules.day_vote.as_ref())
-                };
-                Outcome::Day { out, by }
-            }
+            Phase::Day => Outcome::Day {
+                out: self
+                    .state
+                    .resolve_day(ballots, self.rules.day_vote.as_ref()),
+                by,
+            },
         };
-        self.awake.clear();
-        self.count = 0;
         let winner = self.state.winner();
         if winner.is_none() {
             self.state.next();
@@ -489,12 +495,17 @@ impl Think for Environment {
 mod tests {
     use super::*;
     use crate::werewolf::candidates;
-    use crate::werewolf::tests::{one_wolf_against, selection, village};
+    use crate::werewolf::tests::{self, one_wolf_against, selection, village};
     use crate::werewolf::uniform_random::Actor;
-    use crate::werewolf::uniform_random::tests::{Script, at_once, mute, play, quick};
+    use crate::werewolf::uniform_random::tests::{Script, Seat, at_once, mute, play, quick};
 
     fn id(name: &str) -> PlayerId {
         name.to_string()
+    }
+
+    /// The selections that count in the phase underway.
+    fn selections(game: &Game) -> &Choices {
+        &game.underway.as_ref().unwrap().selections
     }
 
     /// A game of `roles` under `rules`, with its first night open.
@@ -580,14 +591,14 @@ mod tests {
         let (mut game, Opened { seq, .. }) = opened();
         assert_eq!(game.select(seq - 1, &id("wolf1"), &id("villager")), None);
         assert_eq!(game.select(seq + 1, &id("wolf1"), &id("villager")), None);
-        assert!(game.selections.is_empty());
+        assert!(selections(&game).is_empty());
     }
 
     #[test]
     fn a_selection_by_a_player_who_is_not_awake_does_not_count() {
         let (mut game, Opened { seq, .. }) = opened();
         assert_eq!(game.select(seq, &id("villager"), &id("wolf1")), None);
-        assert!(game.selections.is_empty());
+        assert!(selections(&game).is_empty());
     }
 
     #[test]
@@ -596,7 +607,7 @@ mod tests {
         game.select(seq, &id("wolf1"), &id("villager"));
         game.select(seq, &id("wolf2"), &id("villager"));
         assert_eq!(game.select(seq, &id("wolf1"), &id("seer")), None);
-        assert_eq!(game.selections[&id("wolf1")], id("villager"));
+        assert_eq!(selections(&game)[&id("wolf1")], id("villager"));
     }
 
     #[test]
@@ -686,7 +697,8 @@ mod tests {
         assert_eq!(game.state.days(), 0);
     }
 
-    /// Rules under which a day's votes stand after twenty seconds.
+    /// Rules under which a day's votes stand after twenty seconds, as the
+    /// shared [`tests::tentative`] has them.
     fn ratified() -> Rules {
         Rules {
             ratify_limit: Some(RATIFY),
@@ -709,14 +721,8 @@ mod tests {
     /// The tentative decision for the day numbered `seq`, the `n`th message
     /// the environment sent, naming `target` or nobody, to everyone alive.
     fn tentative(seq: u64, n: u64, target: Option<&str>) -> Option<(Message, HashSet<PlayerId>)> {
-        let message = Message::Tentative {
-            seq,
-            n,
-            target: target.map(id),
-            ratify: RATIFY,
-        };
         let everyone = ["wolf", "ann", "bob", "cat"].map(id).into();
-        Some((message, everyone))
+        Some((tests::tentative(seq, n, target), everyone))
     }
 
     /// The ratify timer set by the `count`th counting selection of the day
@@ -800,7 +806,7 @@ mod tests {
                 ratify: timer(day, 2),
             })
         );
-        assert_eq!(game.selections[&id("ann")], id("bob"));
+        assert_eq!(selections(&game)[&id("ann")], id("bob"));
         // Everyone selecting does not end the day.
         for voter in ["wolf", "bob", "cat"] {
             assert!(!game.select(day, &id(voter), &id("ann")).unwrap().last);
@@ -813,7 +819,7 @@ mod tests {
         let (mut game, Opened { seq, .. }) = opened_under(roles, ratified());
         assert_eq!(game.select(seq, &id("wolf"), &id("ann")), last());
         assert_eq!(game.select(seq, &id("wolf"), &id("bob")), None);
-        assert_eq!(game.selections[&id("wolf")], id("ann"));
+        assert_eq!(selections(&game)[&id("wolf")], id("ann"));
     }
 
     #[test]
@@ -876,11 +882,25 @@ mod tests {
         })
     }
 
+    /// Run a game of one werewolf against ann, bob and cat under
+    /// [`ratifying_quickly`], in which the werewolf kills ann the first
+    /// night and `bob` and `cat` are the seats given.
+    async fn play_a_day(bob: Seat, cat: Seat) -> (Team, Vec<Entry>, Duration) {
+        let roles = one_wolf_against(&["ann", "bob", "cat"]);
+        let puppets = HashMap::from([
+            ("wolf", Actor::puppet(hunting())),
+            ("ann", mute()),
+            ("bob", bob),
+            ("cat", cat),
+        ]);
+        play(roles, ratifying_quickly(), puppets).await.unwrap()
+    }
+
     /// A villager, announced the day alone, who votes against each of
     /// `targets` in turn, the first `first` after the day is announced and
     /// each of the rest `every` after the one before.
-    fn voting(first: Duration, targets: &'static [&'static str], every: Duration) -> Script {
-        Box::new(move |me, seq, _| {
+    fn voter(first: Duration, targets: &'static [&'static str], every: Duration) -> Seat {
+        Actor::puppet(Box::new(move |me, seq, _| {
             targets
                 .iter()
                 .enumerate()
@@ -889,26 +909,7 @@ mod tests {
                     (after, selection(seq, me, i as u64 + 1, target))
                 })
                 .collect()
-        })
-    }
-
-    /// A player who says nothing, by night or by day.
-    fn silent() -> Script {
-        Box::new(|_, _, _| vec![])
-    }
-
-    /// Run a game of one werewolf against ann, bob and cat under
-    /// [`ratifying_quickly`], in which the werewolf kills ann the first
-    /// night and `bob` and `cat` vote as scripted by day.
-    async fn play_a_day(bob: Script, cat: Script) -> (Team, Vec<Entry>, Duration) {
-        let roles = one_wolf_against(&["ann", "bob", "cat"]);
-        let puppets = HashMap::from([
-            ("wolf", Actor::puppet(hunting())),
-            ("ann", mute()),
-            ("bob", Actor::puppet(bob)),
-            ("cat", Actor::puppet(cat)),
-        ]);
-        play(roles, ratifying_quickly(), puppets).await.unwrap()
+        }))
     }
 
     /// How each day ended, in order.
@@ -952,8 +953,8 @@ mod tests {
         // Bob votes against the werewolf at once and cat a second later,
         // which restarts the timer without changing the decision, so the
         // day ends six seconds in, well before its ten-second limit.
-        let bob = voting(Duration::ZERO, &["wolf"], Duration::ZERO);
-        let cat = voting(Duration::from_secs(1), &["wolf"], Duration::ZERO);
+        let bob = voter(Duration::ZERO, &["wolf"], Duration::ZERO);
+        let cat = voter(Duration::from_secs(1), &["wolf"], Duration::ZERO);
         let (winner, logged, took) = play_a_day(bob, cat).await;
         assert_eq!(winner, Team::Villagers);
         assert_eq!(took, Duration::from_secs(6));
@@ -969,8 +970,8 @@ mod tests {
         // Bob votes against cat at once, then changes to the werewolf three
         // seconds in: the day ends eight seconds in, and the werewolf is
         // out, not cat.
-        let bob = voting(Duration::ZERO, &["cat", "wolf"], Duration::from_secs(3));
-        let (winner, logged, took) = play_a_day(bob, silent()).await;
+        let bob = voter(Duration::ZERO, &["cat", "wolf"], Duration::from_secs(3));
+        let (winner, logged, took) = play_a_day(bob, mute()).await;
         assert_eq!(winner, Team::Villagers);
         assert_eq!(took, Duration::from_secs(8));
         assert_eq!(voted(&logged), [(2, Some("wolf"), Ending::Ratified)]);
@@ -990,8 +991,8 @@ mod tests {
         // first vote's timer fires five seconds in and is ignored, and the
         // day runs out at ten with nobody voted out. The werewolf then kills
         // bob and wins.
-        let bob = voting(Duration::ZERO, &["cat"], Duration::ZERO);
-        let cat = voting(Duration::from_secs(2), &["bob"], Duration::ZERO);
+        let bob = voter(Duration::ZERO, &["cat"], Duration::ZERO);
+        let cat = voter(Duration::from_secs(2), &["bob"], Duration::ZERO);
         let (winner, logged, took) = play_a_day(bob, cat).await;
         assert_eq!(winner, Team::Werewolves);
         assert_eq!(took, Duration::from_secs(10));
@@ -1009,12 +1010,12 @@ mod tests {
         // the five-second timer each time, so the day runs out at ten with
         // the werewolf selected and nobody voted out. The timers still
         // pending fire during the next night and are ignored.
-        let bob = voting(
+        let bob = voter(
             Duration::ZERO,
             &["wolf", "wolf", "wolf", "wolf"],
             Duration::from_secs(3),
         );
-        let (winner, logged, took) = play_a_day(bob, silent()).await;
+        let (winner, logged, took) = play_a_day(bob, mute()).await;
         assert_eq!(winner, Team::Werewolves);
         assert_eq!(took, Duration::from_secs(10));
         assert_eq!(voted(&logged), [(2, None, Ending::DayLimit)]);

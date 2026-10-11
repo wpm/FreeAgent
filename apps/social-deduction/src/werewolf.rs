@@ -900,6 +900,7 @@ pub fn candidates(me: &PlayerId, view: &View) -> Vec<PlayerId> {
 
 #[cfg(test)]
 mod tests {
+    use super::llm::Memory;
     use super::*;
     use free_agent::Event;
     use tokio::sync::mpsc::UnboundedReceiver;
@@ -1268,34 +1269,59 @@ mod tests {
         }
     }
 
-    /// The selections the players logged as their actions, in the log's
-    /// order.
-    pub(super) fn selections(logged: &[Entry]) -> Vec<&Message> {
+    /// The selections the players logged as their actions, each with
+    /// everyone it was sent to, in the log's order.
+    pub(super) fn selections_sent(logged: &[Entry]) -> Vec<(&Message, &HashSet<ActorId>)> {
         logged
             .iter()
             .filter_map(|entry| match entry {
                 Entry::Action {
                     message: message @ Message::Select { .. },
+                    to,
                     ..
-                } => Some(message),
+                } => Some((message, to)),
                 _ => None,
             })
             .collect()
     }
 
-    /// The selections the environment logged as its observations, each as
-    /// who sent it, the sender's number for it, and the phase the
-    /// environment was in when it arrived, in the log's order.
-    pub(super) fn observed_by_the_environment(logged: &[Entry]) -> Vec<(&str, u64, u64)> {
+    /// The selections the players logged as their actions, in the log's
+    /// order.
+    pub(super) fn selections(logged: &[Entry]) -> Vec<&Message> {
+        selections_sent(logged)
+            .into_iter()
+            .map(|(message, _)| message)
+            .collect()
+    }
+
+    /// The messages `by` logged as its observations, each as who sent it,
+    /// the sender's number for it, and the phase `by` was in when it
+    /// arrived, in the log's order.
+    pub(super) fn observed_by<'a>(logged: &'a [Entry], by: &str) -> Vec<(&'a str, u64, u64)> {
         logged
             .iter()
             .filter_map(|entry| match entry {
-                Entry::Observation { by, from, n, seq } if by == ENVIRONMENT => {
-                    Some((from.as_str(), *n, *seq))
-                }
+                Entry::Observation {
+                    by: observer,
+                    from,
+                    n,
+                    seq,
+                } if observer == by => Some((from.as_str(), *n, *seq)),
                 _ => None,
             })
             .collect()
+    }
+
+    /// The selections the environment logged as its observations, as
+    /// [`observed_by`] has them.
+    pub(super) fn observed_by_the_environment(logged: &[Entry]) -> Vec<(&str, u64, u64)> {
+        observed_by(logged, ENVIRONMENT)
+    }
+
+    /// A player's memory of receiving `message`, in no episode in
+    /// particular.
+    pub(super) fn received(message: Message) -> Event<Memory> {
+        logged(Memory::Observed { message })
     }
 
     /// A selection of `target` by `from` in the phase numbered `seq`, the
