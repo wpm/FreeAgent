@@ -269,7 +269,7 @@ fn configured(test: &str, name: &str, base_url: &str, id: &str) -> String {
         let replacement = replacements
             .iter()
             .find(|(named, _)| table == "[model]" && key == Some(named));
-        file.push_str(replacement.map_or(line, |(_, line)| line));
+        file.push_str(replacement.map_or(line, |(_, written)| written));
         file.push('\n');
     }
     for (_, line) in &replacements {

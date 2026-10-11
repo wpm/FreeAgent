@@ -6,10 +6,9 @@
 use clap::{Args, Parser, Subcommand};
 use free_agent::{Behavior, Episode, Logger};
 use social_deduction::model::{
-    Model, Provider, REQUEST_TIMEOUT, api_key, check_listed, concerns_the_model, key_variable,
-    known_providers,
+    Model, Provider, REQUEST_TIMEOUT, api_key, check_listed, key_variable, known_providers,
 };
-use social_deduction::werewolf::llm::{self, Config};
+use social_deduction::werewolf::llm::{self, Config, Probed};
 use social_deduction::werewolf::report::Narrator;
 use social_deduction::werewolf::{Entry, PhaseLimits, RoleCounts, Rules, Table, Team};
 use social_deduction::werewolf::{scripted, uniform_random};
@@ -140,7 +139,9 @@ async fn main() -> anyhow::Result<()> {
             let provider = model.provider()?;
             let prompts = settings.prompts()?;
             provider.check_serves(&model.id).await?;
-            llm::check_selects(&provider, &model.id).await?;
+            if let Probed::DidNotSelect(error) = llm::check_selects(&provider, &model.id).await? {
+                return Err(error);
+            }
             let roles = settings.table.deal();
             let configuration = settings.configuration(&roles, &prompts)?;
             let rules = settings.rules();
@@ -214,12 +215,9 @@ enum Mark {
 /// of them when `check` is empty, are asked by `model` for a selection one
 /// at a time, since a local server loads each model it is asked for, and
 /// the rest are unmarked. Why a model that did not select failed goes to
-/// `reasons`: a line `! id` naming it as the listing marks it, then the
-/// error's causes, each on its own indented line, so a provider's words
-/// may run to several lines and still be read as one model's. A model
-/// that could not be asked, because the provider was not reached or
-/// answered with anything but the model's answer, is an error that stops
-/// the listing, since nothing it would say about the rest would be true.
+/// `reasons`, as [`reason`] writes it. A model that could not be asked
+/// stops the listing with the error, since nothing it would say about
+/// the rest would be true.
 async fn checked(
     model: &dyn Model,
     ids: Vec<String>,
@@ -229,18 +227,12 @@ async fn checked(
     let mut marked = Vec::new();
     for id in ids {
         let mark = if check.is_empty() || check.contains(&id) {
-            match llm::check_selects(model, &id).await {
-                Ok(()) => Some(Mark::Selected),
-                Err(error) if concerns_the_model(&error) => {
-                    writeln!(reasons, "! {id}")?;
-                    for cause in error.chain() {
-                        for line in cause.to_string().lines() {
-                            writeln!(reasons, "  {line}")?;
-                        }
-                    }
+            match llm::check_selects(model, &id).await? {
+                Probed::Selected => Some(Mark::Selected),
+                Probed::DidNotSelect(error) => {
+                    reason(reasons, &id, &error)?;
                     Some(Mark::DidNotSelect)
                 }
-                Err(error) => return Err(error),
             }
         } else {
             None
@@ -248,6 +240,20 @@ async fn checked(
         marked.push((id, mark));
     }
     Ok(marked)
+}
+
+/// Write why the model `id` did not select: a line `! id` naming it as
+/// the listing marks it, then `error`'s causes, each on its own indented
+/// line, so a provider's words may run to several lines and still be read
+/// as one model's.
+fn reason(out: &mut impl Write, id: &str, error: &anyhow::Error) -> io::Result<()> {
+    writeln!(out, "! {id}")?;
+    for cause in error.chain() {
+        for line in cause.to_string().lines() {
+            writeln!(out, "  {line}")?;
+        }
+    }
+    Ok(())
 }
 
 /// The listing `models` prints: one id per line, in order. When any model

@@ -789,16 +789,25 @@ async fn selection(
     selected(&response, candidates)
 }
 
+/// What [`check_selects`] found.
+#[derive(Debug)]
+pub enum Probed {
+    /// Asked for a selection, the model selected a candidate.
+    Selected,
+    /// Asked for a selection, the model did not: the provider refused the
+    /// request as bad, or the answer was no selection. The error names the
+    /// model and carries the cause beneath it.
+    DidNotSelect(anyhow::Error),
+}
+
 /// Check that `model`, asked as a player is, selects a candidate: one
 /// request of a player's shape, a short system prompt, a line asking for
 /// a selection, and the `select` tool over two placeholder candidates,
-/// judged as a player's answer is. The error names the model and says what
-/// went wrong, with the cause beneath it. A model that did not select when
-/// asked, whether the provider refused the request as bad or the answer
-/// was no selection, is told apart from one that could not be asked at
+/// judged as a player's answer is. A model that could not be asked at
 /// all, because the provider was not reached or answered with anything
-/// but the model's answer, as [`model::concerns_the_model`] tells them.
-pub async fn check_selects(model: &dyn model::Model, model_id: &str) -> anyhow::Result<()> {
+/// but the model's answer, is an error naming the model, with the cause
+/// beneath it.
+pub async fn check_selects(model: &dyn model::Model, model_id: &str) -> anyhow::Result<Probed> {
     let candidates = ["player1".to_string(), "player2".to_string()];
     let request = Request::new(
         model_id,
@@ -808,17 +817,13 @@ pub async fn check_selects(model: &dyn model::Model, model_id: &str) -> anyhow::
         ],
         select(&candidates),
     );
-    selection(model, &request, &candidates)
-        .await
-        .map(|_| ())
-        .map_err(|error| {
-            let what = if model::concerns_the_model(&error) {
-                "did not select when asked"
-            } else {
-                "could not be asked to select"
-            };
-            error.context(format!("{model_id} {what}"))
-        })
+    match selection(model, &request, &candidates).await {
+        Ok(_) => Ok(Probed::Selected),
+        Err(error) if model::concerns_the_model(&error) => Ok(Probed::DidNotSelect(
+            error.context(format!("{model_id} did not select when asked")),
+        )),
+        Err(error) => Err(error.context(format!("{model_id} could not be asked to select"))),
+    }
 }
 
 /// The name of the one tool a player is offered.
@@ -1983,7 +1988,7 @@ player2 = \"Cautious.\"
     #[tokio::test]
     async fn the_probe_asks_for_one_selection_as_a_player_does_and_passes_when_the_model_selects() {
         let model = FakeModel::answering(choosing_first);
-        check_selects(&model, MODEL_ID).await.unwrap();
+        assert!(not_selecting(check_selects(&model, MODEL_ID).await).is_none());
         let requests = model.requests();
         assert_eq!(requests.len(), 1);
         let request = &requests[0];
@@ -2000,12 +2005,20 @@ player2 = \"Cautious.\"
     #[tokio::test]
     async fn the_probe_s_error_names_the_model_and_carries_the_failure() {
         let model = FakeModel::failing("the model is down");
-        let error = check_selects(&model, MODEL_ID).await.unwrap_err();
-        let shown = format!("{error:#}");
+        let error = not_selecting(check_selects(&model, MODEL_ID).await).unwrap();
         assert_eq!(
-            shown,
+            format!("{error:#}"),
             format!("{MODEL_ID} did not select when asked: the model is down")
         );
+    }
+
+    /// The error of a probe that found the model did not select, if it
+    /// found so.
+    fn not_selecting(probed: anyhow::Result<Probed>) -> Option<anyhow::Error> {
+        match probed.unwrap() {
+            Probed::Selected => None,
+            Probed::DidNotSelect(error) => Some(error),
+        }
     }
 
     #[tokio::test]
@@ -2015,7 +2028,6 @@ player2 = \"Cautious.\"
         let (base_url, _served) = canned::answering("429 Too Many Requests", "{}");
         let provider = Provider::new(base_url.clone(), None, REQUEST_TIMEOUT).unwrap();
         let error = check_selects(&provider, MODEL_ID).await.unwrap_err();
-        assert!(!model::concerns_the_model(&error), "{error:#}");
         let shown = format!("{error:#}");
         assert!(
             shown.starts_with(&format!(
@@ -2036,7 +2048,7 @@ player2 = \"Cautious.\"
         for response in [prose, elsewhere] {
             let judged = selected(&response, &candidates).unwrap_err();
             let model = FakeModel::responding(response);
-            let error = check_selects(&model, MODEL_ID).await.unwrap_err();
+            let error = not_selecting(check_selects(&model, MODEL_ID).await).unwrap();
             let shown = format!("{error:#}");
             assert!(shown.starts_with(MODEL_ID), "{shown}");
             assert!(shown.ends_with(&format!("{judged:#}")), "{shown}");
@@ -2047,7 +2059,7 @@ player2 = \"Cautious.\"
     async fn the_probe_names_the_url_and_what_the_server_said_when_the_request_is_refused() {
         let base_url = canned::refusing(&[MODEL_ID]);
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
-        let error = check_selects(&provider, MODEL_ID).await.unwrap_err();
+        let error = not_selecting(check_selects(&provider, MODEL_ID).await).unwrap();
         let shown = format!("{error:#}");
         assert!(shown.starts_with(MODEL_ID), "{shown}");
         assert!(

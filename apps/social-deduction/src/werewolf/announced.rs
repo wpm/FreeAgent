@@ -217,9 +217,8 @@ impl Environment {
     }
 
     /// Stop the survivors, log the result, send the winner, and shut down.
-    /// The survivors stop first, so that a player still waiting on its
-    /// model when the game ends logs nothing after the end: `End` is the
-    /// log's last entry.
+    /// The survivors stop first: a player still waiting on its model is
+    /// dropped at that wait, and logs nothing after the end.
     fn end_game(&self, winner: Team) -> anyhow::Result<()> {
         let (days, survivors, report) = {
             let mut game = self.game();

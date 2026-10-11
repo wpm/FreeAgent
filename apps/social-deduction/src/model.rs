@@ -152,23 +152,18 @@ fn key(name: &str, value: Option<OsString>) -> anyhow::Result<SecretString> {
     Ok(SecretString::from(value))
 }
 
-/// A request the provider answered with anything but success: what was
-/// sent, the status, and what the provider said about it, in words. The
-/// status is kept so a reader can tell a request the provider would not
-/// put to the model from one that never got that far.
+/// A request the provider answered with anything but success: the status,
+/// kept so a reader can tell a request the provider would not put to the
+/// model from one that never got that far, and the error's words.
 #[derive(Debug)]
-pub struct Rejection {
-    /// What was sent, such as `POST {url}`.
-    sent: String,
-    /// The status it was answered with.
-    pub status: StatusCode,
-    /// The status in words, as [`explained`] puts it.
-    explained: String,
+struct Rejection {
+    status: StatusCode,
+    message: String,
 }
 
 impl fmt::Display for Rejection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} was answered {}", self.sent, self.explained)
+        f.write_str(&self.message)
     }
 }
 
@@ -180,7 +175,7 @@ impl std::error::Error for Rejection {}
 /// offers answers, and an answer that is not a selection is the model's
 /// own. A request that never reached the provider, or that it answered
 /// with any other status, says nothing about the model.
-pub fn concerns_the_model(error: &anyhow::Error) -> bool {
+pub(crate) fn concerns_the_model(error: &anyhow::Error) -> bool {
     error.chain().all(|cause| {
         cause.downcast_ref::<reqwest::Error>().is_none()
             && cause
@@ -341,9 +336,11 @@ impl Provider {
         if !status.is_success() {
             let said = response.text().await.unwrap_or_default();
             return Err(Rejection {
-                sent: sent.to_string(),
                 status,
-                explained: explained(status, self.api_key.is_some(), &said),
+                message: format!(
+                    "{sent} was answered {}",
+                    explained(status, self.api_key.is_some(), &said)
+                ),
             }
             .into());
         }
@@ -765,27 +762,31 @@ mod tests {
         assert!(concerns_the_model(&anyhow!("the model made no tool call")));
         // A request refused as bad is one the provider would not put to
         // the model; any other status says nothing about it.
-        for (status, expected) in [
-            ("400 Bad Request", true),
-            ("401 Unauthorized", false),
-            ("429 Too Many Requests", false),
-            ("500 Internal Server Error", false),
+        for (status, answered, expected) in [
+            (StatusCode::BAD_REQUEST, "400 Bad Request", true),
+            (StatusCode::UNAUTHORIZED, "401 Unauthorized", false),
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "429 Too Many Requests",
+                false,
+            ),
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "500 Internal Server Error",
+                false,
+            ),
         ] {
-            let (base_url, _served) = answering(status, "{}");
+            let (base_url, _served) = answering(answered, "{}");
             let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
             let error = provider
                 .complete(&selecting(&["player2"]))
                 .await
                 .unwrap_err();
-            let rejection = error.downcast_ref::<Rejection>().unwrap();
-            assert_eq!(
-                rejection.status.as_u16(),
-                status[..3].parse::<u16>().unwrap()
-            );
+            assert_eq!(error.downcast_ref::<Rejection>().unwrap().status, status);
             assert_eq!(
                 concerns_the_model(&error.context("asked")),
                 expected,
-                "{status}"
+                "{answered}"
             );
         }
         // Nor does a provider that was not reached.
