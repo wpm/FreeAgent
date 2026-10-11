@@ -3,9 +3,16 @@
 //! they come, and ends the phase
 //! once everyone awake has selected or at its limit, whichever comes
 //! first. Players who take seconds to decide hold nothing up.
+//!
+//! The environment logs the deal, then the configuration if there is one;
+//! an [`Entry::Action`] for each announcement it sends, numbered in one
+//! series from 1; an [`Entry::Observation`] for each selection it
+//! receives, stale or not, with the phase it was in when the selection
+//! arrived; each night's hunt as [`Entry::Hunted`]; and the result. The
+//! reminder it sends itself to end a phase is not logged.
 
 use super::{
-    Choices, Entry, Hunt, Message, Observation, Phase, PlayerId, Role, Rules, State, Team,
+    Choices, Entry, Hunt, Message, Phase, PlayerId, Role, Rules, State, Team, View, act, observe,
 };
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Context, Think};
@@ -38,7 +45,7 @@ where
             wrap(Environment {
                 context,
                 game,
-                configuration,
+                configuration: configuration.map(Box::new),
             })
         }),
         think: Some(Box::new(move |context| {
@@ -61,6 +68,9 @@ struct Game {
     rules: Rules,
     /// The number of the current phase. The first night is 1.
     seq: u64,
+    /// The number of the last message the environment sent to a player.
+    /// Each announcement is a message of its own.
+    n: u64,
     /// The players awake in the current phase.
     awake: HashSet<PlayerId>,
     /// The first selection each awake player made in the current phase.
@@ -79,6 +89,7 @@ impl Game {
             state: State::new(roles),
             rules,
             seq: 0,
+            n: 0,
             awake: HashSet::new(),
             selections: Choices::new(),
             winner: Some(winner),
@@ -86,17 +97,17 @@ impl Game {
         }
     }
 
-    /// Open the next phase: number it, wake its players, and clear the
-    /// selections.
+    /// Open the next phase: number it, wake its players, number what each
+    /// is shown, and clear the selections.
     fn open(&mut self) -> anyhow::Result<Opened> {
         self.seq += 1;
         self.awake = self.state.awake();
         self.selections.clear();
-        let shown = self
-            .awake
-            .iter()
-            .map(|player| Ok((player.clone(), self.state.observation(player.clone())?)))
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        let mut shown = Vec::new();
+        for player in self.awake.clone() {
+            self.n += 1;
+            shown.push((self.n, player.clone(), self.state.view(player)?));
+        }
         let limit = match self.state.phase {
             Phase::Night => self.rules.night_limit,
             Phase::Day => self.rules.day_limit,
@@ -110,15 +121,19 @@ impl Game {
 
     /// Record `from`'s selection of `target` in the phase numbered `seq`
     /// if it counts: the phase is the current one, `from` is awake in it,
-    /// and this is its first selection. Returns whether this selection was
-    /// the last one the phase was waiting for.
-    fn select(&mut self, seq: u64, from: &PlayerId, target: &PlayerId) -> bool {
+    /// and this is its first selection. Returns the phase the game is in,
+    /// and whether this selection was the last one the phase was waiting
+    /// for.
+    fn select(&mut self, seq: u64, from: &PlayerId, target: &PlayerId) -> (u64, bool) {
         let counts =
             seq == self.seq && self.awake.contains(from) && !self.selections.contains_key(from);
         if counts {
             self.selections.insert(from.clone(), target.clone());
         }
-        counts && self.selections.len() == self.awake.len()
+        (
+            self.seq,
+            counts && self.selections.len() == self.awake.len(),
+        )
     }
 
     /// End the phase numbered `seq`, unless it has already ended: resolve
@@ -158,11 +173,12 @@ struct Ended {
     winner: Option<Team>,
 }
 
-/// A phase just opened: its number, what each awake player may see of it,
-/// and how long it waits for them.
+/// A phase just opened: its number, what each awake player may see of it
+/// with the environment's number for the message that shows it, and how
+/// long it waits for them.
 struct Opened {
     seq: u64,
-    shown: Vec<(PlayerId, Observation)>,
+    shown: Vec<(u64, PlayerId, View)>,
     limit: Duration,
 }
 
@@ -175,8 +191,9 @@ pub struct Environment {
     context: Context<Message, Entry>,
     game: Arc<Mutex<Game>>,
     /// The entry the perceive loop logs right after the deal, if any.
-    /// Taken when logged.
-    configuration: Option<Entry>,
+    /// Taken when logged. Boxed to keep the environment no larger than a
+    /// player in a variant's actor enum.
+    configuration: Option<Box<Entry>>,
 }
 
 impl Environment {
@@ -186,17 +203,19 @@ impl Environment {
         self.game.lock().unwrap()
     }
 
-    /// Open the next phase: show each awake player what it may see of it,
-    /// and set the timer that ends it at its limit.
+    /// Open the next phase: show each awake player what it may see of it
+    /// and how long it lasts, each announcement an action of its own, and
+    /// set the timer that ends it at its limit.
     fn open_phase(&self) -> anyhow::Result<()> {
         let Opened { seq, shown, limit } = self.game().open()?;
-        for (to, observation) in shown {
-            let message = Message::Announce { seq, observation };
-            self.context.log(Entry::Sent {
-                to: to.clone(),
-                message: message.clone(),
-            });
-            self.context.send(message, HashSet::from([to]))?;
+        for (n, to, view) in shown {
+            let message = Message::Announce {
+                seq,
+                n,
+                view,
+                limit,
+            };
+            act(&self.context, n, message, HashSet::from([to]), None)?;
         }
         self.context.think_after(limit, Message::EndPhase { seq })
     }
@@ -209,7 +228,7 @@ impl Environment {
             return Ok(());
         };
         if let Some(hunt) = hunt {
-            self.context.log(Entry::Hunted(hunt));
+            self.context.log(Entry::Hunted { seq, hunt });
         }
         if let Some(player) = &dead {
             self.context.stop(player)?;
@@ -260,15 +279,19 @@ impl Behavior for Environment {
         &self.context
     }
 
-    /// Log a selection, stale or not, and record it if it counts. The last
-    /// selection a phase is waiting for ends it. Anything else is ignored.
+    /// Log a selection as observed in the current phase, stale or not, and
+    /// record it if it counts. The last selection a phase is waiting for
+    /// ends it. Anything else is ignored.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        if let Message::Select { seq, from, target } = message {
-            self.context.log(Entry::Received {
-                from: from.clone(),
-                message: message.clone(),
-            });
-            let last = self.game().select(*seq, from, target);
+        if let Message::Select {
+            seq,
+            from,
+            n,
+            target,
+        } = message
+        {
+            let (current, last) = self.game().select(*seq, from, target);
+            observe(&self.context, from.clone(), *n, current);
             if last {
                 self.context.think(Message::EndPhase { seq: *seq })?;
             }
@@ -285,7 +308,7 @@ impl Behavior for Environment {
         };
         self.context.log(start);
         if let Some(configuration) = self.configuration.take() {
-            self.context.log(configuration);
+            self.context.log(*configuration);
         }
         self.open_phase()
     }
@@ -326,7 +349,11 @@ mod tests {
     fn opening_a_phase_numbers_it_from_one_and_shows_it_to_the_awake() {
         let (mut game, night) = opened();
         assert_eq!(night.seq, 1);
-        let mut shown: Vec<PlayerId> = night.shown.into_iter().map(|(player, _)| player).collect();
+        let mut shown: Vec<PlayerId> = night
+            .shown
+            .into_iter()
+            .map(|(_, player, _)| player)
+            .collect();
         shown.sort();
         assert_eq!(shown, ["seer", "wolf1", "wolf2"]);
         assert_eq!(night.limit, Rules::default().night_limit);
@@ -338,25 +365,56 @@ mod tests {
     }
 
     #[test]
+    fn each_announcement_is_numbered_in_one_series_from_one() {
+        let (mut game, night) = opened();
+        let mut numbers: Vec<u64> = night.shown.iter().map(|(n, _, _)| *n).collect();
+        numbers.sort_unstable();
+        assert_eq!(numbers, [1, 2, 3]);
+        game.state.next();
+        let mut numbers: Vec<u64> = game
+            .open()
+            .unwrap()
+            .shown
+            .iter()
+            .map(|(n, _, _)| *n)
+            .collect();
+        numbers.sort_unstable();
+        assert_eq!(numbers, [4, 5, 6, 7]);
+    }
+
+    /// Whether `game.select` says the selection was the last one its phase
+    /// was waiting for.
+    fn last(game: &mut Game, seq: u64, from: &str, target: &str) -> bool {
+        game.select(seq, &id(from), &id(target)).1
+    }
+
+    #[test]
     fn the_last_selection_of_a_phase_ends_it() {
         let (mut game, Opened { seq, .. }) = opened();
-        assert!(!game.select(seq, &id("wolf1"), &id("villager")));
-        assert!(!game.select(seq, &id("wolf2"), &id("villager")));
-        assert!(game.select(seq, &id("seer"), &id("wolf1")));
+        assert!(!last(&mut game, seq, "wolf1", "villager"));
+        assert!(!last(&mut game, seq, "wolf2", "villager"));
+        assert!(last(&mut game, seq, "seer", "wolf1"));
+    }
+
+    #[test]
+    fn a_selection_is_observed_in_the_phase_the_game_is_in_whatever_phase_it_was_for() {
+        let (mut game, Opened { seq, .. }) = opened();
+        assert_eq!(game.select(seq, &id("wolf1"), &id("villager")).0, seq);
+        assert_eq!(game.select(seq - 1, &id("wolf2"), &id("villager")).0, seq);
     }
 
     #[test]
     fn a_selection_for_another_phase_does_not_count() {
         let (mut game, Opened { seq, .. }) = opened();
-        assert!(!game.select(seq - 1, &id("wolf1"), &id("villager")));
-        assert!(!game.select(seq + 1, &id("wolf1"), &id("villager")));
+        assert!(!last(&mut game, seq - 1, "wolf1", "villager"));
+        assert!(!last(&mut game, seq + 1, "wolf1", "villager"));
         assert!(game.selections.is_empty());
     }
 
     #[test]
     fn a_selection_by_a_player_who_is_not_awake_does_not_count() {
         let (mut game, Opened { seq, .. }) = opened();
-        assert!(!game.select(seq, &id("villager"), &id("wolf1")));
+        assert!(!last(&mut game, seq, "villager", "wolf1"));
         assert!(game.selections.is_empty());
     }
 
@@ -365,7 +423,7 @@ mod tests {
         let (mut game, Opened { seq, .. }) = opened();
         game.select(seq, &id("wolf1"), &id("villager"));
         game.select(seq, &id("wolf2"), &id("villager"));
-        assert!(!game.select(seq, &id("wolf1"), &id("seer")));
+        assert!(!last(&mut game, seq, "wolf1", "seer"));
         assert_eq!(game.selections[&id("wolf1")], id("villager"));
     }
 

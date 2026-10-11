@@ -6,15 +6,21 @@
 //! environment alone holds the state of the game: the round and whether
 //! it is night or day, every player's [`Role`], who is alive, and what the
 //! seer has learned. A player sees the game only through the
-//! [`Observation`] the environment sends it, which carries the round, the
+//! [`View`] the environment sends it, which carries the round, the
 //! phase, who is alive, and the roles that player may know. A werewolf knows
 //! every werewolf, the seer knows itself and whoever it has discovered, and
 //! everyone else knows only itself. Holding no state, a player can only
 //! talk.
 //!
 //! Play alternates between night and day, starting with night, until one
-//! [`Team`] has won. The environment logs the deal, every message to or
-//! from a player as it was, and the result, as an [`Entry`] each.
+//! [`Team`] has won. The log is written by every actor, an [`Entry`] at a
+//! time, in the language of reinforcement learning: each message an actor
+//! sends to others is an action of its sender, which the sender logs
+//! whole, once, and an observation of each receiver, which the receiver
+//! logs as a receipt naming the message by its sender and number. The
+//! environment logs the deal, its announcements, the selections it
+//! receives, each night's hunt, and the result; every player logs the
+//! announcements it receives and the selections it sends.
 //!
 //! Each variant's module holds what is particular to it: its environment,
 //! its players, the actor enum its episode holds, and the function that
@@ -26,7 +32,7 @@ pub mod report;
 pub mod uniform_random;
 
 use clap::Args;
-use free_agent::{ActorId, ActorInit, Behavior, Builder, Episode, Logger, ThinkBuilder};
+use free_agent::{ActorId, ActorInit, Behavior, Builder, Context, Episode, Logger, ThinkBuilder};
 use rand::seq::{IndexedRandom, SliceRandom};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -343,7 +349,7 @@ impl State {
     /// alive, and the roles it knows. A werewolf knows every werewolf, the
     /// seer knows itself and whoever it has discovered, and everyone else
     /// knows only itself.
-    fn observation(&self, player_id: PlayerId) -> anyhow::Result<Observation> {
+    fn view(&self, player_id: PlayerId) -> anyhow::Result<View> {
         let role = self.roles[&player_id];
         let roles = match role {
             Role::Werewolf => {
@@ -369,7 +375,7 @@ impl State {
                 HashMap::from([(player_id, role)])
             }
         };
-        Ok(Observation {
+        Ok(View {
             round: self.round,
             phase: self.phase.clone(),
             roles,
@@ -524,7 +530,13 @@ impl Default for Rules {
     }
 }
 
-/// What the environment and the players say to one another.
+/// What the environment and the players say to one another. Every message
+/// an actor sends to others is numbered by its sender, from 1, so that the
+/// pair of sender and number names a message in an episode: the
+/// environment numbers its announcements, each player its selections. A
+/// message to several actors has one number, but each announcement is a
+/// message of its own, since each player is shown a different view. A
+/// reminder an actor sends itself is not numbered.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Message {
     /// The environment opens a phase for one awake player. Phases are
@@ -532,8 +544,15 @@ pub enum Message {
     Announce {
         /// The number of the phase.
         seq: u64,
+        /// The environment's number for this message.
+        n: u64,
         /// What the player may see of it.
-        observation: Observation,
+        view: View,
+        /// How long the phase lasts, written as `humantime` writes it. A
+        /// player holds no state but its history, and can see when its
+        /// messages arrived, so the limit is all it needs to know the time.
+        #[serde(with = "humantime_serde")]
+        limit: Duration,
     },
     /// A player's selection for the phase numbered `seq`.
     Select {
@@ -541,6 +560,8 @@ pub enum Message {
         seq: u64,
         /// Who selected, since a message does not carry its sender.
         from: PlayerId,
+        /// The player's number for this message.
+        n: u64,
         /// Whom they selected.
         target: PlayerId,
     },
@@ -553,12 +574,47 @@ pub enum Message {
 }
 impl free_agent::Message for Message {}
 
+/// Send `message`, which the actor of `context` numbered `n`, to everyone
+/// in `to`, logging it first as the actor's action. `seen` is how many
+/// history entries a model was shown when it made the call that produced
+/// the message, and `None` for a message no model made.
+pub fn act(
+    context: &Context<Message, Entry>,
+    n: u64,
+    message: Message,
+    to: HashSet<ActorId>,
+    seen: Option<usize>,
+) -> anyhow::Result<()> {
+    context.log(Entry::Action {
+        from: context.id.clone(),
+        n,
+        to: to.clone(),
+        message: message.clone(),
+        seen,
+    });
+    context.send(message, to)
+}
+
+/// Log that the actor of `context`, in the phase numbered `seq`, received
+/// the message `from` numbered `n`: its observation.
+pub fn observe(context: &Context<Message, Entry>, from: ActorId, n: u64, seq: u64) {
+    context.log(Entry::Observation {
+        by: context.id.clone(),
+        from,
+        n,
+        seq,
+    });
+}
+
 /// What the log holds: the deal, the configuration of a model-played game,
-/// every message to or from a player as it was, each failure of a model
-/// player to select, and the result. The environment writes all but the
-/// failures, which the player that failed writes. Only the result
-/// summarizes anything; the rest is kept whole for whatever reads the log
-/// later.
+/// every message sent as the action of its sender and the observation of
+/// its receiver, each failure of a model player to select, each night's
+/// hunt, and the result. Every actor logs its own actions and observations:
+/// the environment logs the deal, the configuration, the hunts and the
+/// result besides, and a player its failures. Only the result summarizes
+/// anything; the rest is kept whole for whatever reads the log later. Every
+/// entry made during a phase names the phase in a field, so nothing about
+/// phases depends on the order entries reach the log or on their times.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Entry {
     /// The game begins: who plays what, under which variation, and how
@@ -579,19 +635,38 @@ pub enum Entry {
     /// The configuration a model-played game ran under, logged right after
     /// the deal.
     Configuration(Box<llm::Configuration>),
-    /// The environment sent `message` to `to`.
-    Sent {
-        /// Who was sent to.
-        to: PlayerId,
+    /// `from` sent `message`, which it numbered `n`, to everyone in `to`.
+    /// Logged by the sender.
+    Action {
+        /// Who sent it.
+        from: ActorId,
+        /// The sender's number for it.
+        n: u64,
+        /// Everyone it was sent to.
+        to: HashSet<ActorId>,
         /// What was sent.
         message: Message,
+        /// How many history entries the model was shown when it made the
+        /// call that produced the message, and `None` for a message no
+        /// model made: the environment's, or a uniform-random player's.
+        seen: Option<usize>,
     },
-    /// The environment received `message` from `from`.
-    Received {
+    /// `by` received the message `from` numbered `n` while in the phase
+    /// numbered `seq`. Logged by the receiver, and naming the message
+    /// without repeating it: the sender's `Action` holds it.
+    Observation {
+        /// Who received it.
+        by: ActorId,
         /// Who sent it.
-        from: PlayerId,
-        /// What they said.
-        message: Message,
+        from: ActorId,
+        /// The sender's number for it.
+        n: u64,
+        /// The phase the receiver was in when it arrived: for the
+        /// environment, the phase it is in; for a player, the latest phase
+        /// it was announced. Set beside the `seq` of the message named, it
+        /// shows a message that arrived in a later phase than it was sent
+        /// in.
+        seq: u64,
     },
     /// `player` failed to select in the phase numbered `seq`: the model was
     /// not reached, or answered with something that is not a selection.
@@ -603,10 +678,15 @@ pub enum Entry {
         /// What went wrong, as the error says it, causes included.
         error: String,
     },
-    /// The night was resolved: whom the werewolves elected, and which
-    /// doctors protected them. A night in which the werewolves elected
-    /// nobody logs nothing.
-    Hunted(Hunt),
+    /// The night numbered `seq` was resolved: whom the werewolves elected,
+    /// and which doctors protected them. A night in which the werewolves
+    /// elected nobody logs nothing.
+    Hunted {
+        /// The number of the night.
+        seq: u64,
+        /// How the hunt came out.
+        hunt: Hunt,
+    },
     /// The game is over.
     End {
         /// Who won.
@@ -632,7 +712,7 @@ pub trait Vote: Send + Sync {
 
 /// The players with the most votes, in name order so a tie-break depends
 /// on the random number alone. Empty when there are no ballots.
-fn leaders(ballots: &HashMap<PlayerId, PlayerId>) -> Vec<PlayerId> {
+fn most_votes(ballots: &HashMap<PlayerId, PlayerId>) -> Vec<PlayerId> {
     let mut votes: HashMap<&PlayerId, usize> = HashMap::new();
     for chosen in ballots.values() {
         *votes.entry(chosen).or_default() += 1;
@@ -640,13 +720,13 @@ fn leaders(ballots: &HashMap<PlayerId, PlayerId>) -> Vec<PlayerId> {
     let Some(most) = votes.values().copied().max() else {
         return vec![];
     };
-    let mut leaders: Vec<PlayerId> = votes
+    let mut most_votes: Vec<PlayerId> = votes
         .into_iter()
         .filter(|(_, count)| *count == most)
         .map(|(player, _)| player.clone())
         .collect();
-    leaders.sort();
-    leaders
+    most_votes.sort();
+    most_votes
 }
 
 /// A plurality wins, and a tie is broken at random. How the werewolves
@@ -655,7 +735,7 @@ pub struct RandomTieBreak;
 
 impl Vote for RandomTieBreak {
     fn elect(&self, ballots: &HashMap<PlayerId, PlayerId>) -> Option<PlayerId> {
-        leaders(ballots).choose(&mut rand::rng()).cloned()
+        most_votes(ballots).choose(&mut rand::rng()).cloned()
     }
 }
 
@@ -664,17 +744,17 @@ pub struct NoTieBreak;
 
 impl Vote for NoTieBreak {
     fn elect(&self, ballots: &HashMap<PlayerId, PlayerId>) -> Option<PlayerId> {
-        match leaders(ballots).as_slice() {
-            [leader] => Some(leader.clone()),
+        match most_votes(ballots).as_slice() {
+            [player] => Some(player.clone()),
             _ => None,
         }
     }
 }
 
-/// What a player is shown of the game: everything in the state that it
-/// may know.
+/// What a player is shown of the game: its partial view of the state,
+/// everything in it that the player may know.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Observation {
+pub struct View {
     /// Rounds count from one. A round is a night and then a day.
     round: NonZero<u8>,
     /// Which half of the round it is.
@@ -685,7 +765,7 @@ pub struct Observation {
     alive: HashSet<PlayerId>,
 }
 
-/// The players `me` may choose from what it sees in `observation`. By
+/// The players `me` may choose from what it sees in `view`. By
 /// night, the living other than `me` whose roles `me` does not know: a
 /// werewolf does not kill a werewolf, the seer does not ask about anyone
 /// twice, and the doctor does not protect itself. By day, everyone living
@@ -693,11 +773,9 @@ pub struct Observation {
 /// player who knows is the one with the most reason to vote. Sorted by
 /// name, so that a random choice among them depends on the random number
 /// alone.
-pub fn candidates(me: &PlayerId, observation: &Observation) -> Vec<PlayerId> {
-    let eligible = |player: &PlayerId| {
-        observation.phase == Phase::Day || !observation.roles.contains_key(player)
-    };
-    let mut candidates: Vec<PlayerId> = observation
+pub fn candidates(me: &PlayerId, view: &View) -> Vec<PlayerId> {
+    let eligible = |player: &PlayerId| view.phase == Phase::Day || !view.roles.contains_key(player);
+    let mut candidates: Vec<PlayerId> = view
         .alive
         .iter()
         .filter(|player| *player != me && eligible(player))
@@ -841,11 +919,36 @@ mod tests {
     fn an_entry_survives_a_trip_through_json() {
         let state = village();
         let entries = [
-            Entry::Sent {
-                to: "seer".to_string(),
+            Entry::Action {
+                from: ENVIRONMENT.to_string(),
+                n: 2,
+                to: HashSet::from(["seer".to_string()]),
                 message: Message::Announce {
                     seq: 1,
-                    observation: state.observation("seer".to_string()).unwrap(),
+                    n: 2,
+                    view: state.view("seer".to_string()).unwrap(),
+                    limit: Duration::from_secs(90),
+                },
+                seen: None,
+            },
+            Entry::Action {
+                from: "seer".to_string(),
+                n: 1,
+                to: HashSet::from([ENVIRONMENT.to_string()]),
+                message: selection(1, "seer", 1, "wolf1"),
+                seen: Some(3),
+            },
+            Entry::Observation {
+                by: ENVIRONMENT.to_string(),
+                from: "seer".to_string(),
+                n: 1,
+                seq: 2,
+            },
+            Entry::Hunted {
+                seq: 1,
+                hunt: Hunt {
+                    victim: "villager".to_string(),
+                    protectors: HashSet::new(),
                 },
             },
             Entry::Failed {
@@ -860,6 +963,20 @@ mod tests {
             let back: Entry = serde_json::from_str(&json).unwrap();
             assert_eq!(back, entry);
         }
+    }
+
+    #[test]
+    fn an_announcement_carries_its_limit_as_humantime_writes_it() {
+        let announce = Message::Announce {
+            seq: 1,
+            n: 1,
+            view: seen(&["wolf"], &[("wolf", Role::Werewolf)]),
+            limit: Duration::from_secs(90),
+        };
+        let json = serde_json::to_value(&announce).unwrap();
+        assert_eq!(json["Announce"]["limit"], "1m 30s");
+        let back: Message = serde_json::from_value(json).unwrap();
+        assert_eq!(back, announce);
     }
 
     #[test]
@@ -939,22 +1056,43 @@ mod tests {
         }
     }
 
-    /// The selections the environment logged as received.
-    pub(super) fn received(logged: &[Entry]) -> Vec<&Message> {
+    /// The selections the players logged as their actions, in the log's
+    /// order.
+    pub(super) fn selections(logged: &[Entry]) -> Vec<&Message> {
         logged
             .iter()
             .filter_map(|entry| match entry {
-                Entry::Received { message, .. } => Some(message),
+                Entry::Action {
+                    message: message @ Message::Select { .. },
+                    ..
+                } => Some(message),
                 _ => None,
             })
             .collect()
     }
 
-    /// A selection of `target` by `from` in the phase numbered `seq`.
-    pub(super) fn selection(seq: u64, from: &str, target: &str) -> Message {
+    /// The selections the environment logged as its observations, each as
+    /// who sent it, the sender's number for it, and the phase the
+    /// environment was in when it arrived, in the log's order.
+    pub(super) fn observed_by_the_environment(logged: &[Entry]) -> Vec<(&str, u64, u64)> {
+        logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Observation { by, from, n, seq } if by == ENVIRONMENT => {
+                    Some((from.as_str(), *n, *seq))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A selection of `target` by `from` in the phase numbered `seq`, the
+    /// `n`th message `from` sent.
+    pub(super) fn selection(seq: u64, from: &str, n: u64, target: &str) -> Message {
         Message::Select {
             seq,
             from: from.to_string(),
+            n,
             target: target.to_string(),
         }
     }
@@ -970,8 +1108,8 @@ mod tests {
 
     /// What a player sees of a village on the first night, where everyone
     /// in `alive` lives and the player knows the roles in `known`.
-    pub(super) fn seen(alive: &[&str], known: &[(&str, Role)]) -> Observation {
-        Observation {
+    pub(super) fn seen(alive: &[&str], known: &[(&str, Role)]) -> View {
+        View {
             round: NonZero::new(1).unwrap(),
             phase: Phase::Night,
             roles: known
@@ -983,16 +1121,16 @@ mod tests {
     }
 
     /// What a player sees of a village on the first day: [`seen`], by day.
-    pub(super) fn seen_by_day(alive: &[&str], known: &[(&str, Role)]) -> Observation {
-        Observation {
+    pub(super) fn seen_by_day(alive: &[&str], known: &[(&str, Role)]) -> View {
+        View {
             phase: Phase::Day,
             ..seen(alive, known)
         }
     }
 
     fn seen_by(observer: &str) -> Vec<String> {
-        let observation = village().observation(observer.to_string()).unwrap();
-        let mut seen: Vec<_> = observation.roles.keys().cloned().collect();
+        let view = village().view(observer.to_string()).unwrap();
+        let mut seen: Vec<_> = view.roles.keys().cloned().collect();
         seen.sort();
         seen
     }
@@ -1016,19 +1154,19 @@ mod tests {
             .get_mut("seer")
             .unwrap()
             .insert("wolf1".to_string());
-        let observation = state.observation("seer".to_string()).unwrap();
-        let mut seen: Vec<_> = observation.roles.keys().cloned().collect();
+        let view = state.view("seer".to_string()).unwrap();
+        let mut seen: Vec<_> = view.roles.keys().cloned().collect();
         seen.sort();
         assert_eq!(seen, ["seer", "wolf1"]);
-        assert_eq!(observation.roles["wolf1"], Role::Werewolf);
+        assert_eq!(view.roles["wolf1"], Role::Werewolf);
     }
 
     #[test]
-    fn observation_keeps_the_rest_of_the_state() {
+    fn the_view_keeps_the_rest_of_the_state() {
         let state = village();
-        let observation = state.observation("villager".to_string()).unwrap();
-        assert_eq!(observation.round, state.round);
-        assert_eq!(observation.alive, state.alive);
+        let view = state.view("villager".to_string()).unwrap();
+        assert_eq!(view.round, state.round);
+        assert_eq!(view.alive, state.alive);
     }
 
     fn sorted(players: HashSet<PlayerId>) -> Vec<PlayerId> {
@@ -1182,8 +1320,8 @@ mod tests {
         let mut state = full_village();
         let choices = ballots(&[("wolf1", "villager"), ("seer", "wolf1")]);
         state.resolve_night(&choices, &RandomTieBreak);
-        let observation = state.observation("seer".to_string()).unwrap();
-        assert_eq!(observation.roles["wolf1"], Role::Werewolf);
+        let view = state.view("seer".to_string()).unwrap();
+        assert_eq!(view.roles["wolf1"], Role::Werewolf);
     }
 
     #[test]
@@ -1254,42 +1392,39 @@ mod tests {
 
     #[test]
     fn by_night_the_candidates_are_the_living_whose_role_is_unknown_in_name_order() {
-        let observation = seen(
+        let view = seen(
             &["wolf1", "wolf2", "bob", "ann"],
             &[("wolf1", Role::Werewolf), ("wolf2", Role::Werewolf)],
         );
         assert_eq!(
-            candidates(&"wolf1".to_string(), &observation),
+            candidates(&"wolf1".to_string(), &view),
             ["ann".to_string(), "bob".to_string()]
         );
     }
 
     #[test]
     fn a_player_is_never_its_own_candidate() {
-        let observation = seen(&["ann", "bob"], &[("ann", Role::Villager)]);
-        assert_eq!(
-            candidates(&"ann".to_string(), &observation),
-            ["bob".to_string()]
-        );
+        let view = seen(&["ann", "bob"], &[("ann", Role::Villager)]);
+        assert_eq!(candidates(&"ann".to_string(), &view), ["bob".to_string()]);
     }
 
     #[test]
     fn a_player_who_knows_everyone_alive_has_no_candidates_by_night() {
-        let observation = seen(
+        let view = seen(
             &["seer", "wolf"],
             &[("seer", Role::Seer), ("wolf", Role::Werewolf)],
         );
-        assert!(candidates(&"seer".to_string(), &observation).is_empty());
+        assert!(candidates(&"seer".to_string(), &view).is_empty());
     }
 
     #[test]
     fn by_day_the_candidates_are_everyone_living_but_oneself_whatever_their_roles() {
-        let observation = seen_by_day(
+        let view = seen_by_day(
             &["seer", "wolf", "ann"],
             &[("seer", Role::Seer), ("wolf", Role::Werewolf)],
         );
         assert_eq!(
-            candidates(&"seer".to_string(), &observation),
+            candidates(&"seer".to_string(), &view),
             ["ann".to_string(), "wolf".to_string()]
         );
     }
@@ -1298,9 +1433,9 @@ mod tests {
     fn the_dead_are_not_candidates() {
         let mut state = village();
         state.kill(&"villager".to_string());
-        let observation = state.observation("seer".to_string()).unwrap();
+        let view = state.view("seer".to_string()).unwrap();
         assert_eq!(
-            candidates(&"seer".to_string(), &observation),
+            candidates(&"seer".to_string(), &view),
             ["wolf1".to_string(), "wolf2".to_string()]
         );
     }

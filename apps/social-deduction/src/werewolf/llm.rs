@@ -17,14 +17,19 @@
 //! a [`SecretString`], which is redacted wherever it is shown.
 //!
 //! The game is the announcing environment's, with a model [`Player`] in
-//! every seat. A player remembers what it is shown and what it does, as
-//! events like those the environment logs about it. Announced a phase, it tells
-//! the model that history as a story from its own point of view and where
-//! the game stands, and has it select one of the player's [candidates]
-//! with one forced tool call. The call is made in the player's think loop,
-//! so the player keeps perceiving while the model works. A model that is
-//! not reached, or an answer that is not a selection, is no selection: the
-//! player logs the failure and the game goes on. Before a game begins,
+//! every seat. A player remembers what it is shown and what it does, as a
+//! [`Memory`] of each message stamped when it was received or sent.
+//! Announced a phase, it tells the model that history as a story from its
+//! own point of view and where the game stands, with how long the phase
+//! lasts, and has it select one of the player's [candidates] with one
+//! forced tool call. The call is made in the player's think loop, so the
+//! player keeps perceiving while the model works. A model that is not
+//! reached, or an answer that is not a selection, is no selection: the
+//! player logs the failure and the game goes on. The player logs an
+//! [`Entry::Observation`] for each announcement it receives and an
+//! [`Entry::Action`] for each selection it sends, numbering its selections
+//! from 1, with how many memories the model was shown when it made the
+//! call that produced the selection. Before a game begins,
 //! [`check_selects`] asks the model for one selection as a player would,
 //! so a model that does not select fails at launch, in the provider's
 //! words. [`game`] builds the episode from the deal, the rules, the model,
@@ -35,8 +40,8 @@
 use super::announced;
 use super::report::Narrator;
 use super::{
-    ENVIRONMENT, Entry, Message, Observation, Phase, PhaseLimits, PlayerId, Role, RoleCounts,
-    Rules, Table, Team, candidates,
+    ENVIRONMENT, Entry, Message, Phase, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table,
+    Team, View, act, candidates, observe,
 };
 use crate::model::{
     self, Provider, REQUEST_TIMEOUT, Request, Response, Tool, api_key, key_variable,
@@ -44,13 +49,17 @@ use crate::model::{
 use anyhow::{Context as _, anyhow, bail};
 use async_trait::async_trait;
 use clap::Args;
-use free_agent::{Behavior, Builder, Context, Episode, Event, Logger, Think, ThinkBuilder};
+use free_agent::{
+    ActorId, Behavior, Builder, Context, Episode, Event, Logger, Think, ThinkBuilder,
+};
+use humantime::format_duration;
 use minijinja::{Environment, UndefinedBehavior, Value, context};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -553,14 +562,33 @@ impl Behavior for Actor {
     }
 }
 
+/// What a player remembers: a message it received from another actor, or
+/// one it sent.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Memory {
+    /// The player received `message` from `from`.
+    Observed {
+        /// Who sent it.
+        from: ActorId,
+        /// What was sent.
+        message: Message,
+    },
+    /// The player sent `message`.
+    Acted {
+        /// What it sent.
+        message: Message,
+    },
+}
+
 /// What a player's two loops share: what it has been shown and what it has
 /// done, what it is told, and whom it asks.
 struct Mind {
-    /// The history, in order, as events like those the environment logs
-    /// about the player: an announcement sent to it, and a selection
-    /// received from it, each stamped when the player remembered it. Never
-    /// locked across an await.
-    history: Mutex<Vec<Event<Entry>>>,
+    /// The history, in order: each announcement received and each
+    /// selection sent, stamped when the player remembered it. Never locked
+    /// across an await.
+    history: Mutex<Vec<Event<Memory>>>,
+    /// The number of the last selection the player sent.
+    n: AtomicU64,
     /// Its system prompt, rendered for its seat and role.
     prompt: String,
     /// The model's id, as each request names it.
@@ -570,23 +598,34 @@ struct Mind {
 }
 
 impl Mind {
+    /// A mind with nothing in its history yet, told `prompt`, asking
+    /// `model` as the model `model_id`.
+    fn new(prompt: String, model_id: String, model: Arc<dyn model::Model>) -> Self {
+        Self {
+            history: Mutex::new(Vec::new()),
+            n: AtomicU64::new(0),
+            prompt,
+            model_id,
+            model,
+        }
+    }
+
     /// Add `event` to the history. An announcement goes at the end. A
     /// selection goes right after the announcement it answers, which is
     /// where it belongs in the story: one made after a later phase was
     /// announced, which the environment has dropped, was still made in its
     /// own phase, and is not told as a deed of the phase that followed.
-    fn remember(&self, event: Event<Entry>) {
+    fn remember(&self, event: Event<Memory>) {
         let mut history = self.history.lock().unwrap();
         let at = match &event.payload {
-            Entry::Received {
+            Memory::Acted {
                 message: Message::Select { seq, .. },
-                ..
             } => history
                 .iter()
                 .rposition(|remembered| {
                     matches!(
                         &remembered.payload,
-                        Entry::Sent {
+                        Memory::Observed {
                             message: Message::Announce { seq: announced, .. },
                             ..
                         } if announced == seq
@@ -596,6 +635,11 @@ impl Mind {
             _ => history.len(),
         };
         history.insert(at, event);
+    }
+
+    /// The next number for a selection: one up from the last.
+    fn number(&self) -> u64 {
+        self.n.fetch_add(1, Ordering::Relaxed) + 1
     }
 }
 
@@ -619,12 +663,7 @@ impl Player {
         model_id: String,
         model: Arc<dyn model::Model>,
     ) -> (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>) {
-        let mind = Arc::new(Mind {
-            history: Mutex::new(Vec::new()),
-            prompt,
-            model_id,
-            model,
-        });
+        let mind = Arc::new(Mind::new(prompt, model_id, model));
         let shared = Arc::clone(&mind);
         let behavior: Builder<Actor> =
             Box::new(move |context| Actor::Player(Player { context, mind }));
@@ -637,68 +676,80 @@ impl Player {
         (behavior, Some(think))
     }
 
-    /// Add `entry` to the history, stamped now, where it belongs in the
+    /// Add `memory` to the history, stamped now, where it belongs in the
     /// story.
-    fn remember(&self, entry: Entry) {
-        self.mind.remember(Event::now(self.context.episode, entry));
+    fn remember(&self, memory: Memory) {
+        self.mind.remember(Event::now(self.context.episode, memory));
     }
 
-    /// The request for a selection from `candidates` in the phase
-    /// `observation` shows: the system prompt, then the history as a story
-    /// told to the player, a blank line, and where the game stands, with
-    /// the [`select`] tool to answer with.
+    /// The request for a selection from `candidates` in the phase `view`
+    /// shows, which lasts `limit`: the system prompt, then the history as
+    /// a story told to the player, a blank line, and where the game stands,
+    /// with the [`select`] tool to answer with. With it, how many memories
+    /// the story was told from.
     fn request(
         &self,
-        observation: &Observation,
+        view: &View,
+        limit: Duration,
         candidates: &[PlayerId],
-    ) -> anyhow::Result<Request> {
+    ) -> anyhow::Result<(Request, usize)> {
         let me = &self.context.id;
         let mut narrator = Narrator::for_player(me.clone());
-        let story: Vec<String> = self
-            .mind
-            .history
-            .lock()
-            .unwrap()
-            .iter()
-            .flat_map(|event| narrator.narrate(event))
-            .collect();
-        let asked = format!("{}\n\n{}", story.join("\n"), situation(me, observation)?);
-        Ok(Request::new(
+        let (story, seen) = {
+            let history = self.mind.history.lock().unwrap();
+            let story: Vec<String> = history
+                .iter()
+                .flat_map(|event| narrator.recall(event))
+                .collect();
+            (story, history.len())
+        };
+        let asked = format!("{}\n\n{}", story.join("\n"), situation(me, view, limit)?);
+        let request = Request::new(
             &self.mind.model_id,
             vec![
                 model::Message::system(&self.mind.prompt),
                 model::Message::user(asked),
             ],
             select(candidates),
-        ))
+        );
+        Ok((request, seen))
     }
 
     /// Ask the model to select one of `candidates` in the phase numbered
-    /// `seq`, which `observation` shows, remember what it selects, and
-    /// send the selection to the environment. The model's failure to
-    /// select, as [`selection`] judges it, is an error, and no selection;
-    /// so is a request that cannot be put together or a selection that
-    /// cannot be sent, which are the player's own doing, and they read so
-    /// in the error.
+    /// `seq`, which `view` shows and which lasts `limit`, remember what it
+    /// selects, and send the selection to the environment, logged as the
+    /// player's action with how many memories the model was shown. The
+    /// model's failure to select, as [`selection`] judges it, is an error,
+    /// and no selection; so is a request that cannot be put together or a
+    /// selection that cannot be sent, which are the player's own doing,
+    /// and they read so in the error.
     async fn ask(
         &self,
         seq: u64,
-        observation: &Observation,
+        view: &View,
+        limit: Duration,
         candidates: &[PlayerId],
     ) -> anyhow::Result<()> {
         let me = &self.context.id;
-        let request = self.request(observation, candidates)?;
+        let (request, seen) = self.request(view, limit, candidates)?;
+        let target = selection(self.mind.model.as_ref(), &request, candidates).await?;
+        let n = self.mind.number();
         let selection = Message::Select {
             seq,
             from: me.clone(),
-            target: selection(self.mind.model.as_ref(), &request, candidates).await?,
+            n,
+            target,
         };
-        self.remember(Entry::Received {
-            from: me.clone(),
+        self.remember(Memory::Acted {
             message: selection.clone(),
         });
-        self.context
-            .send(selection, HashSet::from([ENVIRONMENT.to_string()]))
+        act(
+            &self.context,
+            n,
+            selection,
+            HashSet::from([ENVIRONMENT.to_string()]),
+            Some(seen),
+        )
     }
 }
 
@@ -711,12 +762,13 @@ impl Behavior for Player {
         &self.context
     }
 
-    /// Announced a phase, remember it and think about it. Anything else is
-    /// ignored.
+    /// Announced a phase, log the announcement as observed in it, remember
+    /// it and think about it. Anything else is ignored.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        if let Message::Announce { .. } = message {
-            self.remember(Entry::Sent {
-                to: self.context.id.clone(),
+        if let Message::Announce { seq, n, .. } = message {
+            observe(&self.context, ENVIRONMENT.to_string(), *n, *seq);
+            self.remember(Memory::Observed {
+                from: ENVIRONMENT.to_string(),
                 message: message.clone(),
             });
             self.context.think(message.clone())?;
@@ -738,14 +790,17 @@ impl Think for Player {
     /// remembered, so the model is never told of it. With nobody to
     /// select, the model is not asked. Nothing else is thought about.
     async fn think(&mut self, message: &Message) -> anyhow::Result<()> {
-        let Message::Announce { seq, observation } = message else {
+        let Message::Announce {
+            seq, view, limit, ..
+        } = message
+        else {
             return Ok(());
         };
-        let candidates = candidates(&self.context.id, observation);
+        let candidates = candidates(&self.context.id, view);
         if candidates.is_empty() {
             return Ok(());
         }
-        if let Err(error) = self.ask(*seq, observation, &candidates).await {
+        if let Err(error) = self.ask(*seq, view, *limit, &candidates).await {
             self.context.log(Entry::Failed {
                 player: self.context.id.clone(),
                 seq: *seq,
@@ -756,12 +811,12 @@ impl Think for Player {
     }
 }
 
-/// Where the game stands for `me` as `observation` shows it, and what is
-/// asked of it: by night, what its role does, and by day, the vote. A
-/// player awake by night is a werewolf, the doctor or the seer, and is
-/// shown its own role.
-fn situation(me: &PlayerId, observation: &Observation) -> anyhow::Result<String> {
-    let (phase, asked) = match (&observation.phase, observation.roles.get(me)) {
+/// Where the game stands for `me` as `view` shows it, how long the phase
+/// lasts, and what is asked of it: by night, what its role does, and by
+/// day, the vote. A player awake by night is a werewolf, the doctor or the
+/// seer, and is shown its own role.
+fn situation(me: &PlayerId, view: &View, limit: Duration) -> anyhow::Result<String> {
+    let (phase, asked) = match (&view.phase, view.roles.get(me)) {
         (Phase::Day, _) => ("day", "Choose whom to vote out."),
         (Phase::Night, Some(Role::Werewolf)) => {
             ("night", "Choose whom the werewolves should kill.")
@@ -771,7 +826,11 @@ fn situation(me: &PlayerId, observation: &Observation) -> anyhow::Result<String>
         (Phase::Night, Some(Role::Villager)) => bail!("{me} is a villager, who sleeps by night"),
         (Phase::Night, None) => bail!("{me} is not shown its own role"),
     };
-    Ok(format!("It is {phase} {}. {asked}", observation.round))
+    Ok(format!(
+        "It is {phase} {}, which lasts {}. {asked}",
+        view.round,
+        format_duration(limit)
+    ))
 }
 
 /// Whom `model` selects from `candidates` when sent `request`: its
@@ -879,8 +938,8 @@ mod tests {
     use crate::model::canned;
     use crate::model::fake::{FakeModel, choosing_first};
     use crate::werewolf::tests::{
-        Played, between_the_deal_and_the_end, logged, one_wolf_against, received, run, seen,
-        seen_by_day, selection,
+        Played, between_the_deal_and_the_end, logged, one_wolf_against, run, seen, seen_by_day,
+        selection, selections,
     };
     use clap::Parser;
     use secrecy::ExposeSecret;
@@ -1655,7 +1714,7 @@ player2 = \"Cautious.\"
                     model::Message::system("You are wolf."),
                     model::Message::user(
                         "You are wolf, the only werewolf.\n\nNight 1.\n\n\
-                         It is night 1. Choose whom the werewolves should kill."
+                         It is night 1, which lasts 1m. Choose whom the werewolves should kill."
                     ),
                 ],
                 Tool::new(
@@ -1678,8 +1737,39 @@ player2 = \"Cautious.\"
         let roles = one_wolf_against(&["ann", "bob"]);
         let (winner, logged, took) = play(roles, quick(), model).await.unwrap();
         assert_eq!(winner, Team::Werewolves);
-        assert_eq!(received(&logged), [&selection(1, "wolf", "bob")]);
+        assert_eq!(selections(&logged), [&selection(1, "wolf", 1, "bob")]);
         assert!(took < quick().night_limit, "{took:?}");
+    }
+
+    /// How many memories each of `player`'s selections says the model was
+    /// shown, in the order they were made.
+    fn seen_by(logged: &[Entry], player: &str) -> Vec<Option<usize>> {
+        logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Action {
+                    from,
+                    message: Message::Select { .. },
+                    seen,
+                    ..
+                } if from == player => Some(*seen),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_selection_s_action_says_how_many_memories_the_model_was_shown() {
+        // The doctor is asked once a phase, and each request is told from
+        // every announcement it has heard and every selection it has made,
+        // so each is told from two memories more than the last.
+        let model = answering(choosing_first);
+        let (_, logged, _) = play(doctored(), rules(), Arc::clone(&model)).await.unwrap();
+        assert_eq!(
+            seen_by(&logged, "doc"),
+            [Some(1), Some(3), Some(5), Some(7)]
+        );
+        assert_eq!(asked_of(&model, "doc").len(), 4);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1705,7 +1795,7 @@ player2 = \"Cautious.\"
              \n\
              Day 2.\n\
              \n\
-             It is day 2. Choose whom to vote out."
+             It is day 2, which lasts 1m. Choose whom to vote out."
         );
         assert_eq!(asked.len(), 4);
         for pair in asked.windows(2) {
@@ -1713,30 +1803,39 @@ player2 = \"Cautious.\"
         }
     }
 
+    /// `memory`, remembered when the game began, in no episode in
+    /// particular.
+    fn remembered(memory: Memory) -> Event<Memory> {
+        Event {
+            time: std::time::UNIX_EPOCH,
+            episode: Default::default(),
+            payload: memory,
+        }
+    }
+
     #[test]
     fn a_late_selection_is_remembered_in_its_own_phase_and_told_there() {
-        let mind = Mind {
-            history: Mutex::new(Vec::new()),
-            prompt: told("wolf"),
-            model_id: MODEL_ID.to_string(),
-            model: Arc::new(FakeModel::failing("down")),
-        };
+        let mind = Mind::new(
+            told("wolf"),
+            MODEL_ID.to_string(),
+            Arc::new(FakeModel::failing("down")),
+        );
         let everyone = ["wolf", "ann", "bob"];
         let pack = [("wolf", Role::Werewolf)];
-        let announced = |seq, observation| {
-            logged(Entry::Sent {
-                to: "wolf".to_string(),
-                message: Message::Announce { seq, observation },
+        let announced = |seq, view| {
+            remembered(Memory::Observed {
+                from: ENVIRONMENT.to_string(),
+                message: Message::Announce {
+                    seq,
+                    n: seq,
+                    view,
+                    limit: Duration::from_secs(60),
+                },
             })
         };
         let selected = |seq| {
-            logged(Entry::Received {
-                from: "wolf".to_string(),
-                message: Message::Select {
-                    seq,
-                    from: "wolf".to_string(),
-                    target: "ann".to_string(),
-                },
+            remembered(Memory::Acted {
+                message: selection(seq, "wolf", seq, "ann"),
             })
         };
         let night = announced(1, seen(&everyone, &pack));
@@ -1751,7 +1850,7 @@ player2 = \"Cautious.\"
         let mut narrator = Narrator::for_player("wolf".to_string());
         let story: Vec<String> = history
             .iter()
-            .flat_map(|event| narrator.narrate(event))
+            .flat_map(|event| narrator.recall(event))
             .collect();
         assert_eq!(
             story,
@@ -1797,14 +1896,16 @@ player2 = \"Cautious.\"
             assert_eq!(took, quick().night_limit);
             assert_eq!(model.requests().len(), 4);
             assert_eq!(failed(&logged), [("wolf", 1, error)]);
-            let mut received = received(&logged);
-            received.sort_by_key(|message| format!("{message:?}"));
+            // A failure takes no number: the werewolf's vote is its first
+            // selection.
+            let mut selected = selections(&logged);
+            selected.sort_by_key(|message| format!("{message:?}"));
             assert_eq!(
-                received,
+                selected,
                 [
-                    &selection(2, "ann", "bob"),
-                    &selection(2, "bob", "ann"),
-                    &selection(2, "wolf", "ann")
+                    &selection(2, "ann", 1, "bob"),
+                    &selection(2, "bob", 1, "ann"),
+                    &selection(2, "wolf", 1, "ann")
                 ]
             );
             // The werewolf's story is what it was shown and what it did,
@@ -1836,7 +1937,7 @@ player2 = \"Cautious.\"
         let (winner, entries, took) = play(roles, quick(), model).await.unwrap();
         assert_eq!(winner, Team::Werewolves);
         assert_eq!(took, quick().night_limit);
-        assert!(received(&entries).is_empty());
+        assert!(selections(&entries).is_empty());
         let mut narrator = Narrator::default();
         let mut told: Vec<String> = entries
             .into_iter()
@@ -1882,7 +1983,7 @@ player2 = \"Cautious.\"
         let (winner, logged, took) = play(roles, quick(), Arc::clone(&model)).await.unwrap();
         assert_eq!(winner, Team::Werewolves);
         assert!(model.requests().is_empty());
-        assert!(received(&logged).is_empty());
+        assert!(selections(&logged).is_empty());
         assert_eq!(took, quick().night_limit);
     }
 
@@ -1899,12 +2000,17 @@ player2 = \"Cautious.\"
         );
         assert_eq!(
             between[1],
-            Entry::Sent {
-                to: "wolf".to_string(),
+            Entry::Action {
+                from: ENVIRONMENT.to_string(),
+                n: 1,
+                to: HashSet::from(["wolf".to_string()]),
                 message: Message::Announce {
                     seq: 1,
-                    observation: seen(&["wolf", "ann", "bob"], &[("wolf", Role::Werewolf)]),
+                    n: 1,
+                    view: seen(&["wolf", "ann", "bob"], &[("wolf", Role::Werewolf)]),
+                    limit: rules().night_limit,
                 },
+                seen: None,
             }
         );
         // The configuration is logged once.
@@ -1928,7 +2034,7 @@ player2 = \"Cautious.\"
             .filter(|entry| {
                 matches!(
                     entry,
-                    Entry::Sent {
+                    Entry::Action {
                         message: Message::Announce { .. },
                         ..
                     }
@@ -1938,7 +2044,7 @@ player2 = \"Cautious.\"
         // Every announcement was asked about, and every answer selected.
         assert_eq!(announced, 11);
         assert_eq!(model.requests().len(), announced);
-        assert_eq!(received(&logged).len(), announced);
+        assert_eq!(selections(&logged).len(), announced);
         let situations: HashSet<String> = model
             .requests()
             .iter()
@@ -1947,43 +2053,46 @@ player2 = \"Cautious.\"
         assert_eq!(
             situations,
             HashSet::from([
-                "It is night 1. Choose whom the werewolves should kill.".to_string(),
-                "It is night 1. Choose whom to protect.".to_string(),
-                "It is day 1. Choose whom to vote out.".to_string(),
-                "It is night 2. Choose whom the werewolves should kill.".to_string(),
-                "It is night 2. Choose whom to protect.".to_string(),
-                "It is day 2. Choose whom to vote out.".to_string(),
+                "It is night 1, which lasts 1m. Choose whom the werewolves should kill."
+                    .to_string(),
+                "It is night 1, which lasts 1m. Choose whom to protect.".to_string(),
+                "It is day 1, which lasts 1m. Choose whom to vote out.".to_string(),
+                "It is night 2, which lasts 1m. Choose whom the werewolves should kill."
+                    .to_string(),
+                "It is night 2, which lasts 1m. Choose whom to protect.".to_string(),
+                "It is day 2, which lasts 1m. Choose whom to vote out.".to_string(),
             ])
         );
     }
 
     #[test]
-    fn the_situation_is_the_phase_and_what_the_role_does_in_it() {
+    fn the_situation_is_the_phase_how_long_it_lasts_and_what_the_role_does_in_it() {
         let night = |known: &[(&str, Role)]| seen(&["wolf", "doc", "seer", "ann"], known);
         let me = |name: &str| name.to_string();
+        let limit = Duration::from_secs(90);
         assert_eq!(
-            situation(&me("wolf"), &night(&[("wolf", Role::Werewolf)])).unwrap(),
-            "It is night 1. Choose whom the werewolves should kill."
+            situation(&me("wolf"), &night(&[("wolf", Role::Werewolf)]), limit).unwrap(),
+            "It is night 1, which lasts 1m 30s. Choose whom the werewolves should kill."
         );
         assert_eq!(
-            situation(&me("doc"), &night(&[("doc", Role::Doctor)])).unwrap(),
-            "It is night 1. Choose whom to protect."
+            situation(&me("doc"), &night(&[("doc", Role::Doctor)]), limit).unwrap(),
+            "It is night 1, which lasts 1m 30s. Choose whom to protect."
         );
         assert_eq!(
-            situation(&me("seer"), &night(&[("seer", Role::Seer)])).unwrap(),
-            "It is night 1. Choose whom to ask about."
+            situation(&me("seer"), &night(&[("seer", Role::Seer)]), limit).unwrap(),
+            "It is night 1, which lasts 1m 30s. Choose whom to ask about."
         );
         // By day everyone votes, whatever its role.
         let mut day = night(&[("ann", Role::Villager)]);
         day.phase = Phase::Day;
         day.round = NonZero::new(2).unwrap();
         assert_eq!(
-            situation(&me("ann"), &day).unwrap(),
-            "It is day 2. Choose whom to vote out."
+            situation(&me("ann"), &day, Duration::from_secs(60)).unwrap(),
+            "It is day 2, which lasts 1m. Choose whom to vote out."
         );
         // A villager sleeps by night, and a player is shown its own role.
-        assert!(situation(&me("ann"), &night(&[("ann", Role::Villager)])).is_err());
-        assert!(situation(&me("ann"), &night(&[])).is_err());
+        assert!(situation(&me("ann"), &night(&[("ann", Role::Villager)]), limit).is_err());
+        assert!(situation(&me("ann"), &night(&[]), limit).is_err());
     }
 
     #[tokio::test]

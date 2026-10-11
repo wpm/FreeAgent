@@ -53,8 +53,18 @@ workflow takes a version's notes from here.
   everything in `receive`. The uniform-random variant plays the announcing
   environment as the model-played variant does: it announces each phase
   and waits for selections, and every player selects at once at random. Its
-  log has `Announce` and `Select` messages in `Sent` and `Received`
-  entries, with no `Observation`, `Action` or `Replied`.
+  log has `Announce` and `Select` messages and no `Replied` entries.
+- The log is written in actions and observations by every actor. Each
+  message an actor sends to others is an `Action` of its sender, logged
+  whole, once, by the sender, with everyone it was sent to, and an
+  `Observation` of each receiver, logged by the receiver as a receipt
+  naming the message by its sender and number and the phase it arrived in.
+  Every actor numbers what it sends from 1. `Sent` and `Received` are gone.
+  A model player's `Action` says how many history entries the model was
+  shown when it made the call that produced the message. Announcements
+  carry the phase's limit, and the model player's request tells it: "It is
+  day 2, which lasts 1m." `Hunted` names its phase. The struct a player is
+  shown is `View`, and the players with the most votes are `most_votes`.
 - The command line is `social-deduction werewolf uniform-random`, a game
   and then its variant, each a subcommand with its own `--help`. The role
   counts `--werewolves`, `--villagers`, `--doctors` and `--seers` belong to
