@@ -15,11 +15,11 @@ workflow takes a version's notes from here.
   dealt at random.
 - `social-deduction werewolf llm`, in which every player is a language
   model set up by a TOML configuration file: the model, how to reach it, and
-  the prompt templates each role is given. It checks the file and the model
-  before the game begins, and its log opens with the configuration the game
-  was played under.
-- `social-deduction models`, which lists the models a provider serves,
-  marking those known to make tool calls.
+  the prompt templates each role is given. It checks the file, and asks the
+  model for a selection as a player would, before the game begins, and its
+  log opens with the configuration the game was played under.
+- `social-deduction models`, which lists the models a provider serves.
+  `--check` asks each model for a selection and marks those that give one.
 - `social-deduction werewolf scripted`, which plays the model-played game
   with no model: the environment announces each phase and waits for
   selections, and every player is a script that selects at once at random.

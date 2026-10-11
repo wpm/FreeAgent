@@ -129,8 +129,19 @@ pub fn unreachable() -> String {
 /// parameter allows, as a player's `select` tool asks for a `target` from
 /// an `enum` of candidates. Anything else asked of it is not found.
 pub fn playing(ids: &[&str]) -> String {
+    playing_only(ids, ids)
+}
+
+/// A provider that serves `ids` but plays only `selecting` of them, kept
+/// for the rest of the process: it answers every listing request with
+/// `ids`; every completion request for a model in `selecting` as
+/// [`playing`] does; and every other completion request 400 Bad Request,
+/// saying what [`refusal`] says, as a server that cannot use the tools a
+/// request offers does. Anything else asked of it is not found.
+pub fn playing_only(ids: &[&str], selecting: &[&str]) -> String {
     let (listener, base_url) = bound();
     let listing = listing(ids);
+    let selecting: Vec<String> = selecting.iter().map(|id| id.to_string()).collect();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
@@ -140,7 +151,13 @@ pub fn playing(ids: &[&str]) -> String {
             let answer = match served.asked() {
                 ("get", "/v1/models") => response("200 OK", &listing),
                 ("post", "/v1/chat/completions") => {
-                    response("200 OK", &selecting_first(&served.json()))
+                    let request = served.json();
+                    let model = request["model"].as_str().unwrap();
+                    if selecting.iter().any(|id| id == model) {
+                        response("200 OK", &selecting_first(&request))
+                    } else {
+                        response("400 Bad Request", &error(&refusal(model)))
+                    }
                 }
                 _ => response("404 Not Found", "{}"),
             };
@@ -148,6 +165,24 @@ pub fn playing(ids: &[&str]) -> String {
         }
     });
     base_url
+}
+
+/// A provider that serves `ids` and plays none of them: every completion
+/// request is answered 400 Bad Request, as [`playing_only`] answers one for
+/// a model it does not play.
+pub fn refusing(ids: &[&str]) -> String {
+    playing_only(ids, &[])
+}
+
+/// What a canned provider says when asked for a completion from `model`,
+/// which it does not play.
+pub fn refusal(model: &str) -> String {
+    format!("{model} does not support tools")
+}
+
+/// An error in OpenAI's shape saying `message`.
+fn error(message: &str) -> String {
+    serde_json::json!({"error": {"message": message, "type": "invalid_request_error"}}).to_string()
 }
 
 /// The completion that calls the one tool `request`, a completion request
@@ -207,6 +242,38 @@ mod tests {
                 Response::tool_call("select", &json!({"target": candidates[0]}))
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_provider_playing_only_some_models_refuses_a_completion_from_the_others() {
+        let base_url = playing_only(&["qwen2.5-7b-instruct", "gpt-0"], &["qwen2.5-7b-instruct"]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        assert_eq!(
+            provider.models().await.unwrap(),
+            ["qwen2.5-7b-instruct", "gpt-0"]
+        );
+        assert_eq!(
+            provider.complete(&selecting(&["player2"])).await.unwrap(),
+            Response::tool_call("select", &json!({"target": "player2"}))
+        );
+        let mut request = selecting(&["player2"]);
+        request.model = "gpt-0".to_string();
+        let error = provider.complete(&request).await.unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("400 Bad Request"), "{shown}");
+        assert!(shown.contains(&refusal("gpt-0")), "{shown}");
+        // The refusing provider plays nothing.
+        let base_url = refusing(&["qwen2.5-7b-instruct"]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        provider.check_serves("qwen2.5-7b-instruct").await.unwrap();
+        let error = provider
+            .complete(&selecting(&["player2"]))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains(&refusal("qwen2.5-7b-instruct")),
+            "{error:#}"
+        );
     }
 
     #[tokio::test]

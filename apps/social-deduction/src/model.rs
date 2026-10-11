@@ -1,15 +1,13 @@
 //! Reaching a model provider: the OpenAI-compatible API every model is
-//! behind, the whitelist of models known to make tool calls, and the
-//! [`Model`] a player asks for one decision.
+//! behind, the providers known, and the [`Model`] a player asks for one
+//! decision.
 //!
 //! Nothing here is particular to Werewolf. The `models` command lists what
-//! a [`Provider`] serves, and a model-played game checks its model against
-//! the whitelist and the listing before it begins, since a model player
-//! makes its selection with a tool call, and a model that cannot make one
-//! would silently never select. Once the game begins, each decision is one
-//! [`Request`] to the provider, forcing a tool call, and the [`Response`]
-//! it is answered with. A player depends only on the [`Model`] trait, so a
-//! test gives it a [`fake::FakeModel`] and no test reaches a model.
+//! a [`Provider`] serves, and a model-played game checks that its model is
+//! in the listing before it begins. Each decision is one [`Request`] to
+//! the provider, forcing a tool call, and the [`Response`] it is answered
+//! with. A player depends only on the [`Model`] trait, so a test gives it
+//! a [`fake::FakeModel`] and no test reaches a model.
 //!
 //! The API key is a [`SecretString`], exposed only where the
 //! `Authorization` header is built, so it never appears in an error.
@@ -65,9 +63,6 @@ static KNOWLEDGE: LazyLock<Knowledge> =
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Knowledge {
-    /// The ids of the models known to make tool calls, exactly as their
-    /// providers list them.
-    tool_models: Vec<String>,
     /// The providers known, in the order the help lists them.
     #[serde(default)]
     providers: Vec<Known>,
@@ -85,28 +80,6 @@ struct Known {
     /// The headers every request to it must carry.
     #[serde(default)]
     headers: BTreeMap<String, String>,
-}
-
-/// The ids of the models known to make tool calls, as `src/models.toml`
-/// lists them.
-fn tool_models() -> impl Iterator<Item = &'static str> {
-    KNOWLEDGE.tool_models.iter().map(String::as_str)
-}
-
-/// Whether the model `id` is known to make tool calls: whether it is on
-/// the whitelist, matched exactly, whatever its provider.
-pub fn makes_tool_calls(id: &str) -> bool {
-    tool_models().any(|model| model == id)
-}
-
-/// Check that the model `id` is known to make tool calls, which needs no
-/// network. The error names the whitelist to add it to.
-pub fn check_makes_tool_calls(id: &str) -> anyhow::Result<()> {
-    if makes_tool_calls(id) {
-        Ok(())
-    } else {
-        bail!("{id} is not known to make tool calls: it is not listed in src/models.toml")
-    }
 }
 
 /// The provider `src/models.toml` knows at `base_url`: the one whose root
@@ -393,18 +366,6 @@ mod tests {
     const TIMEOUT: Duration = Duration::from_secs(5);
 
     #[test]
-    fn the_whitelist_is_not_empty_and_matches_an_id_exactly_as_written() {
-        assert!(tool_models().next().is_some());
-        assert!(makes_tool_calls("qwen2.5-7b-instruct"));
-        assert!(makes_tool_calls("claude-opus-5-5"));
-        assert!(makes_tool_calls("gpt-5.5"));
-        // Not a comment, a blank line, or another case.
-        assert!(!makes_tool_calls("# Models known to make tool calls."));
-        assert!(!makes_tool_calls(""));
-        assert!(!makes_tool_calls("QWEN2.5-7B-INSTRUCT"));
-    }
-
-    #[test]
     fn the_known_providers_are_told_in_the_file_s_order() {
         let providers = known_providers();
         assert!(providers.len() >= 2, "{providers:?}");
@@ -419,8 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn the_file_parses_and_knows_at_least_one_model_and_one_provider() {
-        assert!(tool_models().next().is_some());
+    fn the_file_parses_and_knows_at_least_one_provider() {
         assert!(!KNOWLEDGE.providers.is_empty());
     }
 
@@ -516,15 +476,6 @@ mod tests {
         let shown = format!("{error:#}");
         assert!(shown.contains("SOCIAL_DEDUCTION_KEY"), "{shown}");
         assert!(!shown.contains("not set"), "{shown}");
-    }
-
-    #[test]
-    fn a_model_off_the_whitelist_is_an_error_naming_it_and_the_file() {
-        check_makes_tool_calls("qwen2.5-7b-instruct").unwrap();
-        let error = check_makes_tool_calls("gpt-0").unwrap_err();
-        let shown = format!("{error:#}");
-        assert!(shown.contains("gpt-0"), "{shown}");
-        assert!(shown.contains("src/models.toml"), "{shown}");
     }
 
     #[tokio::test]

@@ -124,21 +124,20 @@ every role at the table before the game begins, so a template that does not
 compile, a variable it does not have, a role at the table with no template,
 or a persona for a seat that is not there stops the program at once.
 
-### Known models
+### Before a game begins
 
-A model player selects with tool calls, so the model must be one known to
-make them: its id is listed under `tool_models` in
-[`src/models.toml`](src/models.toml), which is compiled in. To play with
-another model, add its id there, exactly as its provider lists it, and
-rebuild. The same file knows OpenAI and Anthropic by the root of their
-APIs, with the variable each one's key is read from and the headers its
-requests carry. Before a game begins, the model is checked against the
-whitelist and then against the provider's listing.
+The model is checked before any player is built, so a model that cannot
+play fails at launch. The provider's listing must have the model's id, and
+the model is then asked for one selection exactly as a player is: a short
+prompt, two candidates, and the `select` tool it must call. A model that
+does not answer with a candidate stops the program, and the error says
+why in the provider's own words, such as a server that rejects the request
+or an answer that makes no tool call. Any model that passes can play.
 
 To play against a local [LM Studio](https://lmstudio.ai) server, download
 `qwen2.5-7b-instruct` there and start its server, which listens at
-`http://localhost:1234/v1`. `social-deduction models http://localhost:1234/v1`
-lists what it serves, with that model marked, and
+`http://localhost:1234/v1`. `social-deduction models http://localhost:1234/v1 --check`
+lists what it serves and marks the models that select when asked, and
 [`examples/werewolf/llm/minimal.toml`](examples/werewolf/llm/minimal.toml)
 plays it:
 
@@ -150,13 +149,19 @@ social-deduction werewolf llm examples/werewolf/llm/minimal.toml
 
 The `models` command belongs to no game. It asks a provider, named by the
 root of its OpenAI-compatible API, for the models it serves and lists them,
-marking with `*` those known to make tool calls. A provider whose API key
-variable is known is read with it; any other provider that wants a key is
-told the environment variable holding it. `models --help` tables the
-providers known:
+one id per line in sorted order. With `--check`, it asks each model listed
+for one selection as a player would, one model at a time, and marks with
+`*` those that select and with `!` those that do not, with a line at the
+end saying so. The reason each `!` model failed goes to standard error, so
+the listing stays readable. `--check` followed by ids asks only those,
+each of which must be listed, and leaves the rest unmarked. A provider
+whose API key variable is known is read with it; any other provider that
+wants a key is told the environment variable holding it. `models --help`
+tables the providers known:
 
 ```sh
 social-deduction models http://localhost:1234/v1
-social-deduction models https://api.openai.com/v1
+social-deduction models http://localhost:1234/v1 --check
+social-deduction models https://api.openai.com/v1 --check gpt-5.5 gpt-5.5-mini
 social-deduction models https://example.com/v1 --api-key-env EXAMPLE_API_KEY
 ```
