@@ -1563,10 +1563,7 @@ player2 = \"Cautious.\"
             )]
         );
         let sent = serde_json::to_value(&requests[0]).unwrap();
-        assert_eq!(
-            sent["tool_choice"],
-            json!({"type": "function", "function": {"name": "select"}})
-        );
+        assert_eq!(sent["tool_choice"], json!("required"));
     }
 
     #[tokio::test(start_paused = true)]
