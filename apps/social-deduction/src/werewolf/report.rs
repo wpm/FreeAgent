@@ -204,25 +204,23 @@ impl Narrator {
     }
 
     /// How the phase being told ended, given who is alive after it: the
-    /// deeds held for it, then who died, by name alone. A player that
-    /// `slept` through phases since is told who died without being told
-    /// how. Several dead take a plural verb.
+    /// deeds held for it, then who died, by name alone and in the same
+    /// words by night and by day. A player that `slept` through phases
+    /// since is told who died in the past tense. Several dead take a
+    /// plural verb.
     fn outcome(&mut self, alive_after: &HashSet<PlayerId>, slept: bool) -> Vec<String> {
         let mut lines = self.done();
-        let Some((_, phase)) = &self.phase else {
+        if self.phase.is_none() {
             return lines;
-        };
+        }
         let dead = in_order(self.alive.difference(alive_after));
         let listed = listed(dead.iter().map(|player| Seat::named(player)));
-        let line = match (phase, slept, dead.len()) {
-            (_, true, 0) => "Nobody died.".to_string(),
-            (_, true, _) => format!("{listed} died."),
-            (Phase::Night, false, 0) => "Nobody dies.".to_string(),
-            (Phase::Night, false, 1) => format!("{listed} dies."),
-            (Phase::Night, false, _) => format!("{listed} die."),
-            (Phase::Day, false, 0) => "Nobody is voted out.".to_string(),
-            (Phase::Day, false, 1) => format!("{listed} is voted out."),
-            (Phase::Day, false, _) => format!("{listed} are voted out."),
+        let line = match (slept, dead.len()) {
+            (true, 0) => "Nobody died.".to_string(),
+            (true, _) => format!("{listed} died."),
+            (false, 0) => "Nobody dies.".to_string(),
+            (false, 1) => format!("{listed} dies."),
+            (false, _) => format!("{listed} die."),
         };
         self.alive = alive_after.clone();
         lines.push(line);
@@ -584,7 +582,7 @@ mod tests {
                 "player1 (seer) votes against player2 (werewolf).",
                 "player2 (werewolf) votes against player10 (villager).",
                 "player10 (villager) votes against player2 (werewolf).",
-                "player1 and player10 are voted out.",
+                "player1 and player10 die.",
                 "",
                 "The werewolves win after 1 day.",
                 "Survivors:",
@@ -610,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn a_night_in_which_nobody_dies_says_so() {
+    fn a_phase_in_which_nobody_dies_says_so() {
         let mut narrator = Narrator::default();
         narrator.narrate(&start());
         let everyone = ["wolf", "seer", "doctor", "ann"];
@@ -633,7 +631,7 @@ mod tests {
             [
                 "seer (seer) votes against wolf (werewolf).",
                 "wolf (werewolf) votes against seer (seer).",
-                "Nobody is voted out.",
+                "Nobody dies.",
                 "",
                 "Night 2."
             ]
@@ -647,12 +645,12 @@ mod tests {
         narrator.narrate(&shown("wolf", 1, Phase::Day, &["wolf", "seer", "doctor"]));
         assert_eq!(
             narrator.narrate(&shown("wolf", 2, Phase::Night, &["wolf", "seer", "doctor"])),
-            ["Nobody is voted out.", "", "Night 2."]
+            ["Nobody dies.", "", "Night 2."]
         );
         narrator.narrate(&shown("wolf", 2, Phase::Day, &["wolf", "seer", "doctor"]));
         assert_eq!(
             narrator.narrate(&shown("wolf", 3, Phase::Night, &["seer", "doctor"])),
-            ["wolf is voted out.", "", "Night 3."]
+            ["wolf dies.", "", "Night 3."]
         );
     }
 
@@ -664,7 +662,7 @@ mod tests {
         assert_eq!(
             narrator.narrate(&ended(Team::Villagers, 1, &["seer", "doctor"])),
             [
-                "wolf is voted out.",
+                "wolf dies.",
                 "",
                 "The villagers win after 1 day.",
                 "Survivors:",
@@ -709,7 +707,7 @@ mod tests {
             narrator.narrate(&ended(Team::Villagers, 1, &["seer", "doctor"])),
             [
                 "seer (seer) votes against wolf (werewolf).",
-                "wolf is voted out.",
+                "wolf dies.",
                 "",
                 "The villagers win after 1 day.",
                 "Survivors:",
@@ -848,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn several_voted_out_take_a_plural_verb() {
+    fn several_dead_by_day_take_a_plural_verb() {
         let mut narrator = Narrator::default();
         narrator.narrate(&start());
         narrator.narrate(&shown(
@@ -860,7 +858,7 @@ mod tests {
         assert_eq!(
             narrator.narrate(&ended(Team::Werewolves, 1, &["wolf", "ann"])),
             [
-                "doctor and seer are voted out.",
+                "doctor and seer die.",
                 "",
                 "The werewolves win after 1 day.",
                 "Survivors:",
@@ -973,7 +971,7 @@ mod tests {
                 &["wolf", "seer", "doctor"],
                 &[("seer", Role::Seer), ("wolf", Role::Werewolf)]
             )),
-            ["Nobody is voted out.", "", "Night 2."]
+            ["Nobody dies.", "", "Night 2."]
         );
     }
 

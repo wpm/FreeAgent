@@ -1594,7 +1594,7 @@ player2 = \"Cautious.\"
              \n\
              Day 1.\n\
              You vote against ann.\n\
-             ann is voted out.\n\
+             ann dies.\n\
              \n\
              Night 2.\n\
              You protect bob.\n\
@@ -1665,7 +1665,7 @@ player2 = \"Cautious.\"
     async fn a_bad_answer_by_night_is_no_selection_and_the_day_is_played_normally() {
         // Nobody dies the night the werewolf fails to select, which waits
         // out its limit. By day everyone selects its first candidate, and
-        // ann is voted out, bringing the werewolf to parity.
+        // ann dies by day, bringing the werewolf to parity.
         for by_night in [
             naming_itself as fn(&Request) -> anyhow::Result<Response>,
             down,
