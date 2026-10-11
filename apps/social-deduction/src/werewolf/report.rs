@@ -2,10 +2,13 @@
 //! either of everything or of what one player saw.
 
 use super::{Entry, Hunt, Message, Observation, Phase, PlayerId, Role};
+use free_agent::Event;
+use humantime::format_duration;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::num::NonZero;
+use std::time::{Duration, SystemTime};
 
 /// Whose account a narrator gives.
 #[derive(Debug, Default)]
@@ -17,22 +20,27 @@ enum Voice {
     Player(PlayerId),
 }
 
-/// Turns the log's entries, one at a time, into lines of prose. The
-/// omniscient narrator tells the table, a player to a line, then each
-/// night and day with what every player did and how it ended, then who
-/// won and the survivors, a player to a line. A player's narrator
-/// tells the same nights and days from what that player was shown, in the
-/// second person, with no table. Each names a player with its role in
-/// parentheses whenever it knows the role, except in reporting its death,
-/// and lists players in seat order. A blank line sets each phase off from
-/// what came before it, and another the winner from the last. Both learn who died from who is shown as alive
-/// next, so a phase's result is told as the next one begins, and the
-/// omniscient narrator holds the phase's deeds until then too, to tell them
-/// in seat order, then whom the werewolves chose and who protected them,
-/// which no player is shown; a player's narrator tells the player's own
-/// deed as it is done. A phase announced is told as one requested, and a selection as a
-/// reply, unless a later phase has been announced since: then it is told
-/// as too late to count, for the phase it was for.
+/// Turns the log's events, one at a time, into lines of prose. The
+/// omniscient narrator tells the table, a player to a line, and how long
+/// a night and a day wait, then each night and day with what every player
+/// did, how it ended, and how long it took, then who won and the
+/// survivors, a player to a line. A player's narrator tells the same
+/// nights and days from what that player was shown, in the second person,
+/// with no table, no limits, and no times. Each names a player with its
+/// role in parentheses whenever it knows the role, except in reporting its
+/// death, and lists players in seat order. A blank line sets each phase
+/// off from what came before it, and another the winner from the last.
+/// Both learn who died from who is shown as alive next, so a phase's
+/// result is told as the next one begins, and the omniscient narrator
+/// holds the phase's deeds until then too, to tell them in seat order,
+/// then whom the werewolves chose and who protected them, which no player
+/// is shown; a player's narrator tells the player's own deed as it is
+/// done. A phase begins at its first announcement and ends at the next
+/// phase's, or at the end of the game, and the omniscient narrator tells
+/// the time between, to the nearest second, after who died. A phase
+/// announced is told as one requested, and a selection as a reply, unless
+/// a later phase has been announced since: then it is told as too late to
+/// count, for the phase it was for.
 #[derive(Debug, Default)]
 pub struct Narrator {
     /// Whose account this is.
@@ -43,7 +51,7 @@ pub struct Narrator {
     /// Who was alive when the current phase began.
     alive: HashSet<PlayerId>,
     /// The phase being told, once one has begun.
-    phase: Option<(NonZero<u8>, Phase)>,
+    phase: Option<Told>,
     /// The deeds of the phase being told, each with whose it is, held in
     /// the omniscient account until the phase ends.
     deeds: Vec<(PlayerId, String)>,
@@ -54,10 +62,19 @@ pub struct Narrator {
     announced: BTreeMap<u64, (NonZero<u8>, Phase)>,
 }
 
+/// The phase being told: which it is, and when it began.
+#[derive(Debug)]
+struct Told {
+    /// The round and its half.
+    phase: (NonZero<u8>, Phase),
+    /// When the phase was first announced.
+    began: SystemTime,
+}
+
 impl Narrator {
-    /// The account `me` would give of its own game. Feed it the entries
+    /// The account `me` would give of its own game. Feed it the events
     /// about `me`: each observation `me` was sent, and each selection it
-    /// made. Entries about anyone else add nothing, so the whole log tells
+    /// made. Events about anyone else add nothing, so the whole log tells
     /// it the same account as `me`'s own history does. It opens with who
     /// `me` is, names the roles `me` knows and nobody else's, and tells
     /// `me`'s deeds as "You ...".
@@ -68,25 +85,31 @@ impl Narrator {
         }
     }
 
-    /// The lines `entry` adds to the account, often none.
-    pub fn narrate(&mut self, entry: &Entry) -> Vec<String> {
-        match entry {
-            Entry::Start { variation, roles } if matches!(self.voice, Voice::Omniscient) => {
+    /// The lines `event` adds to the account, often none.
+    pub fn narrate(&mut self, event: &Event<Entry>) -> Vec<String> {
+        let time = event.time;
+        match &event.payload {
+            Entry::Start {
+                variation,
+                roles,
+                night_limit,
+                day_limit,
+            } if matches!(self.voice, Voice::Omniscient) => {
                 self.roles = roles.clone();
                 self.alive = roles.keys().cloned().collect();
-                self.table(variation)
+                self.table(variation, *night_limit, *day_limit)
             }
             Entry::Sent {
                 to,
                 message: Message::Observation(observation),
-            } if self.concerns(to) => self.show(observation),
+            } if self.concerns(to) => self.show(observation, time),
             Entry::Sent {
                 to,
                 message: Message::Announce { seq, observation },
             } if self.concerns(to) => {
                 self.announced
                     .insert(*seq, (observation.round, observation.phase.clone()));
-                self.show(observation)
+                self.show(observation, time)
             }
             Entry::Replied {
                 from,
@@ -113,7 +136,7 @@ impl Narrator {
                 days,
                 survivors,
             } => {
-                let mut lines = self.outcome(survivors, false);
+                let mut lines = self.outcome(survivors, false, time);
                 lines.push(String::new());
                 lines.push(format!(
                     "The {winner} win after {days} {}.",
@@ -141,13 +164,21 @@ impl Narrator {
     }
 
     /// The deal: how many players, then each with its role on a line of
-    /// its own.
-    fn table(&self, variation: &str) -> Vec<String> {
+    /// its own, then how long a night and a day wait for them.
+    fn table(&self, variation: &str, night_limit: Duration, day_limit: Duration) -> Vec<String> {
         let heading = format!("{variation} with {} players:", self.roles.len());
         let seats = in_order(self.roles.keys())
             .into_iter()
             .map(|player| self.seat(player).to_string());
-        std::iter::once(heading).chain(seats).collect()
+        let limits = format!(
+            "A night waits {} and a day {}.",
+            format_duration(night_limit),
+            format_duration(day_limit)
+        );
+        std::iter::once(heading)
+            .chain(seats)
+            .chain(std::iter::once(limits))
+            .collect()
     }
 
     /// `player` as this account names it: with its role when known.
@@ -180,48 +211,51 @@ impl Narrator {
         lines
     }
 
-    /// What a player being shown `observation` adds to the account: the
-    /// roles it learns, and the phase it begins.
-    fn show(&mut self, observation: &Observation) -> Vec<String> {
+    /// What a player being shown `observation` at `time` adds to the
+    /// account: the roles it learns, and the phase it begins.
+    fn show(&mut self, observation: &Observation, time: SystemTime) -> Vec<String> {
         let mut lines = self.learn(&observation.roles);
-        lines.extend(self.begin(observation));
+        lines.extend(self.begin(observation, time));
         lines
     }
 
-    /// A phase begins when a player is first shown it. The phase before
-    /// it ends then, with whoever is no longer alive, and a blank line sets
-    /// the new phase off from what came before it.
-    fn begin(&mut self, observation: &Observation) -> Vec<String> {
+    /// A phase begins when a player is first shown it, at `time`. The
+    /// phase before it ends then, with whoever is no longer alive, and a
+    /// blank line sets the new phase off from what came before it.
+    fn begin(&mut self, observation: &Observation, time: SystemTime) -> Vec<String> {
         let phase = (observation.round, observation.phase.clone());
-        if self.phase.as_ref() == Some(&phase) {
+        if self.phase.as_ref().is_some_and(|told| told.phase == phase) {
             return vec![];
         }
         let slept = self
             .phase
             .as_ref()
-            .is_some_and(|told| ordinal(&phase) != ordinal(told) + 1);
-        let mut lines = self.outcome(&observation.alive, slept);
+            .is_some_and(|told| ordinal(&phase) != ordinal(&told.phase) + 1);
+        let mut lines = self.outcome(&observation.alive, slept, time);
         self.alive = observation.alive.clone();
-        self.phase = Some(phase);
         lines.push(String::new());
-        lines.push(match observation.phase {
-            Phase::Night => format!("Night {}.", observation.round),
-            Phase::Day => format!("Day {}.", observation.round),
-        });
+        lines.push(format!("{}.", title(&phase)));
+        self.phase = Some(Told { phase, began: time });
         lines
     }
 
-    /// How the phase being told ended, given who is alive after it: the
-    /// deeds held for it, the hunt if there was one, then who died, by
-    /// name alone and in the same words by night and by day. A player that `slept` through phases
-    /// since is told who died in the past tense. Several dead take a
-    /// plural verb.
-    fn outcome(&mut self, alive_after: &HashSet<PlayerId>, slept: bool) -> Vec<String> {
+    /// How the phase being told ended at `time`, given who is alive after
+    /// it: the deeds held for it, the hunt if there was one, then who died,
+    /// by name alone and in the same words by night and by day, then in
+    /// the omniscient account how long the phase took. A player that
+    /// `slept` through phases since is told who died in the past tense.
+    /// Several dead take a plural verb.
+    fn outcome(
+        &mut self,
+        alive_after: &HashSet<PlayerId>,
+        slept: bool,
+        time: SystemTime,
+    ) -> Vec<String> {
         let mut lines = self.done();
         lines.extend(self.hunted.take());
-        if self.phase.is_none() {
+        let Some(told) = &self.phase else {
             return lines;
-        }
+        };
         let dead = in_order(self.alive.difference(alive_after));
         let listed = listed(dead.iter().map(|player| Seat::named(player)));
         let line = match (slept, dead.len()) {
@@ -233,6 +267,14 @@ impl Narrator {
         };
         self.alive = alive_after.clone();
         lines.push(line);
+        if matches!(self.voice, Voice::Omniscient) {
+            let took = time.duration_since(told.began).unwrap_or_default();
+            lines.push(format!(
+                "{} took {}.",
+                title(&told.phase),
+                whole_seconds(took)
+            ));
+        }
         lines
     }
 
@@ -274,7 +316,7 @@ impl Narrator {
     /// always the player's own deed, told to it.
     fn deed(&self, player: &PlayerId, chosen: &PlayerId) -> String {
         let role = self.roles.get(player).copied();
-        let phase = self.phase.as_ref().map(|(_, phase)| phase);
+        let phase = self.phase.as_ref().map(|told| &told.phase.1);
         let (player, chosen) = (self.seat(player), self.seat(chosen));
         match (&self.voice, phase, role) {
             (Voice::Player(_), Some(Phase::Night), Some(Role::Werewolf)) => {
@@ -315,12 +357,9 @@ impl Narrator {
         &self,
         player: &PlayerId,
         chosen: &PlayerId,
-        (round, phase): &(NonZero<u8>, Phase),
+        phase: &(NonZero<u8>, Phase),
     ) -> String {
-        let when = match phase {
-            Phase::Night => format!("night {round}"),
-            Phase::Day => format!("day {round}"),
-        };
+        let when = title(phase).to_lowercase();
         let chosen = self.seat(chosen);
         match &self.voice {
             Voice::Player(_) => format!("You choose {chosen} for {when} too late to count."),
@@ -381,6 +420,21 @@ fn identity(me: &PlayerId, roles: &HashMap<PlayerId, Role>) -> String {
     }
 }
 
+/// A phase by its name: `Night 1`, `Day 1`.
+fn title((round, phase): &(NonZero<u8>, Phase)) -> String {
+    match phase {
+        Phase::Night => format!("Night {round}"),
+        Phase::Day => format!("Day {round}"),
+    }
+}
+
+/// `elapsed` to the nearest whole second, as `humantime` writes it: `40s`,
+/// `1m 5s`.
+fn whole_seconds(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs_f64().round() as u64;
+    format_duration(Duration::from_secs(seconds)).to_string()
+}
+
 /// Where a phase falls in the game, so that consecutive phases are one
 /// apart.
 fn ordinal((round, phase): &(NonZero<u8>, Phase)) -> u16 {
@@ -421,13 +475,22 @@ fn listed<'a>(seats: impl IntoIterator<Item = Seat<'a>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::werewolf::Team;
     use crate::werewolf::llm::Configuration;
+    use crate::werewolf::tests::logged;
+    use crate::werewolf::{Rules, Team};
     use std::collections::BTreeMap;
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     fn id(name: &str) -> PlayerId {
         name.to_string()
+    }
+
+    /// `event`, logged `seconds` into the game.
+    fn at(seconds: f64, event: Event<Entry>) -> Event<Entry> {
+        Event {
+            time: UNIX_EPOCH + Duration::from_secs_f64(seconds),
+            ..event
+        }
     }
 
     fn roles() -> HashMap<PlayerId, Role> {
@@ -457,74 +520,86 @@ mod tests {
         Message::Observation(seen(round, phase, alive))
     }
 
-    fn shown(to: &str, round: u8, phase: Phase, alive: &[&str]) -> Entry {
+    fn shown(to: &str, round: u8, phase: Phase, alive: &[&str]) -> Event<Entry> {
         told(to, round, phase, alive, &[])
     }
 
     /// `to` was shown round `round`'s `phase` with `alive` alive and `known`
     /// roles, as a player of a requesting environment is.
-    fn told(to: &str, round: u8, phase: Phase, alive: &[&str], known: &[(&str, Role)]) -> Entry {
-        Entry::Sent {
+    fn told(
+        to: &str,
+        round: u8,
+        phase: Phase,
+        alive: &[&str],
+        known: &[(&str, Role)],
+    ) -> Event<Entry> {
+        logged(Entry::Sent {
             to: id(to),
             message: Message::Observation(observed(round, phase, alive, known)),
-        }
+        })
     }
 
-    fn chose(from: &str, chosen: &str) -> Entry {
-        Entry::Replied {
+    fn chose(from: &str, chosen: &str) -> Event<Entry> {
+        logged(Entry::Replied {
             from: id(from),
             message: Message::Action(id(chosen)),
-        }
+        })
     }
 
     /// The environment announced the phase to `to`.
-    fn announced(to: &str, seq: u64, round: u8, phase: Phase, alive: &[&str]) -> Entry {
-        Entry::Sent {
+    fn announced(to: &str, seq: u64, round: u8, phase: Phase, alive: &[&str]) -> Event<Entry> {
+        logged(Entry::Sent {
             to: id(to),
             message: Message::Announce {
                 seq,
                 observation: seen(round, phase, alive),
             },
-        }
+        })
     }
 
     /// `from` selected `target` in the phase numbered `seq`.
-    fn selected(from: &str, seq: u64, target: &str) -> Entry {
-        Entry::Received {
+    fn selected(from: &str, seq: u64, target: &str) -> Event<Entry> {
+        logged(Entry::Received {
             from: id(from),
             message: Message::Select {
                 seq,
                 from: id(from),
                 target: id(target),
             },
-        }
-    }
-
-    /// The werewolves elected `victim`, whom `protectors` protected.
-    fn hunted(victim: &str, protectors: &[&str]) -> Entry {
-        Entry::Hunted(Hunt {
-            victim: id(victim),
-            protectors: protectors.iter().map(|name| id(name)).collect(),
         })
     }
 
-    fn ended(winner: Team, days: u8, survivors: &[&str]) -> Entry {
-        Entry::End {
+    /// The werewolves elected `victim`, whom `protectors` protected.
+    fn hunted(victim: &str, protectors: &[&str]) -> Event<Entry> {
+        logged(Entry::Hunted(Hunt {
+            victim: id(victim),
+            protectors: protectors.iter().map(|name| id(name)).collect(),
+        }))
+    }
+
+    fn ended(winner: Team, days: u8, survivors: &[&str]) -> Event<Entry> {
+        logged(Entry::End {
             winner,
             days,
             survivors: survivors.iter().map(|name| id(name)).collect(),
-        }
+        })
     }
 
-    fn start() -> Entry {
-        Entry::Start {
-            variation: "Uniform Random".to_string(),
-            roles: roles(),
-        }
+    /// The deal of `roles`, with a night waiting a minute and a day two.
+    fn dealt(roles: HashMap<PlayerId, Role>) -> Event<Entry> {
+        let rules = Rules {
+            day_limit: Duration::from_secs(120),
+            ..Rules::default()
+        };
+        logged(rules.start(roles))
+    }
+
+    fn start() -> Event<Entry> {
+        dealt(roles())
     }
 
     #[test]
-    fn the_table_is_told_first() {
+    fn the_table_is_told_first_then_the_limits() {
         let mut narrator = Narrator::default();
         assert_eq!(
             narrator.narrate(&start()),
@@ -533,7 +608,8 @@ mod tests {
                 "ann (villager)",
                 "doctor (doctor)",
                 "seer (seer)",
-                "wolf (werewolf)"
+                "wolf (werewolf)",
+                "A night waits 1m and a day 2m."
             ]
         );
     }
@@ -574,6 +650,7 @@ mod tests {
                 "seer (seer) learns wolf is a werewolf.",
                 "wolf (werewolf) votes to kill ann (villager).",
                 "ann dies.",
+                "Night 1 took 0s.",
                 "",
                 "Day 1."
             ]
@@ -594,6 +671,7 @@ mod tests {
                 "wolf (werewolf) votes to kill ann (villager).",
                 "The werewolves choose ann (villager).",
                 "ann dies.",
+                "Night 1 took 0s.",
                 "",
                 "Day 1."
             ]
@@ -616,6 +694,7 @@ mod tests {
                 "wolf (werewolf) votes to kill ann (villager).",
                 "The werewolves choose ann (villager), whom doctor (doctor) protects.",
                 "Nobody dies.",
+                "Night 1 took 0s.",
                 "",
                 "Day 1."
             ]
@@ -625,15 +704,12 @@ mod tests {
     #[test]
     fn several_protectors_take_a_plural_verb() {
         let mut narrator = Narrator::default();
-        narrator.narrate(&Entry::Start {
-            variation: "Uniform Random".to_string(),
-            roles: HashMap::from([
-                (id("wolf"), Role::Werewolf),
-                (id("doc1"), Role::Doctor),
-                (id("doc2"), Role::Doctor),
-                (id("ann"), Role::Villager),
-            ]),
-        });
+        narrator.narrate(&dealt(HashMap::from([
+            (id("wolf"), Role::Werewolf),
+            (id("doc1"), Role::Doctor),
+            (id("doc2"), Role::Doctor),
+            (id("ann"), Role::Villager),
+        ])));
         let everyone = ["wolf", "doc1", "doc2", "ann"];
         narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone));
         narrator.narrate(&hunted("ann", &["doc2", "doc1"]));
@@ -642,6 +718,7 @@ mod tests {
             [
                 "The werewolves choose ann (villager), whom doc1 (doctor) and doc2 (doctor) protect.",
                 "Nobody dies.",
+                "Night 1 took 0s.",
                 "",
                 "Day 1."
             ]
@@ -680,17 +757,14 @@ mod tests {
             (id("player2"), Role::Werewolf),
             (id("player1"), Role::Seer),
         ]);
-        let start = Entry::Start {
-            variation: "Uniform Random".to_string(),
-            roles,
-        };
         assert_eq!(
-            narrator.narrate(&start),
+            narrator.narrate(&dealt(roles)),
             [
                 "Uniform Random with 3 players:",
                 "player1 (seer)",
                 "player2 (werewolf)",
-                "player10 (villager)"
+                "player10 (villager)",
+                "A night waits 1m and a day 2m."
             ]
         );
         let everyone = ["player1", "player2", "player10"];
@@ -705,6 +779,7 @@ mod tests {
                 "player2 (werewolf) votes against player10 (villager).",
                 "player10 (villager) votes against player2 (werewolf).",
                 "player1 and player10 die.",
+                "Day 1 took 0s.",
                 "",
                 "The werewolves win after 1 day.",
                 "Survivors:",
@@ -725,7 +800,7 @@ mod tests {
         ));
         assert_eq!(
             narrator.narrate(&shown("wolf", 1, Phase::Day, &["wolf", "seer", "doctor"])),
-            ["ann dies.", "", "Day 1."]
+            ["ann dies.", "Night 1 took 0s.", "", "Day 1."]
         );
     }
 
@@ -737,7 +812,7 @@ mod tests {
         narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone));
         assert_eq!(
             narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone)),
-            ["Nobody dies.", "", "Day 1."]
+            ["Nobody dies.", "Night 1 took 0s.", "", "Day 1."]
         );
     }
 
@@ -754,6 +829,7 @@ mod tests {
                 "seer (seer) votes against wolf (werewolf).",
                 "wolf (werewolf) votes against seer (seer).",
                 "Nobody dies.",
+                "Day 1 took 0s.",
                 "",
                 "Night 2."
             ]
@@ -767,12 +843,12 @@ mod tests {
         narrator.narrate(&shown("wolf", 1, Phase::Day, &["wolf", "seer", "doctor"]));
         assert_eq!(
             narrator.narrate(&shown("wolf", 2, Phase::Night, &["wolf", "seer", "doctor"])),
-            ["Nobody dies.", "", "Night 2."]
+            ["Nobody dies.", "Day 1 took 0s.", "", "Night 2."]
         );
         narrator.narrate(&shown("wolf", 2, Phase::Day, &["wolf", "seer", "doctor"]));
         assert_eq!(
             narrator.narrate(&shown("wolf", 3, Phase::Night, &["seer", "doctor"])),
-            ["wolf dies.", "", "Night 3."]
+            ["wolf dies.", "Day 2 took 0s.", "", "Night 3."]
         );
     }
 
@@ -785,6 +861,7 @@ mod tests {
             narrator.narrate(&ended(Team::Villagers, 1, &["seer", "doctor"])),
             [
                 "wolf dies.",
+                "Day 1 took 0s.",
                 "",
                 "The villagers win after 1 day.",
                 "Survivors:",
@@ -820,6 +897,7 @@ mod tests {
             [
                 "wolf (werewolf) votes to kill ann (villager).",
                 "ann dies.",
+                "Night 1 took 0s.",
                 "",
                 "Day 1."
             ]
@@ -830,6 +908,7 @@ mod tests {
             [
                 "seer (seer) votes against wolf (werewolf).",
                 "wolf dies.",
+                "Day 1 took 0s.",
                 "",
                 "The villagers win after 1 day.",
                 "Survivors:",
@@ -879,10 +958,10 @@ mod tests {
     fn a_statement_that_is_not_a_selection_is_passed_over() {
         let mut narrator = Narrator::default();
         narrator.narrate(&start());
-        let received = Entry::Received {
+        let received = logged(Entry::Received {
             from: id("wolf"),
             message: Message::Action(id("ann")),
-        };
+        });
         assert!(narrator.narrate(&received).is_empty());
     }
 
@@ -890,15 +969,15 @@ mod tests {
     fn a_message_going_the_other_way_is_passed_over() {
         let mut narrator = Narrator::default();
         narrator.narrate(&start());
-        let backwards = Entry::Sent {
+        let backwards = logged(Entry::Sent {
             to: id("wolf"),
             message: Message::Action(id("ann")),
-        };
+        });
         assert!(narrator.narrate(&backwards).is_empty());
-        let backwards = Entry::Replied {
+        let backwards = logged(Entry::Replied {
             from: id("wolf"),
             message: observation(1, Phase::Night, &["wolf"]),
-        };
+        });
         assert!(narrator.narrate(&backwards).is_empty());
     }
 
@@ -923,6 +1002,7 @@ mod tests {
             [
                 "seer (seer) asks about stranger.",
                 "Nobody dies.",
+                "Night 1 took 0s.",
                 "",
                 "Day 1."
             ]
@@ -958,6 +1038,7 @@ mod tests {
             narrator.narrate(&ended(Team::Werewolves, 0, &["wolf", "ann"])),
             [
                 "doctor and seer die.",
+                "Night 1 took 0s.",
                 "",
                 "The werewolves win after 0 days.",
                 "Survivors:",
@@ -981,6 +1062,7 @@ mod tests {
             narrator.narrate(&ended(Team::Werewolves, 1, &["wolf", "ann"])),
             [
                 "doctor and seer die.",
+                "Day 1 took 0s.",
                 "",
                 "The werewolves win after 1 day.",
                 "Survivors:",
@@ -1188,13 +1270,13 @@ mod tests {
     fn an_announced_game_is_told_to_its_player_as_a_requested_one_is() {
         let mut narrator = Narrator::for_player(id("wolf"));
         let everyone = ["wolf", "seer", "doctor", "ann"];
-        let announcement = Entry::Sent {
+        let announcement = logged(Entry::Sent {
             to: id("wolf"),
             message: Message::Announce {
                 seq: 1,
                 observation: observed(1, Phase::Night, &everyone, &[("wolf", Role::Werewolf)]),
             },
-        };
+        });
         assert_eq!(
             narrator.narrate(&announcement),
             ["You are wolf, the only werewolf.", "", "Night 1."]
@@ -1230,8 +1312,93 @@ mod tests {
     }
 
     #[test]
+    fn a_phase_is_timed_from_its_first_announcement_to_the_next_and_the_last_to_the_end() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&at(10.0, announced("wolf", 1, 1, Phase::Night, &everyone)));
+        // A later announcement of the same phase does not restart it.
+        narrator.narrate(&at(12.0, announced("seer", 1, 1, Phase::Night, &everyone)));
+        assert_eq!(
+            narrator.narrate(&at(50.4, announced("wolf", 2, 1, Phase::Day, &everyone))),
+            ["Nobody dies.", "Night 1 took 40s.", "", "Day 1."]
+        );
+        assert_eq!(
+            narrator.narrate(&at(
+                126.0,
+                ended(Team::Villagers, 1, &["seer", "doctor", "ann"])
+            )),
+            [
+                "wolf dies.",
+                "Day 1 took 1m 16s.",
+                "",
+                "The villagers win after 1 day.",
+                "Survivors:",
+                "ann (villager)",
+                "doctor (doctor)",
+                "seer (seer)"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_phases_time_is_rounded_to_the_nearest_second() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&at(0.0, shown("wolf", 1, Phase::Night, &everyone)));
+        assert_eq!(
+            narrator.narrate(&at(2.5, shown("wolf", 1, Phase::Day, &everyone))),
+            ["Nobody dies.", "Night 1 took 3s.", "", "Day 1."]
+        );
+        assert_eq!(
+            narrator.narrate(&at(2.9, shown("wolf", 2, Phase::Night, &everyone))),
+            ["Nobody dies.", "Day 1 took 0s.", "", "Night 2."]
+        );
+    }
+
+    #[test]
+    fn a_phase_announced_before_the_clock_went_back_took_no_time() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&at(10.0, shown("wolf", 1, Phase::Night, &everyone)));
+        assert_eq!(
+            narrator.narrate(&at(5.0, shown("wolf", 1, Phase::Day, &everyone))),
+            ["Nobody dies.", "Night 1 took 0s.", "", "Day 1."]
+        );
+    }
+
+    #[test]
+    fn a_player_is_told_neither_the_limits_nor_how_long_a_phase_took() {
+        let mut narrator = Narrator::for_player(id("wolf"));
+        assert!(narrator.narrate(&start()).is_empty());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        let known = [("wolf", Role::Werewolf)];
+        assert_eq!(
+            narrator.narrate(&at(10.0, told("wolf", 1, Phase::Night, &everyone, &known))),
+            ["You are wolf, the only werewolf.", "", "Night 1."]
+        );
+        assert_eq!(
+            narrator.narrate(&at(50.0, told("wolf", 1, Phase::Day, &everyone, &known))),
+            ["Nobody dies.", "", "Day 1."]
+        );
+        assert_eq!(
+            narrator.narrate(&at(90.0, ended(Team::Werewolves, 1, &["wolf", "ann"]))),
+            [
+                "doctor and seer die.",
+                "",
+                "The werewolves win after 1 day.",
+                "Survivors:",
+                "ann",
+                "wolf (werewolf)"
+            ]
+        );
+    }
+
+    #[test]
     fn the_configuration_adds_nothing_to_either_account() {
-        let configuration = Entry::Configuration(Box::new(Configuration {
+        let configuration = logged(Entry::Configuration(Box::new(Configuration {
             role_counts: BTreeMap::from([(Role::Werewolf, 1), (Role::Villager, 2)]),
             night_limit: Duration::from_secs(30),
             day_limit: Duration::from_secs(60),
@@ -1244,7 +1411,7 @@ mod tests {
             default_template: Some("You are {{ name }}.".to_string()),
             role_templates: BTreeMap::new(),
             text: BTreeMap::new(),
-        }));
+        })));
         assert!(Narrator::default().narrate(&configuration).is_empty());
         assert!(
             Narrator::for_player(id("wolf"))

@@ -233,10 +233,7 @@ impl Behavior for Environment {
     /// the result, then stop the survivors, report the winner, and end the
     /// episode.
     async fn start(&mut self) -> anyhow::Result<()> {
-        self.context.log(Entry::Start {
-            variation: self.rules.variation.clone(),
-            roles: self.state.roles.clone(),
-        });
+        self.context.log(self.rules.start(self.state.roles.clone()));
         let winner = loop {
             self.night().await?;
             if let Some(team) = self.state.winner() {
@@ -393,7 +390,7 @@ mod tests {
             .filter(|(_, role)| **role == Role::Doctor)
             .map(|(player, _)| player)
             .collect();
-        let between = between_the_deal_and_the_end(&logged, "Uniform Random", &roles, winner);
+        let between = between_the_deal_and_the_end(&logged, &Rules::default(), &roles, winner);
         let mut shown = 0;
         let mut chosen = 0;
         let mut hunts = 0;

@@ -51,7 +51,10 @@ fn played(variant: &str, args: &[&str]) -> (Vec<Event<Entry>>, String) {
 
 /// The variation and the deal the log opens with.
 fn start(events: &[Event<Entry>]) -> (&str, &HashMap<PlayerId, Role>) {
-    let Some(Entry::Start { variation, roles }) = events.first().map(|event| &event.payload) else {
+    let Some(Entry::Start {
+        variation, roles, ..
+    }) = events.first().map(|event| &event.payload)
+    else {
         panic!("{events:?}");
     };
     (variation, roles)
@@ -84,9 +87,10 @@ fn assert_plays_the_default_table(
     let Some(Entry::End { winner, .. }) = events.last().map(|event| &event.payload) else {
         panic!("{events:?}");
     };
-    // The account opens with the table, a player to a line, goes through
-    // the first night, set off by a blank line, and closes with the winner
-    // and the survivors, a player to a line.
+    // The account opens with the table, a player to a line, then the
+    // limits, goes through the first night, set off by a blank line, tells
+    // how long the last phase took, and closes with the winner and the
+    // survivors, a player to a line.
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(
         lines[0],
@@ -99,12 +103,21 @@ fn assert_plays_the_default_table(
             "{printed}"
         );
     }
-    assert_eq!(lines[8], "", "{printed}");
-    assert_eq!(lines[9], "Night 1.", "{printed}");
+    assert!(
+        lines[8].starts_with("A night waits ") && lines[8].contains(" and a day "),
+        "{printed}"
+    );
+    assert_eq!(lines[9], "", "{printed}");
+    assert_eq!(lines[10], "Night 1.", "{printed}");
     let won = lines
         .iter()
         .position(|line| line.starts_with(&format!("The {winner} win after ")))
         .unwrap_or_else(|| panic!("{printed}"));
+    let took = lines[won - 2];
+    assert!(
+        (took.starts_with("Night ") || took.starts_with("Day ")) && took.contains(" took "),
+        "{printed}"
+    );
     assert_eq!(lines[won - 1], "", "{printed}");
     assert_eq!(lines[won + 1], "Survivors:", "{printed}");
     assert!(!lines[won + 2..].is_empty(), "{printed}");

@@ -220,7 +220,7 @@ async fn play<A: Behavior<Log = Entry> + 'static>(
             if logging {
                 event.write(io::stderr())?;
             }
-            for line in narrator.narrate(&event.payload) {
+            for line in narrator.narrate(&event) {
                 writeln!(stdout, "{line}")?;
             }
         }
