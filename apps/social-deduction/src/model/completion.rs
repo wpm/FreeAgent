@@ -14,9 +14,8 @@ use serde_json::Value;
 /// shown, and the one tool it is offered and must call.
 ///
 /// It serializes as the protocol has it: the tool in `tools`, and a
-/// `tool_choice` of `"required"`. With one tool offered, that forces the
-/// same call as naming it, and the string form is the one every provider
-/// accepts.
+/// `tool_choice` of `"required"`, which, with the one tool offered, forces
+/// a call to it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Request {
     /// The model's id, exactly as the provider lists it.
