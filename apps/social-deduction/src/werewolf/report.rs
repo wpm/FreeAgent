@@ -22,8 +22,8 @@ enum Voice {
 /// every player did and how it ended, then who won. A player's narrator
 /// tells the same nights and days from what that player was shown, in the
 /// second person, with no table. Each names a player with its role in
-/// parentheses whenever it knows the role, and lists players in seat
-/// order. Both learn who died from who is shown as alive next, so a
+/// parentheses whenever it knows the role, except in reporting its death,
+/// and lists players in seat order. Both learn who died from who is shown as alive next, so a
 /// phase's result is told as the next one begins, and the omniscient
 /// narrator holds the phase's deeds until then too, to tell them in seat
 /// order; a player's narrator tells the player's own deed as it is done. A
@@ -201,16 +201,16 @@ impl Narrator {
     }
 
     /// How the phase being told ended, given who is alive after it: the
-    /// deeds held for it, then who died. A player that `slept` through
-    /// phases since is told who died without being told how. Several dead
-    /// take a plural verb.
+    /// deeds held for it, then who died, by name alone. A player that
+    /// `slept` through phases since is told who died without being told
+    /// how. Several dead take a plural verb.
     fn outcome(&mut self, alive_after: &HashSet<PlayerId>, slept: bool) -> Vec<String> {
         let mut lines = self.done();
         let Some((_, phase)) = &self.phase else {
             return lines;
         };
         let dead = in_order(self.alive.difference(alive_after));
-        let listed = listed(dead.iter().map(|player| self.seat(player)));
+        let listed = listed(dead.iter().map(|player| Seat::named(player)));
         let line = match (phase, slept, dead.len()) {
             (_, true, 0) => "Nobody died.".to_string(),
             (_, true, _) => format!("{listed} died."),
@@ -538,7 +538,7 @@ mod tests {
                 "doctor (doctor) protects seer (seer).",
                 "seer (seer) learns wolf is a werewolf.",
                 "wolf (werewolf) votes to kill ann (villager).",
-                "ann (villager) dies.",
+                "ann dies.",
                 "Day 1."
             ]
         );
@@ -573,7 +573,7 @@ mod tests {
                 "player1 (seer) votes against player2 (werewolf).",
                 "player2 (werewolf) votes against player10 (villager).",
                 "player10 (villager) votes against player2 (werewolf).",
-                "player1 (seer) and player10 (villager) are voted out.",
+                "player1 and player10 are voted out.",
                 "The werewolves win after 1 day. Survivors: player2 (werewolf)."
             ]
         );
@@ -591,7 +591,7 @@ mod tests {
         ));
         assert_eq!(
             narrator.narrate(&shown("wolf", 1, Phase::Day, &["wolf", "seer", "doctor"])),
-            ["ann (villager) dies.", "Day 1."]
+            ["ann dies.", "Day 1."]
         );
     }
 
@@ -637,7 +637,7 @@ mod tests {
         narrator.narrate(&shown("wolf", 2, Phase::Day, &["wolf", "seer", "doctor"]));
         assert_eq!(
             narrator.narrate(&shown("wolf", 3, Phase::Night, &["seer", "doctor"])),
-            ["wolf (werewolf) is voted out.", "Night 3."]
+            ["wolf is voted out.", "Night 3."]
         );
     }
 
@@ -649,7 +649,7 @@ mod tests {
         assert_eq!(
             narrator.narrate(&ended(Team::Villagers, 1, &["seer", "doctor"])),
             [
-                "wolf (werewolf) is voted out.",
+                "wolf is voted out.",
                 "The villagers win after 1 day. Survivors: doctor (doctor), seer (seer)."
             ]
         );
@@ -680,7 +680,7 @@ mod tests {
             )),
             [
                 "wolf (werewolf) votes to kill ann (villager).",
-                "ann (villager) dies.",
+                "ann dies.",
                 "Day 1."
             ]
         );
@@ -689,7 +689,7 @@ mod tests {
             narrator.narrate(&ended(Team::Villagers, 1, &["seer", "doctor"])),
             [
                 "seer (seer) votes against wolf (werewolf).",
-                "wolf (werewolf) is voted out.",
+                "wolf is voted out.",
                 "The villagers win after 1 day. Survivors: doctor (doctor), seer (seer)."
             ]
         );
@@ -803,7 +803,7 @@ mod tests {
         assert_eq!(
             narrator.narrate(&ended(Team::Werewolves, 0, &["wolf", "ann"])),
             [
-                "doctor (doctor) and seer (seer) die.",
+                "doctor and seer die.",
                 "The werewolves win after 0 days. Survivors: ann (villager), wolf (werewolf)."
             ]
         );
@@ -822,7 +822,7 @@ mod tests {
         assert_eq!(
             narrator.narrate(&ended(Team::Werewolves, 1, &["wolf", "ann"])),
             [
-                "doctor (doctor) and seer (seer) are voted out.",
+                "doctor and seer are voted out.",
                 "The werewolves win after 1 day. Survivors: ann (villager), wolf (werewolf)."
             ]
         );
