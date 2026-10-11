@@ -24,7 +24,7 @@ enum Voice {
 /// second person, with no table. Each names a player with its role in
 /// parentheses whenever it knows the role, except in reporting its death,
 /// and lists players in seat order. A blank line sets each phase off from
-/// what came before it. Both learn who died from who is shown as alive
+/// what came before it, and another the winner from the last. Both learn who died from who is shown as alive
 /// next, so a phase's result is told as the next one begins, and the
 /// omniscient narrator holds the phase's deeds until then too, to tell them
 /// in seat order; a player's narrator tells the player's own deed as it is
@@ -109,6 +109,7 @@ impl Narrator {
                     .into_iter()
                     .map(|player| self.seat(player).to_string())
                     .collect();
+                lines.push(String::new());
                 lines.push(format!(
                     "The {winner} win after {days} {}. Survivors: {}.",
                     if *days == 1 { "day" } else { "days" },
@@ -578,6 +579,7 @@ mod tests {
                 "player2 (werewolf) votes against player10 (villager).",
                 "player10 (villager) votes against player2 (werewolf).",
                 "player1 and player10 are voted out.",
+                "",
                 "The werewolves win after 1 day. Survivors: player2 (werewolf)."
             ]
         );
@@ -655,6 +657,7 @@ mod tests {
             narrator.narrate(&ended(Team::Villagers, 1, &["seer", "doctor"])),
             [
                 "wolf is voted out.",
+                "",
                 "The villagers win after 1 day. Survivors: doctor (doctor), seer (seer)."
             ]
         );
@@ -696,6 +699,7 @@ mod tests {
             [
                 "seer (seer) votes against wolf (werewolf).",
                 "wolf is voted out.",
+                "",
                 "The villagers win after 1 day. Survivors: doctor (doctor), seer (seer)."
             ]
         );
@@ -797,7 +801,7 @@ mod tests {
         narrator.narrate(&start());
         assert_eq!(
             narrator.narrate(&ended(Team::Villagers, 1, &["stranger"])),
-            ["The villagers win after 1 day. Survivors: stranger."]
+            ["", "The villagers win after 1 day. Survivors: stranger."]
         );
     }
 
@@ -815,6 +819,7 @@ mod tests {
             narrator.narrate(&ended(Team::Werewolves, 0, &["wolf", "ann"])),
             [
                 "doctor and seer die.",
+                "",
                 "The werewolves win after 0 days. Survivors: ann (villager), wolf (werewolf)."
             ]
         );
@@ -834,6 +839,7 @@ mod tests {
             narrator.narrate(&ended(Team::Werewolves, 1, &["wolf", "ann"])),
             [
                 "doctor and seer are voted out.",
+                "",
                 "The werewolves win after 1 day. Survivors: ann (villager), wolf (werewolf)."
             ]
         );
@@ -1068,6 +1074,7 @@ mod tests {
             narrator.narrate(&ended(Team::Werewolves, 0, &["wolf", "seer", "doctor"])),
             [
                 "ann dies.",
+                "",
                 "The werewolves win after 0 days. Survivors: doctor, seer (seer), wolf (werewolf)."
             ]
         );
