@@ -142,12 +142,18 @@ pub struct Environment {
 
 impl Environment {
     /// The werewolves, the doctor, and the seer each choose, and the night
-    /// is resolved from what they chose.
+    /// is resolved from what they chose. The hunt is logged, if the
+    /// werewolves elected anyone.
     async fn night(&mut self) -> anyhow::Result<()> {
         let choices = self.gather(self.rules.night_limit).await?;
-        let dead = self
+        let Some(hunt) = self
             .state
-            .resolve_night(&choices, self.rules.night_vote.as_ref());
+            .resolve_night(&choices, self.rules.night_vote.as_ref())
+        else {
+            return Ok(());
+        };
+        let dead = hunt.dead().cloned();
+        self.context.log(Entry::Hunted(hunt));
         self.bury(dead)
     }
 
@@ -380,10 +386,22 @@ mod tests {
         let roles = village().roles;
         let (winner, logged) = play(roles.clone(), Rules::default(), &[]).await.unwrap();
 
-        // Everything between is a message to or from a player, as it was.
+        // Everything between is a message to or from a player, as it was,
+        // or a night's hunt.
         let mut shown = 0;
+        let mut hunts = 0;
         for entry in between_the_deal_and_the_end(&logged, "Uniform Random", &roles, winner) {
             match entry {
+                Entry::Hunted(hunt) => {
+                    assert!(roles.contains_key(&hunt.victim), "{hunt:?}");
+                    assert!(
+                        hunt.protectors
+                            .iter()
+                            .all(|doctor| roles.get(doctor) == Some(&Role::Doctor)),
+                        "{hunt:?}"
+                    );
+                    hunts += 1;
+                }
                 Entry::Sent {
                     to,
                     message: Message::Observation(_),
@@ -401,8 +419,10 @@ mod tests {
                 other => panic!("not a message to or from a player: {other:?}"),
             }
         }
-        // By the first night three players are shown the game.
+        // By the first night three players are shown the game, and the
+        // werewolves, who always choose, hunt.
         assert!(shown >= 3, "{logged:?}");
+        assert!(hunts >= 1, "{logged:?}");
     }
 
     #[tokio::test]

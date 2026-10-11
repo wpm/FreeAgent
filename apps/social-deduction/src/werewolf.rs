@@ -89,6 +89,23 @@ where
 /// What the awake players chose in a phase: each player's choice of another.
 type Choices = HashMap<PlayerId, PlayerId>;
 
+/// How a night's hunt came out: the werewolves elected `victim`, who died
+/// unless a doctor protected them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hunt {
+    /// Whom the werewolves elected.
+    pub victim: PlayerId,
+    /// The doctors who chose to protect the victim.
+    pub protectors: HashSet<PlayerId>,
+}
+
+impl Hunt {
+    /// Who died: the victim, unless protected.
+    pub fn dead(&self) -> Option<&PlayerId> {
+        self.protectors.is_empty().then_some(&self.victim)
+    }
+}
+
 /// The two sides. A game ends when one of them has won.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Team {
@@ -364,21 +381,23 @@ impl State {
     /// Resolve the night from what the awake players chose. The werewolves'
     /// choices are ballots under `vote`, and whoever they elect dies unless
     /// a doctor chose to protect them. Each seer learns the role of whom it
-    /// chose. Returns who died.
-    fn resolve_night(&mut self, choices: &Choices, vote: &dyn Vote) -> Option<PlayerId> {
+    /// chose. Returns the hunt, if the werewolves elected anyone.
+    fn resolve_night(&mut self, choices: &Choices, vote: &dyn Vote) -> Option<Hunt> {
         for (seer, seen) in self.chosen_by(choices, Role::Seer) {
             self.seers_discovered.entry(seer).or_default().insert(seen);
         }
-        let protected: HashSet<PlayerId> = self
-            .chosen_by(choices, Role::Doctor)
-            .into_values()
-            .collect();
         let victim = vote.elect(&self.chosen_by(choices, Role::Werewolf))?;
-        if protected.contains(&victim) {
-            return None;
+        let protectors = self
+            .chosen_by(choices, Role::Doctor)
+            .into_iter()
+            .filter(|(_, protected)| *protected == victim)
+            .map(|(doctor, _)| doctor)
+            .collect();
+        let hunt = Hunt { victim, protectors };
+        if let Some(dead) = hunt.dead().cloned() {
+            self.kill(&dead);
         }
-        self.kill(&victim);
-        Some(victim)
+        Some(hunt)
     }
 
     /// Resolve the day from what the awake players chose. Every choice is
@@ -563,6 +582,10 @@ pub enum Entry {
         /// What they said.
         message: Message,
     },
+    /// The night was resolved: whom the werewolves elected, and which
+    /// doctors protected them. A night in which the werewolves elected
+    /// nobody logs nothing.
+    Hunted(Hunt),
     /// The game is over.
     End {
         /// Who won.
@@ -1051,7 +1074,10 @@ mod tests {
         ]);
         assert_eq!(
             state.resolve_night(&choices, &RandomTieBreak),
-            Some("villager".to_string())
+            Some(Hunt {
+                victim: "villager".to_string(),
+                protectors: HashSet::new(),
+            })
         );
         assert!(!state.alive.contains("villager"));
     }
@@ -1064,8 +1090,28 @@ mod tests {
             ("wolf2", "villager"),
             ("doctor", "villager"),
         ]);
-        assert_eq!(state.resolve_night(&choices, &RandomTieBreak), None);
+        assert_eq!(
+            state.resolve_night(&choices, &RandomTieBreak),
+            Some(Hunt {
+                victim: "villager".to_string(),
+                protectors: HashSet::from(["doctor".to_string()]),
+            })
+        );
         assert!(state.alive.contains("villager"));
+    }
+
+    #[test]
+    fn a_hunt_kills_its_victim_unless_a_doctor_protected_them() {
+        let hunt = Hunt {
+            victim: "villager".to_string(),
+            protectors: HashSet::new(),
+        };
+        assert_eq!(hunt.dead(), Some(&"villager".to_string()));
+        let saved = Hunt {
+            protectors: HashSet::from(["doctor".to_string()]),
+            ..hunt
+        };
+        assert_eq!(saved.dead(), None);
     }
 
     #[test]

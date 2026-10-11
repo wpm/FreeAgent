@@ -1,7 +1,7 @@
 //! A legible account of a game, told from its log as the log is written,
 //! either of everything or of what one player saw.
 
-use super::{Entry, Message, Observation, Phase, PlayerId, Role};
+use super::{Entry, Hunt, Message, Observation, Phase, PlayerId, Role};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -28,8 +28,9 @@ enum Voice {
 /// what came before it, and another the winner from the last. Both learn who died from who is shown as alive
 /// next, so a phase's result is told as the next one begins, and the
 /// omniscient narrator holds the phase's deeds until then too, to tell them
-/// in seat order; a player's narrator tells the player's own deed as it is
-/// done. A phase announced is told as one requested, and a selection as a
+/// in seat order, then whom the werewolves chose and who protected them,
+/// which no player is shown; a player's narrator tells the player's own
+/// deed as it is done. A phase announced is told as one requested, and a selection as a
 /// reply, unless a later phase has been announced since: then it is told
 /// as too late to count, for the phase it was for.
 #[derive(Debug, Default)]
@@ -46,6 +47,9 @@ pub struct Narrator {
     /// The deeds of the phase being told, each with whose it is, held in
     /// the omniscient account until the phase ends.
     deeds: Vec<(PlayerId, String)>,
+    /// What came of the night's hunt, held in the omniscient account until
+    /// the night ends.
+    hunted: Option<String>,
     /// Every phase announced so far, by its number.
     announced: BTreeMap<u64, (NonZero<u8>, Phase)>,
 }
@@ -100,6 +104,10 @@ impl Narrator {
                 Some(phase) => vec![self.lateness(from, chosen, &phase)],
                 None => self.did(from, chosen),
             },
+            Entry::Hunted(hunt) if matches!(self.voice, Voice::Omniscient) => {
+                self.hunted = Some(self.hunt(hunt));
+                vec![]
+            }
             Entry::End {
                 winner,
                 days,
@@ -204,12 +212,13 @@ impl Narrator {
     }
 
     /// How the phase being told ended, given who is alive after it: the
-    /// deeds held for it, then who died, by name alone and in the same
-    /// words by night and by day. A player that `slept` through phases
+    /// deeds held for it, the hunt if there was one, then who died, by
+    /// name alone and in the same words by night and by day. A player that `slept` through phases
     /// since is told who died in the past tense. Several dead take a
     /// plural verb.
     fn outcome(&mut self, alive_after: &HashSet<PlayerId>, slept: bool) -> Vec<String> {
         let mut lines = self.done();
+        lines.extend(self.hunted.take());
         if self.phase.is_none() {
             return lines;
         }
@@ -237,6 +246,19 @@ impl Narrator {
                 vec![]
             }
             Voice::Player(_) => vec![line],
+        }
+    }
+
+    /// What came of the werewolves' `hunt`: whom they chose, and who
+    /// protected them if anyone did.
+    fn hunt(&self, hunt: &Hunt) -> String {
+        let victim = self.seat(&hunt.victim);
+        let protectors = in_order(&hunt.protectors);
+        let listed = listed(protectors.iter().map(|doctor| self.seat(doctor)));
+        match protectors.len() {
+            0 => format!("The werewolves choose {victim}."),
+            1 => format!("The werewolves choose {victim}, whom {listed} protects."),
+            _ => format!("The werewolves choose {victim}, whom {listed} protect."),
         }
     }
 
@@ -478,6 +500,14 @@ mod tests {
         }
     }
 
+    /// The werewolves elected `victim`, whom `protectors` protected.
+    fn hunted(victim: &str, protectors: &[&str]) -> Entry {
+        Entry::Hunted(Hunt {
+            victim: id(victim),
+            protectors: protectors.iter().map(|name| id(name)).collect(),
+        })
+    }
+
     fn ended(winner: Team, days: u8, survivors: &[&str]) -> Entry {
         Entry::End {
             winner,
@@ -547,6 +577,98 @@ mod tests {
                 "",
                 "Day 1."
             ]
+        );
+    }
+
+    #[test]
+    fn the_werewolves_choice_is_told_after_the_deeds_and_before_who_dies() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone));
+        narrator.narrate(&chose("wolf", "ann"));
+        assert!(narrator.narrate(&hunted("ann", &[])).is_empty());
+        assert_eq!(
+            narrator.narrate(&shown("wolf", 1, Phase::Day, &["wolf", "seer", "doctor"])),
+            [
+                "wolf (werewolf) votes to kill ann (villager).",
+                "The werewolves choose ann (villager).",
+                "ann dies.",
+                "",
+                "Day 1."
+            ]
+        );
+    }
+
+    #[test]
+    fn a_victim_the_doctor_protects_is_told_as_protected() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone));
+        narrator.narrate(&chose("wolf", "ann"));
+        narrator.narrate(&chose("doctor", "ann"));
+        narrator.narrate(&hunted("ann", &["doctor"]));
+        assert_eq!(
+            narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone)),
+            [
+                "doctor (doctor) protects ann (villager).",
+                "wolf (werewolf) votes to kill ann (villager).",
+                "The werewolves choose ann (villager), whom doctor (doctor) protects.",
+                "Nobody dies.",
+                "",
+                "Day 1."
+            ]
+        );
+    }
+
+    #[test]
+    fn several_protectors_take_a_plural_verb() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&Entry::Start {
+            variation: "Uniform Random".to_string(),
+            roles: HashMap::from([
+                (id("wolf"), Role::Werewolf),
+                (id("doc1"), Role::Doctor),
+                (id("doc2"), Role::Doctor),
+                (id("ann"), Role::Villager),
+            ]),
+        });
+        let everyone = ["wolf", "doc1", "doc2", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone));
+        narrator.narrate(&hunted("ann", &["doc2", "doc1"]));
+        assert_eq!(
+            narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone)),
+            [
+                "The werewolves choose ann (villager), whom doc1 (doctor) and doc2 (doctor) protect.",
+                "Nobody dies.",
+                "",
+                "Day 1."
+            ]
+        );
+    }
+
+    #[test]
+    fn a_player_is_not_told_whom_the_werewolves_chose() {
+        let mut narrator = Narrator::for_player(id("doctor"));
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&told(
+            "doctor",
+            1,
+            Phase::Night,
+            &everyone,
+            &[("doctor", Role::Doctor)],
+        ));
+        assert!(narrator.narrate(&hunted("ann", &["doctor"])).is_empty());
+        assert_eq!(
+            narrator.narrate(&told(
+                "doctor",
+                1,
+                Phase::Day,
+                &everyone,
+                &[("doctor", Role::Doctor)]
+            )),
+            ["Nobody dies.", "", "Day 1."]
         );
     }
 

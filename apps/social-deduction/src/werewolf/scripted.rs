@@ -233,6 +233,7 @@ mod tests {
 
         // Everything between is a message to or from a player, as it was.
         let mut announced = 0;
+        let mut hunts = 0;
         for entry in between_the_deal_and_the_end(&logged, "Scripted", &roles, winner) {
             match entry {
                 Entry::Sent {
@@ -257,11 +258,17 @@ mod tests {
                     assert!(roles.contains_key(target), "{target}");
                     assert!(*seq >= 1, "{seq}");
                 }
+                Entry::Hunted(hunt) => {
+                    assert!(roles.contains_key(&hunt.victim), "{hunt:?}");
+                    hunts += 1;
+                }
                 other => panic!("not a message to or from a player: {other:?}"),
             }
         }
-        // By the first night three players are announced the game.
+        // By the first night three players are announced the game, and the
+        // werewolves, who always select, hunt.
         assert!(announced >= 3, "{logged:?}");
+        assert!(hunts >= 1, "{logged:?}");
     }
 
     #[tokio::test(start_paused = true)]
