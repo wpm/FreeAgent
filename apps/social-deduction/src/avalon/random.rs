@@ -121,11 +121,13 @@ mod tests {
         Script, dealt, five, logged, mute, observed_by, outcomes, play, quick, run, utterance,
         view_of,
     };
-    use crate::avalon::{Role, Rules, game};
+    use crate::avalon::{PROPOSALS, Role, Rules, Table, game, sabotages_needed, team_size};
     use crate::seat::{ENVIRONMENT, to_the_environment};
     use crate::strategy::RANDOM;
     use free_agent::ActorId;
     use std::collections::{HashMap, HashSet};
+    use std::num::NonZero;
+    use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::sync::oneshot;
 
@@ -339,5 +341,135 @@ mod tests {
         let mut view = view;
         view.players = vec![me.clone(), id("player5")];
         assert_eq!(choose(&me, &view), None);
+    }
+
+    /// `n` choose `k`, for `k` at most `n`, exactly as a float: every
+    /// count here is small.
+    fn choose_count(n: usize, k: usize) -> f64 {
+        (0..k).fold(1.0, |count, i| count * (n - i) as f64 / (i + 1) as f64)
+    }
+
+    /// The chance that a fair coin tossed `n` times comes up heads in a way
+    /// `heads` allows.
+    fn binomial(n: usize, heads: impl Fn(usize) -> bool) -> f64 {
+        (0..=n)
+            .filter(|&h| heads(h))
+            .map(|h| choose_count(n, h))
+            .sum::<f64>()
+            / 2f64.powi(n as i32)
+    }
+
+    /// The exact chance that good wins an all-random game of `n` players,
+    /// `evil` of them evil, with Merlin and the Assassin. A proposal is
+    /// approved by a strict majority of even-odds ballots, and a quest goes
+    /// unless five in a row are not. A team is drawn uniformly, so the
+    /// number of evil players on it is hypergeometric, and each sabotages
+    /// with even odds. After three successes the Assassin names one of the
+    /// good players uniformly, so good keeps the game unless it names
+    /// Merlin.
+    fn good_wins_exactly(n: usize, evil: usize) -> f64 {
+        let good = n - evil;
+        let approved = binomial(n, |approvals| 2 * approvals > n);
+        let goes = 1.0 - (1.0 - approved).powi(i32::from(PROPOSALS));
+        let succeeds = |quest: usize| {
+            let quest = NonZero::new(u8::try_from(quest + 1).unwrap()).unwrap();
+            let size = team_size(n, quest);
+            let needed = sabotages_needed(n, quest);
+            (0..=size.min(evil))
+                .map(|on| {
+                    let held = choose_count(evil, on) * choose_count(good, size - on)
+                        / choose_count(n, size);
+                    held * binomial(on, |sabotages| sabotages < needed)
+                })
+                .sum::<f64>()
+        };
+        let assassinated = 1.0 - 1.0 / good as f64;
+        // value[w][l]: good's chance from w successes and l failures.
+        let mut value = [[0.0; 4]; 4];
+        for w in (0..=3).rev() {
+            for l in (0..=3).rev() {
+                value[w][l] = match (w, l) {
+                    (3, _) => assassinated,
+                    (_, 3) => 0.0,
+                    _ => {
+                        let p = succeeds(w + l);
+                        goes * (p * value[w + 1][l] + (1.0 - p) * value[w][l + 1])
+                    }
+                };
+            }
+        }
+        value[0][0]
+    }
+
+    #[test]
+    fn good_wins_an_all_random_game_with_the_exact_chance_its_markov_chain_gives() {
+        // The usual splits: 2, 2, 3, 3, 3 and 4 evil for 5 to 10 players.
+        let expected = [
+            (5, 2, 0.3326),
+            (6, 2, 0.2498),
+            (7, 3, 0.3771),
+            (8, 3, 0.2343),
+            (9, 3, 0.4067),
+            (10, 4, 0.2337),
+        ];
+        for (n, evil, chance) in expected {
+            let exact = good_wins_exactly(n, evil);
+            assert!((exact - chance).abs() < 5e-5, "{n} players: {exact}");
+        }
+        // The sawtooth is the strict majority: a random team is approved
+        // half the time with five players but 22 times in 64 with six.
+        assert_eq!(binomial(5, |approvals| 2 * approvals > 5), 0.5);
+        assert_eq!(binomial(6, |approvals| 2 * approvals > 6), 22.0 / 64.0);
+    }
+
+    /// How many of `games` all-random games at `table` good wins, played
+    /// one after another without logging.
+    async fn good_wins(table: &Table, games: usize) -> usize {
+        let mut won = 0;
+        for _ in 0..games {
+            let (winner, result) = oneshot::channel();
+            let (logger, _) = unbounded_channel();
+            let deal = table.deal();
+            let episode = game(deal, Rules::default(), winner, |_| Player::init(), logger);
+            episode.run(Duration::from_secs(60 * 60)).await.unwrap();
+            if result.await.unwrap() == Team::Good {
+                won += 1;
+            }
+        }
+        won
+    }
+
+    /// Plays `games` all-random games at `table` and checks that good wins
+    /// within four standard errors of its exact chance.
+    async fn plays_to_its_exact_chance(table: Table, games: usize) {
+        let evil = table
+            .counts()
+            .into_iter()
+            .filter(|(role, _)| role.team() == Team::Evil)
+            .map(|(_, count)| count)
+            .sum();
+        let exact = good_wins_exactly(table.players(), evil);
+        let rate = good_wins(&table, games).await as f64 / games as f64;
+        let error = (exact * (1.0 - exact) / games as f64).sqrt();
+        assert!(
+            (rate - exact).abs() < 4.0 * error,
+            "good won {rate} of {games} games, against an exact {exact}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn good_wins_all_random_games_of_the_default_table_at_its_exact_chance() {
+        plays_to_its_exact_chance(Table::default(), 2000).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn good_wins_all_random_games_of_seven_at_its_exact_chance() {
+        // The fourth quest needs two sabotages to fail.
+        let table = Table {
+            servants: 3,
+            minions: 2,
+            ..Table::default()
+        };
+        plays_to_its_exact_chance(table, 2000).await;
     }
 }
