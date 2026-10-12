@@ -1,6 +1,7 @@
 # ADR-0003: The model player
 
-**Status:** Accepted, amended by [ADR-0006](0006-players-talk-by-day.md)
+**Status:** Accepted, amended by [ADR-0006](0006-players-talk-by-day.md) and
+[ADR-0007](0007-a-tool-call-is-required-where-the-model-allows-it.md)
 **Date:** 2026-10-09
 **Deciders:** Bill McNeill
 **Depends on:** [ADR-0001](0001-games-and-variants-are-modules-and-subcommands.md),
