@@ -122,6 +122,8 @@ struct Mind {
     context_window: u64,
     /// The model asked each time the player is woken.
     model: Arc<dyn model::Model>,
+    /// Whether the day's vote is ratified, which the ratify limit says.
+    ratified: bool,
 }
 
 /// A player's history and the story that tells it, kept together so that
@@ -156,7 +158,8 @@ struct Announced {
 impl Mind {
     /// The mind of `me` with nothing in its history yet, told `prompt`,
     /// asking `model` as the model `model_id` under `tool_choice`, within
-    /// `context_window` tokens.
+    /// `context_window` tokens, in a game whose day's vote is `ratified` or
+    /// not.
     fn new(
         me: PlayerId,
         prompt: String,
@@ -164,6 +167,7 @@ impl Mind {
         tool_choice: ToolChoice,
         context_window: u64,
         model: Arc<dyn model::Model>,
+        ratified: bool,
     ) -> Self {
         Self {
             remembered: Mutex::new(Remembered {
@@ -179,6 +183,7 @@ impl Mind {
             tool_choice,
             context_window,
             model,
+            ratified,
         }
     }
 
@@ -292,7 +297,8 @@ impl Player {
     /// Builds a player's two loops once the episode has made their
     /// contexts: the perceive loop as the actor, and the think loop. The
     /// player `me` is told `prompt`, and asks `model` as the model
-    /// `model_id` under `tool_choice`, within `context_window` tokens.
+    /// `model_id` under `tool_choice`, within `context_window` tokens, in a
+    /// game whose day's vote is `ratified` or not.
     pub fn init(
         me: PlayerId,
         prompt: String,
@@ -300,6 +306,7 @@ impl Player {
         tool_choice: ToolChoice,
         context_window: u64,
         model: Arc<dyn model::Model>,
+        ratified: bool,
     ) -> Seat {
         let mind = Arc::new(Mind::new(
             me,
@@ -308,6 +315,7 @@ impl Player {
             tool_choice,
             context_window,
             model,
+            ratified,
         ));
         let shared = Arc::clone(&mind);
         let behavior: Builder<Actor> =
@@ -438,7 +446,8 @@ impl Player {
         limit: Duration,
         candidates: &[PlayerId],
     ) -> anyhow::Result<()> {
-        let (request, shown) = self.request(view, limit, day_tools(candidates, limit))?;
+        let tools = day_tools(candidates, limit, self.mind.ratified);
+        let (request, shown) = self.request(view, limit, tools)?;
         let response = self.mind.model.complete(&request).await?;
         let Asked { sends, wait } = asked(&response, candidates, limit)?;
         let still_on = self.carry_out(seq, view, sends, shown)?;
@@ -620,9 +629,10 @@ fn request(
 
 /// The most a request to the model `model_id` from `me`, dealt `role` and
 /// told `prompt`, takes of the context window before its story, by
-/// estimate, at a table of `alive` whose day lasts `day_limit`: the system
-/// prompt, and the first day's situation and tools over every other seat,
-/// which outweigh a night's, and the reply.
+/// estimate, at a table of `alive` whose day lasts `day_limit` and whose
+/// vote is `ratified` or not: the system prompt, and the first day's
+/// situation and tools over every other seat, which outweigh a night's,
+/// and the reply.
 pub(crate) fn unstoried(
     model_id: &str,
     prompt: &str,
@@ -630,6 +640,7 @@ pub(crate) fn unstoried(
     role: Role,
     alive: &HashSet<PlayerId>,
     day_limit: Duration,
+    ratified: bool,
 ) -> anyhow::Result<u64> {
     let view = View {
         round: NonZero::<u8>::MIN,
@@ -637,7 +648,7 @@ pub(crate) fn unstoried(
         roles: HashMap::from([(me.clone(), role)]),
         alive: alive.clone(),
     };
-    let tools = day_tools(&candidates(me, &view), day_limit);
+    let tools = day_tools(&candidates(me, &view), day_limit, ratified);
     let asked = format!("\n\n{}", situation(me, &view, day_limit)?);
     let request = request(model_id, ToolChoice::Required, prompt, asked, tools);
     Ok(model::estimated(&request))
@@ -653,10 +664,10 @@ fn night_tools(candidates: &[PlayerId]) -> Vec<Tool> {
 }
 
 /// The tools a player is offered by day: [`speak`], [`vote`] over
-/// `candidates`, [`retract`], and [`wait`] up to `limit`, how long the day
-/// lasts.
-fn day_tools(candidates: &[PlayerId], limit: Duration) -> Vec<Tool> {
-    vec![speak(), vote(candidates), retract(), wait(limit)]
+/// `candidates` in a day that is `ratified` or not, [`retract`], and
+/// [`wait`] up to `limit`, how long the day lasts.
+fn day_tools(candidates: &[PlayerId], limit: Duration, ratified: bool) -> Vec<Tool> {
+    vec![speak(), vote(candidates, ratified), retract(), wait(limit)]
 }
 
 /// What a player is asked to do by day.
@@ -723,7 +734,7 @@ pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Re
             tool_choice,
             PROBE_PROMPT,
             situation,
-            day_tools(&candidates, PROBE_DAY),
+            day_tools(&candidates, PROBE_DAY, true),
         );
         let response = model.complete(&day).await?;
         asked(&response, &candidates, PROBE_DAY).map(drop)
@@ -779,12 +790,14 @@ fn select(candidates: &[PlayerId]) -> Tool {
 }
 
 /// The tool a player votes with by day: `select`, taking a `target` that
-/// is one of `candidates`, described as a vote that may be changed.
-fn vote(candidates: &[PlayerId]) -> Tool {
-    selecting(
-        "Vote for the player you want voted out. Your latest vote is the one that counts.",
-        candidates,
-    )
+/// is one of `candidates`, described as a vote that may be changed in a
+/// `ratified` day, and as final in a day that is not.
+fn vote(candidates: &[PlayerId], ratified: bool) -> Tool {
+    let description = match ratified {
+        true => "Vote for the player you want voted out. Your latest vote is the one that counts.",
+        false => "Vote for the player you want voted out. Your first vote is final.",
+    };
+    selecting(description, candidates)
 }
 
 /// The `select` tool, described to the model by `description`, taking a
@@ -1133,7 +1146,12 @@ mod tests {
         rules: Rules,
         model: Arc<FakeModel>,
     ) -> anyhow::Result<Played> {
-        let configuration = configuration(&roles);
+        let configuration = Configuration {
+            night_limit: rules.night_limit,
+            day_limit: rules.day_limit,
+            ratify_limit: rules.ratify_limit,
+            ..configuration(&roles)
+        };
         play_configured(roles, rules, configuration, model).await
     }
 
@@ -1168,6 +1186,7 @@ mod tests {
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
         let model: Arc<dyn model::Model> = model;
+        let ratified = !rules.ratify_limit.is_zero();
         let player = |id: &PlayerId| {
             puppets.remove(id.as_str()).unwrap_or_else(|| {
                 Player::init(
@@ -1177,6 +1196,7 @@ mod tests {
                     ToolChoice::Required,
                     CONTEXT_WINDOW,
                     Arc::clone(&model),
+                    ratified,
                 )
             })
         };
@@ -1585,6 +1605,7 @@ mod tests {
             ToolChoice::Required,
             CONTEXT_WINDOW,
             Arc::new(FakeModel::failing("down")),
+            true,
         );
         let pack = [("wolf", Role::Werewolf)];
         let night_2 = View {
@@ -2124,7 +2145,10 @@ mod tests {
         // day's a player's four by day, over the same candidates and a day
         // of a minute, and says what a day says.
         assert_eq!(requests[0].tools, night_tools(&placeholders()));
-        assert_eq!(requests[1].tools, day_tools(&placeholders(), PROBE_DAY));
+        assert_eq!(
+            requests[1].tools,
+            day_tools(&placeholders(), PROBE_DAY, true)
+        );
         assert!(
             requests[1].messages[1]
                 .content
@@ -2354,6 +2378,47 @@ mod tests {
         ];
         for (what, response) in wrong {
             assert!(selected(&response, &candidates).is_err(), "{what}");
+        }
+    }
+
+    #[test]
+    fn the_vote_tool_says_the_latest_vote_counts_in_a_ratified_day_and_the_first_is_final_otherwise()
+     {
+        let candidates = placeholders();
+        assert_eq!(
+            vote(&candidates, true).description,
+            "Vote for the player you want voted out. Your latest vote is the one that counts."
+        );
+        assert_eq!(
+            vote(&candidates, false).description,
+            "Vote for the player you want voted out. Your first vote is final."
+        );
+        for ratified in [false, true] {
+            let tools = day_tools(&candidates, PROBE_DAY, ratified);
+            assert!(tools.contains(&vote(&candidates, ratified)), "{ratified}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_player_s_vote_tool_says_which_vote_counts_as_the_configuration_s_ratify_limit_has_it()
+     {
+        // Everyone waits by day, so the werewolf wins on the third night.
+        for (ratify_limit, ratified) in [(Duration::ZERO, false), (Duration::from_secs(5), true)] {
+            let model = Arc::new(by_day(waiting_out(10)));
+            let rules = Rules {
+                ratify_limit,
+                ..quick()
+            };
+            let roles = one_wolf_against(&["ann", "bob", "cat"]);
+            play(roles, rules, Arc::clone(&model)).await.unwrap();
+            let days: Vec<Request> = model.requests().into_iter().filter(is_day).collect();
+            assert!(!days.is_empty());
+            for request in days {
+                let select = request.tools.iter().find(|tool| tool.name == SELECT);
+                let said = &select.unwrap().description;
+                let expected = &vote(&placeholders(), ratified).description;
+                assert_eq!(said, expected, "{ratify_limit:?}");
+            }
         }
     }
 

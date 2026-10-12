@@ -215,9 +215,10 @@ player's utterance, vote or retraction and the environment's tentative
 decision, and the model is offered four tools, of which it must call one
 and may call several: `speak`, which says something to every other living
 player, and never to the environment, which does nothing with speech;
-`select`, which votes for a player, and may be called again to change the
-vote; `retract`, which withdraws the vote, so that the player is undecided
-again; and `wait`, which says nothing now and asks to be woken after some
+`select`, which votes for a player, and in a ratified day may be called
+again to change the vote, while in a day that is not the first vote is
+final, as the tool tells the model; `retract`, which withdraws the vote, so
+that the player is undecided again; and `wait`, which says nothing now and asks to be woken after some
 seconds unless something wakes the player sooner. The calls are carried out
 in the order the model made them. Wake-ups are debounced: a player has at
 most one model call in progress and one waiting, however fast the talk

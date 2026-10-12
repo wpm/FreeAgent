@@ -571,7 +571,8 @@ impl Settings {
             .filter(|prompt| self.model_of(&prompt.strategy) == Some(name))
             .try_fold(0, |most, prompt| {
                 let (text, seat, role) = (&prompt.text, &prompt.seat, prompt.role);
-                let needed = prompted::unstoried(id, text, seat, role, &alive, self.day_limit);
+                let (day_limit, ratified) = (self.day_limit, !self.ratify_limit.is_zero());
+                let needed = prompted::unstoried(id, text, seat, role, &alive, day_limit, ratified);
                 Ok(most.max(needed?))
             })
     }
@@ -747,12 +748,14 @@ pub struct Configuration {
 /// Each seat's player, as `deal` dealt it a strategy and `configuration`
 /// sets the strategy up: a random player, or a prompted player told its
 /// system prompt and asking its strategy's model through its handle in
-/// `handles`.
+/// `handles`, in a day that is ratified if the configuration's ratify
+/// limit is above zero.
 pub fn players(
     configuration: &Configuration,
     deal: &HashMap<PlayerId, Dealt>,
     handles: &Handles,
 ) -> impl FnMut(&PlayerId) -> Seat + use<> {
+    let ratified = !configuration.ratify_limit.is_zero();
     let mut prompted = HashMap::new();
     for (seat, Dealt { strategy, .. }) in deal {
         if let Strategy::Prompted(strategy) = &configuration.strategies[strategy] {
@@ -776,6 +779,7 @@ pub fn players(
             tool_choice,
             context_window,
             model,
+            ratified,
         ),
         None => random::Player::init(),
     }

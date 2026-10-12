@@ -72,7 +72,9 @@ workflow takes a version's notes from here.
   `--ratify-limit`, and may not be longer than the day limit. It is zero by
   default, and a day whose ratify limit is zero is not ratified: each
   player's first vote counts, and the day ends when everyone has voted or
-  at the day limit. The log records how every day ended as `Voted`, the
+  at the day limit. A model player's `select` tool says which vote counts:
+  the latest in a ratified day, and otherwise the first, which is final.
+  The log records how every day ended as `Voted`, the
   start entry carries the ratify limit, `"0s"` for a day that is not
   ratified, as does the configuration, and the narration tells the ratify
   limit when it is above zero, the votes as they come, each tentative
