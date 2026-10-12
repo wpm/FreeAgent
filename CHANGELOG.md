@@ -171,7 +171,8 @@ workflow takes a version's notes from here.
   named strategies under `[strategies.<name>]`, each a policy, `random` or
   `prompted`, with its parameters, a prompted one its `system` template and
   its `model`; and allots each role's seats among the strategies by a
-  `[roles.<role>.strategies]` table, a role's `strategy`, or the file's
+  `[roles.<role>.strategies]` table, with the role's own `strategy`
+  filling the seats it leaves; by a role's `strategy`; or by the file's
   top-level `strategy`, otherwise `random`. Roles and strategies are dealt
   together at random. Only the models in play are set up, and a game may
   play several, each with its own tool choice and context window. The `[model]`, `[prompt]` and `[personas]`

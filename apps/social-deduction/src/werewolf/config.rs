@@ -222,7 +222,8 @@ impl Roles {
 pub struct RoleConfig {
     /// How many of the role sit at the table.
     pub count: Option<usize>,
-    /// The strategy every seat of the role plays.
+    /// The strategy every seat of the role plays that `strategies` does
+    /// not allot.
     pub strategy: Option<String>,
     /// How many seats of the role play each strategy, by name.
     pub strategies: Option<BTreeMap<String, usize>>,
@@ -309,15 +310,20 @@ impl Config {
     /// The settings that take effect with `overrides` from the command
     /// line: each limit from the command line if given there, otherwise
     /// from the file, otherwise from the code; and each role's allotment.
-    /// A role allotted by a `strategies` table has as many seats as the
-    /// table allots, and a count in the file or on the command line that
-    /// disagrees is an error naming the role and both numbers. Any other
-    /// role's seats all play one strategy, its own `strategy`, otherwise
-    /// the file's, otherwise [`RANDOM`], and it has the count from the
-    /// command line if given there, otherwise from the file, otherwise from
-    /// the code. A strategy allotted that is not defined is an error naming
-    /// the role. A ratify limit longer than the day limit is an error
-    /// naming both, since the day would run out before any vote stood.
+    /// A role's `strategies` table allots its seats first. With the role's
+    /// own `strategy`, that strategy fills the rest of the role's count,
+    /// from the command line if given there, otherwise from the file,
+    /// otherwise from the code, and a count given that is less than the
+    /// table allots is an error naming the role and both numbers. Without
+    /// one, the role has as many seats as the table allots, and a count in
+    /// the file or on the command line that disagrees is an error naming the
+    /// role and both numbers. A role with no table plays one strategy, its
+    /// own `strategy`, otherwise the file's, otherwise [`RANDOM`], and has
+    /// the count from the command line if given there, otherwise from the
+    /// file, otherwise from the code. A strategy allotted that is not
+    /// defined is an error naming the role. A ratify limit longer than the
+    /// day limit is an error naming both, since the day would run out
+    /// before any vote stood.
     pub fn settle(self, overrides: Overrides) -> anyhow::Result<Settings> {
         let rules = Rules::default();
         let day_limit = overrides
@@ -342,14 +348,32 @@ impl Config {
         for (role, default) in Table::default().counts() {
             let file = self.roles.get(role);
             let given = overrides.roles.get(role);
-            let allotted = match &file.strategies {
-                Some(table) => {
+            let file_count = (format!("[roles.{role}] count"), file.count);
+            let flag_count = (RoleCounts::flag(role), given);
+            let allotted = match (&file.strategies, &file.strategy) {
+                (Some(table), Some(filling)) => {
                     let allots: usize = table.values().sum();
-                    let counts = [
-                        (format!("[roles.{role}] count"), file.count),
-                        (RoleCounts::flag(role), given),
-                    ];
-                    for (setting, count) in counts {
+                    let (setting, count) = match given {
+                        Some(_) => flag_count,
+                        None => file_count,
+                    };
+                    if let Some(count) = count
+                        && count < allots
+                    {
+                        bail!(
+                            "{setting} is {count}, but [roles.{role}.strategies] allots {allots}"
+                        );
+                    }
+                    let mut table = table.clone();
+                    let left = count.unwrap_or(default).saturating_sub(allots);
+                    if left > 0 {
+                        *table.entry(filling.clone()).or_default() += left;
+                    }
+                    table
+                }
+                (Some(table), None) => {
+                    let allots: usize = table.values().sum();
+                    for (setting, count) in [file_count, flag_count] {
                         if let Some(count) = count
                             && count != allots
                         {
@@ -360,7 +384,7 @@ impl Config {
                     }
                     table.clone()
                 }
-                None => {
+                (None, _) => {
                     let strategy = file
                         .strategy
                         .as_ref()
@@ -1127,6 +1151,75 @@ dice = 1
         assert_eq!(
             settings.allotments[&Role::Werewolf],
             allotted(&[(RANDOM, 2)])
+        );
+    }
+
+    #[test]
+    fn a_role_s_strategy_fills_the_seats_its_strategies_table_leaves() {
+        let file = |count: &str| {
+            format!(
+                "{}[roles.villager]\n{count}strategy = \"dice\"\n[roles.villager.strategies]\nbold = 2\n",
+                three()
+            )
+        };
+        let villagers =
+            |file: &str, overrides| settle(file, overrides).allotments[&Role::Villager].clone();
+        assert_eq!(
+            villagers(&file("count = 5\n"), Overrides::default()),
+            allotted(&[("bold", 2), ("dice", 3)])
+        );
+        // The count from the command line over the file's, and the code's
+        // without either.
+        let given = counting(RoleCounts {
+            villagers: Some(4),
+            ..RoleCounts::default()
+        });
+        assert_eq!(
+            villagers(&file("count = 5\n"), given),
+            allotted(&[("bold", 2), ("dice", 2)])
+        );
+        assert_eq!(
+            villagers(&file(""), Overrides::default()),
+            allotted(&[("bold", 2), ("dice", 1)])
+        );
+        // A count the table fills leaves nothing to fill.
+        assert_eq!(
+            villagers(&file("count = 2\n"), Overrides::default()),
+            allotted(&[("bold", 2)])
+        );
+        // A strategy in the table and filling adds up.
+        let both = file("count = 4\n").replace("bold = 2", "bold = 1\ndice = 1");
+        assert_eq!(
+            villagers(&both, Overrides::default()),
+            allotted(&[("bold", 1), ("dice", 3)])
+        );
+        // A count the table overfills is an error naming both numbers.
+        assert_eq!(
+            unsettled(&file("count = 1\n"), Overrides::default()),
+            "[roles.villager] count is 1, but [roles.villager.strategies] allots 2"
+        );
+        let given = counting(RoleCounts {
+            villagers: Some(1),
+            ..RoleCounts::default()
+        });
+        assert_eq!(
+            unsettled(&file("count = 5\n"), given),
+            "--villagers is 1, but [roles.villager.strategies] allots 2"
+        );
+        // Without a count, a table that allots more than the code's count
+        // has as many seats as it allots.
+        let more = file("").replace("bold = 2", "bold = 4");
+        assert_eq!(
+            villagers(&more, Overrides::default()),
+            allotted(&[("bold", 4)])
+        );
+        // A strategy that fills is checked like any other.
+        assert_eq!(
+            unsettled(
+                &file("count = 5\n").replace("\"dice\"", "\"wild\""),
+                Overrides::default()
+            ),
+            "the villager is allotted wild, which is not a strategy"
         );
     }
 
