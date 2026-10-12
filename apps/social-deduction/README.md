@@ -57,7 +57,7 @@ file that names the model, how to reach it, and the prompts each role is
 given. The [examples](examples/werewolf/llm) show how one is written.
 
 ```sh
-social-deduction werewolf llm game.toml [role counts] [limits] [--ratify-limit 20s] [--model-base-url URL] [--model-id ID]
+social-deduction werewolf llm game.toml [role counts] [limits] [--ratify-limit 20s] [--model-base-url URL] [--model-id ID] [--context-window TOKENS]
 ```
 
 A setting comes from the command line if it is given there, otherwise from
@@ -130,8 +130,9 @@ is an error.
 - `[model]`: `base_url`, the root of the provider's OpenAI-compatible API,
   ending in `/v1`; `id`, the model's id exactly as the provider lists it;
   `api_key_env`, the environment variable holding the API key, over the one
-  known for the provider; and `request_timeout`, how long one request may
-  take, a minute unless it says.
+  known for the provider; `request_timeout`, how long one request may
+  take, a minute unless it says; and `context_window`, the model's context
+  window in tokens.
 - `[phases]`: `night_limit` and `day_limit`, how long each phase waits for
   the players' selections, a minute each unless they say; and
   `ratify_limit`, how long a day's votes must stand to be ratified, twenty
@@ -175,6 +176,15 @@ A model that does not answer both requests as a player must stops the
 program, and the error names the request that failed and says why in the
 provider's own words, such as a server that rejects the request or an
 answer that makes no tool call. Any model that passes can play.
+
+The model's context window, in tokens, is settled before the game begins:
+from `--context-window` if given, otherwise from `context_window` in
+`[model]`, otherwise from the provider's listing of the model, otherwise
+4096 tokens, a size most models can run in. The listing gives it when the
+model's entry carries one of the fields named in `src/models.toml`, such as
+vLLM's `max_model_len` or OpenRouter's `context_length`, holding a positive
+whole number. A window of 0 stops the program. The account tells the window
+and where it came from, and the configuration in the log records both.
 
 Every request makes the model call a tool, unless the model refuses that.
 The night's request is made with `tool_choice` set to `"required"`; if the

@@ -16,6 +16,10 @@
 //! variable that holds it, and [`Model::api_key`] reads that variable into
 //! a [`SecretString`], which is redacted wherever it is shown.
 //!
+//! The model's [`ContextWindow`] is settled before any game begins: from
+//! the command line, otherwise from the file, otherwise from the provider's
+//! listing of the model, otherwise from the code.
+//!
 //! The game is the announcing environment's, with a model [`Player`] in
 //! every seat, and the day's vote is ratified: a day ends one ratify limit
 //! after its votes stop changing, or at the day limit with nobody voted
@@ -77,7 +81,8 @@ use super::{
     awake, candidates, observe, receivers,
 };
 use crate::model::{
-    self, Provider, REQUEST_TIMEOUT, Request, Response, Tool, ToolChoice, api_key, key_variable,
+    self, CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT, Request, Response, Tool, ToolChoice, api_key,
+    key_variable,
 };
 use anyhow::{Context as _, anyhow, bail};
 use async_trait::async_trait;
@@ -137,6 +142,16 @@ pub struct ModelOverrides {
     /// The model's id, exactly as the provider lists it
     #[arg(long = "model-id", value_name = "ID")]
     pub id: Option<String>,
+    /// The model's context window, over what the provider reports
+    #[arg(long, value_name = "TOKENS", help = context_window_help())]
+    pub context_window: Option<u64>,
+}
+
+/// The help for `--context-window`, naming the default the code fills in.
+fn context_window_help() -> String {
+    format!(
+        "The model's context window in tokens, over what the provider reports [default: {CONTEXT_WINDOW}]"
+    )
 }
 
 /// The configuration file, as written. Every table but `[model]` may be
@@ -179,6 +194,9 @@ pub struct Model {
     /// How long a request may take.
     #[serde(default = "request_timeout", with = "humantime_serde")]
     pub request_timeout: Duration,
+    /// The model's context window, in tokens, over what the provider
+    /// reports.
+    pub context_window: Option<u64>,
 }
 
 impl Model {
@@ -288,6 +306,9 @@ pub struct Settings {
     pub day_limit: Duration,
     /// How long a day's votes must stand to be ratified.
     pub ratify_limit: Duration,
+    /// The model's context window, when the command line or the file
+    /// gives one.
+    pub context_window: Option<ContextWindow>,
 }
 
 impl Config {
@@ -315,9 +336,11 @@ impl Config {
     /// line: each role count and limit from the command line if given
     /// there, otherwise from the file, otherwise from the code, and the
     /// model's provider and id from the command line if given there,
-    /// otherwise from the file. A ratify limit longer than the day limit
-    /// is an error naming both, since the day would run out before any
-    /// vote stood.
+    /// otherwise from the file, and the context window from the command
+    /// line if given there, otherwise from the file if given there. A ratify
+    /// limit longer than the day limit is an error naming both, since the
+    /// day would run out before any vote stood, and a context window of 0
+    /// is an error naming the setting that gave it.
     pub fn settle(mut self, overrides: Overrides) -> anyhow::Result<Settings> {
         if let Some(base_url) = overrides.model.base_url {
             self.model.base_url = base_url;
@@ -348,6 +371,22 @@ impl Config {
                 format_duration(day_limit)
             );
         }
+        let given = |tokens, source| ContextWindow { tokens, source };
+        let context_window = overrides
+            .model
+            .context_window
+            .map(|tokens| given(tokens, Source::CommandLine))
+            .or(self
+                .model
+                .context_window
+                .map(|tokens| given(tokens, Source::File)));
+        if let Some(ContextWindow { tokens: 0, source }) = context_window {
+            let setting = match source {
+                Source::CommandLine => "--context-window",
+                _ => "context_window",
+            };
+            bail!("{setting} is 0; a context window holds at least 1 token");
+        }
         Ok(Settings {
             table: overrides.roles.or(file.or(Table::default())),
             night_limit: overrides
@@ -357,6 +396,7 @@ impl Config {
                 .unwrap_or(rules.night_limit),
             day_limit,
             ratify_limit,
+            context_window,
             config: self,
         })
     }
@@ -450,14 +490,16 @@ impl Settings {
     /// which [`Settings::prompts`] rendered for every seat and role at the
     /// table, and the templates and text blocks as written. The key's
     /// variable is named, and the key itself never recorded. Each request
-    /// is made under `tool_choice`, as the probe found. A player with no
-    /// prompt rendered for its role is an error naming the seat and the
-    /// role.
+    /// is made under `tool_choice`, as the probe found, within
+    /// `context_window`, as [`Settings::context_window`] settled it. A
+    /// player with no prompt rendered for its role is an error naming the
+    /// seat and the role.
     pub fn configuration(
         &self,
         roles: &HashMap<PlayerId, Role>,
         prompts: &[SystemPrompt],
         tool_choice: ToolChoice,
+        context_window: ContextWindow,
     ) -> anyhow::Result<Configuration> {
         let rendered: HashMap<(&PlayerId, Role), &str> = prompts
             .iter()
@@ -484,6 +526,7 @@ impl Settings {
             base_url: model.base_url.clone(),
             model: model.id.clone(),
             tool_choice,
+            context_window,
             api_key_env: model.key_variable().map(String::from),
             personas: config.personas.clone(),
             prompts,
@@ -495,6 +538,21 @@ impl Settings {
                 .collect(),
             text: config.text.clone(),
         })
+    }
+
+    /// The model's context window: the one the command line or the file
+    /// gives, otherwise `reported`, the one the provider's listing reports
+    /// for the model, otherwise [`CONTEXT_WINDOW`].
+    pub fn context_window(&self, reported: Option<u64>) -> ContextWindow {
+        self.context_window
+            .or(reported.map(|tokens| ContextWindow {
+                tokens,
+                source: Source::Provider,
+            }))
+            .unwrap_or(ContextWindow {
+                tokens: CONTEXT_WINDOW,
+                source: Source::Default,
+            })
     }
 
     /// The rules a game is played under: the variant's, with the limits
@@ -529,6 +587,31 @@ pub fn rules() -> Rules {
     }
 }
 
+/// A model's context window, in tokens, and where it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextWindow {
+    /// How many tokens the model takes in at once.
+    pub tokens: u64,
+    /// Where the window came from.
+    pub source: Source,
+}
+
+/// Where a setting came from, written as `command line`, `file`,
+/// `provider` or `default`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    /// The command line.
+    #[serde(rename = "command line")]
+    CommandLine,
+    /// The configuration file.
+    File,
+    /// The provider.
+    Provider,
+    /// The code's default.
+    Default,
+}
+
 /// The configuration a game ran under, as it took effect once the command
 /// line, the file and the defaults were combined, so that the log says by
 /// itself what was played and under which prompts. Each duration is
@@ -557,6 +640,8 @@ pub struct Configuration {
     /// Whether each request made the model call a tool, as the probe
     /// found the model would.
     pub tool_choice: ToolChoice,
+    /// The model's context window and where it came from.
+    pub context_window: ContextWindow,
     /// The name of the environment variable the key came from, if any.
     pub api_key_env: Option<String>,
     /// Each seat's persona, for the seats that have one.
@@ -1854,6 +1939,57 @@ count = 8
     }
 
     #[test]
+    fn the_context_window_falls_back_from_the_command_line_to_the_file_to_the_provider_to_the_code()
+    {
+        let window = |tokens, source| ContextWindow { tokens, source };
+        let file = format!("{MODEL}context_window = 8192\n");
+        let command_line = || Variant::parse_from(["llm", "--context-window", "16384"]).overrides;
+        let settings = settle(&file, command_line());
+        assert_eq!(
+            settings.context_window(Some(32768)),
+            window(16384, Source::CommandLine)
+        );
+        let settings = settle(MODEL, command_line());
+        assert_eq!(
+            settings.context_window(None),
+            window(16384, Source::CommandLine)
+        );
+        let settings = settle(&file, Overrides::default());
+        assert_eq!(
+            settings.context_window(Some(32768)),
+            window(8192, Source::File)
+        );
+        let settings = settle(MODEL, Overrides::default());
+        assert_eq!(
+            settings.context_window(Some(32768)),
+            window(32768, Source::Provider)
+        );
+        assert_eq!(
+            settings.context_window(None),
+            window(CONTEXT_WINDOW, Source::Default)
+        );
+        assert_eq!(CONTEXT_WINDOW, 4096);
+    }
+
+    #[test]
+    fn a_context_window_of_0_is_an_error_naming_the_setting() {
+        let error = |file: &str, overrides| {
+            let error = Config::parse(file).unwrap().settle(overrides).unwrap_err();
+            format!("{error:#}")
+        };
+        let file = format!("{MODEL}context_window = 0\n");
+        assert_eq!(
+            error(&file, Overrides::default()),
+            "context_window is 0; a context window holds at least 1 token"
+        );
+        let overrides = Variant::parse_from(["llm", "--context-window", "0"]).overrides;
+        assert_eq!(
+            error(MODEL, overrides),
+            "--context-window is 0; a context window holds at least 1 token"
+        );
+    }
+
+    #[test]
     fn a_duration_the_file_cannot_parse_is_an_error() {
         let file = format!("{MODEL}request_timeout = \"soon\"\n");
         assert!(Config::parse(&file).is_err());
@@ -2104,6 +2240,7 @@ system = \"{{{{ rules }}}} {{{{ wolf }}}}\"
         format!(
             "{MODEL}
 request_timeout = \"10s\"
+context_window = 8192
 [phases]
 night_limit = \"30s\"
 day_limit = \"1m 30s\"
@@ -2142,7 +2279,12 @@ player2 = \"Cautious.\"
         settings: &Settings,
         roles: &HashMap<PlayerId, Role>,
     ) -> anyhow::Result<Configuration> {
-        settings.configuration(roles, &settings.prompts()?, ToolChoice::Required)
+        settings.configuration(
+            roles,
+            &settings.prompts()?,
+            ToolChoice::Required,
+            settings.context_window(None),
+        )
     }
 
     #[test]
@@ -2173,6 +2315,10 @@ player2 = \"Cautious.\"
                 base_url: "http://localhost:1234/v1".to_string(),
                 model: MODEL_ID.to_string(),
                 tool_choice: ToolChoice::Required,
+                context_window: ContextWindow {
+                    tokens: 8192,
+                    source: Source::File,
+                },
                 api_key_env: None,
                 personas: BTreeMap::from([("player2".to_string(), "Cautious.".to_string())]),
                 prompts: BTreeMap::from([
@@ -2218,6 +2364,10 @@ player2 = \"Cautious.\"
         assert_eq!(configuration["day_limit"], json!("1m 30s"));
         assert_eq!(configuration["ratify_limit"], json!("10s"));
         assert_eq!(configuration["request_timeout"], json!("10s"));
+        assert_eq!(
+            configuration["context_window"],
+            json!({"tokens": 8192, "source": "file"})
+        );
         // A role is a key by its name.
         assert_eq!(configuration["role_counts"]["Werewolf"], json!(1));
         let back: Entry = serde_json::from_value(json).unwrap();
@@ -2298,8 +2448,14 @@ player2 = \"Cautious.\"
                 text: told(id),
             })
             .collect();
-        settle(MODEL, Overrides::default())
-            .configuration(roles, &prompts, ToolChoice::Required)
+        let settings = settle(MODEL, Overrides::default());
+        settings
+            .configuration(
+                roles,
+                &prompts,
+                ToolChoice::Required,
+                settings.context_window(None),
+            )
             .unwrap()
     }
 
@@ -2833,7 +2989,7 @@ player2 = \"Cautious.\"
         // The werewolves fail side by side, in no particular order. The
         // night takes no time because every event is stamped at the epoch,
         // while the game took its night limit by the environment's clock.
-        told[8..10].sort();
+        told[9..11].sort();
         assert_eq!(
             told.join("\n"),
             "LLM with 4 players:\n\
@@ -2842,6 +2998,7 @@ player2 = \"Cautious.\"
              wolf1 (werewolf)\n\
              wolf2 (werewolf)\n\
              A night waits 10s and a day 10s, and a vote stands after 5s.\n\
+             The model's context window is 4096 tokens, the default.\n\
              \n\
              Night 1.\n\
              wolf1 (werewolf) fails to select: the model is down\n\

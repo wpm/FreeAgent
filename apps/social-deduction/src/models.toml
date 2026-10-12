@@ -1,6 +1,11 @@
 # What the model client knows, compiled in. Adding to it is an edit here and
 # a rebuild.
 
+# The fields a model's entry in a provider's listing, GET /v1/models, may
+# carry its context window under, in tokens: vLLM's and OpenRouter's. The
+# first of them holding a positive whole number is the window.
+context_window_fields = ["max_model_len", "context_length"]
+
 # Providers known, in the order the help lists them. Each has the root of its
 # OpenAI-compatible API, ending in /v1, as a base URL is given on the command
 # line; the environment variable that conventionally holds its API key, if it

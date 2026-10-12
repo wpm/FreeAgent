@@ -20,6 +20,10 @@ workflow takes a version's notes from here.
   before the game begins, and its log opens with the configuration the game
   was played under. A model that refuses to be made to call a tool is asked
   to call one instead.
+- The model's context window, settled before a `werewolf llm` game begins
+  from `--context-window`, `context_window` in `[model]`, the provider's
+  listing of the model, or a default of 4096 tokens, and told and logged
+  with where it came from.
 - `social-deduction models`, which lists the models a provider serves.
   `--check` asks each model to play as by night and as by day and marks
   those that answer both requests well, and those that do only when not

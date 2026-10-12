@@ -36,6 +36,10 @@ use std::time::Duration;
 /// How long a request may take unless the configuration says otherwise.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The context window, in tokens, of a model nothing else gives one for:
+/// a size most models can run in.
+pub const CONTEXT_WINDOW: u64 = 4096;
+
 /// How much of what a provider said about a failure an error repeats.
 const SAID_AT_MOST: usize = 500;
 
@@ -67,6 +71,10 @@ struct Knowledge {
     /// The providers known, in the order the help lists them.
     #[serde(default)]
     providers: Vec<Known>,
+    /// The fields a model's entry in a provider's listing may carry its
+    /// context window under, in the order they are read.
+    #[serde(default)]
+    context_window_fields: Vec<String>,
 }
 
 /// A provider `src/models.toml` knows.
@@ -272,17 +280,48 @@ pub struct Provider {
     client: reqwest::Client,
 }
 
-/// The listing `GET /v1/models` answers with. Only the ids are read, and
-/// unknown fields are ignored, so a provider's additions do not break it.
+/// The listing `GET /v1/models` answers with. Only the ids and the
+/// context windows are read, and other fields are ignored, so a provider's
+/// additions do not break it.
 #[derive(Deserialize)]
 struct Listing {
     data: Vec<Listed>,
 }
 
-/// One model in a [`Listing`].
+/// One model as a provider lists it: its id, and its context window, in
+/// tokens, when its entry carries one. The window is the first of the
+/// fields `src/models.toml` names that holds a positive whole number.
+#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[serde(from = "Entry")]
+pub struct Listed {
+    /// The model's id.
+    pub id: String,
+    /// The model's context window, in tokens, if its entry says.
+    pub context_window: Option<u64>,
+}
+
+/// A model's entry in a [`Listing`], as written.
 #[derive(Deserialize)]
-struct Listed {
+struct Entry {
     id: String,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, serde_json::Value>,
+}
+
+impl From<Entry> for Listed {
+    fn from(entry: Entry) -> Self {
+        let context_window = KNOWLEDGE.context_window_fields.iter().find_map(|name| {
+            entry
+                .fields
+                .get(name)?
+                .as_u64()
+                .filter(|&tokens| tokens > 0)
+        });
+        Self {
+            id: entry.id,
+            context_window,
+        }
+    }
 }
 
 impl Provider {
@@ -369,17 +408,33 @@ impl Provider {
     /// answered with anything but success an error naming the URL, the
     /// status, and whatever the provider said about it.
     pub async fn models(&self) -> anyhow::Result<Vec<String>> {
+        Ok(self
+            .listing()
+            .await?
+            .into_iter()
+            .map(|model| model.id)
+            .collect())
+    }
+
+    /// The models the provider serves, as `GET {base_url}/models` lists
+    /// them, failing as [`Provider::models`] does.
+    async fn listing(&self) -> anyhow::Result<Vec<Listed>> {
         let url = self.url("models");
         let listing: Listing = self
             .answered(self.client.get(&url), &format!("GET {url}"))
             .await?;
-        Ok(listing.data.into_iter().map(|model| model.id).collect())
+        Ok(listing.data)
     }
 
-    /// Check that the provider serves the model `id`: that it is in the
-    /// provider's listing. The error names the provider and the model.
-    pub async fn check_serves(&self, id: &str) -> anyhow::Result<()> {
-        check_listed(&self.base_url, &self.models().await?, id)
+    /// The model `id` as the provider lists it, checking that the provider
+    /// serves it. A model it does not list is an error naming the provider
+    /// and the model.
+    pub async fn listed(&self, id: &str) -> anyhow::Result<Listed> {
+        self.listing()
+            .await?
+            .into_iter()
+            .find(|model| model.id == id)
+            .ok_or_else(|| not_served(&self.base_url, id))
     }
 }
 
@@ -389,8 +444,14 @@ pub fn check_listed(base_url: &str, listing: &[String], id: &str) -> anyhow::Res
     if listing.iter().any(|served| served == id) {
         Ok(())
     } else {
-        bail!("{base_url} does not serve a model with the id {id}")
+        Err(not_served(base_url, id))
     }
+}
+
+/// The error saying the provider at `base_url` does not serve the model
+/// `id`.
+fn not_served(base_url: &str, id: &str) -> anyhow::Error {
+    anyhow!("{base_url} does not serve a model with the id {id}")
 }
 
 /// The provider as a model: a completion is `POST {base_url}/chat/completions`.
@@ -693,13 +754,76 @@ mod tests {
     async fn a_model_the_provider_lists_is_served_and_one_it_does_not_is_an_error_naming_both() {
         let (base_url, _served) = answering("200 OK", &listing(&["a", "qwen2.5-7b-instruct"]));
         let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
-        provider.check_serves("qwen2.5-7b-instruct").await.unwrap();
+        assert_eq!(
+            provider.listed("qwen2.5-7b-instruct").await.unwrap(),
+            Listed {
+                id: "qwen2.5-7b-instruct".to_string(),
+                context_window: None,
+            }
+        );
         let (base_url, _served) = answering("200 OK", &listing(&["a", "qwen2.5-7b-instruct"]));
         let provider = Provider::new(base_url.clone(), None, TIMEOUT).unwrap();
-        let error = provider.check_serves("qwen").await.unwrap_err();
+        let error = provider.listed("qwen").await.unwrap_err();
         let shown = format!("{error:#}");
         assert!(shown.contains(&base_url), "{shown}");
         assert!(shown.contains("qwen"), "{shown}");
+    }
+
+    /// The model a listing's `entry` describes.
+    fn entry(entry: serde_json::Value) -> Listed {
+        serde_json::from_value(entry).unwrap()
+    }
+
+    #[test]
+    fn the_file_names_the_fields_a_context_window_is_read_from() {
+        assert_eq!(
+            KNOWLEDGE.context_window_fields,
+            ["max_model_len", "context_length"]
+        );
+    }
+
+    #[test]
+    fn a_model_s_context_window_is_the_first_named_field_holding_a_positive_whole_number() {
+        let window = |fields: serde_json::Value| {
+            let mut model = json!({"id": "m", "object": "model"});
+            model
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            entry(model).context_window
+        };
+        assert_eq!(window(json!({"max_model_len": 32768})), Some(32768));
+        assert_eq!(window(json!({"context_length": 8192})), Some(8192));
+        assert_eq!(
+            window(json!({"context_length": 8192, "max_model_len": 32768})),
+            Some(32768)
+        );
+        assert_eq!(
+            window(json!({"max_model_len": 0, "context_length": 8192})),
+            Some(8192)
+        );
+        assert_eq!(window(json!({})), None);
+        assert_eq!(window(json!({"context_window": 8192})), None);
+        for unusable in [json!(0), json!(-1), json!(1.5), json!("8192"), json!(null)] {
+            assert_eq!(window(json!({"max_model_len": unusable})), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_listed_model_carries_the_context_window_its_entry_reports() {
+        let said = json!({"data": [
+            {"id": "a", "context_length": 8192},
+            {"id": "b", "max_model_len": 32768},
+        ]});
+        let (base_url, _served) = answering("200 OK", &said.to_string());
+        let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
+        assert_eq!(
+            provider.listed("b").await.unwrap(),
+            Listed {
+                id: "b".to_string(),
+                context_window: Some(32768),
+            }
+        );
     }
 
     #[tokio::test]
