@@ -482,18 +482,11 @@ mod tests {
             ("--seers", table.seers.to_string()),
         ];
         let rules = Rules::default();
-        let limits = |variant| {
-            let mut limits = vec![
-                ("--night-limit", rules.night_limit),
-                ("--day-limit", rules.day_limit),
-            ];
-            if variant == "llm" {
-                limits.push(("--ratify-limit", llm::RATIFY_LIMIT));
-            }
-            limits
-                .into_iter()
-                .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()))
-        };
+        let limits = [
+            ("--night-limit", rules.night_limit),
+            ("--day-limit", rules.day_limit),
+        ]
+        .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()));
         let window =
             |variant| (variant == "llm").then(|| ("--context-window", CONTEXT_WINDOW.to_string()));
         for variant in ["uniform-random", "llm"] {
@@ -504,12 +497,28 @@ mod tests {
                 .unwrap()
                 .render_help()
                 .to_string();
-            let defaults = counts.iter().cloned().chain(limits(variant));
+            let defaults = counts.iter().cloned().chain(limits.iter().cloned());
             for (option, default) in defaults.chain(window(variant)) {
                 let line = help.lines().find(|line| line.contains(option)).unwrap();
                 assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
             }
         }
+        // The ratify limit's default, zero, is told in words.
+        let help = CommandLine::command()
+            .find_subcommand_mut("werewolf")
+            .unwrap()
+            .find_subcommand_mut("llm")
+            .unwrap()
+            .render_help()
+            .to_string();
+        let line = help
+            .lines()
+            .find(|line| line.contains("--ratify-limit"))
+            .unwrap();
+        assert!(
+            line.ends_with("zero, the default, means a day is not ratified"),
+            "{line}"
+        );
     }
 
     #[test]

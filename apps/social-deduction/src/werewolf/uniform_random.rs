@@ -8,8 +8,7 @@
 
 use super::announced::{self, Environment};
 use super::{
-    Entry, Message, PlayerId, Role, Rules, Team, View, act, awake, candidates, observe,
-    to_the_environment,
+    Entry, Message, PlayerId, Role, Rules, Team, View, act, awake, candidates, observe, receivers,
 };
 use async_trait::async_trait;
 use free_agent::{Behavior, Builder, Context, Episode, Logger};
@@ -93,7 +92,10 @@ impl Behavior for Actor {
 
 /// A player who answers each announcement of a phase it is [`awake`] in at
 /// once, selecting one of its [`candidates`] uniformly at random, and does
-/// nothing about one it sleeps through. It has no think loop.
+/// nothing about one it sleeps through. Its selection goes to the
+/// [`receivers`] of a selection: by night the environment, by day the
+/// environment and every other living player, since the votes are public.
+/// It has no think loop.
 pub struct Player {
     context: Context<Message, Entry>,
     /// The number of the last selection it sent.
@@ -138,7 +140,8 @@ impl Behavior for Player {
                 n: self.n,
                 target,
             };
-            act(&self.context, selection, to_the_environment(), None, None)?;
+            let to = receivers(&selection, me, view);
+            act(&self.context, selection, to, None, None)?;
         }
         Ok(())
     }
@@ -159,9 +162,10 @@ pub(crate) mod tests {
         one_wolf_against, run, seen, selection, selections, tentative, utterance, village,
     };
     use crate::werewolf::{
-        ENVIRONMENT, Phase, View, thinking_episode, to_everyone_but, to_the_players_but,
+        ENVIRONMENT, Phase, View, thinking_episode, to_everyone_but, to_the_environment,
+        to_the_players_but,
     };
-    use free_agent::{Think, ThinkBuilder};
+    use free_agent::{ActorId, Think, ThinkBuilder};
     use std::collections::HashSet;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -391,18 +395,18 @@ pub(crate) mod tests {
         let (winner, logged, _) = run(episode, won, log).await.unwrap();
 
         // Everything between is an announcement or a selection, logged as
-        // the action of its sender and the observation of its receiver, or
-        // a night's hunt.
+        // the action of its sender and the observation of each of its
+        // receivers, or a night's hunt.
         let doctors: HashSet<&PlayerId> = roles
             .iter()
             .filter(|(_, role)| **role == Role::Doctor)
             .map(|(player, _)| player)
             .collect();
         let between = between_the_deal_and_the_end(&logged, &Rules::default(), &roles, winner);
-        // How often each message, named by its sender and number, was
-        // logged as an action and as an observation.
-        let mut actions: HashMap<(&str, u64), usize> = HashMap::new();
-        let mut observations: HashMap<(&str, u64), usize> = HashMap::new();
+        // Whom each message, named by its sender and number, was logged as
+        // sent to as an action, and who logged observing it.
+        let mut actions: HashMap<(&str, u64), &HashSet<ActorId>> = HashMap::new();
+        let mut observations: HashMap<(&str, u64), Vec<&str>> = HashMap::new();
         let mut announced = 0;
         let mut selected = 0;
         let mut observed = 0;
@@ -423,7 +427,7 @@ pub(crate) mod tests {
                 assert!(*seq >= 1, "{seq}");
                 assert_eq!(*seen, None);
                 assert_eq!(*forgot, None);
-                *actions.entry((from, *n)).or_default() += 1;
+                assert_eq!(actions.insert((from, *n), to), None);
                 announced += 1;
             }
             if let Entry::Action {
@@ -444,20 +448,27 @@ pub(crate) mod tests {
                 assert_eq!(from, said);
                 assert!(roles.contains_key(from), "{from}");
                 assert!(roles.contains_key(target), "{target}");
-                assert_eq!(*to, to_the_environment());
+                // To the environment, and by day to the other players too.
+                assert!(to.contains(ENVIRONMENT), "{to:?}");
+                assert!(!to.contains(from), "{to:?}");
+                assert!(
+                    to.iter()
+                        .all(|actor| actor == ENVIRONMENT || roles.contains_key(actor)),
+                    "{to:?}"
+                );
                 assert!(*seq >= 1, "{seq}");
                 assert_eq!(*seen, None);
                 assert_eq!(*forgot, None);
-                *actions.entry((from, *n)).or_default() += 1;
+                assert_eq!(actions.insert((from, *n), to), None);
                 selected += 1;
             }
             if let Entry::Observation { by, from, n, seq } = entry {
-                // The environment observes the players, and they it.
-                let between_them = (by == ENVIRONMENT && roles.contains_key(from))
-                    || (from == ENVIRONMENT && roles.contains_key(by));
-                assert!(between_them, "{entry:?}");
+                // The environment observes the players, and they it and
+                // one another.
+                let in_play = |actor: &str| actor == ENVIRONMENT || roles.contains_key(actor);
+                assert!(in_play(by) && in_play(from) && by != from, "{entry:?}");
                 assert!(*seq >= 1, "{seq}");
-                *observations.entry((from, *n)).or_default() += 1;
+                observations.entry((from, *n)).or_default().push(by);
                 observed += 1;
             }
             if let Entry::Hunted { seq, hunt } = entry {
@@ -474,10 +485,28 @@ pub(crate) mod tests {
             between.len(),
             "{logged:?}"
         );
-        // Every message is logged once as an action and once as an
-        // observation, with the same number.
-        assert_eq!(actions, observations, "{logged:?}");
-        assert!(actions.values().all(|count| *count == 1), "{logged:?}");
+        // Every message is logged once as an action, and as an observation
+        // with the same number at most once by each of its receivers, and
+        // always by the environment, or by the player it announced to. A
+        // player voted out, or stopped when the game ends, may be stopped
+        // before it observes a vote.
+        let mut sent: Vec<&(&str, u64)> = actions.keys().collect();
+        let mut heard: Vec<&(&str, u64)> = observations.keys().collect();
+        sent.sort_unstable();
+        heard.sort_unstable();
+        assert_eq!(sent, heard, "{logged:?}");
+        for (message, by) in &observations {
+            let to = actions[message];
+            let distinct: HashSet<&str> = by.iter().copied().collect();
+            assert_eq!(distinct.len(), by.len(), "{message:?}: {by:?}");
+            assert!(by.iter().all(|by| to.contains(*by)), "{message:?}: {by:?}");
+            let first = if message.0 == ENVIRONMENT {
+                to.iter().next().unwrap().as_str()
+            } else {
+                ENVIRONMENT
+            };
+            assert!(by.contains(&first), "{message:?}: {by:?}");
+        }
         // Each sender numbers its messages from 1, one up each.
         let mut numbers: HashMap<&str, Vec<u64>> = HashMap::new();
         for (from, n) in actions.keys() {
@@ -559,6 +588,48 @@ pub(crate) mod tests {
                 .count();
             assert_eq!(selected, 1, "{player}");
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_selection_goes_to_the_environment_and_by_day_to_every_other_living_player_too() {
+        // The werewolf kills one of three villagers the first night, so the
+        // three left alive vote by day.
+        let roles = one_wolf_against(&["ann", "bob", "cat"]);
+        let (_, logged, _) = play(roles, quick(), HashMap::new()).await.unwrap();
+        // What each player was last announced, as the log has it so far.
+        let mut views: HashMap<&PlayerId, &View> = HashMap::new();
+        let mut by_day = 0;
+        for entry in &logged {
+            match entry {
+                Entry::Action {
+                    to,
+                    message: Message::Announce { view, .. },
+                    ..
+                } => {
+                    for player in to {
+                        views.insert(player, view);
+                    }
+                }
+                Entry::Action {
+                    from,
+                    to,
+                    message: Message::Select { .. },
+                    ..
+                } => {
+                    let view = views[from];
+                    let expected = match view.phase {
+                        Phase::Night => to_the_environment(),
+                        Phase::Day => {
+                            by_day += 1;
+                            to_everyone_but(from, &view.alive)
+                        }
+                    };
+                    assert_eq!(*to, expected, "{from}");
+                }
+                _ => {}
+            }
+        }
+        assert!(by_day >= 3, "{logged:?}");
     }
 
     #[tokio::test(start_paused = true)]

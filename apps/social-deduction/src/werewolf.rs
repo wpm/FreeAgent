@@ -513,12 +513,12 @@ pub struct Rules {
     /// ignored.
     pub day_limit: Duration,
     /// How long the day's votes must stand for the player they select to
-    /// be voted out. With a ratify limit, a player may change its vote
-    /// while the day is open, its latest vote counts, and the day ends one
-    /// ratify limit after the votes stop moving, or at the day limit with
-    /// nobody voted out. Without one, the first vote counts and the day
-    /// ends when everyone has voted or at its limit.
-    pub ratify_limit: Option<Duration>,
+    /// be voted out. Above zero, a player may change its vote while the
+    /// day is open, its latest vote counts, and the day ends one ratify
+    /// limit after the votes stop moving, or at the day limit with nobody
+    /// voted out. At zero, the day is not ratified: the first vote counts
+    /// and the day ends when everyone has voted or at its limit.
+    pub ratify_limit: Duration,
 }
 
 impl Rules {
@@ -546,7 +546,7 @@ impl Default for Rules {
             day_vote: Box::new(NoTieBreak),
             night_limit: Duration::from_secs(60),
             day_limit: Duration::from_secs(60),
-            ratify_limit: None,
+            ratify_limit: Duration::ZERO,
         }
     }
 }
@@ -578,8 +578,8 @@ pub enum Message {
         limit: Duration,
     },
     /// A player's selection for the phase numbered `seq`. By night it goes
-    /// to the environment alone; by day, when the vote is ratified, to every
-    /// other living player as well.
+    /// to the environment alone; by day to every other living player as
+    /// well, since the votes are public.
     Select {
         /// The number of the phase.
         seq: u64,
@@ -785,7 +785,7 @@ pub fn observe(context: &Context<Message, Entry>, from: ActorId, n: u64, seq: u6
 pub enum Entry {
     /// The game begins: who plays what, under which variation, how long
     /// each phase waits for the players, and how long a day's votes must
-    /// stand, if they are ratified. The limits are written as `humantime`
+    /// stand, zero when they are not ratified. The limits are written as `humantime`
     /// writes them, such as `"60s"`.
     Start {
         /// The name of the variation played, such as "Uniform Random".
@@ -798,14 +798,10 @@ pub enum Entry {
         /// How long a day waits for the players.
         #[serde(with = "humantime_serde")]
         day_limit: Duration,
-        /// How long a day's votes must stand to be ratified, if they are.
-        /// Left out when they are not.
-        #[serde(
-            default,
-            with = "humantime_serde",
-            skip_serializing_if = "Option::is_none"
-        )]
-        ratify_limit: Option<Duration>,
+        /// How long a day's votes must stand to be ratified, `"0s"` when
+        /// they are not.
+        #[serde(with = "humantime_serde")]
+        ratify_limit: Duration,
     },
     /// The configuration a model-played game ran under, logged right after
     /// the deal.
@@ -1140,16 +1136,16 @@ mod tests {
         let json = serde_json::to_value(&start).unwrap();
         assert_eq!(json["Start"]["night_limit"], "1m 30s");
         assert_eq!(json["Start"]["day_limit"], "40s");
-        // Without a ratify limit, the start is written as it always was.
-        assert!(json["Start"].get("ratify_limit").is_none(), "{json}");
+        // By default the day is not ratified: its ratify limit is zero.
+        assert_eq!(json["Start"]["ratify_limit"], "0s");
         let back: Entry = serde_json::from_value(json).unwrap();
         assert_eq!(back, start);
     }
 
     #[test]
-    fn the_start_carries_the_ratify_limit_when_there_is_one() {
+    fn the_start_carries_a_ratify_limit_above_zero() {
         let rules = Rules {
-            ratify_limit: Some(Duration::from_secs(20)),
+            ratify_limit: Duration::from_secs(20),
             ..Rules::default()
         };
         let start = rules.start(village().roles);
