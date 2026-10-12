@@ -1,18 +1,23 @@
-# The least a model-played game needs: a local LM Studio model and one
-# system prompt for everyone. The rules live in a text block the prompt
-# pulls in, and the prompt tells a werewolf apart from the rest with one
-# conditional. Run it with
+# The least a model-played game needs: one model and one prompted strategy
+# for everyone. The rules live in a text block the prompt pulls in, and the
+# prompt tells a werewolf apart from the rest with one conditional. Run it
+# with
 #
-#     social-deduction werewolf llm minimal.toml
+#     social-deduction werewolf prompted.toml
 
-[model]
+# Every role not allotted otherwise plays this strategy.
+strategy = "everyone"
+
+[phases]
+ratify_limit = "20s"
+
+# A Qwen model on a local LM Studio server. The id and base URL will likely
+# need changing to whatever model and server you have running.
+[models.qwen]
 base_url = "http://localhost:1234/v1"
 id = "qwen2.5-7b-instruct-1m"
 # The model's context window in tokens, over what the provider reports.
 # context_window = 32768
-
-[phases]
-ratify_limit = "20s"
 
 [text]
 rules = """
@@ -29,7 +34,8 @@ the last werewolf is dead. The werewolves win when they are at least as
 many as the villagers.
 """
 
-[prompt]
+[strategies.everyone]
+policy = "prompted"
 system = """
 {{ rules }}
 
@@ -38,5 +44,4 @@ You are {{ name }}, a {{ role }}.
 You know who the other werewolves are. Kill a villager each night and avoid
 being voted out by day.
 {% endif %}
-{% if persona %}{{ persona }}{% endif %}
 """

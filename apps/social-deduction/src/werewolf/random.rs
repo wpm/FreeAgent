@@ -93,11 +93,12 @@ fn choose(me: &PlayerId, view: &View) -> Option<PlayerId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::werewolf::config::RANDOM;
     use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{
-        Script, at_once, between_the_deal_and_the_end, logged, mute, observed_by,
-        observed_by_the_environment, one_wolf_against, play, quick, run, seen, selection,
-        selections, tentative, utterance, village,
+        Script, at_once, between_the_deal_and_the_end, configured, dealt, logged, mute,
+        observed_by, observed_by_the_environment, one_wolf_against, play, quick, run, seen,
+        selection, selections, tentative, utterance, village,
     };
     use crate::werewolf::{
         ENVIRONMENT, Phase, Role, Rules, Team, game, to_everyone_but, to_the_environment,
@@ -136,9 +137,9 @@ mod tests {
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
         let episode = game(
-            roles.clone(),
+            dealt(&roles, RANDOM),
             Rules::default(),
-            None,
+            configured(&roles, &Rules::default()),
             winner,
             |_| Player::init(),
             logger,

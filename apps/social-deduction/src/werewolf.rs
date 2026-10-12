@@ -23,12 +23,15 @@
 //! receives and the selections and utterances it sends.
 //!
 //! The environment is [`announced`]'s, and each of an episode's players
-//! follows a policy: a [`random`] player selects at random, and a
-//! [`prompted`] player asks a language model. An episode holds one kind of
-//! actor, [`Actor`], which is the environment or a player of either policy,
-//! and [`game`] builds every episode, with each seat's player built for it.
+//! follows the policy of the strategy it is dealt with its role: a
+//! [`random`] player selects at random, and a [`prompted`] player asks a
+//! language model. The [`config`] says which strategies are dealt, and how
+//! each is played. An episode holds one kind of actor, [`Actor`], which is
+//! the environment or a player of either policy, and [`game`] builds every
+//! episode, with each seat's player built for it.
 
 pub mod announced;
+pub mod config;
 pub mod prompted;
 pub mod random;
 pub mod report;
@@ -36,7 +39,7 @@ pub mod report;
 use async_trait::async_trait;
 use clap::Args;
 use free_agent::{ActorId, ActorInit, Behavior, Builder, Context, Episode, Logger, ThinkBuilder};
-use rand::seq::{IndexedRandom, SliceRandom};
+use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -54,24 +57,47 @@ pub const ENVIRONMENT: &str = "environment";
 /// has one.
 pub type Seat = (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>);
 
-/// An episode of a game of `roles` under `rules`: the announcing
+/// What a seat is dealt: a role, and the strategy its player plays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dealt {
+    /// The role.
+    pub role: Role,
+    /// The name of the strategy.
+    pub strategy: String,
+}
+
+/// An episode of a game of `deal` under `rules`: the announcing
 /// environment, which may reach and stop every player, logs
-/// `configuration`, if there is one, right after the deal, and sends the
-/// winning team on `winner` when the game ends; and in each seat the
-/// player `player` builds for it. Everyone holds `logger`. A player may
-/// send to the environment and to every other player, and stops nobody.
+/// `configuration` right after the deal, and sends the winning team on
+/// `winner` when the game ends; and in each seat the player `player`
+/// builds for it. Everyone holds `logger`. A player may send to the
+/// environment and to every other player, and stops nobody.
 pub fn game(
-    roles: HashMap<PlayerId, Role>,
+    deal: HashMap<PlayerId, Dealt>,
     rules: Rules,
-    configuration: Option<prompted::Configuration>,
+    configuration: config::Configuration,
     winner: oneshot::Sender<Team>,
     mut player: impl FnMut(&PlayerId) -> Seat,
     logger: Logger<Entry>,
 ) -> Episode<Actor> {
-    let players: Vec<PlayerId> = roles.keys().cloned().collect();
-    let configuration =
-        configuration.map(|configuration| Entry::Configuration(Box::new(configuration)));
-    let environment = announced::init(roles, rules, configuration, winner, Actor::Environment);
+    let players: Vec<PlayerId> = deal.keys().cloned().collect();
+    let roles = deal
+        .iter()
+        .map(|(id, dealt)| (id.clone(), dealt.role))
+        .collect();
+    let strategies = deal
+        .into_iter()
+        .map(|(id, dealt)| (id, dealt.strategy))
+        .collect();
+    let configuration = Entry::Configuration(Box::new(configuration));
+    let environment = announced::init(
+        roles,
+        strategies,
+        rules,
+        configuration,
+        winner,
+        Actor::Environment,
+    );
     let mut init = HashMap::from([(ENVIRONMENT.to_string(), environment)]);
     for id in &players {
         let (behavior, think) = player(id);
@@ -212,10 +238,10 @@ impl Role {
     }
 }
 
-/// How many of each role sit at the table, for a variant to flatten into its
+/// How many of each role sit at the table, for a game to flatten into its
 /// command line arguments. A count left unset has no `clap` default, so
-/// that a variant can tell it apart from a count that was given, and fill
-/// it in from [`Table::default`] or from somewhere else.
+/// that the game can tell it apart from a count that was given, and fill
+/// it in from the configuration file or [`Table::default`].
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 pub struct RoleCounts {
     /// How many werewolves.
@@ -238,10 +264,10 @@ fn how_many(what: &str, default: usize) -> String {
     format!("How many {what} [default: {default}]")
 }
 
-/// How long each phase waits for the players, for a variant to flatten into
+/// How long each phase waits for the players, for a game to flatten into
 /// its command line arguments. A limit left unset has no `clap` default, so
-/// that a variant can tell it apart from a limit that was given, and fill it
-/// in from [`Rules::default`] or from somewhere else.
+/// that the game can tell it apart from a limit that was given, and fill it
+/// in from the configuration file or [`Rules::default`].
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 pub struct PhaseLimits {
     /// How long the night waits for a player.
@@ -259,30 +285,6 @@ fn how_long(phase: &str, default: Duration) -> String {
         "How long the {phase} waits for a player [default: {}]",
         humantime::format_duration(default)
     )
-}
-
-impl PhaseLimits {
-    /// `rules`, with each limit given here in place of its own.
-    pub fn or(&self, rules: Rules) -> Rules {
-        Rules {
-            night_limit: self.night_limit.unwrap_or(rules.night_limit),
-            day_limit: self.day_limit.unwrap_or(rules.day_limit),
-            ..rules
-        }
-    }
-}
-
-impl RoleCounts {
-    /// The table these counts seat, with any count left unset taken from
-    /// `default`.
-    pub fn or(&self, default: Table) -> Table {
-        Table {
-            werewolves: self.werewolves.unwrap_or(default.werewolves),
-            villagers: self.villagers.unwrap_or(default.villagers),
-            doctors: self.doctors.unwrap_or(default.doctors),
-            seers: self.seers.unwrap_or(default.seers),
-        }
-    }
 }
 
 /// How many of each role sit at the table.
@@ -326,16 +328,6 @@ impl Table {
     pub fn seats(&self) -> impl Iterator<Item = PlayerId> {
         let players: usize = self.counts().iter().map(|(_, count)| count).sum();
         (1..=players).map(|seat| format!("player{seat}"))
-    }
-
-    /// Deal the roles at random to the seats.
-    pub fn deal(&self) -> HashMap<PlayerId, Role> {
-        let mut roles = Vec::new();
-        for (role, count) in self.counts() {
-            roles.extend(std::iter::repeat_n(role, count));
-        }
-        roles.shuffle(&mut rand::rng());
-        self.seats().zip(roles).collect()
     }
 }
 
@@ -548,8 +540,6 @@ impl State {
 /// How a game is played: the vote each phase is decided by, how long each
 /// phase waits for the players, and whether the day's vote is ratified.
 pub struct Rules {
-    /// The name of the variation played, for the log.
-    pub variation: String,
     /// How the werewolves' choices become a victim.
     pub night_vote: Box<dyn Vote>,
     /// How the village's choices become a victim.
@@ -570,12 +560,16 @@ pub struct Rules {
 }
 
 impl Rules {
-    /// The entry that opens a game of `roles` under these rules: the
-    /// variation, the deal, and the limits.
-    pub fn start(&self, roles: HashMap<PlayerId, Role>) -> Entry {
+    /// The entry that opens a game of `roles` and `strategies` under these
+    /// rules: the deal and the limits.
+    pub fn start(
+        &self,
+        roles: HashMap<PlayerId, Role>,
+        strategies: HashMap<PlayerId, String>,
+    ) -> Entry {
         Entry::Start {
-            variation: self.variation.clone(),
             roles,
+            strategies,
             night_limit: self.night_limit,
             day_limit: self.day_limit,
             ratify_limit: self.ratify_limit,
@@ -584,12 +578,10 @@ impl Rules {
 }
 
 impl Default for Rules {
-    /// Uniform Random: the werewolves break ties at random, the village
-    /// does not, each phase waits a minute, and the day's vote is not
-    /// ratified.
+    /// The werewolves break ties at random, the village does not, each
+    /// phase waits a minute, and the day's vote is not ratified.
     fn default() -> Self {
         Self {
-            variation: "Uniform Random".to_string(),
             night_vote: Box::new(RandomTieBreak),
             day_vote: Box::new(NoTieBreak),
             night_limit: Duration::from_secs(60),
@@ -831,15 +823,15 @@ pub fn observe(context: &Context<Message, Entry>, from: ActorId, n: u64, seq: u6
 /// entries reach the log or on their times.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Entry {
-    /// The game begins: who plays what, under which variation, how long
+    /// The game begins: who plays what, with which strategy, how long
     /// each phase waits for the players, and how long a day's votes must
-    /// stand, zero when they are not ratified. The limits are written as `humantime`
-    /// writes them, such as `"60s"`.
+    /// stand, zero when they are not ratified. The limits are written as
+    /// `humantime` writes them, such as `"60s"`.
     Start {
-        /// The name of the variation played, such as "Uniform Random".
-        variation: String,
         /// Every player's role.
         roles: HashMap<PlayerId, Role>,
+        /// The name of every player's strategy.
+        strategies: HashMap<PlayerId, String>,
         /// How long a night waits for the players.
         #[serde(with = "humantime_serde")]
         night_limit: Duration,
@@ -851,9 +843,8 @@ pub enum Entry {
         #[serde(with = "humantime_serde")]
         ratify_limit: Duration,
     },
-    /// The configuration a model-played game ran under, logged right after
-    /// the deal.
-    Configuration(Box<prompted::Configuration>),
+    /// The configuration the game ran under, logged right after the deal.
+    Configuration(Box<config::Configuration>),
     /// `from` sent `message`, which it numbered `n`, to everyone in `to`.
     /// Logged by the sender.
     Action {
@@ -1059,53 +1050,14 @@ pub fn awake(me: &PlayerId, view: &View) -> bool {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::config::{Configuration, RANDOM, Strategy};
     use super::prompted::Memory;
     use super::*;
-    use crate::model::fake::{FakeModel, choosing_first};
-    use crate::model::{CONTEXT_WINDOW, Model, ToolChoice};
     use free_agent::{Event, Think};
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
     use tokio::time::Instant;
-
-    #[test]
-    fn a_limit_given_replaces_the_rules_own_and_one_left_unset_keeps_it() {
-        let limits = PhaseLimits {
-            night_limit: Some(Duration::from_secs(5)),
-            day_limit: None,
-        };
-        let rules = limits.or(Rules::default());
-        assert_eq!(rules.night_limit, Duration::from_secs(5));
-        assert_eq!(rules.day_limit, Rules::default().day_limit);
-        assert_eq!(rules.variation, "Uniform Random");
-    }
-
-    #[test]
-    fn unset_counts_are_filled_from_the_defaults() {
-        let roles = RoleCounts {
-            werewolves: Some(1),
-            ..RoleCounts::default()
-        };
-        assert_eq!(
-            roles.or(Table::default()),
-            Table {
-                werewolves: 1,
-                ..Table::default()
-            }
-        );
-        assert_eq!(RoleCounts::default().or(Table::default()), Table::default());
-    }
-
-    #[test]
-    fn the_deal_seats_every_role_as_many_times_as_asked() {
-        let roles = Table::default().deal();
-        let count = |role| roles.values().filter(|r| **r == role).count();
-        assert_eq!(roles.len(), 7);
-        assert_eq!(count(Role::Werewolf), 2);
-        assert_eq!(count(Role::Villager), 3);
-        assert_eq!(count(Role::Doctor), 1);
-        assert_eq!(count(Role::Seer), 1);
-    }
 
     #[test]
     fn the_seats_are_numbered_from_one_up_to_the_number_of_players() {
@@ -1117,39 +1069,6 @@ pub(crate) mod tests {
         };
         let seats: Vec<_> = table.seats().collect();
         assert_eq!(seats, ["player1", "player2", "player3", "player4"]);
-    }
-
-    #[test]
-    fn the_deal_names_players_without_giving_away_their_roles() {
-        let table = Table {
-            werewolves: 1,
-            villagers: 2,
-            doctors: 0,
-            seers: 0,
-        };
-        let mut names: Vec<_> = table.deal().into_keys().collect();
-        names.sort();
-        assert_eq!(names, ["player1", "player2", "player3"]);
-    }
-
-    #[test]
-    fn the_deal_is_shuffled() {
-        let table = Table {
-            werewolves: 1,
-            villagers: 1,
-            doctors: 0,
-            seers: 0,
-        };
-        let wolves: HashSet<PlayerId> = (0..50)
-            .flat_map(|_| {
-                table
-                    .deal()
-                    .into_iter()
-                    .filter(|(_, role)| *role == Role::Werewolf)
-                    .map(|(name, _)| name)
-            })
-            .collect();
-        assert_eq!(wolves.len(), 2, "{wolves:?}");
     }
 
     #[test]
@@ -1177,13 +1096,16 @@ pub(crate) mod tests {
             day_limit: Duration::from_secs(40),
             ..Rules::default()
         };
-        let start = rules.start(village().roles);
-        assert!(
-            matches!(&start, Entry::Start { variation, roles, .. }
-                if variation == "Uniform Random" && roles.len() == 4),
-            "{start:?}"
-        );
+        let roles = village().roles;
+        let strategies = dealt(&roles, "random")
+            .into_iter()
+            .map(|(id, dealt)| (id, dealt.strategy))
+            .collect();
+        let start = rules.start(roles, strategies);
         let json = serde_json::to_value(&start).unwrap();
+        // Each player's strategy beside its role.
+        assert_eq!(json["Start"]["roles"]["wolf1"], "Werewolf");
+        assert_eq!(json["Start"]["strategies"]["wolf1"], "random");
         assert_eq!(json["Start"]["night_limit"], "1m 30s");
         assert_eq!(json["Start"]["day_limit"], "40s");
         // By default the day is not ratified: its ratify limit is zero.
@@ -1198,7 +1120,7 @@ pub(crate) mod tests {
             ratify_limit: Duration::from_secs(20),
             ..Rules::default()
         };
-        let start = rules.start(village().roles);
+        let start = rules.start(village().roles, HashMap::new());
         let json = serde_json::to_value(&start).unwrap();
         assert_eq!(json["Start"]["ratify_limit"], "20s");
         let back: Entry = serde_json::from_value(json).unwrap();
@@ -1460,17 +1382,33 @@ pub(crate) mod tests {
         ]))
     }
 
-    /// Everything `logged` between the deal and the end of the game,
-    /// checking that the deal is of `roles` under `rules`, whose variation
-    /// and limits it carries, and that the end names `winner` and survivors
-    /// from among the players.
+    /// Everything `logged` between the deal, with the configuration after
+    /// it, and the end of the game, checking that the deal is of `roles`
+    /// under `rules`, whose limits it carries, and that the end names
+    /// `winner` and survivors from among the players.
     pub(super) fn between_the_deal_and_the_end<'a>(
         logged: &'a [Entry],
         rules: &Rules,
         roles: &HashMap<PlayerId, Role>,
         winner: Team,
     ) -> &'a [Entry] {
-        assert_eq!(logged.first(), Some(&rules.start(roles.clone())));
+        let first = logged.first();
+        assert!(
+            matches!(
+                first,
+                Some(Entry::Start { roles: dealt, night_limit, day_limit, ratify_limit, .. })
+                    if dealt == roles
+                        && *night_limit == rules.night_limit
+                        && *day_limit == rules.day_limit
+                        && *ratify_limit == rules.ratify_limit
+            ),
+            "{first:?}"
+        );
+        let second = logged.get(1);
+        assert!(
+            matches!(second, Some(Entry::Configuration(_))),
+            "{second:?}"
+        );
         let last = logged.last();
         assert!(
             matches!(
@@ -1482,7 +1420,45 @@ pub(crate) mod tests {
             ),
             "{last:?}"
         );
-        &logged[1..logged.len() - 1]
+        &logged[2..logged.len() - 1]
+    }
+
+    /// `roles`, each dealt with the strategy `strategy`.
+    pub(crate) fn dealt(
+        roles: &HashMap<PlayerId, Role>,
+        strategy: &str,
+    ) -> HashMap<PlayerId, Dealt> {
+        roles
+            .iter()
+            .map(|(id, role)| {
+                let dealt = Dealt {
+                    role: *role,
+                    strategy: strategy.to_string(),
+                };
+                (id.clone(), dealt)
+            })
+            .collect()
+    }
+
+    /// The configuration of a game of `roles` under `rules` with every
+    /// player random.
+    pub(crate) fn configured(roles: &HashMap<PlayerId, Role>, rules: &Rules) -> Configuration {
+        let count = |role| roles.values().filter(|r| **r == role).count();
+        let roles = [Role::Werewolf, Role::Villager, Role::Doctor, Role::Seer];
+        Configuration {
+            role_counts: roles.into_iter().map(|role| (role, count(role))).collect(),
+            night_limit: rules.night_limit,
+            day_limit: rules.day_limit,
+            ratify_limit: rules.ratify_limit,
+            strategies: BTreeMap::from([(RANDOM.to_string(), Strategy::Random(config::Random {}))]),
+            allotments: roles
+                .into_iter()
+                .map(|role| (role, BTreeMap::from([(RANDOM.to_string(), count(role))])))
+                .collect(),
+            models: BTreeMap::new(),
+            prompts: BTreeMap::new(),
+            text: BTreeMap::new(),
+        }
     }
 
     /// What a game reports: the winner, everything the environment
@@ -1662,7 +1638,15 @@ pub(crate) mod tests {
                 .remove(id.as_str())
                 .unwrap_or_else(random::Player::init)
         };
-        let episode = game(roles, rules, None, winner, player, logger);
+        let configuration = configured(&roles, &rules);
+        let episode = game(
+            dealt(&roles, RANDOM),
+            rules,
+            configuration,
+            winner,
+            player,
+            logger,
+        );
         run(episode, won, log).await
     }
 
@@ -2161,69 +2145,5 @@ pub(crate) mod tests {
         ));
         assert!(!awake(&villager, &seen(&["wolf1", "villager"], &[])));
         assert!(awake(&villager, &seen_by_day(&["wolf1", "villager"], &[])));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_table_may_seat_random_and_prompted_players_together() {
-        // A werewolf and two villagers of each policy, the prompted players
-        // asking one model, which answers as the canned player does.
-        let roles = HashMap::from([
-            ("wolf1".to_string(), Role::Werewolf),
-            ("wolf2".to_string(), Role::Werewolf),
-            ("ann".to_string(), Role::Villager),
-            ("bob".to_string(), Role::Villager),
-            ("cat".to_string(), Role::Villager),
-            ("dan".to_string(), Role::Villager),
-        ]);
-        let prompted = HashSet::from(["wolf2", "cat", "dan"]);
-        let model: Arc<dyn Model> = Arc::new(FakeModel::answering(choosing_first));
-        let player = |id: &PlayerId| {
-            if prompted.contains(id.as_str()) {
-                prompted::Player::init(
-                    id.clone(),
-                    format!("You are {id}."),
-                    "qwen2.5-7b-instruct".to_string(),
-                    ToolChoice::Required,
-                    CONTEXT_WINDOW,
-                    Arc::clone(&model),
-                )
-            } else {
-                random::Player::init()
-            }
-        };
-        let (winner, won) = oneshot::channel();
-        let (logger, log) = unbounded_channel();
-        let episode = game(roles.clone(), quick(), None, winner, player, logger);
-        let (winner, logged, _) = run(episode, won, log).await.unwrap();
-        between_the_deal_and_the_end(&logged, &quick(), &roles, winner);
-        // Each selection is made as its player's policy makes it: a random
-        // player's with no model to have been shown anything, a prompted
-        // player's by a model shown its memories. Both werewolves hunt the
-        // first night, and everyone left alive votes the first day.
-        let mut selected: HashSet<&PlayerId> = HashSet::new();
-        let mut first_victim = None;
-        for entry in &logged {
-            if let Entry::Action {
-                from,
-                message: Message::Select { .. },
-                seen,
-                ..
-            } = entry
-            {
-                assert_eq!(seen.is_some(), prompted.contains(from.as_str()), "{from}");
-                selected.insert(from);
-            }
-            if let Entry::Hunted { seq: 1, hunt } = entry {
-                first_victim = hunt.dead();
-            }
-        }
-        let survived_the_first_night: HashSet<&PlayerId> = roles
-            .keys()
-            .filter(|player| Some(*player) != first_victim)
-            .collect();
-        assert!(
-            selected.is_superset(&survived_the_first_night),
-            "{logged:?}"
-        );
     }
 }
