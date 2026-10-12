@@ -65,9 +65,10 @@ workflow takes a version's notes from here.
   may change its vote while the day is open and its latest vote counts,
   every vote goes to every other living player as well as to the
   environment, and the environment sends every living player a
-  `Tentative` whenever the votes change whom they select. A day ends once
-  the votes have stood for the ratify limit, voting out the selected
-  player, or at the day limit with nobody voted out. The ratify limit is
+  `Tentative` whenever the votes change whom they select. A day ends one
+  ratify limit after a `Tentative` naming a player, unless another follows
+  first, voting that player out, or at the day limit with nobody voted out.
+  A vote that leaves the decision as it was leaves the deadline as it was. The ratify limit is
   `ratify_limit` under `[phases]` or `--ratify-limit`, twenty seconds by
   default, and may not be longer than the day limit. The log records how
   every day ended as `Voted`, the start entry and the configuration carry

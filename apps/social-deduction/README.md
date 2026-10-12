@@ -108,9 +108,12 @@ is forgotten.
 The votes are public and ratified. Each vote goes to every other living
 player as well as to the environment, a player's latest vote counts, and
 whenever the votes change who they select, or come to select nobody, the
-environment tells every living player so. A day ends once the votes have
-stood unchanged for the ratify limit, and the selected player is voted
-out; or at the day limit, whatever is standing, and nobody is. The ratify
+environment tells every living player so. A day ends once the tentative
+decision has stood unchanged for the ratify limit, and the selected player
+is voted out; or at the day limit, whatever is standing, and nobody is. A
+vote that leaves the decision as it was leaves the deadline as it was, so
+a player selected is voted out one ratify limit after the tentative
+decision naming them, unless another follows first. The ratify
 limit is `ratify_limit` under `[phases]`, or `--ratify-limit` on the
 command line, twenty seconds unless either says, and may not be longer
 than the day limit. The account tells what everyone says as they say it,

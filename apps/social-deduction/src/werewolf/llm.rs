@@ -630,8 +630,8 @@ fn request_timeout() -> Duration {
 pub const RATIFY_LIMIT: Duration = Duration::from_secs(20);
 
 /// The rules of the model-played variant: the uniform-random variant's,
-/// played as "LLM", with the day's vote ratified once it has stood for
-/// [`RATIFY_LIMIT`].
+/// played as "LLM", with the day's vote ratified once its tentative
+/// decision has stood for [`RATIFY_LIMIT`].
 pub fn rules() -> Rules {
     Rules {
         variation: "LLM".to_string(),
@@ -1737,8 +1737,8 @@ id = "qwen2.5-7b-instruct"
                 .unwrap_or_else(|e| panic!("{name}: {e:#}"));
             assert!(!prompts.is_empty(), "{name}");
             // Each example sets the ratify limit, and tells the players
-            // that a vote stands once nobody has changed theirs for that
-            // long, and that by day they may speak, vote, or wait.
+            // that a player is eliminated once they have had the most votes
+            // for that long, and that by day they may speak, vote, or wait.
             let ratify = settings.config.phases.ratify_limit.unwrap();
             assert_eq!(ratify, settings.ratify_limit, "{name}");
             let rules = &settings.config.text["rules"];
@@ -4424,7 +4424,7 @@ player2 = \"Cautious.\"
              Day 1.\n\
              bob says, \"Day talk.\"\n\
              bob votes against wolf.\n\
-             wolf will be voted out in 5s unless the votes change.\n\
+             wolf will be voted out in 5s unless the votes stop selecting them.\n\
              Nobody is about to be voted out."
         );
     }

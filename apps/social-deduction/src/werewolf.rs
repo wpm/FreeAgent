@@ -626,14 +626,14 @@ pub enum Message {
         seq: u64,
     },
     /// The environment's own message to itself that the ratify timer set at
-    /// the `count`th counting selection of the day numbered `seq` has run
-    /// out. A timer cannot be canceled, so one whose `count` is not the
-    /// day's latest is ignored.
+    /// the `change`th change of the tentative decision of the day numbered
+    /// `seq` has run out. A timer cannot be canceled, so one whose `change`
+    /// is not the day's latest is ignored.
     Ratify {
         /// The number of the day.
         seq: u64,
-        /// Which counting selection of the day set the timer.
-        count: u64,
+        /// Which change of the day's tentative decision set the timer.
+        change: u64,
     },
     /// A model player's own message to its think loop to call the model.
     Wake,
@@ -913,7 +913,8 @@ pub enum Entry {
 /// How a day ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ending {
-    /// A selected player's votes stood for the ratify limit.
+    /// A player stayed selected, the decision unchanged, for the ratify
+    /// limit.
     Ratified,
     /// The day limit came first.
     DayLimit,
@@ -1323,7 +1324,7 @@ mod tests {
         assert_eq!(tentative(2, 4, None).number(), Some(4));
         assert_eq!(utterance(2, "wolf", 5, "Hello.").number(), Some(5));
         assert_eq!(Message::EndPhase { seq: 1 }.number(), None);
-        assert_eq!(Message::Ratify { seq: 2, count: 3 }.number(), None);
+        assert_eq!(Message::Ratify { seq: 2, change: 3 }.number(), None);
         assert_eq!(Message::Wake.number(), None);
         assert_eq!(Message::Remind { seq: 2, count: 1 }.number(), None);
     }
@@ -1336,7 +1337,7 @@ mod tests {
         assert_eq!(tentative(2, 4, None).seq(), Some(2));
         assert_eq!(utterance(3, "wolf", 5, "Hello.").seq(), Some(3));
         assert_eq!(Message::EndPhase { seq: 1 }.seq(), Some(1));
-        assert_eq!(Message::Ratify { seq: 2, count: 3 }.seq(), Some(2));
+        assert_eq!(Message::Ratify { seq: 2, change: 3 }.seq(), Some(2));
         assert_eq!(Message::Remind { seq: 4, count: 1 }.seq(), Some(4));
         assert_eq!(Message::Wake.seq(), None);
     }
