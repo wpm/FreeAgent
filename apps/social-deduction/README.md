@@ -33,12 +33,13 @@ who is still alive. The villagers win when the last werewolf is dead. The
 werewolves win when they are at least as many as the villagers.
 
 The command line names the game, then its variant. In `uniform-random`
-the environment announces each phase and waits for the players'
-selections, as it does for language models, and every player selects at
-once, at random among those it may choose: by night the living whose roles
-it does not know, by day everyone else living. It plays the model-played
-game with no model, provider, API key or configuration file, so a game
-finishes in moments.
+the environment announces each phase to every living player and waits for
+the awake players' selections, as it does for language models, and every
+player awake in the phase selects at once, at random among those it may
+choose: by night the living whose roles it does not know, by day everyone
+else living. A player with nothing to do in the phase sleeps. It plays the
+model-played game with no model, provider, API key or configuration file,
+so a game finishes in moments.
 
 ```sh
 social-deduction werewolf uniform-random [--werewolves N] [--villagers N] [--doctors N] [--seers N] [--night-limit 30s] [--day-limit 2m]
@@ -68,13 +69,18 @@ each player's rendered prompt, and the templates and text blocks as
 written, so a log says by itself what was played and under which prompts.
 The API key is never logged.
 
-Each time a player is woken, it is told its prompt and the story of the
-game so far from its own point of view, what others said and how they
+Every living player is told each phase as it begins, awake in it or not,
+since only the environment knows when a phase ends. A player with nothing
+to do in the phase sleeps: it remembers the announcement, makes no model
+call, and is woken by nothing until the day, and its story says "You
+sleep." Each time a player is woken, it is told its prompt and the story of
+the game so far from its own point of view, what others said and how they
 voted included, and where the game stands, and the model answers with tool
-calls. By night a player is woken once, when the night is announced to it,
-and selects one of the living with one forced `select` call, which goes to
-the environment alone; the first selection counts, and the night ends when
-everyone awake has selected or at its limit. A player whose model fails,
+calls. By night a werewolf, the doctor or the seer is woken once, when the
+night is announced to it, and selects one of the living with one forced
+`select` call, which goes to the environment alone; the first selection
+counts, and the night ends when everyone awake has selected or at its
+limit. A player whose model fails,
 because it was not reached or answered with something that is not well
 formed, has done nothing, and the failure is logged with the phase and the
 error and told as it happens; the game goes on, and the player is not told

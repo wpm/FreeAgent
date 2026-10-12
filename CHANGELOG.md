@@ -100,5 +100,13 @@ workflow takes a version's notes from here.
 - A selection that arrives after the next phase has been announced is told
   as too late to count, for the phase it was for, instead of as a deed of
   the phase that followed.
+- Every living player is announced every phase, awake in it or not, in
+  name order, so a player knows when the day has ended. A model player
+  announced a phase it sleeps through remembers the announcement and makes
+  no call: by night a villager is woken by nothing, late talk is
+  remembered without a call, and a day's `wait` reminder no longer counts
+  once the night is announced. A uniform-random player sleeps through such
+  a phase too, so its games play as before. A player's story tells a phase
+  it sleeps through as the phase line and "You sleep."
 
 [Unreleased]: https://github.com/wpm/FreeAgent/compare/main...HEAD

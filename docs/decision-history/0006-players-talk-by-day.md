@@ -134,7 +134,7 @@ how much time is left can see when its messages arrived.
 
 | Message | From | To | Carries |
 |---|---|---|---|
-| `Announce` | environment | each awake player | `seq`, `n`, `view`, `limit` |
+| `Announce` | environment | every living player, awake in the phase or not | `seq`, `n`, `view`, `limit` |
 | `Select` | a player | the environment, and by day every other living player | `seq`, `from`, `n`, `target` |
 | `Say` | a player | every other living player, by day | `seq`, `from`, `n`, `text` |
 | `Tentative` | environment | every living player, by day | `seq`, `n`, `target: Option<PlayerId>`, `ratify` |
@@ -163,14 +163,29 @@ environment. A player sends only to the living players its latest
 view shows; one that has died since is skipped by `send`, as
 before.
 
-By night nothing changes: selections go to the environment alone, the
-first one counts, and the phase ends when everyone awake has selected or at
-its limit.
+By night the rules do not change: selections go to the environment alone,
+the first one counts, one from a player asleep is dropped, and the phase
+ends when everyone awake has selected or at its limit. What changes is who
+is told. Every living player is announced every phase, awake in it or not,
+because nothing else marks a phase's end: `EndPhase` and `Ratify` are the
+environment's reminders to itself, and a player cannot know the day has
+ended unless it is told. The announcement is what lets a player know which
+phase is active, which is its responsibility. `werewolf::awake(me, view)`
+says whether a player acts in the phase its view shows, by the one rule
+`State::awake()` goes by, so the environment and the players cannot
+disagree about who sleeps.
 
 ### What wakes a model player
 
-By night, a model player is woken once, by its `Announce`, and makes one
-forced `select` call, as it does today.
+A model player announced a phase it is not awake in records the phase,
+remembers the announcement, and makes no call. By night a villager is
+woken by nothing: a `Say`, `Select` or `Tentative` that arrives late is
+remembered and observed without a call, a reminder it set by day no longer
+counts, and a wake-up left waiting from the day finds it asleep. No request
+is built and no failure is logged for a phase slept through.
+
+By night, a model player awake in it is woken once, by its `Announce`, and
+makes one forced `select` call, as it does today.
 
 By day, it is woken by every message it receives: an `Announce`, a `Say`, a
 `Select` or a `Tentative`. Wake-ups are debounced. The perceive loop adds
@@ -239,6 +254,9 @@ the `Narrator`'s account for a player tells it:
   "Nobody is about to be voted out."
 - "During day 2, player4 said, “…”" for an utterance heard after its
   phase.
+- "You sleep." after the phase line of a phase the player sleeps through,
+  so a villager learns of a death when the night opens rather than at the
+  next day.
 
 Where the game stands, at the end of the request, gives the phase and its
 limit, and what the player may do: by day, speak, vote, or wait. The
@@ -419,9 +437,14 @@ decision appears, which a hammer would not.
 - **The log is written by everyone,** in actions and observations. Each
   actor logs what it sends and what it receives, as well as its failures.
   Reading what was said to whom means joining observations to actions.
+- **Every living player is announced every phase,** so a player knows when
+  the day has ended, which only the environment's timer decides. A player
+  asleep in the phase makes no call and is woken by nothing, and the log
+  holds an announcement to, and an observation by, every living player each
+  phase.
 - **The uniform-random variant plays as before,** but its log changes shape
   with everyone else's: `Sent` and `Received` become actions and
-  observations.
+  observations, and every living player is announced every phase.
 - **Startup makes one more request** to the model, for the day's probe.
 - **ADR-0003 is amended:** talk is no longer deferred, a player's account
   holds what others said and how they voted, a player's history holds
