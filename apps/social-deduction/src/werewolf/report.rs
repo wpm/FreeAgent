@@ -56,7 +56,9 @@ enum Voice {
 /// player hears them, and as the day ends its tally: each player alive
 /// that day, in seat order, with its vote standing or that it did not
 /// vote, which takes the place of the day's votes, retractions and
-/// tentative decisions in the player's account. A phase begins at its
+/// tentative decisions in the player's account. Both tell a retraction
+/// with no vote standing for it to take back as not counting. A phase
+/// begins at its
 /// first announcement and ends at the next phase's, or at the end of the
 /// game, and the omniscient narrator tells the time between, to the
 /// nearest second, after who died. The omniscient narrator tells a
@@ -103,8 +105,8 @@ pub struct Narrator {
     /// the message: the phase it was for, and whom it chose, or nobody for
     /// a retraction.
     selections: HashMap<(ActorId, u64), (u64, Option<PlayerId>)>,
-    /// In a player's account, each player's last vote of the day being
-    /// told, for the day's tally.
+    /// Each player's last vote of the day being told, for a player's
+    /// account's tally, and to tell whether a retraction takes one back.
     votes: HashMap<PlayerId, PlayerId>,
     /// In a player's account, the lines told so far, in order, each with
     /// what it is.
@@ -550,8 +552,9 @@ impl Narrator {
         self.tell(player, Some(chosen), line)
     }
 
-    /// `player`'s deed of retracting its vote, so that it is undecided
-    /// again, as [`Narrator::tell`] tells it.
+    /// `player`'s deed of retracting its vote, as [`Narrator::tell`] tells
+    /// it: undecided again if the retraction counts, and otherwise a
+    /// withdrawal that does not count.
     fn withdrew(&mut self, player: &PlayerId) -> Vec<String> {
         let (subject, s) = self.subject(player);
         let (whose, is) = if self.is_me(player) {
@@ -559,28 +562,40 @@ impl Narrator {
         } else {
             ("their", "is")
         };
-        let line = format!("{subject} withdraw{s} {whose} vote and {is} undecided again.");
+        let line = match self.withdrawable(player) {
+            true => format!("{subject} withdraw{s} {whose} vote and {is} undecided again."),
+            false => {
+                format!("{subject} withdraw{s} {whose} vote, but the withdrawal does not count.")
+            }
+        };
         self.tell(player, None, line)
+    }
+
+    /// Whether `player` has a vote standing that a retraction takes back:
+    /// by day, in a day whose vote is ratified. A player is not told
+    /// whether the day's vote is ratified, so a player's account takes
+    /// back any vote standing by day.
+    fn withdrawable(&self, player: &PlayerId) -> bool {
+        let ratified = self.ratified || matches!(self.voice, Voice::Player(_));
+        ratified && self.by_day() && self.votes.contains_key(player)
     }
 
     /// `line`, `player`'s deed, after which its vote is `vote`, or none:
     /// told at once in a player's account, and in the omniscient one in a
     /// day whose vote is ratified, since the votes may change and their
     /// order matters; otherwise held for the end of the phase, to be told
-    /// in seat order. A player's account keeps each player's last vote of
-    /// the day for its tally.
+    /// in seat order. Each player's last vote of the day is kept.
     fn tell(&mut self, player: &PlayerId, vote: Option<&PlayerId>, line: String) -> Vec<String> {
+        if self.by_day() {
+            match vote {
+                Some(chosen) => self.votes.insert(player.clone(), chosen.clone()),
+                None => self.votes.remove(player),
+            };
+        }
         match self.voice {
             Voice::Omniscient if !(self.ratified && self.by_day()) => {
                 self.deeds.push((player.clone(), line));
                 vec![]
-            }
-            Voice::Player(_) if self.by_day() => {
-                match vote {
-                    Some(chosen) => self.votes.insert(player.clone(), chosen.clone()),
-                    None => self.votes.remove(player),
-                };
-                vec![line]
             }
             _ => vec![line],
         }
@@ -1275,6 +1290,54 @@ mod tests {
     }
 
     #[test]
+    fn a_retraction_without_a_vote_standing_is_told_as_not_counting() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&ratified());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
+        assert_eq!(
+            retracted_in(&mut narrator, "seer", 2, 1, 2),
+            ["seer (seer) withdraws their vote, but the withdrawal does not count."]
+        );
+        // Once withdrawn, a vote is not there to withdraw again.
+        selected(&mut narrator, "wolf", 2, "ann");
+        retracted_in(&mut narrator, "wolf", 2, 3, 2);
+        assert_eq!(
+            retracted_in(&mut narrator, "wolf", 2, 4, 2),
+            ["wolf (werewolf) withdraws their vote, but the withdrawal does not count."]
+        );
+    }
+
+    #[test]
+    fn a_retraction_by_night_or_in_a_day_not_ratified_is_told_as_not_counting() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&ratified());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone));
+        selected(&mut narrator, "wolf", 1, "ann");
+        assert!(retracted_in(&mut narrator, "wolf", 1, 2, 1).is_empty());
+        assert_eq!(
+            narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone))[..2],
+            [
+                "wolf (werewolf) votes to kill ann (villager).",
+                "wolf (werewolf) withdraws their vote, but the withdrawal does not count.",
+            ]
+        );
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
+        selected(&mut narrator, "wolf", 2, "ann");
+        assert!(retracted_in(&mut narrator, "wolf", 2, 3, 2).is_empty());
+        assert_eq!(
+            narrator.narrate(&shown("wolf", 2, Phase::Night, &everyone))[..2],
+            [
+                "wolf (werewolf) votes against ann (villager).",
+                "wolf (werewolf) withdraws their vote, but the withdrawal does not count.",
+            ]
+        );
+    }
+
+    #[test]
     fn an_utterance_is_told_as_it_is_said_in_order_with_the_votes() {
         let mut narrator = Narrator::default();
         narrator.narrate(&ratified());
@@ -1480,16 +1543,41 @@ mod tests {
         let everyone = ["wolf", "seer", "doctor", "ann"];
         let known = [("doctor", Role::Doctor)];
         narrator.recall(&heard(1, Phase::Day, &everyone, &known));
+        narrator.recall(&received(choice("ann", 2, "wolf")));
         assert_eq!(
             narrator.recall(&received(retraction(2, "ann", 3))),
             ["ann withdraws their vote and is undecided again."]
         );
+        narrator.recall(&chose("doctor", 2, "wolf"));
         let withdrew = logged(Memory::Acted {
-            message: retraction(2, "doctor", 2),
+            message: retraction(2, "doctor", 3),
         });
         assert_eq!(
             narrator.recall(&withdrew),
             ["You withdraw your vote and are undecided again."]
+        );
+    }
+
+    #[test]
+    fn a_player_is_told_a_retraction_without_a_vote_standing_as_not_counting() {
+        let mut narrator = Narrator::for_player(id("doctor"));
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        let known = [("doctor", Role::Doctor)];
+        narrator.recall(&heard(1, Phase::Night, &everyone, &known));
+        narrator.recall(&chose("doctor", 1, "seer"));
+        let withdrew = |n| {
+            logged(Memory::Acted {
+                message: retraction(1, "doctor", n),
+            })
+        };
+        assert_eq!(
+            narrator.recall(&withdrew(2)),
+            ["You withdraw your vote, but the withdrawal does not count."]
+        );
+        narrator.recall(&heard(1, Phase::Day, &everyone, &known));
+        assert_eq!(
+            narrator.recall(&received(retraction(2, "ann", 3))),
+            ["ann withdraws their vote, but the withdrawal does not count."]
         );
     }
 
