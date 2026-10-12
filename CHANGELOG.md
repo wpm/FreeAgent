@@ -20,9 +20,9 @@ workflow takes a version's notes from here.
   before the game begins, and its log opens with the configuration the game
   was played under. A model that refuses to be made to call a tool is asked
   to call one instead.
-- The model's context window, settled before a `werewolf llm` game begins
-  from `--context-window`, `context_window` in `[model]`, the provider's
-  listing of the model, the provider's default in `src/models.toml`
+- The model's context window, settled before a model-played game begins
+  from `context_window` in the model's table, the provider's listing of
+  the model, the provider's default in `src/models.toml`
   (128000 tokens for OpenAI, 200000 for Anthropic), or a default of 4096
   tokens, and told and logged with where it came from. A window with no
   room for a story is refused.
@@ -36,10 +36,10 @@ workflow takes a version's notes from here.
   `--check` asks each model to play as by night and as by day and marks
   those that answer both requests well, and those that do only when not
   made to call a tool.
-- `--night-limit` and `--day-limit` on `social-deduction werewolf
-  uniform-random`, how long each phase waits for the players' selections,
-  with defaults in the code.
-- `--log` and `--no-log` on every Werewolf variant, saying whether the game
+- `--night-limit` and `--day-limit` on `social-deduction werewolf`, how
+  long each phase waits for the players' selections, with defaults in the
+  code.
+- `--log` and `--no-log` on `social-deduction werewolf`, saying whether the game
   is logged to standard error. It is unless `--no-log` says otherwise, and
   the last one given wins.
 - The log records each night's hunt: whom the werewolves elected and which
@@ -141,6 +141,27 @@ workflow takes a version's notes from here.
   builds every episode, with each seat's player built for it, so a table
   may seat players of both policies. The player modules are named after
   their policies: `werewolf::uniform_random` is `werewolf::random`, and
-  `werewolf::llm` is `werewolf::prompted`. Both subcommands play as before.
+  `werewolf::llm` is `werewolf::prompted`.
+- **Breaking:** Werewolf is one game, played by one command,
+  `social-deduction werewolf [CONFIG]`, whose players are dealt
+  strategies. `werewolf uniform-random` and `werewolf llm` are gone.
+  Without a file every player is random, as in 0.1.0's game. The
+  configuration file defines named models under `[models.<name>]` and
+  named strategies under `[strategies.<name>]`, each a policy, `random` or
+  `prompted`, with its parameters, a prompted one its `system` template and
+  its `model`; and allots each role's seats among the strategies by a
+  `[roles.<role>.strategies]` table, a role's `strategy`, or the file's
+  top-level `strategy`, otherwise `random`. Roles and strategies are dealt
+  together at random. Only the models in play are set up, and this version
+  plays one model per game. The `[model]`, `[prompt]` and `[personas]`
+  tables, each role's `system` template and the `persona` variable are
+  gone, and so are the command line's `--model-base-url`, `--model-id` and
+  `--context-window`: a model is changed in its `[models.<name>]` table,
+  where its context window may be given too. The log's `Start` carries
+  every player's strategy and no longer a variation, `Configuration` is
+  logged in every game and records the strategies, the allotments and each
+  model in play, and the narration tells each player's strategy with its
+  role and each model's context window by name. The examples are
+  `examples/werewolf/random.toml` and `examples/werewolf/prompted.toml`.
 
 [Unreleased]: https://github.com/wpm/FreeAgent/compare/main...HEAD
