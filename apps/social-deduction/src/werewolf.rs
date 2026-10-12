@@ -627,7 +627,7 @@ pub enum Message {
     },
     /// The environment's own message to itself that the ratify timer set at
     /// the `count`th counting selection of the day numbered `seq` has run
-    /// out. A timer cannot be cancelled, so one whose `count` is not the
+    /// out. A timer cannot be canceled, so one whose `count` is not the
     /// day's latest is ignored.
     Ratify {
         /// The number of the day.
@@ -638,7 +638,7 @@ pub enum Message {
     /// A model player's own message to its think loop to call the model.
     Wake,
     /// A model player's own reminder, the `count`th it set, to be woken in
-    /// the phase numbered `seq`. A timer cannot be cancelled, so one whose
+    /// the phase numbered `seq`. A timer cannot be canceled, so one whose
     /// `count` is not the latest set, or whose phase has ended, is ignored.
     Remind {
         /// The number of the phase.

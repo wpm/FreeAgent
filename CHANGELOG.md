@@ -65,11 +65,14 @@ workflow takes a version's notes from here.
   model chooses with one required call among `speak`, which goes to every
   other living player and not to the environment, `select`, and `wait`,
   which asks to be woken later; it may call several at once. A response
-  that comes back after the day has ended is withheld and logged as
-  `Withheld`. The log has `Say` messages, the narration tells what each
-  player says as they say it and a player's story tells it what others
-  said, talk heard after its day as said during that day. The night plays
-  as before.
+  that comes back after its phase has ended, by night or by day, is
+  withheld and logged as `Withheld`. A player ignores talk, votes and
+  tentative decisions from a phase it is not in: it logs the receipt and
+  neither remembers the message nor wakes for it. The log has `Say`
+  messages, the narration tells what each player says as they say it, or
+  as too late to say if its phase has ended, and a player's story tells it
+  what others said. A day's failure is narrated as a failure to play. The
+  night plays as before.
 
 ### Changed
 
@@ -103,9 +106,9 @@ workflow takes a version's notes from here.
 - Every living player is announced every phase, awake in it or not, in
   name order, so a player knows when the day has ended. A model player
   announced a phase it sleeps through remembers the announcement and makes
-  no call: by night a villager is woken by nothing, late talk is
-  remembered without a call, and a day's `wait` reminder no longer counts
-  once the night is announced. A uniform-random player sleeps through such
+  no call: by night a villager is woken by nothing, talk from the day is
+  observed and ignored, and a day's `wait` reminder no longer counts once
+  the night is announced. A uniform-random player sleeps through such
   a phase too, so its games play as before. A player's story tells a phase
   it sleeps through as the phase line and "You sleep."
 
