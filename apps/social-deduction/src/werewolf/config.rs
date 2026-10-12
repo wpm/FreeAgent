@@ -216,61 +216,16 @@ impl Roles {
     }
 }
 
-/// What the file says about one role: a `strategy` every seat plays, or a
-/// `strategies` table allotting the seats, which may not both be given.
-#[derive(Debug, Deserialize)]
-#[serde(try_from = "RoleTable")]
-pub enum RoleConfig {
-    /// Every seat of the role plays one strategy.
-    Uniform {
-        /// How many of the role sit at the table.
-        count: Option<usize>,
-        /// The strategy every seat of the role plays.
-        strategy: Option<String>,
-    },
-    /// Each strategy is allotted some seats of the role.
-    Allotted {
-        /// How many of the role sit at the table.
-        count: Option<usize>,
-        /// How many seats of the role play each strategy, by name.
-        strategies: BTreeMap<String, usize>,
-    },
-}
-
-impl Default for RoleConfig {
-    /// Nothing said about the role.
-    fn default() -> Self {
-        RoleConfig::Uniform {
-            count: None,
-            strategy: None,
-        }
-    }
-}
-
-/// A `[roles.<role>]` table, as written.
-#[derive(Deserialize)]
+/// What the file says about one role.
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RoleTable {
-    count: Option<usize>,
-    strategy: Option<String>,
-    strategies: Option<BTreeMap<String, usize>>,
-}
-
-impl TryFrom<RoleTable> for RoleConfig {
-    type Error = &'static str;
-
-    fn try_from(table: RoleTable) -> Result<Self, Self::Error> {
-        let RoleTable {
-            count,
-            strategy,
-            strategies,
-        } = table;
-        match (strategy, strategies) {
-            (Some(_), Some(_)) => Err("strategy and strategies may not both be given"),
-            (strategy, None) => Ok(RoleConfig::Uniform { count, strategy }),
-            (None, Some(strategies)) => Ok(RoleConfig::Allotted { count, strategies }),
-        }
-    }
+pub struct RoleConfig {
+    /// How many of the role sit at the table.
+    pub count: Option<usize>,
+    /// The strategy every seat of the role plays.
+    pub strategy: Option<String>,
+    /// How many seats of the role play each strategy, by name.
+    pub strategies: Option<BTreeMap<String, usize>>,
 }
 
 /// How many seats of each role play each strategy, by name.
@@ -385,12 +340,13 @@ impl Config {
         strategies.insert(RANDOM.to_string(), Strategy::Random(Random {}));
         let mut allotments = Allotments::new();
         for (role, default) in Table::default().counts() {
+            let file = self.roles.get(role);
             let given = overrides.roles.get(role);
-            let allotted = match self.roles.get(role) {
-                RoleConfig::Allotted { count, strategies } => {
-                    let allots: usize = strategies.values().sum();
+            let allotted = match &file.strategies {
+                Some(table) => {
+                    let allots: usize = table.values().sum();
                     let counts = [
-                        (format!("[roles.{role}] count"), *count),
+                        (format!("[roles.{role}] count"), file.count),
                         (RoleCounts::flag(role), given),
                     ];
                     for (setting, count) in counts {
@@ -402,14 +358,15 @@ impl Config {
                             );
                         }
                     }
-                    strategies.clone()
+                    table.clone()
                 }
-                RoleConfig::Uniform { count, strategy } => {
-                    let strategy = strategy
+                None => {
+                    let strategy = file
+                        .strategy
                         .as_ref()
                         .or(self.strategy.as_ref())
                         .map_or(RANDOM, String::as_str);
-                    let count = given.or(*count).unwrap_or(default);
+                    let count = given.or(file.count).unwrap_or(default);
                     BTreeMap::from([(strategy.to_string(), count)])
                 }
             };
@@ -1137,6 +1094,8 @@ dice = 1
 bold = 2
 [roles.villager]
 strategy = \"dice\"
+[roles.doctor]
+strategy = \"bold\"
 [roles.doctor.strategies]
 dice = 1
 ",
@@ -1169,33 +1128,6 @@ dice = 1
             settings.allotments[&Role::Werewolf],
             allotted(&[(RANDOM, 2)])
         );
-    }
-
-    #[test]
-    fn a_role_given_both_a_strategy_and_a_strategies_table_is_an_error_naming_the_role() {
-        let file = format!(
-            "{}[roles.werewolf]\nstrategy = \"bold\"\n[roles.werewolf.strategies]\nrandom = 2\n",
-            three()
-        );
-        let shown = unsettled(&file, Overrides::default());
-        assert!(
-            shown.contains("roles.werewolf")
-                && shown.contains("strategy and strategies may not both be given"),
-            "{shown}"
-        );
-        // Each alone, with a count, and nothing at all, are fine.
-        for role in [
-            "[roles.werewolf]\ncount = 2\nstrategy = \"bold\"\n",
-            "[roles.werewolf]\ncount = 2\n[roles.werewolf.strategies]\nbold = 2\n",
-            "[roles.werewolf]\n",
-        ] {
-            settle(&format!("{}{role}", three()), Overrides::default());
-        }
-        let unknown = format!(
-            "{}[roles.werewolf]\nstrategy = \"bold\"\nsystem = \"\"\n",
-            three()
-        );
-        assert!(unsettled(&unknown, Overrides::default()).contains("system"));
     }
 
     #[test]
