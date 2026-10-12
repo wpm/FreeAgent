@@ -218,7 +218,8 @@ and may call several: `speak`, which says something to every other living
 player, and never to the environment, which does nothing with speech;
 `select`, which votes for a player, and in a ratified day may be called
 again to change the vote, while in a day that is not the first vote is
-final, as the tool tells the model; in a ratified day, `retract`, which
+final, as the tool tells the model, and `select` is offered until the
+player has voted; in a ratified day, `retract`, which
 withdraws the vote, so that the player is undecided again; and `wait`, which says nothing now and asks to be woken after some
 seconds unless something wakes the player sooner. The calls are carried out
 in the order the model made them. Wake-ups are debounced: a player has at
