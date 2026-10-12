@@ -100,17 +100,25 @@ pub struct Narrator {
     resolution: Option<String>,
     /// Every phase announced so far, by its number.
     announced: BTreeMap<u64, (NonZero<u8>, Phase)>,
-    /// Every selection or retraction logged as its player's action and not
-    /// yet observed by the environment, by the player and its number for
-    /// the message: the phase it was for, and whom it chose, or nobody for
-    /// a retraction.
-    selections: HashMap<(ActorId, u64), (u64, Option<PlayerId>)>,
+    /// Every ballot logged as its player's action and not yet observed by
+    /// the environment, by the player and its number for the message: the
+    /// phase it was for, and the ballot.
+    ballots: HashMap<(ActorId, u64), (u64, Ballot)>,
     /// Each player's last vote of the day being told, for a player's
     /// account's tally, and to tell whether a retraction takes one back.
     votes: HashMap<PlayerId, PlayerId>,
     /// In a player's account, the lines told so far, in order, each with
     /// what it is.
     account: Vec<(String, Line)>,
+}
+
+/// A player's selection or retraction, as cast.
+#[derive(Debug)]
+enum Ballot {
+    /// A selection of this player.
+    Vote(PlayerId),
+    /// A retraction of the player's vote.
+    Retract,
 }
 
 /// What a line of a player's account is, which decides what becomes of it.
@@ -187,8 +195,8 @@ impl Narrator {
                 message: Message::Select { seq, target, .. },
                 ..
             } => {
-                self.selections
-                    .insert((from.clone(), *n), (*seq, Some(target.clone())));
+                self.ballots
+                    .insert((from.clone(), *n), (*seq, Ballot::Vote(target.clone())));
                 vec![]
             }
             Entry::Action {
@@ -197,7 +205,8 @@ impl Narrator {
                 message: Message::Retract { seq, .. },
                 ..
             } => {
-                self.selections.insert((from.clone(), *n), (*seq, None));
+                self.ballots
+                    .insert((from.clone(), *n), (*seq, Ballot::Retract));
                 vec![]
             }
             Entry::Action {
@@ -222,19 +231,19 @@ impl Narrator {
                 from,
                 message: Message::Select { seq, target, .. },
                 ..
-            } => vec![self.lateness(from, Some(target), *seq)],
+            } => vec![self.lateness(from, &Ballot::Vote(target.clone()), *seq)],
             Entry::Withheld {
                 from,
                 message: Message::Retract { seq, .. },
                 ..
-            } => vec![self.lateness(from, None, *seq)],
+            } => vec![self.lateness(from, &Ballot::Retract, *seq)],
             Entry::Observation { by, from, n, seq } if by == ENVIRONMENT => {
-                match self.selections.remove(&(from.clone(), *n)) {
-                    Some((sent_in, chosen)) if sent_in != *seq => {
-                        vec![self.lateness(from, chosen.as_ref(), sent_in)]
+                match self.ballots.remove(&(from.clone(), *n)) {
+                    Some((sent_in, ballot)) if sent_in != *seq => {
+                        vec![self.lateness(from, &ballot, sent_in)]
                     }
-                    Some((_, Some(chosen))) => self.did(from, &chosen),
-                    Some((_, None)) => self.withdrew(from),
+                    Some((_, Ballot::Vote(chosen))) => self.did(from, &chosen),
+                    Some((_, Ballot::Retract)) => self.withdrew(from),
                     None => vec![],
                 }
             }
@@ -717,22 +726,21 @@ impl Narrator {
         self.announced.range(seq + 1..).next().is_some()
     }
 
-    /// What `player`'s choice of `chosen`, or retraction of its vote, for
-    /// the phase numbered `seq` came to once a later phase had begun,
-    /// whether the player withheld it or the environment observed it late:
-    /// nothing. The phase is named when it is known, as it is unless the
-    /// choice was for a phase never announced.
-    fn lateness(&self, player: &PlayerId, chosen: Option<&PlayerId>, seq: u64) -> String {
+    /// What `player`'s `ballot` for the phase numbered `seq` came to once a
+    /// later phase had begun, whether the player withheld it or the
+    /// environment observed it late: nothing. The phase is named when it is
+    /// known, as it is unless the ballot was for a phase never announced.
+    fn lateness(&self, player: &PlayerId, ballot: &Ballot, seq: u64) -> String {
         let when = self
             .phase_name(seq)
             .map_or(String::new(), |phase| format!(" for {phase}"));
         let (subject, s) = self.subject(player);
-        match chosen {
-            Some(chosen) => {
+        match ballot {
+            Ballot::Vote(chosen) => {
                 let chosen = self.seat(chosen);
                 format!("{subject} choose{s} {chosen}{when} too late to count.")
             }
-            None => format!("{subject} withdraw{s} their vote{when} too late to count."),
+            Ballot::Retract => format!("{subject} withdraw{s} their vote{when} too late to count."),
         }
     }
 }
