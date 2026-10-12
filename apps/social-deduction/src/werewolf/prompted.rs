@@ -24,11 +24,11 @@
 //! refused.
 //!
 //! A game of prompted players is the announcing environment's, with a
-//! model [`Player`] in every seat. With a ratify limit above zero the day's vote is ratified:
-//! a day ends one ratify limit after its votes stop changing, or at the day
-//! limit with nobody voted out. With the default of zero, each player's
-//! first vote counts, and the day ends when everyone has voted or at its
-//! limit. A player remembers what it is shown, what it hears and what it
+//! model [`Player`] in every seat. With a ratify limit above zero the
+//! day's vote is ratified: a day ends one ratify limit after its votes stop
+//! changing, or at the day limit with nobody voted out. With the default of
+//! zero, each player's first vote counts, and the day ends when everyone
+//! has voted or at its limit. A player remembers what it is shown, what it hears and what it
 //! does, as a [`Memory`] of each message stamped when it was received or
 //! sent, and keeps with the history the story that tells it from its own
 //! point of view: each memory adds its lines to the story as it is

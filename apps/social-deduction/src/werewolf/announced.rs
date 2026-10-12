@@ -335,7 +335,8 @@ struct Opened {
 /// each an `Environment` with a context of its own over the one shared
 /// game: the perceive loop opens the first night, takes selections and
 /// announces tentative decisions, and the think loop ends phases.
-/// [`Actor::Environment`](super::Actor::Environment) holds the perceive loop's, built by [`init`].
+/// [`Actor::Environment`](super::Actor::Environment) holds the perceive
+/// loop's, built by [`init`].
 pub struct Environment {
     context: Context<Message, Entry>,
     game: Arc<Mutex<Game>>,
