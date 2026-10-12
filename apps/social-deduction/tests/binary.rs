@@ -334,6 +334,35 @@ fn configuration(events: &[Event<Entry>]) -> &Configuration {
     configuration
 }
 
+/// How many players' selections in `events` reached the environment: its
+/// observations of a message a player logged as an action carrying a
+/// selection. An observation names the message by its sender and number,
+/// so the two are joined on those, as the narrator joins them.
+fn selections_received(events: &[Event<Entry>]) -> usize {
+    let selections: HashSet<(&PlayerId, u64)> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            Entry::Action {
+                from,
+                n,
+                message: Message::Select { .. },
+                ..
+            } => Some((from, *n)),
+            _ => None,
+        })
+        .collect();
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.payload,
+                Entry::Observation { by, from, n, .. }
+                    if by == "environment" && selections.contains(&(from, *n))
+            )
+        })
+        .count()
+}
+
 /// What the account says of the model's context window when nothing gives
 /// one.
 const DEFAULT_WINDOW: &str = "The model's context window is 4096 tokens, the default.";
@@ -458,6 +487,15 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
     assert_eq!(configuration.night_limit, Duration::from_secs(1));
     assert_eq!(configuration.ratify_limit, Duration::from_secs(1));
     assert_eq!(configuration.tool_choice, ToolChoice::Required);
+    // The players' selections reach the environment, and a selection that
+    // was sent but never received is not counted.
+    assert!(selections_received(&events) > 0, "{events:?}");
+    let unreceived: Vec<Event<Entry>> = events
+        .iter()
+        .filter(|event| !matches!(event.payload, Entry::Observation { .. }))
+        .cloned()
+        .collect();
+    assert_eq!(selections_received(&unreceived), 0);
     // Everyone votes at once, so each day's votes stand after the ratify
     // limit and the selected player is voted out.
     let endings = endings(&events);
@@ -808,4 +846,81 @@ fn the_models_command_refuses_a_key_variable_that_is_not_set_before_asking_anyon
     let stderr = refused(&["models", &base_url, "--api-key-env", name]);
     assert!(stderr.contains(name), "{stderr}");
     assert!(!stderr.contains(&base_url), "{stderr}");
+}
+
+/// The model the live tests play against: the root of an OpenAI-compatible
+/// API, ending in `/v1`, and the id of a model it serves, as it lists it.
+fn live_model() -> (String, String) {
+    match (
+        std::env::var("LIVE_MODEL_BASE_URL"),
+        std::env::var("LIVE_MODEL_ID"),
+    ) {
+        (Ok(base_url), Ok(id)) => (base_url, id),
+        _ => panic!(
+            "a live test plays against the model that LIVE_MODEL_BASE_URL and \
+             LIVE_MODEL_ID name: set both"
+        ),
+    }
+}
+
+/// Play the example configuration `name` against the live model at a table
+/// of one of each role and two villagers, with phase limits long enough for
+/// a slow model, and check that the game runs from the deal to the result
+/// with at least one player's selection reaching the environment. What the
+/// model chose is its own affair; a weak model may fail some calls, which
+/// are counted on standard error.
+fn assert_plays_against_the_live_model(name: &str) {
+    let (base_url, id) = live_model();
+    let (events, _) = played(
+        "llm",
+        &[
+            &example(name),
+            "--model-base-url",
+            &base_url,
+            "--model-id",
+            &id,
+            "--werewolves",
+            "1",
+            "--villagers",
+            "2",
+            "--doctors",
+            "1",
+            "--seers",
+            "1",
+            "--night-limit",
+            "3m",
+            "--day-limit",
+            "3m",
+        ],
+    );
+    let (_, roles) = start(&events);
+    assert_eq!(roles.len(), 5);
+    assert!(
+        matches!(
+            events.last().map(|event| &event.payload),
+            Some(Entry::End { .. })
+        ),
+        "{events:?}"
+    );
+    let configuration = configuration(&events);
+    assert_eq!(configuration.base_url, base_url);
+    assert_eq!(configuration.model, id);
+    assert!(selections_received(&events) > 0, "{events:?}");
+    let failed = events
+        .iter()
+        .filter(|event| matches!(event.payload, Entry::Failed { .. }))
+        .count();
+    eprintln!("{name} against {id}: {failed} failed model calls");
+}
+
+#[test]
+#[ignore = "plays against the model LIVE_MODEL_BASE_URL and LIVE_MODEL_ID name"]
+fn the_minimal_example_plays_against_a_live_model() {
+    assert_plays_against_the_live_model("minimal.toml");
+}
+
+#[test]
+#[ignore = "plays against the model LIVE_MODEL_BASE_URL and LIVE_MODEL_ID name"]
+fn the_personas_example_plays_against_a_live_model() {
+    assert_plays_against_the_live_model("personas.toml");
 }

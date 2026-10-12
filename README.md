@@ -34,4 +34,8 @@ cargo fmt --check                            # what CI checks, besides the above
 cargo clippy --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo llvm-cov --workspace                   # test coverage, which CI reports to Codecov
+
+# Games against a real model, which cargo test leaves out
+LIVE_MODEL_BASE_URL=http://localhost:1234/v1 LIVE_MODEL_ID=qwen2.5-7b-instruct \
+  cargo test -p social-deduction --test binary -- --ignored --nocapture
 ```
