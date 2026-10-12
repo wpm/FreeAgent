@@ -238,19 +238,18 @@ impl Config {
     pub fn settle(self, overrides: Overrides) -> anyhow::Result<Settings> {
         let code = Rules::default();
         let (given, file) = (&overrides.limits, &self.phases);
+        // The command line over the file over the code.
+        let limit =
+            |given: Option<Duration>, file: Option<Duration>, code| given.or(file).unwrap_or(code);
         let rules = Rules {
-            propose_limit: (given.propose_limit)
-                .or(file.propose_limit)
-                .unwrap_or(code.propose_limit),
-            vote_limit: (given.vote_limit)
-                .or(file.vote_limit)
-                .unwrap_or(code.vote_limit),
-            quest_limit: (given.quest_limit)
-                .or(file.quest_limit)
-                .unwrap_or(code.quest_limit),
-            assassinate_limit: (given.assassinate_limit)
-                .or(file.assassinate_limit)
-                .unwrap_or(code.assassinate_limit),
+            propose_limit: limit(given.propose_limit, file.propose_limit, code.propose_limit),
+            vote_limit: limit(given.vote_limit, file.vote_limit, code.vote_limit),
+            quest_limit: limit(given.quest_limit, file.quest_limit, code.quest_limit),
+            assassinate_limit: limit(
+                given.assassinate_limit,
+                file.assassinate_limit,
+                code.assassinate_limit,
+            ),
         };
         let mut strategies = self.strategies.clone();
         strategies.insert(RANDOM.to_string(), Strategy::Random(Random {}));
