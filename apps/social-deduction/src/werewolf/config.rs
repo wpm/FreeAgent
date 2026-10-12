@@ -342,18 +342,13 @@ impl Config {
         let mut allotments = Allotments::new();
         for (role, default) in Table::default().counts() {
             let file = self.roles.get(role);
-            let (given, option) = match role {
-                Role::Werewolf => (overrides.roles.werewolves, "--werewolves"),
-                Role::Villager => (overrides.roles.villagers, "--villagers"),
-                Role::Doctor => (overrides.roles.doctors, "--doctors"),
-                Role::Seer => (overrides.roles.seers, "--seers"),
-            };
+            let given = overrides.roles.get(role);
             let allotted = match &file.strategies {
                 Some(table) => {
                     let allots: usize = table.values().sum();
                     let counts = [
                         (format!("[roles.{role}] count"), file.count),
-                        (option.to_string(), given),
+                        (RoleCounts::flag(role), given),
                     ];
                     for (setting, count) in counts {
                         if let Some(count) = count

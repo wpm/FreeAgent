@@ -214,6 +214,16 @@ impl fmt::Display for Role {
 }
 
 impl Role {
+    /// The role's plural: `werewolves`, `villagers`, `doctors`, `seers`.
+    pub fn plural(self) -> &'static str {
+        match self {
+            Role::Werewolf => "werewolves",
+            Role::Villager => "villagers",
+            Role::Doctor => "doctors",
+            Role::Seer => "seers",
+        }
+    }
+
     /// Which side this role wins with.
     pub fn team(self) -> Team {
         match self {
@@ -241,6 +251,23 @@ pub struct RoleCounts {
     /// How many seers.
     #[arg(long, help = how_many("seers", Table::default().seers))]
     pub seers: Option<usize>,
+}
+
+impl RoleCounts {
+    /// How many of `role` were given, if any.
+    pub fn get(&self, role: Role) -> Option<usize> {
+        match role {
+            Role::Werewolf => self.werewolves,
+            Role::Villager => self.villagers,
+            Role::Doctor => self.doctors,
+            Role::Seer => self.seers,
+        }
+    }
+
+    /// The flag that gives how many of `role`, such as `--werewolves`.
+    pub fn flag(role: Role) -> String {
+        format!("--{}", role.plural())
+    }
 }
 
 /// The help for a count of `what`, naming the `default` the code fills in
@@ -320,10 +347,9 @@ impl fmt::Display for Table {
     /// The counts in the order the roles are dealt, each in its number:
     /// `2 werewolves, 3 villagers, 1 doctor, 1 seer`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let counted = self.counts().map(|(role, count)| match (count, role) {
-            (1, _) => format!("1 {role}"),
-            (_, Role::Werewolf) => format!("{count} werewolves"),
-            _ => format!("{count} {role}s"),
+        let counted = self.counts().map(|(role, count)| match count {
+            1 => format!("1 {role}"),
+            _ => format!("{count} {}", role.plural()),
         });
         f.write_str(&counted.join(", "))
     }
@@ -1090,6 +1116,27 @@ pub(crate) mod tests {
         };
         let seats: Vec<_> = table.seats().collect();
         assert_eq!(seats, ["player1", "player2", "player3", "player4"]);
+    }
+
+    #[test]
+    fn role_counts_give_each_roles_count_under_the_flag_clap_derives() {
+        let counts = RoleCounts {
+            werewolves: Some(1),
+            villagers: None,
+            doctors: Some(2),
+            seers: None,
+        };
+        let got = Table::default().counts().map(|(role, _)| counts.get(role));
+        assert_eq!(got, [Some(1), None, Some(2), None]);
+        let flags: Vec<String> = RoleCounts::augment_args(clap::Command::new("werewolf"))
+            .get_arguments()
+            .filter_map(|arg| arg.get_long().map(|long| format!("--{long}")))
+            .collect();
+        let named = Table::default()
+            .counts()
+            .map(|(role, _)| RoleCounts::flag(role));
+        assert_eq!(flags, named);
+        assert_eq!(named[0], "--werewolves");
     }
 
     #[test]
