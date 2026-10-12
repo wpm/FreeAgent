@@ -150,7 +150,7 @@ pub fn playing_only(ids: &[&str], selecting: &[&str]) -> String {
         if selecting.iter().any(|id| id == model) {
             match canned_calls(request) {
                 Ok(calls) => response("200 OK", &completion_of(&calls)),
-                Err(error) => response("400 Bad Request", &self::error(&format!("{error:#}"))),
+                Err(refused) => response("400 Bad Request", &error(&format!("{refused:#}"))),
             }
         } else {
             response("400 Bad Request", &error(&refusal(model)))

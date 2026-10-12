@@ -108,12 +108,7 @@ pub fn canned_calls(request: &Value) -> anyhow::Result<Vec<(String, Value)>> {
         .as_array()
         .and_then(|messages| messages.last()?["content"].as_str())
         .unwrap_or_default();
-    if asked
-        .rsplit("\n\n")
-        .nth(1)
-        .unwrap_or_default()
-        .contains("You vote")
-    {
+    if voted_in_this_phase(asked) {
         let (tool, (parameter, most)) = tools
             .iter()
             .find_map(|tool| first_bounded(&tool["parameters"]).map(|found| (*tool, found)))
@@ -130,6 +125,15 @@ pub fn canned_calls(request: &Value) -> anyhow::Result<Vec<(String, Value)>> {
         (name(speak), json!({text: SAID})),
         (name(select), json!({parameter: first})),
     ])
+}
+
+/// Whether the story a request's user message `asked` tells has the player
+/// voting in the phase underway, which follows the story's last blank line.
+pub fn voted_in_this_phase(asked: &str) -> bool {
+    asked
+        .rsplit("\n\n")
+        .nth(1)
+        .is_some_and(|phase| phase.contains("You vote"))
 }
 
 /// The name of `function`, a tool in the protocol's JSON.
@@ -182,15 +186,20 @@ pub fn selecting(candidates: &[&str]) -> Request {
             Message::system("You are player1."),
             Message::user("Select."),
         ],
-        Tool::new(
-            "select",
-            "Knowing everything you know, select the best one.",
-            json!({
-                "type": "object",
-                "properties": {"target": {"type": "string", "enum": candidates}},
-                "required": ["target"],
-            }),
-        ),
+        select_tool(candidates),
+    )
+}
+
+/// The tool `select`, taking a `target` from an `enum` of `candidates`.
+fn select_tool(candidates: &[&str]) -> Tool {
+    Tool::new(
+        "select",
+        "Knowing everything you know, select the best one.",
+        json!({
+            "type": "object",
+            "properties": {"target": {"type": "string", "enum": candidates}},
+            "required": ["target"],
+        }),
     )
 }
 
@@ -209,7 +218,7 @@ pub fn by_day(candidates: &[&str], limit: u64, story: &str) -> Request {
                 "required": ["text"],
             }),
         ),
-        selecting(candidates).tools.remove(0),
+        select_tool(candidates),
         Tool::new(
             "wait",
             "Say nothing now.",

@@ -43,10 +43,11 @@
 //! which asks to be woken after some seconds unless something wakes the
 //! player sooner. A reminder is numbered so that only the latest set
 //! counts, and one for a phase that has ended is ignored. The calls are
-//! carried out in the order the model made them. Before carrying any out,
-//! the player checks that the phase the call began in is still the one it
-//! was last announced; if not, it sends nothing and logs each message it
-//! would have sent as [`Entry::Withheld`].
+//! carried out in the order the model made them. Before carrying a day's
+//! out, the player checks that the day the call began in is still the phase
+//! it was last announced; if not, it sends nothing and logs each message it
+//! would have sent as [`Entry::Withheld`]. A night's selection is sent
+//! whatever the phase, as before, and the environment drops a late one.
 //!
 //! A model that is not reached, or an answer that is not well formed, is a
 //! failure: the player logs it as [`Entry::Failed`], carries nothing out,
@@ -761,12 +762,19 @@ impl Mind {
     /// The number of the latest phase the player was announced, and 0
     /// before any.
     fn seq(&self) -> u64 {
-        self.announced().map_or(0, |announced| announced.seq)
+        self.announced
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, |announced| announced.seq)
     }
 
     /// Whether the latest phase the player was announced is a day.
     fn by_day(&self) -> bool {
-        self.announced()
+        self.announced
+            .lock()
+            .unwrap()
+            .as_ref()
             .is_some_and(|announced| announced.view.phase == Phase::Day)
     }
 
@@ -956,17 +964,17 @@ impl Player {
         let Asked { sends, wait } = asked(&response, candidates, limit)?;
         if self.mind.seq() != seq {
             for sending in sends {
-                let (message, _) = sending.message(seq, me, 0, &view.alive);
                 self.context.log(Entry::Withheld {
                     from: me.clone(),
-                    message,
+                    message: sending.message(seq, me, 0),
                     seen: Some(seen),
                 });
             }
             return Ok(());
         }
         for sending in sends {
-            let (message, to) = sending.message(seq, me, self.mind.number(), &view.alive);
+            let to = sending.receivers(me, &view.alive);
+            let message = sending.message(seq, me, self.mind.number());
             self.send(message, to, seen)?;
         }
         if let Some(after) = wait {
@@ -1011,13 +1019,15 @@ impl Behavior for Player {
     /// are remembered and nothing more. Anything else is ignored.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
         if let Some(n) = message.number() {
-            let announced = matches!(message, Message::Announce { .. });
-            if let Message::Announce {
+            let announced = if let Message::Announce {
                 seq, view, limit, ..
             } = message
             {
                 self.mind.announce(*seq, view, *limit);
-            }
+                true
+            } else {
+                false
+            };
             observe(&self.context, message.sender(), n, self.mind.seq());
             self.remember(Memory::Observed {
                 message: message.clone(),
@@ -1269,35 +1279,26 @@ enum Sending {
 
 impl Sending {
     /// The message `from` sends for this in the phase numbered `seq`,
-    /// numbered `n`, and whom among `alive` it goes to: an utterance to the
-    /// other living players, a selection to them and the environment.
-    fn message(
-        self,
-        seq: u64,
-        from: &PlayerId,
-        n: u64,
-        alive: &HashSet<PlayerId>,
-    ) -> (Message, HashSet<ActorId>) {
+    /// numbered `n`.
+    fn message(self, seq: u64, from: &PlayerId, n: u64) -> Message {
         let from = from.clone();
         match self {
-            Sending::Say(text) => (
-                Message::Say {
-                    seq,
-                    from: from.clone(),
-                    n,
-                    text,
-                },
-                to_the_players_but(&from, alive),
-            ),
-            Sending::Select(target) => (
-                Message::Select {
-                    seq,
-                    from: from.clone(),
-                    n,
-                    target,
-                },
-                to_everyone_but(&from, alive),
-            ),
+            Sending::Say(text) => Message::Say { seq, from, n, text },
+            Sending::Select(target) => Message::Select {
+                seq,
+                from,
+                n,
+                target,
+            },
+        }
+    }
+
+    /// Whom among `alive` this goes to from `me`: an utterance to the other
+    /// living players, a selection to them and the environment.
+    fn receivers(&self, me: &PlayerId, alive: &HashSet<PlayerId>) -> HashSet<ActorId> {
+        match self {
+            Sending::Say(_) => to_the_players_but(me, alive),
+            Sending::Select(_) => to_everyone_but(me, alive),
         }
     }
 }
@@ -1360,7 +1361,7 @@ fn target(call: &model::Call, candidates: &[PlayerId]) -> anyhow::Result<PlayerI
 mod tests {
     use super::*;
     use crate::model::canned;
-    use crate::model::fake::{FakeModel, SAID, choosing_first};
+    use crate::model::fake::{FakeModel, SAID, choosing_first, voted_in_this_phase};
     use crate::werewolf::tests::{
         Played, announcement, between_the_deal_and_the_end, logged, observed_by,
         observed_by_the_environment, one_wolf_against, received, run, seen, seen_by_day, selection,
@@ -2217,9 +2218,9 @@ player2 = \"Cautious.\"
         }))
     }
 
-    /// Whether `request` is a day's: it offers the three tools.
+    /// Whether `request` is a day's: it offers the tool to speak with.
     fn is_day(request: &Request) -> bool {
-        request.tools.len() == 3
+        request.tools.iter().any(|tool| tool.name == SPEAK)
     }
 
     /// A model answering a day's request with `by_day` of it, and a night's
@@ -2257,16 +2258,6 @@ player2 = \"Cautious.\"
     /// The answer that waits out a day of `seconds`.
     fn waiting_out(seconds: u64) -> impl Fn(&Request) -> anyhow::Result<Response> {
         move |_| Ok(Response::calling(&[waiting(seconds)]))
-    }
-
-    /// Whether the story a request's user message `asked` tells has the
-    /// player voting in the phase underway, which follows the story's last
-    /// blank line.
-    fn voted_in_this_phase(asked: &str) -> bool {
-        asked
-            .rsplit("\n\n")
-            .nth(1)
-            .is_some_and(|phase| phase.contains("You vote"))
     }
 
     /// The messages `player` logged sending, each with everyone it was sent
@@ -3411,7 +3402,7 @@ player2 = \"Cautious.\"
             ratify_limit: Some(Duration::from_secs(1)),
             ..quick()
         };
-        let (winner, logged, took) = play_with(roles, rules, Arc::clone(&model), puppets)
+        let (winner, entries, took) = play_with(roles, rules, Arc::clone(&model), puppets)
             .await
             .unwrap();
         assert_eq!(winner, Team::Werewolves);
@@ -3419,7 +3410,7 @@ player2 = \"Cautious.\"
         // werewolf kills three seconds in, and sam, woken for the night as
         // soon as its day call came back, answers two seconds after that.
         assert_eq!(took, Duration::from_secs(9));
-        let withheld = withheld_by(&logged, "sam");
+        let withheld = withheld_by(&entries, "sam");
         assert_eq!(withheld.len(), 2, "{withheld:?}");
         assert_eq!(withheld[0].0, &utterance(2, "sam", 0, SAID));
         assert_eq!(withheld[1].0, &selection(2, "sam", 0, "bob"));
@@ -3427,8 +3418,8 @@ player2 = \"Cautious.\"
         assert_eq!(withheld[0].1, withheld[1].1);
         // Nothing of the day was sent, remembered or numbered: sam's two
         // selections are its first and second messages.
-        assert!(utterances(&logged).is_empty(), "{logged:?}");
-        let sam: Vec<&Message> = sent_by(&logged, "sam")
+        assert!(utterances(&entries).is_empty(), "{entries:?}");
+        let sam: Vec<&Message> = sent_by(&entries, "sam")
             .into_iter()
             .map(|(message, _, _)| message)
             .collect();
@@ -3441,9 +3432,9 @@ player2 = \"Cautious.\"
         );
         assert_eq!(asked_of(&model, "sam").len(), 3);
         let mut narrator = Narrator::default();
-        let told: Vec<String> = logged
+        let told: Vec<String> = entries
             .into_iter()
-            .flat_map(|entry| narrator.narrate(&logged_entry(entry)))
+            .flat_map(|entry| narrator.narrate(&logged(entry)))
             .collect();
         for line in [
             format!("sam (seer) is too late to say, for day 1: \"{SAID}\""),
@@ -3451,11 +3442,6 @@ player2 = \"Cautious.\"
         ] {
             assert!(told.contains(&line), "{told:?}");
         }
-    }
-
-    /// `entry`, as an event logged when the game began.
-    fn logged_entry(entry: Entry) -> Event<Entry> {
-        logged(entry)
     }
 
     #[tokio::test(start_paused = true)]

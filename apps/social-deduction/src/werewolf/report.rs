@@ -203,13 +203,12 @@ impl Narrator {
             }
             Entry::Failed { player, seq, error } => {
                 let player = self.seat(player);
-                vec![match (self.late(*seq), self.announced.get(seq)) {
-                    (true, Some(phase)) => format!(
-                        "{player} fails to select for {}: {error}",
-                        title(phase).to_lowercase()
-                    ),
-                    _ => format!("{player} fails to select: {error}"),
-                }]
+                vec![
+                    match self.late(*seq).then(|| self.phase_name(*seq)).flatten() {
+                        Some(phase) => format!("{player} fails to select for {phase}: {error}"),
+                        None => format!("{player} fails to select: {error}"),
+                    },
+                ]
             }
             _ => vec![],
         }
@@ -508,11 +507,8 @@ impl Narrator {
         } else {
             self.seat(player).to_string()
         };
-        match self.announced.get(&seq) {
-            Some(phase) => format!(
-                "During {}, {who} said, \"{text}\"",
-                title(phase).to_lowercase()
-            ),
+        match self.phase_name(seq) {
+            Some(phase) => format!("During {phase}, {who} said, \"{text}\""),
             None => format!("Earlier, {who} said, \"{text}\""),
         }
     }
@@ -522,13 +518,18 @@ impl Narrator {
     /// phase is named when it was announced.
     fn unsaid(&self, player: &PlayerId, seq: u64, text: &str) -> String {
         let seat = self.seat(player);
-        match self.announced.get(&seq) {
-            Some(phase) => format!(
-                "{seat} is too late to say, for {}: \"{text}\"",
-                title(phase).to_lowercase()
-            ),
+        match self.phase_name(seq) {
+            Some(phase) => format!("{seat} is too late to say, for {phase}: \"{text}\""),
             None => format!("{seat} is too late to say: \"{text}\""),
         }
+    }
+
+    /// The phase numbered `seq` as prose names it mid-sentence, "day 2",
+    /// if it has been announced.
+    fn phase_name(&self, seq: u64) -> Option<String> {
+        self.announced
+            .get(&seq)
+            .map(|phase| title(phase).to_lowercase())
     }
 
     /// What `player` did by choosing `chosen`, which depends on the phase
@@ -565,9 +566,9 @@ impl Narrator {
     /// when it is known, as it is unless the choice was for a phase never
     /// announced.
     fn lateness(&self, player: &PlayerId, chosen: &PlayerId, seq: u64) -> String {
-        let when = self.announced.get(&seq).map_or(String::new(), |phase| {
-            format!(" for {}", title(phase).to_lowercase())
-        });
+        let when = self
+            .phase_name(seq)
+            .map_or(String::new(), |phase| format!(" for {phase}"));
         let (subject, s) = self.subject(player);
         let chosen = self.seat(chosen);
         format!("{subject} choose{s} {chosen}{when} too late to count.")

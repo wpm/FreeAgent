@@ -7,7 +7,7 @@ use social_deduction::model::canned::{
 };
 use social_deduction::werewolf::llm::Configuration;
 use social_deduction::werewolf::{Ending, Entry, Message, PlayerId, Role};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::{Command, Output};
 use std::time::Duration;
 
@@ -365,7 +365,7 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
     // and not to the environment, and the account tells what they say. The
     // day's phases are the even-numbered ones, and each living player is
     // announced each of them.
-    let said: Vec<(&PlayerId, &std::collections::HashSet<PlayerId>)> = events
+    let said: Vec<(&PlayerId, &HashSet<PlayerId>)> = events
         .iter()
         .filter_map(|event| match &event.payload {
             Entry::Action {
