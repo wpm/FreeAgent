@@ -109,7 +109,9 @@ impl Behavior for Player {
         if let Message::Announce { seq, n, view, .. } = message {
             observe(&self.context, ENVIRONMENT.to_string(), *n, *seq);
             let me = &self.context.id;
-            if let Some(target) = awake(me, view).then(|| choose(me, view)).flatten() {
+            if awake(me, view)
+                && let Some(target) = choose(me, view)
+            {
                 self.n += 1;
                 let selection = Message::Select {
                     seq: *seq,
@@ -451,17 +453,8 @@ pub(crate) mod tests {
         assert_eq!(winner, Team::Werewolves);
         assert_eq!(took, quick().night_limit);
         assert!(selections(&logged).is_empty(), "{logged:?}");
-        let announced = logged
-            .iter()
-            .filter(|entry| {
-                matches!(entry, Entry::Action {
-                    to,
-                    message: Message::Announce { seq: 1, .. },
-                    ..
-                } if to.contains("ann"))
-            })
-            .count();
-        assert_eq!(announced, 1, "{logged:?}");
+        // Ann observed the announcement, the environment's first message,
+        // and nothing else.
         assert_eq!(observed_by(&logged, "ann"), [(ENVIRONMENT, 1, 1)]);
     }
 

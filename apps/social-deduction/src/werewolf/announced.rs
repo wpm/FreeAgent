@@ -541,10 +541,8 @@ mod tests {
     }
 
     /// The players the phase underway waits on, in name order.
-    fn awake(game: &Game) -> Vec<&PlayerId> {
-        let mut awake: Vec<&PlayerId> = game.underway.as_ref().unwrap().awake.iter().collect();
-        awake.sort();
-        awake
+    fn awake(game: &Game) -> Vec<PlayerId> {
+        tests::sorted(game.underway.as_ref().unwrap().awake.clone())
     }
 
     #[test]

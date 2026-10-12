@@ -893,8 +893,11 @@ impl Player {
             .announced()
             .context("woken before any phase was announced")?;
         let me = &self.context.id;
+        if !awake(me, &view) {
+            return Ok(());
+        }
         let candidates = candidates(me, &view);
-        if !awake(me, &view) || candidates.is_empty() {
+        if candidates.is_empty() {
             return Ok(());
         }
         let acted = match view.phase {
@@ -2257,10 +2260,25 @@ player2 = \"Cautious.\"
     /// A werewolf who kills its first candidate `after` each night begins,
     /// and says nothing by day.
     fn hunting_after(after: Duration) -> Seat<Actor> {
+        hunting_after_each(move |_| after)
+    }
+
+    /// A werewolf who kills its first candidate `after` the night numbered
+    /// `seq` begins, and says nothing by day.
+    fn hunting_after_each(after: impl Fn(u64) -> Duration + Send + 'static) -> Seat<Actor> {
         puppet(Box::new(move |me, seq, view| match view.phase {
-            Phase::Night => vec![(after, selection(seq, me, seq, &candidates(me, view)[0]))],
+            Phase::Night => vec![(
+                after(seq),
+                selection(seq, me, seq, &candidates(me, view)[0]),
+            )],
             Phase::Day => vec![],
         }))
+    }
+
+    /// A werewolf who kills its first candidate at once the first night and
+    /// three seconds into every night after.
+    fn hunting_at_once_then_after_three_seconds() -> Seat<Actor> {
+        hunting_after_each(|seq| Duration::from_secs(if seq == 1 { 0 } else { 3 }))
     }
 
     /// Whether `request` is a day's: it offers the tool to speak with.
@@ -3323,14 +3341,7 @@ player2 = \"Cautious.\"
         }));
         // The werewolf kills ann at once the first night, and takes three
         // seconds every night after.
-        let wolf = puppet(Box::new(|me, seq, view| match view.phase {
-            Phase::Night => {
-                let after = if seq == 1 { 0 } else { 3 };
-                let kill = selection(seq, me, seq, &candidates(me, view)[0]);
-                vec![(Duration::from_secs(after), kill)]
-            }
-            Phase::Day => vec![],
-        }));
+        let wolf = hunting_at_once_then_after_three_seconds();
         let mut roles = one_wolf_against(&["ann", "bob", "cat"]);
         roles.insert("pat".to_string(), Role::Seer);
         let puppets = HashMap::from([
@@ -3613,14 +3624,7 @@ player2 = \"Cautious.\"
         // night 2, which bob does not know has begun. By day 2 dan votes
         // the werewolf out.
         let model = Arc::new(by_day(waiting_out(2)).taking(Duration::from_millis(100)));
-        let wolf = puppet(Box::new(|me, seq, view| match view.phase {
-            Phase::Night => {
-                let after = if seq == 1 { 0 } else { 3 };
-                let kill = selection(seq, me, seq, &candidates(me, view)[0]);
-                vec![(Duration::from_secs(after), kill)]
-            }
-            Phase::Day => vec![],
-        }));
+        let wolf = hunting_at_once_then_after_three_seconds();
         let bob = puppet(Box::new(|me, seq, _| {
             vec![
                 (Duration::ZERO, selection(seq, me, 1, "cat")),

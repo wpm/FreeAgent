@@ -253,13 +253,7 @@ impl Narrator {
         match &event.payload {
             Memory::Observed {
                 message: Message::Announce { seq, view, .. },
-            } => {
-                let mut lines = self.announce(*seq, view, event.time);
-                if self.sleeps(view) {
-                    lines.push("You sleep.".to_string());
-                }
-                lines
-            }
+            } => self.announce(*seq, view, event.time),
             Memory::Observed {
                 message: Message::Tentative { target, ratify, .. },
             } => vec![self.tentative(target.as_ref(), *ratify)],
@@ -313,13 +307,6 @@ impl Narrator {
     fn announce(&mut self, seq: u64, view: &View, time: SystemTime) -> Vec<String> {
         self.announced.insert(seq, (view.round, view.phase.clone()));
         self.show(view, time)
-    }
-
-    /// Whether the player whose account this is sleeps through the phase
-    /// `view` shows. The omniscient account is nobody's, and sleeps through
-    /// nothing.
-    fn sleeps(&self, view: &View) -> bool {
-        matches!(&self.voice, Voice::Player(me) if !awake(me, view))
     }
 
     /// The deal: how many players, then each with its role on a line of
@@ -396,7 +383,8 @@ impl Narrator {
 
     /// A phase begins when a player is first shown it, at `time`. The
     /// phase before it ends then, with whoever is no longer alive, and a
-    /// blank line sets the new phase off from what came before it.
+    /// blank line sets the new phase off from what came before it. In a
+    /// player's account, a phase the player sleeps through says so.
     fn begin(&mut self, view: &View, time: SystemTime) -> Vec<String> {
         let phase = (view.round, view.phase.clone());
         if self.phase.as_ref().is_some_and(|told| told.phase == phase) {
@@ -410,6 +398,11 @@ impl Narrator {
         self.alive = view.alive.clone();
         lines.push(String::new());
         lines.push(format!("{}.", title(&phase)));
+        if let Voice::Player(me) = &self.voice
+            && !awake(me, view)
+        {
+            lines.push("You sleep.".to_string());
+        }
         self.phase = Some(Told { phase, began: time });
         lines
     }

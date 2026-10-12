@@ -468,7 +468,7 @@ impl State {
     fn awake(&self) -> HashSet<PlayerId> {
         self.alive
             .iter()
-            .filter(|player_id| self.phase.wakes(self.roles.get(*player_id).copied()))
+            .filter(|player_id| self.phase.wakes(Some(self.roles[*player_id])))
             .cloned()
             .collect()
     }
@@ -1532,7 +1532,8 @@ mod tests {
         assert_eq!(view.alive, state.alive);
     }
 
-    fn sorted(players: HashSet<PlayerId>) -> Vec<PlayerId> {
+    /// `players` in name order.
+    pub(super) fn sorted(players: HashSet<PlayerId>) -> Vec<PlayerId> {
         let mut players: Vec<_> = players.into_iter().collect();
         players.sort();
         players
