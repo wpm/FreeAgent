@@ -1,6 +1,7 @@
 # ADR-0004: The model is asked to select before a game
 
-**Status:** Accepted
+**Status:** Accepted, amended by
+[ADR-0007](0007-a-tool-call-is-required-where-the-model-allows-it.md)
 **Date:** 2026-10-11
 **Deciders:** Bill McNeill
 **Supersedes:** the tool-call whitelist in
