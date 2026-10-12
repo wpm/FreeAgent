@@ -1607,10 +1607,7 @@ impl Asked {
             }
             SELECT => self.sends.push(Sending::Select(target(call, candidates)?)),
             RETRACT => {
-                // A provider may send no arguments as no text at all.
-                if !call.arguments.trim().is_empty() {
-                    let Retraction {} = arguments(call)?;
-                }
+                let Retraction {} = arguments(call)?;
                 self.sends.push(Sending::Retract);
             }
             WAIT => {
@@ -1693,10 +1690,15 @@ fn asked(response: &Response, candidates: &[PlayerId], limit: Duration) -> anyho
     Ok(asked)
 }
 
-/// The arguments of `call`, parsed. Arguments that do not parse are an
+/// The arguments of `call`, parsed. A provider may send no arguments as no
+/// text at all, which parses as `{}`. Arguments that do not parse are an
 /// error naming the tool and showing them.
 fn arguments<T: DeserializeOwned>(call: &model::Call) -> anyhow::Result<T> {
-    serde_json::from_str(&call.arguments).with_context(|| {
+    let text = match call.arguments.trim() {
+        "" => "{}",
+        _ => &call.arguments,
+    };
+    serde_json::from_str(text).with_context(|| {
         format!(
             "the arguments of the model's {} call: {}",
             call.name, call.arguments
@@ -4185,14 +4187,6 @@ player2 = \"Cautious.\"
                 wait: None,
             }
         );
-        // A provider may send a call with no arguments as no text at all.
-        let mut bare = Asked::default();
-        let call = model::Call {
-            name: RETRACT.to_string(),
-            arguments: String::new(),
-        };
-        bare.take(&call, &candidates, limit).unwrap();
-        assert_eq!(bare.sends, [Sending::Retract]);
         let wrong: [(&str, Vec<Made>, &str); 11] = [
             ("no tool call", vec![], "the model made no tool call"),
             (
@@ -4256,6 +4250,19 @@ player2 = \"Cautious.\"
         // A response with no choice makes no tool call.
         let none = super::asked(&answered(json!({"choices": []})), &candidates, limit);
         assert!(none.is_err());
+    }
+
+    #[test]
+    fn arguments_sent_as_no_text_or_only_whitespace_are_no_arguments() {
+        let call = |arguments: &str| model::Call {
+            name: RETRACT.to_string(),
+            arguments: arguments.to_string(),
+        };
+        for bare in ["", " \n"] {
+            let Retraction {} = arguments(&call(bare)).unwrap();
+            assert!(arguments::<Speech>(&call(bare)).is_err());
+        }
+        let Retraction {} = arguments(&call("{}")).unwrap();
     }
 
     #[tokio::test(start_paused = true)]
