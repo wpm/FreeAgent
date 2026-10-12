@@ -27,7 +27,7 @@
 //! deal, and [`players`] builds each seat's player from it.
 
 use super::prompted::{self, Probed};
-use super::{Dealt, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Seat, Table, random};
+use super::{Dealt, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Seat, Table, random, ratified};
 use crate::model::{
     self, CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable,
 };
@@ -571,7 +571,7 @@ impl Settings {
             .filter(|prompt| self.model_of(&prompt.strategy) == Some(name))
             .try_fold(0, |most, prompt| {
                 let (text, seat, role) = (&prompt.text, &prompt.seat, prompt.role);
-                let (day_limit, ratified) = (self.day_limit, !self.ratify_limit.is_zero());
+                let (day_limit, ratified) = (self.day_limit, ratified(self.ratify_limit));
                 let needed = prompted::unstoried(id, text, seat, role, &alive, day_limit, ratified);
                 Ok(most.max(needed?))
             })
@@ -755,7 +755,7 @@ pub fn players(
     deal: &HashMap<PlayerId, Dealt>,
     handles: &Handles,
 ) -> impl FnMut(&PlayerId) -> Seat + use<> {
-    let ratified = !configuration.ratify_limit.is_zero();
+    let ratified = ratified(configuration.ratify_limit);
     let mut prompted = HashMap::new();
     for (seat, Dealt { strategy, .. }) in deal {
         if let Strategy::Prompted(strategy) = &configuration.strategies[strategy] {

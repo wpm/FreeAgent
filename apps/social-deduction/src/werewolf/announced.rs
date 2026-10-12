@@ -182,9 +182,8 @@ impl Game {
     /// zero. A day whose limit is zero is not ratified, so no timer of
     /// zero ever starts.
     fn ratifying(&self) -> Option<Duration> {
-        let limit = self.rules.ratify_limit;
         match self.state.phase {
-            Phase::Day if !limit.is_zero() => Some(limit),
+            Phase::Day if self.rules.ratified() => Some(self.rules.ratify_limit),
             _ => None,
         }
     }

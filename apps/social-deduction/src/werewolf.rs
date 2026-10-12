@@ -545,6 +545,12 @@ pub struct Rules {
 }
 
 impl Rules {
+    /// Whether the day's vote is ratified, which it is when the ratify
+    /// limit is above zero.
+    pub fn ratified(&self) -> bool {
+        ratified(self.ratify_limit)
+    }
+
     /// The entry that opens a game of `deal` under these rules: every
     /// player's role and strategy, and the limits.
     pub fn start(&self, deal: &HashMap<PlayerId, Dealt>) -> Entry {
@@ -565,6 +571,12 @@ impl Rules {
             ratify_limit: self.ratify_limit,
         }
     }
+}
+
+/// Whether a day with `ratify_limit` is ratified: whether the limit is
+/// above zero.
+pub fn ratified(ratify_limit: Duration) -> bool {
+    !ratify_limit.is_zero()
 }
 
 impl Default for Rules {
@@ -1096,6 +1108,18 @@ pub(crate) mod tests {
             table.to_string(),
             "1 werewolf, 0 villagers, 2 doctors, 2 seers"
         );
+    }
+
+    #[test]
+    fn a_day_is_ratified_when_its_ratify_limit_is_above_zero() {
+        assert!(!ratified(Duration::ZERO));
+        assert!(ratified(Duration::from_millis(1)));
+        assert!(!Rules::default().ratified());
+        let rules = Rules {
+            ratify_limit: Duration::from_secs(20),
+            ..Rules::default()
+        };
+        assert!(rules.ratified());
     }
 
     #[test]

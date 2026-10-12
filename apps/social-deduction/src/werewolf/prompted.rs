@@ -1210,7 +1210,7 @@ mod tests {
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
         let model: Arc<dyn model::Model> = model;
-        let ratified = !rules.ratify_limit.is_zero();
+        let ratified = rules.ratified();
         let player = |id: &PlayerId| {
             puppets.remove(id.as_str()).unwrap_or_else(|| {
                 Player::init(
