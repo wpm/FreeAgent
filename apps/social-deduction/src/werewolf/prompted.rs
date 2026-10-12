@@ -1048,10 +1048,9 @@ fn selected(response: &Response, candidates: &[PlayerId]) -> anyhow::Result<Play
 /// ratified, a vote after the first, in this response or an earlier one,
 /// is a call to a tool not offered. The response is judged as a whole: no
 /// tool call, a call to a tool [`day_tools`] does not offer the player,
-/// arguments that do not parse, a target who is not
-/// one of `candidates`, text that is empty once trimmed, or seconds not
-/// between 1 and `limit` in whole seconds is an error, and then nothing in
-/// it is carried out.
+/// arguments that do not parse, a target who is not one of `candidates`,
+/// text that is empty once trimmed, or seconds not between 1 and `limit`
+/// in whole seconds is an error, and then nothing in it is carried out.
 fn asked(
     response: &Response,
     candidates: &[PlayerId],
