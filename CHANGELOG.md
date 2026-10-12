@@ -93,6 +93,12 @@ workflow takes a version's notes from here.
   as too late to say if its phase has ended, and a player's story tells it
   what others said. A day's failure is narrated as a failure to play. The
   night plays as before.
+- A Werewolf game may play several models, so a stronger model can play a
+  weaker one: each model in play is set up and probed before the game, one
+  at a time in name order, its context window checked against the
+  strategies that name it, and each prompted player asks its strategy's
+  model. The narration tells each model's context window and tool choice
+  by name.
 
 ### Changed
 
@@ -152,8 +158,8 @@ workflow takes a version's notes from here.
   its `model`; and allots each role's seats among the strategies by a
   `[roles.<role>.strategies]` table, a role's `strategy`, or the file's
   top-level `strategy`, otherwise `random`. Roles and strategies are dealt
-  together at random. Only the models in play are set up, and this version
-  plays one model per game. The `[model]`, `[prompt]` and `[personas]`
+  together at random. Only the models in play are set up, and a game may
+  play several, each with its own tool choice and context window. The `[model]`, `[prompt]` and `[personas]`
   tables, each role's `system` template and the `persona` variable are
   gone, and so are the command line's `--model-base-url`, `--model-id` and
   `--context-window`: a model is changed in its `[models.<name>]` table,

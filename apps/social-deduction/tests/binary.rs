@@ -717,20 +717,28 @@ fn a_model_its_provider_does_not_serve_is_refused() {
     assert!(stderr.contains(EXAMPLE_MODEL), "{stderr}");
 }
 
-#[test]
-fn two_models_in_play_are_refused_naming_both() {
-    let base_url = playing(&[EXAMPLE_MODEL]);
-    let config = configured("two", &base_url, EXAMPLE_MODEL, &[]);
+/// A configuration file written for this test: the prompted example with
+/// its model `qwen` at `qwen_url` serving `qwen_id`, as [`configured`]
+/// writes it, and a second model, `claude`, at `claude_url` serving
+/// `claude_id`, which the seers play through a strategy of their own.
+fn two_models(
+    test: &str,
+    qwen_url: &str,
+    qwen_id: &str,
+    claude_url: &str,
+    claude_id: &str,
+) -> String {
+    let config = configured(test, qwen_url, qwen_id, &[]);
     let file = std::fs::read_to_string(&config).unwrap();
     let file = format!(
         "{file}
 [models.claude]
-base_url = \"{base_url}\"
-id = \"{EXAMPLE_MODEL}\"
+base_url = \"{claude_url}\"
+id = \"{claude_id}\"
 [strategies.smart]
 policy = \"prompted\"
 model = \"claude\"
-system = \"Smart.\"
+system = \"You are {{{{ name }}}}, a {{{{ role }}}}.\"
 [roles.seer]
 strategy = \"smart\"
 "
@@ -740,9 +748,55 @@ strategy = \"smart\"
         "policy = \"prompted\"\nmodel = \"qwen\"\nsystem",
     );
     std::fs::write(&config, file).unwrap();
+    config
+}
+
+#[test]
+fn a_table_of_two_models_plays_to_the_end() {
+    let qwen_url = playing(&[EXAMPLE_MODEL]);
+    let claude_url = refusing_required(&["claude-sonnet-4-5"]);
+    let config = two_models(
+        "two",
+        &qwen_url,
+        EXAMPLE_MODEL,
+        &claude_url,
+        "claude-sonnet-4-5",
+    );
+    let args = [&[config.as_str()], &QUICK[..]].concat();
+    let notes = [
+        "claude's context window is 4096 tokens, the default.",
+        "claude does not accept a required tool call, so its players are asked to call one.",
+        DEFAULT_WINDOW,
+    ];
+    let (events, _) = assert_plays_the_default_table(&args, &notes);
+    let (roles, strategies) = start(&events);
+    for (player, role) in roles {
+        let strategy = match role {
+            Role::Seer => "smart",
+            _ => "everyone",
+        };
+        assert_eq!(strategies[player], strategy, "{player}");
+    }
+    let models = &configuration(&events).models;
+    assert_eq!(models.keys().collect::<Vec<_>>(), ["claude", "qwen"]);
+    assert_eq!(models["claude"].tool_choice, ToolChoice::Auto);
+    assert_eq!(models["qwen"].tool_choice, ToolChoice::Required);
+}
+
+#[test]
+fn the_second_model_failing_its_probe_is_refused_naming_it_and_nothing_is_played() {
+    let qwen_url = refusing(&[EXAMPLE_MODEL]);
+    let claude_url = playing(&["claude-sonnet-4-5"]);
+    let config = two_models(
+        "second-refused",
+        &qwen_url,
+        EXAMPLE_MODEL,
+        &claude_url,
+        "claude-sonnet-4-5",
+    );
     let stderr = refused(&["werewolf", &config]);
     assert!(
-        stderr.contains("this version plays one model per game; models in play: claude, qwen"),
+        stderr.starts_with("Error: setting up the model qwen"),
         "{stderr}"
     );
 }
