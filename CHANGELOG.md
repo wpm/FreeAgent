@@ -97,8 +97,8 @@ workflow takes a version's notes from here.
   weaker one: each model in play is set up and probed before the game, one
   at a time in name order, its context window checked against the
   strategies that name it, and each prompted player asks its strategy's
-  model. The narration tells each model's context window and tool choice
-  by name.
+  model. The narration tells each model's context window, and each model
+  that does not accept a required tool call, by name.
 
 ### Changed
 

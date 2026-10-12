@@ -166,12 +166,12 @@ id = "claude-sonnet-4-5"
 [strategies.local]
 policy = "prompted"
 model = "qwen"
-system = "{{ rules }}\n\nYou are {{ name }}, a {{ role }}."
+system = "You are {{ name }}, a {{ role }}."
 
 [strategies.smart]
 policy = "prompted"
 model = "claude"
-system = "{{ rules }}\n\nYou are {{ name }}, a {{ role }}."
+system = "You are {{ name }}, a {{ role }}."
 
 [roles.werewolf]
 strategy = "smart"
