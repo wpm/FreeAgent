@@ -1,0 +1,343 @@
+//! The random policy: a player who answers each announcement of a phase
+//! that awaits it at once with a choice made uniformly at random among the
+//! legal ones, observes the rest, and never speaks. A player logs an
+//! [`Entry::Observation`] for each message it receives, in the latest
+//! phase it was announced, and an [`Entry::Action`] for each choice it
+//! sends, numbering its choices from 1; no model made them, so `seen` is
+//! `None`.
+
+use super::{
+    Actor, Ballot, Choice, Deed, Entry, Message, Phase, PlayerId, Seat, Team, View, act, awaited,
+    candidates, observe, receivers,
+};
+use crate::report::seat_order;
+use async_trait::async_trait;
+use free_agent::{Behavior, Builder, Context};
+use rand::seq::IndexedRandom;
+
+/// A player who answers each announcement of a phase that [awaits](awaited)
+/// it at once, with a choice drawn uniformly from the legal ones, and does
+/// nothing about one that does not. Its choice goes to the [`receivers`]
+/// of a choice: the environment alone. It has no think loop.
+pub struct Player {
+    context: Context<Message, Entry>,
+    /// The number of the last choice it sent.
+    n: u64,
+    /// The number of the latest phase it was announced, and 0 before any.
+    seq: u64,
+}
+
+impl Player {
+    /// Builds a player once the episode has made its context. It has no
+    /// think loop.
+    pub fn init() -> Seat {
+        let behavior: Builder<Actor> = Box::new(|context| {
+            Actor::Random(Player {
+                context,
+                n: 0,
+                seq: 0,
+            })
+        });
+        (behavior, None)
+    }
+}
+
+#[async_trait]
+impl Behavior for Player {
+    type Message = Message;
+    type Log = Entry;
+
+    fn context(&self) -> &Context<Message, Entry> {
+        &self.context
+    }
+
+    /// Log a message from another actor, which is any numbered one, as
+    /// observed in the latest phase announced. Announced a phase that
+    /// awaits it, choose at once; otherwise, or with nothing to choose, say
+    /// nothing. Anything else, another player's utterance above all, is
+    /// observed and nothing more, whatever phase it is tagged with: the
+    /// player keeps nothing it could put it in.
+    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
+        let Some(n) = message.number() else {
+            return Ok(());
+        };
+        if let Message::Announce { seq, .. } = message {
+            self.seq = *seq;
+        }
+        observe(&self.context, message.sender(), n, self.seq);
+        let me = &self.context.id;
+        if let Message::Announce { seq, view, .. } = message
+            && awaited(me, view)
+            && let Some(choice) = choose(me, view)
+        {
+            self.n += 1;
+            let message = choice.message(*seq, me.clone(), self.n);
+            let to = receivers(&message, me, view);
+            act(&self.context, message, to, None, None)?;
+        }
+        Ok(())
+    }
+}
+
+/// A choice `me` may make in the phase `view` shows, drawn uniformly from
+/// the legal ones: a team of the size the quest needs from every team of
+/// that size, `me` included, told in seat order; approval or rejection
+/// with even odds; support from a good player, and support or sabotage
+/// with even odds from an evil one; and one of the [`candidates`] to name
+/// as Merlin. None when there is nobody to name.
+fn choose(me: &PlayerId, view: &View) -> Option<Choice> {
+    let even = || rand::random_bool(0.5);
+    match view.phase {
+        Phase::Propose => {
+            let mut team: Vec<PlayerId> = view
+                .players
+                .sample(&mut rand::rng(), view.size)
+                .cloned()
+                .collect();
+            team.sort_by(seat_order);
+            Some(Choice::Team(team))
+        }
+        Phase::Vote => Some(Choice::Ballot(if even() {
+            Ballot::Approve
+        } else {
+            Ballot::Reject
+        })),
+        Phase::Quest => Some(Choice::Deed(match view.role.team() {
+            Team::Evil if even() => Deed::Sabotage,
+            _ => Deed::Support,
+        })),
+        Phase::Assassinate => candidates(me, view)
+            .choose(&mut rand::rng())
+            .cloned()
+            .map(Choice::Target),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::avalon::report::Narrator;
+    use crate::avalon::tests::{
+        Script, dealt, five, logged, mute, observed_by, outcomes, play, quick, run, utterance,
+        view_of,
+    };
+    use crate::avalon::{Role, Rules, game};
+    use crate::seat::{ENVIRONMENT, to_the_environment};
+    use crate::strategy::RANDOM;
+    use free_agent::ActorId;
+    use std::collections::{HashMap, HashSet};
+    use tokio::sync::mpsc::unbounded_channel;
+    use tokio::sync::oneshot;
+
+    fn id(name: &str) -> PlayerId {
+        name.to_string()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_game_is_logged_from_the_deal_to_the_end_and_told() {
+        let roles = five();
+        let (winner, won) = oneshot::channel();
+        let (logger, log) = unbounded_channel();
+        let episode = game(
+            dealt(&roles, RANDOM),
+            Rules::default(),
+            winner,
+            |_| Player::init(),
+            logger,
+        );
+        let (winner, entries, took) = run(episode, won, log).await.unwrap();
+        // Random players answer at once, so no phase waits out its limit.
+        assert!(took < Rules::default().propose_limit, "{took:?}");
+
+        let first = entries.first();
+        assert!(
+            matches!(first, Some(Entry::Start { roles: dealt, .. }) if *dealt == roles),
+            "{first:?}"
+        );
+        let last = entries.last();
+        assert!(
+            matches!(last, Some(Entry::End { winner: won, .. }) if *won == winner),
+            "{last:?}"
+        );
+        let between = &entries[1..entries.len() - 1];
+        // Whom each message, named by its sender and number, was entries as
+        // sent to as an action, and who entries observing it.
+        let mut actions: HashMap<(&str, u64), &HashSet<ActorId>> = HashMap::new();
+        let mut observations: HashMap<(&str, u64), Vec<&str>> = HashMap::new();
+        let mut phases = 0;
+        for entry in between {
+            match entry {
+                Entry::Action {
+                    from,
+                    n,
+                    to,
+                    message,
+                    seen,
+                    forgot,
+                } => {
+                    assert_eq!(*seen, None);
+                    assert_eq!(*forgot, None);
+                    match message {
+                        Message::Announce { .. } => {
+                            assert_eq!(from, ENVIRONMENT);
+                            assert_eq!(to.len(), 1, "{to:?}");
+                        }
+                        message => {
+                            assert!(message.choice().is_some(), "{message:?}");
+                            assert_eq!(message.sender(), *from);
+                            assert_eq!(*to, to_the_environment());
+                        }
+                    }
+                    assert_eq!(actions.insert((from, *n), to), None);
+                }
+                Entry::Observation { by, from, n, .. } => {
+                    observations.entry((from, *n)).or_default().push(by);
+                }
+                entry => {
+                    assert!(
+                        outcomes(std::slice::from_ref(entry)).len() == 1,
+                        "{entry:?}"
+                    );
+                    phases += 1;
+                }
+            }
+        }
+        // Every message is entries once as an action, and once as an
+        // observation by each of its receivers.
+        let mut sent: Vec<&(&str, u64)> = actions.keys().collect();
+        let mut heard: Vec<&(&str, u64)> = observations.keys().collect();
+        sent.sort_unstable();
+        heard.sort_unstable();
+        assert_eq!(sent, heard, "{entries:?}");
+        for (message, by) in &observations {
+            let by: HashSet<&str> = by.iter().copied().collect();
+            let to: HashSet<&str> = actions[message].iter().map(String::as_str).collect();
+            assert_eq!(by, to, "{message:?}");
+        }
+        // Each phase is announced to every player, and ends once.
+        let announced = actions
+            .keys()
+            .filter(|(from, _)| *from == ENVIRONMENT)
+            .count();
+        assert_eq!(announced, phases * roles.len());
+        // Every line of the log tells, and the account ends with the winner.
+        let mut narrator = Narrator::default();
+        let told: Vec<String> = entries
+            .into_iter()
+            .flat_map(|entry| narrator.narrate(&logged(entry)))
+            .collect();
+        assert_eq!(told[0], "5 players:");
+        let won = format!("{winner} wins");
+        assert!(
+            told[told.len() - 2].to_lowercase().starts_with(&won),
+            "{told:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_player_observes_what_it_is_sent_in_the_phase_it_is_in_and_does_nothing_about_it() {
+        // Player2 talks in every phase, once for the phase before it too.
+        // Player3, who plays at random, observes both in the phase it is
+        // in.
+        let talker: Script = Box::new(|me, seq, _| {
+            vec![
+                utterance(seq, me, 100 + seq, "Now."),
+                utterance(seq.saturating_sub(1), me, 200 + seq, "Late."),
+            ]
+        });
+        let mut puppets = HashMap::from([("player2", Actor::puppet(talker))]);
+        for player in ["player1", "player4", "player5"] {
+            puppets.insert(player, mute());
+        }
+        let (_, logged, _) = play(five(), quick(), puppets).await.unwrap();
+        let heard: Vec<(&str, u64, u64)> = observed_by(&logged, "player3")
+            .into_iter()
+            .filter(|(from, _, seq)| *from == "player2" && *seq == 1)
+            .collect();
+        assert_eq!(heard, [("player2", 101, 1), ("player2", 201, 1)]);
+        // Player3 never speaks: all it sends is choices.
+        let sent: Vec<&Message> = logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Action { from, message, .. } if from == "player3" => Some(message),
+                _ => None,
+            })
+            .collect();
+        assert!(!sent.is_empty());
+        assert!(
+            sent.iter().all(|message| message.choice().is_some()),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn a_leader_proposes_a_team_of_the_size_needed_drawn_from_every_team_itself_included() {
+        let me = id("player1");
+        let view = view_of("player1", Phase::Propose, &[]);
+        let mut teams = HashSet::new();
+        for _ in 0..500 {
+            let team = choose(&me, &view).unwrap().team().unwrap().clone();
+            assert_eq!(team.len(), 2);
+            assert_ne!(team[0], team[1]);
+            let mut sorted = team.clone();
+            sorted.sort_by(seat_order);
+            assert_eq!(team, sorted);
+            teams.insert(team);
+        }
+        // Five choose two.
+        assert_eq!(teams.len(), 10);
+    }
+
+    #[test]
+    fn a_player_approves_or_rejects_with_even_odds() {
+        let me = id("player3");
+        let view = view_of("player3", Phase::Vote, &["player1", "player2"]);
+        let ballots: Vec<Option<Choice>> = (0..200).map(|_| choose(&me, &view)).collect();
+        for ballot in [Ballot::Approve, Ballot::Reject] {
+            let cast = ballots
+                .iter()
+                .filter(|chosen| **chosen == Some(Choice::Ballot(ballot)))
+                .count();
+            assert!((50..=150).contains(&cast), "{ballot:?}: {cast}");
+        }
+    }
+
+    #[test]
+    fn a_good_member_supports_and_an_evil_one_supports_or_sabotages() {
+        let team = ["player1", "player2"];
+        let merlin = view_of("player1", Phase::Quest, &team);
+        assert_eq!(merlin.role, Role::Merlin);
+        for _ in 0..50 {
+            assert_eq!(
+                choose(&id("player1"), &merlin),
+                Some(Choice::Deed(Deed::Support))
+            );
+        }
+        let assassin = view_of("player2", Phase::Quest, &team);
+        let deeds: HashSet<Option<Choice>> = (0..100)
+            .map(|_| choose(&id("player2"), &assassin))
+            .collect();
+        assert_eq!(
+            deeds,
+            HashSet::from([
+                Some(Choice::Deed(Deed::Support)),
+                Some(Choice::Deed(Deed::Sabotage))
+            ])
+        );
+    }
+
+    #[test]
+    fn the_assassin_names_one_of_the_players_it_does_not_see_as_evil() {
+        let me = id("player2");
+        let view = view_of("player2", Phase::Assassinate, &[]);
+        let named: HashSet<Option<Choice>> = (0..200).map(|_| choose(&me, &view)).collect();
+        let expected = ["player1", "player3", "player4"]
+            .map(|player| Some(Choice::Target(id(player))))
+            .into();
+        assert_eq!(named, expected);
+        // Seeing everyone else as evil, it names nobody.
+        let mut view = view;
+        view.players = vec![me.clone(), id("player5")];
+        assert_eq!(choose(&me, &view), None);
+    }
+}

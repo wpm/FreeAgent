@@ -1,7 +1,7 @@
 # Social deduction
 
 Social deduction games, played by [free agents](../../README.md), either at
-random or by a language model. The first of them is Werewolf.
+random or by a language model: Werewolf and Avalon.
 
 ## Installing
 
@@ -341,6 +341,61 @@ have running:
 ```sh
 social-deduction werewolf examples/werewolf/prompted.toml
 ```
+
+## Avalon
+
+*The Resistance: Avalon* is played by 5 to 10 players on two teams, good
+and evil, over at most five quests. Each quest is led by a leader, who
+proposes a team of the size the quest needs. Every player votes on the
+team in secret, and it goes when a strict majority of all the players
+approves. Each member of a team that goes supports or sabotages the quest
+in secret, and the quest fails when enough of them sabotage it: one,
+except two on the fourth quest with seven or more players. Only how many
+sabotaged it is told. `player1` leads first, and the lead passes in seat
+order after every proposal. Everyone may talk in every phase.
+
+Good wins with three successful quests, unless the Assassin then names
+Merlin. Evil wins with three failed quests, five failed proposals in a row,
+or Merlin named. A leader who proposes nobody in time fails the proposal,
+a player who does not vote does not approve, and a member who does neither
+supports.
+
+| Players | Quest 1 | Quest 2 | Quest 3 | Quest 4 | Quest 5 |
+|---|---|---|---|---|---|
+| 5 | 2 | 3 | 2 | 3 | 3 |
+| 6 | 2 | 3 | 4 | 3 | 4 |
+| 7 | 2 | 3 | 3 | 4 (2 sabotages) | 4 |
+| 8–10 | 3 | 4 | 4 | 5 (2 sabotages) | 5 |
+
+Merlin, Percival and the Servants (loyal servants of Arthur) are good; the
+Assassin, Morgana, Mordred, Oberon and the Minions (of Mordred) are evil.
+Each player is shown its own role and what it sees of some others:
+
+| Role | Sees |
+|---|---|
+| Merlin | every evil player but Mordred, as evil |
+| Percival | Merlin and Morgana, as Merlin or Morgana |
+| Evil, but Oberon | every other evil player but Oberon, as evil |
+| Oberon, Servant | nobody |
+
+Only the Assassin names Merlin, and only evil players sabotage. The
+environment counts only the choices the rules allow.
+
+```sh
+social-deduction avalon [--merlin N] [--percival N] [--servants N] [--assassin N] [--morgana N] [--mordred N] [--oberon N] [--minions N] [--propose-limit D] [--vote-limit D] [--quest-limit D] [--assassinate-limit D] [--log | --no-log]
+```
+
+The table seats Merlin, the Assassin, two Servants and a Minion unless the
+counts say otherwise, and each phase waits a minute unless a limit says
+otherwise. A table seats 5 to 10 players, at most one of each role but
+Servant and Minion, and Merlin exactly when it seats an Assassin. The usual
+splits between good and evil are 3–2, 4–2, 4–3, 5–3, 6–3 and 6–4 for 5 to
+10 players. Every player plays `random`: a leader proposes a team drawn at
+random, a vote approves or rejects with even odds, a good member supports
+and an evil one supports or sabotages with even odds, and the Assassin names
+one of the players it does not see as evil. The game is told on standard
+output as it happens and logged to standard error as JSON Lines, as
+Werewolf's is.
 
 ## Models
 
