@@ -819,9 +819,8 @@ impl State {
     /// Whether `from` may make `choice` in the current phase: it is of the
     /// kind the phase takes; a team is the size the quest needs, of
     /// distinct players at the table; a sabotage comes from an evil
-    /// player; and the Assassin's target is another player at the table,
-    /// and not one it sees as evil. Whether the phase waits on `from` is
-    /// the environment's to say.
+    /// player; and the Assassin's target is one of its [`candidates`].
+    /// Whether the phase waits on `from` is the environment's to say.
     fn legal(&self, from: &PlayerId, choice: &Choice) -> bool {
         match self.phase {
             Phase::Propose => choice.team().is_some_and(|team| {
@@ -834,11 +833,9 @@ impl State {
             Phase::Quest => choice
                 .deed()
                 .is_some_and(|deed| deed == Deed::Support || self.roles[from].team() == Team::Evil),
-            Phase::Assassinate => choice.target().is_some_and(|target| {
-                target != from
-                    && self.roles.contains_key(target)
-                    && self.sees(from).get(target) != Some(&Seen::Evil)
-            }),
+            Phase::Assassinate => choice
+                .target()
+                .is_some_and(|target| candidates(from, &self.view(from)).contains(target)),
         }
     }
 
