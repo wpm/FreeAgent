@@ -214,6 +214,16 @@ impl fmt::Display for Role {
 }
 
 impl Role {
+    /// The role's plural: `werewolves`, `villagers`, `doctors`, `seers`.
+    pub fn plural(self) -> &'static str {
+        match self {
+            Role::Werewolf => "werewolves",
+            Role::Villager => "villagers",
+            Role::Doctor => "doctors",
+            Role::Seer => "seers",
+        }
+    }
+
     /// Which side this role wins with.
     pub fn team(self) -> Team {
         match self {
@@ -241,6 +251,23 @@ pub struct RoleCounts {
     /// How many seers.
     #[arg(long, help = how_many("seers", Table::default().seers))]
     pub seers: Option<usize>,
+}
+
+impl RoleCounts {
+    /// How many of `role` were given, if any.
+    pub fn get(&self, role: Role) -> Option<usize> {
+        match role {
+            Role::Werewolf => self.werewolves,
+            Role::Villager => self.villagers,
+            Role::Doctor => self.doctors,
+            Role::Seer => self.seers,
+        }
+    }
+
+    /// The flag that gives how many of `role`, such as `--werewolves`.
+    pub fn flag(role: Role) -> String {
+        format!("--{}", role.plural())
+    }
 }
 
 /// The help for a count of `what`, naming the `default` the code fills in
@@ -320,10 +347,9 @@ impl fmt::Display for Table {
     /// The counts in the order the roles are dealt, each in its number:
     /// `2 werewolves, 3 villagers, 1 doctor, 1 seer`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let counted = self.counts().map(|(role, count)| match (count, role) {
-            (1, _) => format!("1 {role}"),
-            (_, Role::Werewolf) => format!("{count} werewolves"),
-            _ => format!("{count} {role}s"),
+        let counted = self.counts().map(|(role, count)| match count {
+            1 => format!("1 {role}"),
+            _ => format!("{count} {}", role.plural()),
         });
         f.write_str(&counted.join(", "))
     }
@@ -545,6 +571,12 @@ pub struct Rules {
 }
 
 impl Rules {
+    /// Whether the day's vote is ratified, which it is when the ratify
+    /// limit is above zero.
+    pub fn ratified(&self) -> bool {
+        ratified(self.ratify_limit)
+    }
+
     /// The entry that opens a game of `deal` under these rules: every
     /// player's role and strategy, and the limits.
     pub fn start(&self, deal: &HashMap<PlayerId, Dealt>) -> Entry {
@@ -565,6 +597,12 @@ impl Rules {
             ratify_limit: self.ratify_limit,
         }
     }
+}
+
+/// Whether a day with `ratify_limit` is ratified: whether the limit is
+/// above zero.
+pub fn ratified(ratify_limit: Duration) -> bool {
+    !ratify_limit.is_zero()
 }
 
 impl Default for Rules {
@@ -1081,6 +1119,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn role_counts_give_each_roles_count_under_the_flag_clap_derives() {
+        let counts = RoleCounts {
+            werewolves: Some(1),
+            villagers: None,
+            doctors: Some(2),
+            seers: None,
+        };
+        let got = Table::default().counts().map(|(role, _)| counts.get(role));
+        assert_eq!(got, [Some(1), None, Some(2), None]);
+        let flags: Vec<String> = RoleCounts::augment_args(clap::Command::new("werewolf"))
+            .get_arguments()
+            .filter_map(|arg| arg.get_long().map(|long| format!("--{long}")))
+            .collect();
+        let named = Table::default()
+            .counts()
+            .map(|(role, _)| RoleCounts::flag(role));
+        assert_eq!(flags, named);
+        assert_eq!(named[0], "--werewolves");
+    }
+
+    #[test]
     fn a_table_is_told_role_by_role_in_the_singular_or_the_plural() {
         assert_eq!(
             Table::default().to_string(),
@@ -1096,6 +1155,18 @@ pub(crate) mod tests {
             table.to_string(),
             "1 werewolf, 0 villagers, 2 doctors, 2 seers"
         );
+    }
+
+    #[test]
+    fn a_day_is_ratified_when_its_ratify_limit_is_above_zero() {
+        assert!(!ratified(Duration::ZERO));
+        assert!(ratified(Duration::from_millis(1)));
+        assert!(!Rules::default().ratified());
+        let rules = Rules {
+            ratify_limit: Duration::from_secs(20),
+            ..Rules::default()
+        };
+        assert!(rules.ratified());
     }
 
     #[test]

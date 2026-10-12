@@ -27,7 +27,7 @@
 //! deal, and [`players`] builds each seat's player from it.
 
 use super::prompted::{self, Probed};
-use super::{Dealt, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Seat, Table, random};
+use super::{Dealt, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Seat, Table, random, ratified};
 use crate::model::{
     self, CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable,
 };
@@ -154,24 +154,36 @@ pub struct Random {}
 
 /// The prompted policy's parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "PromptedTable")]
 pub struct Prompted {
     /// The system prompt template.
     pub system: String,
-    /// The name of the model asked, which may be left out when the file
-    /// defines exactly one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+    /// The name of the model asked. The file may leave it out when it
+    /// defines exactly one, which [`Config::parse`] fills in.
+    pub model: String,
 }
 
-impl Prompted {
-    /// The name of the model this strategy asks, of `models`: the one it
-    /// names, otherwise the only one.
-    pub fn model_name<'a, M>(&'a self, models: &'a BTreeMap<String, M>) -> &'a str {
-        self.model
-            .as_ref()
-            .or(models.keys().next())
-            .map_or("", String::as_str)
+/// The prompted policy's parameters, as written.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PromptedTable {
+    system: String,
+    model: Option<String>,
+}
+
+impl TryFrom<PromptedTable> for Prompted {
+    type Error = &'static str;
+
+    /// The parameters, with a model left out as no name yet. A model
+    /// named by the empty name is an error.
+    fn try_from(PromptedTable { system, model }: PromptedTable) -> Result<Self, Self::Error> {
+        match model {
+            Some(model) if model.is_empty() => Err("model is empty; name a model or leave it out"),
+            model => Ok(Prompted {
+                system,
+                model: model.unwrap_or_default(),
+            }),
+        }
     }
 }
 
@@ -233,7 +245,8 @@ impl Roles {
 pub struct RoleConfig {
     /// How many of the role sit at the table.
     pub count: Option<usize>,
-    /// The strategy every seat of the role plays.
+    /// The strategy every seat of the role plays that `strategies` does
+    /// not allot.
     pub strategy: Option<String>,
     /// How many seats of the role play each strategy, by name.
     pub strategies: Option<BTreeMap<String, usize>>,
@@ -272,11 +285,12 @@ impl Config {
     /// Parse `file`, the text of a configuration file. A `[text]` block
     /// named like one of the template variables is an error, since the
     /// templates could not tell them apart, and so is a model's context
-    /// window of 0, a strategy named [`RANDOM`], and a prompted strategy
+    /// window of 0, a strategy named [`RANDOM`], a file's `strategy` that
+    /// is not defined, and a prompted strategy
     /// naming a model the file does not define, or naming none when the
     /// file does not define exactly one.
     pub fn parse(file: &str) -> anyhow::Result<Self> {
-        let config: Self = toml::from_str(file)?;
+        let mut config: Self = toml::from_str(file)?;
         if let Some(taken) = VARIABLES.iter().find(|v| config.text.contains_key(**v)) {
             bail!("[text] has a block named {taken}, which is a template variable");
         }
@@ -290,18 +304,27 @@ impl Config {
         if config.strategies.contains_key(RANDOM) {
             bail!("[strategies.{RANDOM}] is built in, and may not be defined");
         }
-        for (name, strategy) in &config.strategies {
-            if let Strategy::Prompted(prompted) = strategy {
-                match &prompted.model {
-                    Some(model) if !config.models.contains_key(model) => {
-                        bail!("strategy {name} names the model {model}, which is not defined")
-                    }
-                    None if config.models.len() != 1 => bail!(
+        if let Some(name) = &config.strategy
+            && name != RANDOM
+            && !config.strategies.contains_key(name)
+        {
+            bail!("the file's strategy is {name}, which is not a strategy");
+        }
+        for (name, strategy) in &mut config.strategies {
+            let Strategy::Prompted(prompted) = strategy else {
+                continue;
+            };
+            let model = &prompted.model;
+            if model.is_empty() {
+                let [only] = config.models.keys().collect::<Vec<_>>()[..] else {
+                    bail!(
                         "strategy {name} names no model, which it may leave out only when the file defines exactly one; it defines {}",
                         config.models.len()
-                    ),
-                    _ => {}
-                }
+                    );
+                };
+                prompted.model = only.clone();
+            } else if !config.models.contains_key(model) {
+                bail!("strategy {name} names the model {model}, which is not defined");
             }
         }
         Ok(config)
@@ -310,15 +333,20 @@ impl Config {
     /// The settings that take effect with `overrides` from the command
     /// line: each limit from the command line if given there, otherwise
     /// from the file, otherwise from the code; and each role's allotment.
-    /// A role allotted by a `strategies` table has as many seats as the
-    /// table allots, and a count in the file or on the command line that
-    /// disagrees is an error naming the role and both numbers. Any other
-    /// role's seats all play one strategy, its own `strategy`, otherwise
-    /// the file's, otherwise [`RANDOM`], and it has the count from the
-    /// command line if given there, otherwise from the file, otherwise from
-    /// the code. A strategy allotted that is not defined is an error naming
-    /// the role. A ratify limit longer than the day limit is an error
-    /// naming both, since the day would run out before any vote stood.
+    /// A role's `strategies` table allots its seats first. With the role's
+    /// own `strategy`, that strategy fills the rest of the role's count,
+    /// from the command line if given there, otherwise from the file,
+    /// otherwise from the code, and a count given that is less than the
+    /// table allots is an error naming the role and both numbers. Without
+    /// one, the role has as many seats as the table allots, and a count in
+    /// the file or on the command line that disagrees is an error naming the
+    /// role and both numbers. A role with no table plays one strategy, its
+    /// own `strategy`, otherwise the file's, otherwise [`RANDOM`], and has
+    /// the count from the command line if given there, otherwise from the
+    /// file, otherwise from the code. A strategy allotted that is not
+    /// defined is an error naming the role. A ratify limit longer than the
+    /// day limit is an error naming both, since the day would run out
+    /// before any vote stood.
     pub fn settle(self, overrides: Overrides) -> anyhow::Result<Settings> {
         let rules = Rules::default();
         let day_limit = overrides
@@ -342,20 +370,33 @@ impl Config {
         let mut allotments = Allotments::new();
         for (role, default) in Table::default().counts() {
             let file = self.roles.get(role);
-            let (given, option) = match role {
-                Role::Werewolf => (overrides.roles.werewolves, "--werewolves"),
-                Role::Villager => (overrides.roles.villagers, "--villagers"),
-                Role::Doctor => (overrides.roles.doctors, "--doctors"),
-                Role::Seer => (overrides.roles.seers, "--seers"),
-            };
-            let allotted = match &file.strategies {
-                Some(table) => {
+            let given = overrides.roles.get(role);
+            let file_count = (format!("[roles.{role}] count"), file.count);
+            let flag_count = (RoleCounts::flag(role), given);
+            let allotted = match (&file.strategies, &file.strategy) {
+                (Some(table), Some(filling)) => {
                     let allots: usize = table.values().sum();
-                    let counts = [
-                        (format!("[roles.{role}] count"), file.count),
-                        (option.to_string(), given),
-                    ];
-                    for (setting, count) in counts {
+                    let (setting, count) = match given {
+                        Some(_) => flag_count,
+                        None => file_count,
+                    };
+                    if let Some(count) = count
+                        && count < allots
+                    {
+                        bail!(
+                            "{setting} is {count}, but [roles.{role}.strategies] allots {allots}"
+                        );
+                    }
+                    let mut table = table.clone();
+                    let left = count.unwrap_or(default).saturating_sub(allots);
+                    if left > 0 {
+                        *table.entry(filling.clone()).or_default() += left;
+                    }
+                    table
+                }
+                (Some(table), None) => {
+                    let allots: usize = table.values().sum();
+                    for (setting, count) in [file_count, flag_count] {
                         if let Some(count) = count
                             && count != allots
                         {
@@ -366,7 +407,7 @@ impl Config {
                     }
                     table.clone()
                 }
-                None => {
+                (None, _) => {
                     let strategy = file
                         .strategy
                         .as_ref()
@@ -456,7 +497,7 @@ impl Settings {
     /// The name of the model the strategy `name` asks, if it is prompted.
     fn model_of(&self, name: &str) -> Option<&str> {
         match &self.strategies[name] {
-            Strategy::Prompted(prompted) => Some(prompted.model_name(&self.config.models)),
+            Strategy::Prompted(prompted) => Some(&prompted.model),
             Strategy::Random(_) => None,
         }
     }
@@ -571,7 +612,7 @@ impl Settings {
             .filter(|prompt| self.model_of(&prompt.strategy) == Some(name))
             .try_fold(0, |most, prompt| {
                 let (text, seat, role) = (&prompt.text, &prompt.seat, prompt.role);
-                let (day_limit, ratified) = (self.day_limit, !self.ratify_limit.is_zero());
+                let (day_limit, ratified) = (self.day_limit, ratified(self.ratify_limit));
                 let needed = prompted::unstoried(id, text, seat, role, &alive, day_limit, ratified);
                 Ok(most.max(needed?))
             })
@@ -733,7 +774,8 @@ pub struct Configuration {
     /// How long a day's votes had to stand to be ratified.
     #[serde(with = "humantime_serde")]
     pub ratify_limit: Duration,
-    /// Every strategy as written, by name, [`RANDOM`] included.
+    /// Every strategy, by name, [`RANDOM`] included, each prompted one
+    /// naming the model it asks.
     pub strategies: BTreeMap<String, Strategy>,
     /// How many seats of each role played each strategy.
     pub allotments: Allotments,
@@ -755,11 +797,11 @@ pub fn players(
     deal: &HashMap<PlayerId, Dealt>,
     handles: &Handles,
 ) -> impl FnMut(&PlayerId) -> Seat + use<> {
-    let ratified = !configuration.ratify_limit.is_zero();
+    let ratified = ratified(configuration.ratify_limit);
     let mut prompted = HashMap::new();
     for (seat, Dealt { strategy, .. }) in deal {
         if let Strategy::Prompted(strategy) = &configuration.strategies[strategy] {
-            let name = strategy.model_name(&configuration.models);
+            let name = &strategy.model;
             let model = &configuration.models[name];
             let player = (
                 configuration.prompts[seat].clone(),
@@ -920,22 +962,27 @@ system = "{{ name }} the {{ role }}"
     }
 
     #[test]
-    fn a_strategy_of_either_policy_parses_and_is_written_as_it_was() {
+    fn a_strategy_of_either_policy_parses_and_is_written_with_its_model() {
         let file = format!("{PLAIN}[strategies.dice]\npolicy = \"random\"\n");
         let config = Config::parse(&file).unwrap();
         assert_eq!(config.strategies["dice"], Strategy::Random(Random {}));
+        // The file's one model, filled in.
         assert_eq!(
             config.strategies["plain"],
             Strategy::Prompted(Prompted {
                 system: "{{ name }} the {{ role }}".to_string(),
-                model: None,
+                model: "qwen".to_string(),
             })
         );
         assert_eq!(
             serde_json::to_value(&config.strategies).unwrap(),
             json!({
                 "dice": {"policy": "random"},
-                "plain": {"policy": "prompted", "system": "{{ name }} the {{ role }}"},
+                "plain": {
+                    "policy": "prompted",
+                    "system": "{{ name }} the {{ role }}",
+                    "model": "qwen",
+                },
             })
         );
     }
@@ -983,6 +1030,19 @@ system = "{{ name }} the {{ role }}"
         assert_eq!(
             settle(&named, Overrides::default()).model_of("plain"),
             Some("claude")
+        );
+    }
+
+    #[test]
+    fn a_model_named_empty_is_an_error_naming_the_strategy() {
+        let file = PLAIN.replace(
+            "policy = \"prompted\"",
+            "policy = \"prompted\"\nmodel = \"\"",
+        );
+        let shown = unsettled(&file, Overrides::default());
+        assert!(
+            shown.contains("[strategies.plain]") && shown.contains("model is empty"),
+            "{shown}"
         );
     }
 
@@ -1131,6 +1191,75 @@ dice = 1
     }
 
     #[test]
+    fn a_role_s_strategy_fills_the_seats_its_strategies_table_leaves() {
+        let file = |count: &str| {
+            format!(
+                "{}[roles.villager]\n{count}strategy = \"dice\"\n[roles.villager.strategies]\nbold = 2\n",
+                three()
+            )
+        };
+        let villagers =
+            |file: &str, overrides| settle(file, overrides).allotments[&Role::Villager].clone();
+        assert_eq!(
+            villagers(&file("count = 5\n"), Overrides::default()),
+            allotted(&[("bold", 2), ("dice", 3)])
+        );
+        // The count from the command line over the file's, and the code's
+        // without either.
+        let given = counting(RoleCounts {
+            villagers: Some(4),
+            ..RoleCounts::default()
+        });
+        assert_eq!(
+            villagers(&file("count = 5\n"), given),
+            allotted(&[("bold", 2), ("dice", 2)])
+        );
+        assert_eq!(
+            villagers(&file(""), Overrides::default()),
+            allotted(&[("bold", 2), ("dice", 1)])
+        );
+        // A count the table fills leaves nothing to fill.
+        assert_eq!(
+            villagers(&file("count = 2\n"), Overrides::default()),
+            allotted(&[("bold", 2)])
+        );
+        // A strategy in the table and filling adds up.
+        let both = file("count = 4\n").replace("bold = 2", "bold = 1\ndice = 1");
+        assert_eq!(
+            villagers(&both, Overrides::default()),
+            allotted(&[("bold", 1), ("dice", 3)])
+        );
+        // A count the table overfills is an error naming both numbers.
+        assert_eq!(
+            unsettled(&file("count = 1\n"), Overrides::default()),
+            "[roles.villager] count is 1, but [roles.villager.strategies] allots 2"
+        );
+        let given = counting(RoleCounts {
+            villagers: Some(1),
+            ..RoleCounts::default()
+        });
+        assert_eq!(
+            unsettled(&file("count = 5\n"), given),
+            "--villagers is 1, but [roles.villager.strategies] allots 2"
+        );
+        // Without a count, a table that allots more than the code's count
+        // has as many seats as it allots.
+        let more = file("").replace("bold = 2", "bold = 4");
+        assert_eq!(
+            villagers(&more, Overrides::default()),
+            allotted(&[("bold", 4)])
+        );
+        // A strategy that fills is checked like any other.
+        assert_eq!(
+            unsettled(
+                &file("count = 5\n").replace("\"dice\"", "\"wild\""),
+                Overrides::default()
+            ),
+            "the villager is allotted wild, which is not a strategy"
+        );
+    }
+
+    #[test]
     fn a_strategies_table_s_seats_are_the_role_s_count_and_a_count_that_disagrees_is_an_error() {
         let file = format!(
             "{}[roles.werewolf.strategies]\ndice = 1\nbold = 2\n",
@@ -1170,13 +1299,22 @@ dice = 1
                 format!("the {role} is allotted wild, which is not a strategy")
             );
         }
-        let file = PLAIN.replace("strategy = \"plain\"", "strategy = \"wild\"");
-        assert_eq!(
-            unsettled(&file, Overrides::default()),
-            "the werewolf is allotted wild, which is not a strategy"
-        );
         // A strategy defined and never allotted is no error.
         settle(&three(), Overrides::default());
+    }
+
+    #[test]
+    fn the_file_s_strategy_must_be_defined_even_when_every_role_is_allotted_otherwise() {
+        let mut file = PLAIN.replace("strategy = \"plain\"", "strategy = \"cautous\"");
+        for role in ["werewolf", "villager", "doctor", "seer"] {
+            file.push_str(&format!("[roles.{role}]\nstrategy = \"plain\"\n"));
+        }
+        assert_eq!(
+            unsettled(&file, Overrides::default()),
+            "the file's strategy is cautous, which is not a strategy"
+        );
+        let file = PLAIN.replace("strategy = \"plain\"", &format!("strategy = \"{RANDOM}\""));
+        settle(&file, Overrides::default());
     }
 
     #[test]
@@ -1978,7 +2116,7 @@ count = 1
         let prompted = |system: &str| {
             Strategy::Prompted(Prompted {
                 system: system.to_string(),
-                model: None,
+                model: "qwen".to_string(),
             })
         };
         assert_eq!(

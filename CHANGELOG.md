@@ -73,7 +73,9 @@ workflow takes a version's notes from here.
   default, and a day whose ratify limit is zero is not ratified: each
   player's first vote counts, and the day ends when everyone has voted or
   at the day limit. A model player's `select` tool says which vote counts:
-  the latest in a ratified day, and otherwise the first, which is final.
+  the latest in a ratified day, and otherwise the first, which is final,
+  and in a day that is not ratified it is offered until the player has
+  voted.
   The log records how every day ended as `Voted`, the
   start entry carries the ratify limit, `"0s"` for a day that is not
   ratified, as does the configuration, and the narration tells the ratify
@@ -169,7 +171,8 @@ workflow takes a version's notes from here.
   named strategies under `[strategies.<name>]`, each a policy, `random` or
   `prompted`, with its parameters, a prompted one its `system` template and
   its `model`; and allots each role's seats among the strategies by a
-  `[roles.<role>.strategies]` table, a role's `strategy`, or the file's
+  `[roles.<role>.strategies]` table, with the role's own `strategy`
+  filling the seats it leaves; by a role's `strategy`; or by the file's
   top-level `strategy`, otherwise `random`. Roles and strategies are dealt
   together at random. Only the models in play are set up, and a game may
   play several, each with its own tool choice and context window. The `[model]`, `[prompt]` and `[personas]`

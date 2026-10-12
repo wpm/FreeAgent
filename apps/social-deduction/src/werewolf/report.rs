@@ -10,7 +10,9 @@
 
 use super::config::{ContextWindow, Source};
 use super::prompted::Memory;
-use super::{ENVIRONMENT, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Team, View, awake};
+use super::{
+    ENVIRONMENT, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Team, View, awake, ratified,
+};
 use crate::model::{ToolChoice, tokens};
 use free_agent::{ActorId, Event};
 use humantime::format_duration;
@@ -185,7 +187,7 @@ impl Narrator {
                 self.roles = roles.clone();
                 self.strategies = strategies.clone();
                 self.alive = roles.keys().cloned().collect();
-                self.ratified = !ratify_limit.is_zero();
+                self.ratified = ratified(*ratify_limit);
                 self.table(*night_limit, *day_limit, *ratify_limit)
             }
             Entry::Action {
@@ -443,7 +445,7 @@ impl Narrator {
             format_duration(night_limit),
             format_duration(day_limit)
         );
-        if !ratify_limit.is_zero() {
+        if ratified(ratify_limit) {
             write!(
                 limits,
                 ", and a vote stands after {}",

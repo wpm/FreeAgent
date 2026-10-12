@@ -29,7 +29,8 @@
 //! these tools, of which the model calls one and may call several: `speak`,
 //! which sends what it says to every other living player and not to the
 //! environment; `select`, which sends its vote to the environment and every
-//! other living player, so the votes are public; in a ratified day,
+//! other living player, so the votes are public, and which a day that is
+//! not ratified offers only until the player has voted; in a ratified day,
 //! `retract`, which withdraws its vote, so that it is undecided again, and
 //! goes where a vote goes; and `wait`, which asks to be woken after some
 //! seconds unless something wakes the player sooner. A reminder is
@@ -211,6 +212,17 @@ impl Mind {
         (lines.join("\n"), shown)
     }
 
+    /// Whether the player has sent a selection in the phase numbered
+    /// `seq`.
+    fn voted(&self, seq: u64) -> bool {
+        self.remembered.lock().unwrap().history.iter().any(|event| {
+            matches!(
+                &event.payload,
+                Memory::Acted { message: Message::Select { seq: sent, .. } } if *sent == seq
+            )
+        })
+    }
+
     /// The next number for a message to others: one up from the last.
     fn number(&self) -> u64 {
         self.n.fetch_add(1, Ordering::Relaxed) + 1
@@ -345,7 +357,8 @@ impl Player {
 
     /// The request for a decision in the phase `view` shows, which lasts
     /// `limit`: the system prompt, then the story so far, a blank line, and
-    /// where the game stands, with `tools` to answer with. The story fits
+    /// where the game stands as the player may be `voting`, with `tools` to
+    /// answer with. The story fits
     /// what is left of the context window once the reply, the system
     /// prompt, the tools and the situation are counted, by estimate,
     /// forgetting talk if it has to. With the request, what the story was
@@ -354,10 +367,11 @@ impl Player {
         &self,
         view: &View,
         limit: Duration,
+        voting: Voting,
         tools: Vec<Tool>,
     ) -> anyhow::Result<(Request, Shown)> {
         let me = &self.context.id;
-        let situation = format!("\n\n{}", situation(me, view, limit, self.mind.ratified)?);
+        let situation = format!("\n\n{}", situation(me, view, limit, voting)?);
         let asking = |asked: String, tools| {
             let mind = &self.mind;
             request(&mind.model_id, mind.tool_choice, &mind.prompt, asked, tools)
@@ -422,7 +436,8 @@ impl Player {
         limit: Duration,
         candidates: &[PlayerId],
     ) -> anyhow::Result<()> {
-        let (request, shown) = self.request(view, limit, night_tools(candidates))?;
+        let voting = Voting::of(self.mind.ratified, false);
+        let (request, shown) = self.request(view, limit, voting, night_tools(candidates))?;
         let response = self.mind.model.complete(&request).await?;
         let target = selected(&response, candidates)?;
         self.carry_out(seq, view, vec![Sending::Select(target)], shown)?;
@@ -430,9 +445,10 @@ impl Player {
     }
 
     /// Ask the model what to do in the day numbered `seq`, which `view`
-    /// shows and which lasts `limit`: speak, vote for one of `candidates`,
-    /// retract its vote in a ratified day, or wait, in any number and
-    /// order, with one response. A response that is not well formed, as
+    /// shows and which lasts `limit`: speak, vote for one of `candidates`
+    /// unless it has voted in a day that is not ratified, retract its vote
+    /// in a ratified day, or wait, in any number and order, with one
+    /// response. A response that is not well formed, as
     /// [`asked`] judges it, is an error, and nothing in it is carried out.
     /// Otherwise the messages are sent in the order the model asked for
     /// them, each utterance to every other living player and each
@@ -446,10 +462,11 @@ impl Player {
         limit: Duration,
         candidates: &[PlayerId],
     ) -> anyhow::Result<()> {
-        let tools = day_tools(candidates, limit, self.mind.ratified);
-        let (request, shown) = self.request(view, limit, tools)?;
+        let voting = Voting::of(self.mind.ratified, self.mind.voted(seq));
+        let tools = day_tools(candidates, limit, voting);
+        let (request, shown) = self.request(view, limit, voting, tools)?;
         let response = self.mind.model.complete(&request).await?;
-        let Asked { sends, wait } = asked(&response, candidates, limit, self.mind.ratified)?;
+        let Asked { sends, wait } = asked(&response, candidates, limit, voting)?;
         let still_on = self.carry_out(seq, view, sends, shown)?;
         if still_on && let Some(after) = wait {
             self.remind(seq, after)?;
@@ -584,17 +601,17 @@ impl Think for Player {
 
 /// Where the game stands for `me` as `view` shows it, how long the phase
 /// lasts, and what is asked of it: by night, what its role does, and by
-/// day, what [`day_asked`] says of a day that is `ratified` or not. A
+/// day, what [`day_asked`] says of a player `voting` as it may. A
 /// player awake by night is a werewolf, the doctor or the seer, and is
 /// shown its own role.
 fn situation(
     me: &PlayerId,
     view: &View,
     limit: Duration,
-    ratified: bool,
+    voting: Voting,
 ) -> anyhow::Result<String> {
     let (phase, asked) = match (&view.phase, view.roles.get(me)) {
-        (Phase::Day, _) => ("day", day_asked(ratified)),
+        (Phase::Day, _) => ("day", day_asked(voting)),
         (Phase::Night, Some(Role::Werewolf)) => {
             ("night", "Choose whom the werewolves should kill.")
         }
@@ -653,8 +670,9 @@ pub(crate) fn unstoried(
         roles: HashMap::from([(me.clone(), role)]),
         alive: alive.clone(),
     };
-    let tools = day_tools(&candidates(me, &view), day_limit, ratified);
-    let asked = format!("\n\n{}", situation(me, &view, day_limit, ratified)?);
+    let voting = Voting::of(ratified, false);
+    let tools = day_tools(&candidates(me, &view), day_limit, voting);
+    let asked = format!("\n\n{}", situation(me, &view, day_limit, voting)?);
     let request = request(model_id, ToolChoice::Required, prompt, asked, tools);
     Ok(model::estimated(&request))
 }
@@ -668,24 +686,52 @@ fn night_tools(candidates: &[PlayerId]) -> Vec<Tool> {
     vec![select(candidates)]
 }
 
-/// The tools a player is offered by day: [`speak`], [`vote`] over
-/// `candidates` in a day that is `ratified` or not, [`retract`] if it is,
-/// and [`wait`] up to `limit`, how long the day lasts.
-fn day_tools(candidates: &[PlayerId], limit: Duration, ratified: bool) -> Vec<Tool> {
-    let retracting = ratified.then(retract);
-    [speak(), vote(candidates, ratified)]
-        .into_iter()
-        .chain(retracting)
+/// How a player may vote by day.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Voting {
+    /// In a ratified day: vote, again if it likes, or retract its vote.
+    Ratified,
+    /// In a day that is not ratified, before it has voted: vote once.
+    Once,
+    /// In a day that is not ratified, once it has voted: not again.
+    Voted,
+}
+
+impl Voting {
+    /// How a player may vote in a day that is `ratified` or not, once it
+    /// has `voted` in it or not.
+    fn of(ratified: bool, voted: bool) -> Self {
+        match (ratified, voted) {
+            (true, _) => Voting::Ratified,
+            (false, false) => Voting::Once,
+            (false, true) => Voting::Voted,
+        }
+    }
+}
+
+/// The tools a player `voting` as it may is offered by day: [`speak`],
+/// [`vote`] over `candidates` unless it has voted in a day that is not
+/// ratified, [`retract`] in a ratified day, and [`wait`] up to `limit`, how
+/// long the day lasts.
+fn day_tools(candidates: &[PlayerId], limit: Duration, voting: Voting) -> Vec<Tool> {
+    let voting = match voting {
+        Voting::Ratified => vec![vote(candidates, true), retract()],
+        Voting::Once => vec![vote(candidates, false)],
+        Voting::Voted => vec![],
+    };
+    std::iter::once(speak())
+        .chain(voting)
         .chain([wait(limit)])
         .collect()
 }
 
-/// What a player is asked to do by day, in a day that is `ratified` or
-/// not: what [`day_tools`] offers it.
-fn day_asked(ratified: bool) -> &'static str {
-    match ratified {
-        true => "You may speak, vote, retract your vote, or wait.",
-        false => "You may speak, vote, or wait.",
+/// What a player `voting` as it may is asked to do by day: what
+/// [`day_tools`] offers it.
+fn day_asked(voting: Voting) -> &'static str {
+    match voting {
+        Voting::Ratified => "You may speak, vote, retract your vote, or wait.",
+        Voting::Once => "You may speak, vote, or wait.",
+        Voting::Voted => "You may speak or wait.",
     }
 }
 
@@ -745,17 +791,17 @@ pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Re
         let situation = format!(
             "It is day, which lasts {}. {}",
             format_duration(PROBE_DAY),
-            day_asked(true)
+            day_asked(Voting::Ratified)
         );
         let day = request(
             model_id,
             tool_choice,
             PROBE_PROMPT,
             situation,
-            day_tools(&candidates, PROBE_DAY, true),
+            day_tools(&candidates, PROBE_DAY, Voting::Ratified),
         );
         let response = model.complete(&day).await?;
-        asked(&response, &candidates, PROBE_DAY, true).map(drop)
+        asked(&response, &candidates, PROBE_DAY, Voting::Ratified).map(drop)
     };
     let (tool_choice, night) = match by_night(ToolChoice::Required).await {
         Err(required) if model::refused(&required) => {
@@ -912,14 +958,14 @@ struct Asked {
 }
 
 impl Asked {
-    /// Take in `call`, one of a day's that is `ratified` or not, if it is
-    /// well formed, as [`asked`] judges it.
+    /// Take in `call`, one of a day's by a player `voting` as it may, if it
+    /// is well formed, as [`asked`] judges it.
     fn take(
         &mut self,
         call: &model::Call,
         candidates: &[PlayerId],
         limit: Duration,
-        ratified: bool,
+        voting: Voting,
     ) -> anyhow::Result<()> {
         match call.name.as_str() {
             SPEAK => {
@@ -929,8 +975,10 @@ impl Asked {
                 }
                 self.sends.push(Sending::Say(text));
             }
-            SELECT => self.sends.push(Sending::Select(target(call, candidates)?)),
-            RETRACT if ratified => {
+            SELECT if voting != Voting::Voted => {
+                self.sends.push(Sending::Select(target(call, candidates)?));
+            }
+            RETRACT if voting == Voting::Ratified => {
                 let Retraction {} = arguments(call)?;
                 self.sends.push(Sending::Retract);
             }
@@ -996,17 +1044,18 @@ fn selected(response: &Response, candidates: &[PlayerId]) -> anyhow::Result<Play
 }
 
 /// What a day's `response` asks for, its calls taken in the order the
-/// model made them, in a day that is `ratified` or not. The response is
-/// judged as a whole: no tool call, a call to a tool [`day_tools`] does not
-/// offer in such a day, arguments that do not parse, a target who is not
-/// one of `candidates`, text that is empty once trimmed, or seconds not
-/// between 1 and `limit` in whole seconds is an error, and then nothing in
-/// it is carried out.
+/// model made them, by a player `voting` as it may. In a day that is not
+/// ratified, a vote after the first, in this response or an earlier one,
+/// is a call to a tool not offered. The response is judged as a whole: no
+/// tool call, a call to a tool [`day_tools`] does not offer the player,
+/// arguments that do not parse, a target who is not one of `candidates`,
+/// text that is empty once trimmed, or seconds not between 1 and `limit`
+/// in whole seconds is an error, and then nothing in it is carried out.
 fn asked(
     response: &Response,
     candidates: &[PlayerId],
     limit: Duration,
-    ratified: bool,
+    mut voting: Voting,
 ) -> anyhow::Result<Asked> {
     let made = response.tool_calls();
     if made.is_empty() {
@@ -1014,7 +1063,10 @@ fn asked(
     }
     let mut asked = Asked::default();
     for call in made {
-        asked.take(&call.function, candidates, limit, ratified)?;
+        asked.take(&call.function, candidates, limit, voting)?;
+        if voting == Voting::Once && call.function.name == SELECT {
+            voting = Voting::Voted;
+        }
     }
     Ok(asked)
 }
@@ -1136,7 +1188,7 @@ mod tests {
         };
         let strategy = Strategy::Prompted(config::Prompted {
             system: "You are {{ name }}.".to_string(),
-            model: None,
+            model: MODEL.to_string(),
         });
         Configuration {
             role_counts: all.into_iter().map(|role| (role, count(role))).collect(),
@@ -1210,7 +1262,7 @@ mod tests {
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
         let model: Arc<dyn model::Model> = model;
-        let ratified = !rules.ratify_limit.is_zero();
+        let ratified = rules.ratified();
         let player = |id: &PlayerId| {
             puppets.remove(id.as_str()).unwrap_or_else(|| {
                 Player::init(
@@ -1885,7 +1937,8 @@ mod tests {
         // Every living player is announced every phase: two nights of four
         // and three, and two days of the same. Every announcement of a
         // phase the player is awake in was asked about, and by day every
-        // player was asked again about what it heard. Every player awake
+        // player was asked again about what it heard, offered no vote once
+        // it had voted, since the day is not ratified. Every player awake
         // selected once a phase, and spoke once a day.
         assert_eq!(announced.len(), 14);
         assert_eq!(awake, 11);
@@ -1905,10 +1958,12 @@ mod tests {
                     .to_string(),
                 "It is night 1, which lasts 1m. Choose whom to protect.".to_string(),
                 "It is day 1, which lasts 1m. You may speak, vote, or wait.".to_string(),
+                "It is day 1, which lasts 1m. You may speak or wait.".to_string(),
                 "It is night 2, which lasts 1m. Choose whom the werewolves should kill."
                     .to_string(),
                 "It is night 2, which lasts 1m. Choose whom to protect.".to_string(),
                 "It is day 2, which lasts 1m. You may speak, vote, or wait.".to_string(),
+                "It is day 2, which lasts 1m. You may speak or wait.".to_string(),
             ])
         );
     }
@@ -2081,6 +2136,70 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn in_a_day_that_is_not_ratified_a_player_who_voted_is_not_offered_select_again() {
+        // Bob votes against cat by day 1 and asks to wait two seconds, and
+        // everyone else waits. Woken by the reminder, bob is offered no
+        // vote and told it may speak or wait, and its model votes against
+        // dan anyway, which is a call to a tool not offered, so nothing of
+        // that response is sent.
+        let roles = one_wolf_against(&["ann", "bob", "cat", "dan"]);
+        let model = Arc::new(by_day(|request| {
+            let bob = request.messages[0] == model::Message::system(told("bob"));
+            let target = match voted_in_this_phase(&request.messages[1].content) {
+                false => "cat",
+                true => "dan",
+            };
+            let calls = match bob {
+                true => vec![voting(target), waiting(2)],
+                false => vec![waiting(10)],
+            };
+            Ok(Response::calling(&calls))
+        }));
+        let rules = Rules {
+            ratify_limit: Duration::ZERO,
+            ..quick()
+        };
+        let (_, logged, _) = play(roles, rules, Arc::clone(&model)).await.unwrap();
+        let votes: Vec<_> = sent_by(&logged, "bob")
+            .into_iter()
+            .filter(|(message, _, _)| matches!(message, Message::Select { seq: 2, .. }))
+            .map(|(message, _, _)| message)
+            .collect();
+        assert_eq!(votes, [&selection(2, "bob", 1, "cat")]);
+        let failed = logged.iter().any(|entry| {
+            matches!(entry, Entry::Failed { player, seq: 2, error }
+                if player == "bob"
+                    && error == "the model called select, which is not a tool it was offered")
+        });
+        assert!(failed, "{logged:?}");
+        let bob: Vec<Request> = model
+            .requests()
+            .into_iter()
+            .filter(|request| request.messages[0] == model::Message::system(told("bob")))
+            .filter(is_day)
+            .collect();
+        let again = &bob[1];
+        assert!(again.tools.iter().all(|tool| tool.name != SELECT));
+        assert!(asked(&again.messages[1].content).ends_with("You may speak or wait."));
+        // The others remember bob's first vote, and only that one.
+        for other in ["wolf", "cat", "dan"] {
+            let asked = asked_of(&model, other);
+            assert!(
+                asked
+                    .iter()
+                    .any(|asked| asked.contains("bob votes against cat")),
+                "{other}: {asked:?}"
+            );
+            assert!(
+                asked
+                    .iter()
+                    .all(|asked| !asked.contains("bob votes against dan")),
+                "{other}: {asked:?}"
+            );
+        }
+    }
+
     /// The number of the environment's first tentative decision.
     fn decided(logged: &[Entry]) -> u64 {
         logged
@@ -2124,17 +2243,29 @@ mod tests {
                 &me("wolf"),
                 &night(&[("wolf", Role::Werewolf)]),
                 limit,
-                true
+                Voting::Ratified
             )
             .unwrap(),
             "It is night 1, which lasts 1m 30s. Choose whom the werewolves should kill."
         );
         assert_eq!(
-            situation(&me("doc"), &night(&[("doc", Role::Doctor)]), limit, true).unwrap(),
+            situation(
+                &me("doc"),
+                &night(&[("doc", Role::Doctor)]),
+                limit,
+                Voting::Ratified
+            )
+            .unwrap(),
             "It is night 1, which lasts 1m 30s. Choose whom to protect."
         );
         assert_eq!(
-            situation(&me("seer"), &night(&[("seer", Role::Seer)]), limit, true).unwrap(),
+            situation(
+                &me("seer"),
+                &night(&[("seer", Role::Seer)]),
+                limit,
+                Voting::Ratified
+            )
+            .unwrap(),
             "It is night 1, which lasts 1m 30s. Choose whom to ask about."
         );
         // By day everyone votes, whatever its role, and may retract its
@@ -2143,16 +2274,24 @@ mod tests {
         day.phase = Phase::Day;
         day.round = NonZero::new(2).unwrap();
         assert_eq!(
-            situation(&me("ann"), &day, Duration::from_secs(60), true).unwrap(),
+            situation(&me("ann"), &day, Duration::from_secs(60), Voting::Ratified).unwrap(),
             "It is day 2, which lasts 1m. You may speak, vote, retract your vote, or wait."
         );
         assert_eq!(
-            situation(&me("ann"), &day, Duration::from_secs(60), false).unwrap(),
+            situation(&me("ann"), &day, Duration::from_secs(60), Voting::Once).unwrap(),
             "It is day 2, which lasts 1m. You may speak, vote, or wait."
         );
         // A villager sleeps by night, and a player is shown its own role.
-        assert!(situation(&me("ann"), &night(&[("ann", Role::Villager)]), limit, true).is_err());
-        assert!(situation(&me("ann"), &night(&[]), limit, true).is_err());
+        assert!(
+            situation(
+                &me("ann"),
+                &night(&[("ann", Role::Villager)]),
+                limit,
+                Voting::Ratified
+            )
+            .is_err()
+        );
+        assert!(situation(&me("ann"), &night(&[]), limit, Voting::Ratified).is_err());
     }
 
     #[tokio::test]
@@ -2180,12 +2319,12 @@ mod tests {
         assert_eq!(requests[0].tools, night_tools(&placeholders()));
         assert_eq!(
             requests[1].tools,
-            day_tools(&placeholders(), PROBE_DAY, true)
+            day_tools(&placeholders(), PROBE_DAY, Voting::Ratified)
         );
         assert!(
             requests[1].messages[1]
                 .content
-                .ends_with(&format!("{} {ANSWER}", day_asked(true)))
+                .ends_with(&format!("{} {ANSWER}", day_asked(Voting::Ratified)))
         );
     }
 
@@ -2320,7 +2459,7 @@ mod tests {
             ("night", selected(&elsewhere, &candidates).unwrap_err()),
             (
                 "day",
-                super::asked(&too_long, &candidates, PROBE_DAY, true).unwrap_err(),
+                super::asked(&too_long, &candidates, PROBE_DAY, Voting::Ratified).unwrap_err(),
             ),
         ];
         let models = [
@@ -2427,7 +2566,7 @@ mod tests {
             "Vote for the player you want voted out. Your first vote is final."
         );
         for ratified in [false, true] {
-            let tools = day_tools(&candidates, PROBE_DAY, ratified);
+            let tools = day_tools(&candidates, PROBE_DAY, Voting::of(ratified, false));
             assert!(tools.contains(&vote(&candidates, ratified)), "{ratified}");
         }
     }
@@ -2664,8 +2803,14 @@ mod tests {
     fn a_day_s_response_is_judged_as_a_whole_and_its_calls_kept_in_order() {
         let candidates = ["ann".to_string(), "bob".to_string()];
         let limit = Duration::from_secs(60);
-        let judged =
-            |calls: &[Made]| super::asked(&Response::calling(calls), &candidates, limit, true);
+        let judged = |calls: &[Made]| {
+            super::asked(
+                &Response::calling(calls),
+                &candidates,
+                limit,
+                Voting::Ratified,
+            )
+        };
         assert_eq!(
             judged(&[speaking("Hi."), voting("bob"), waiting(60)]).unwrap(),
             Asked {
@@ -2772,7 +2917,12 @@ mod tests {
             assert!(format!("{error:#}").contains(said), "{what}: {error:#}");
         }
         // A response with no choice makes no tool call.
-        let none = super::asked(&answered(json!({"choices": []})), &candidates, limit, true);
+        let none = super::asked(
+            &answered(json!({"choices": []})),
+            &candidates,
+            limit,
+            Voting::Ratified,
+        );
         assert!(none.is_err());
     }
 
@@ -2780,8 +2930,9 @@ mod tests {
     fn in_a_day_that_is_not_ratified_a_retraction_is_a_call_to_a_tool_not_offered() {
         let candidates = ["ann".to_string(), "bob".to_string()];
         let limit = Duration::from_secs(60);
-        let judged =
-            |calls: &[Made]| super::asked(&Response::calling(calls), &candidates, limit, false);
+        let judged = |calls: &[Made]| {
+            super::asked(&Response::calling(calls), &candidates, limit, Voting::Once)
+        };
         assert_eq!(
             judged(&[speaking("Hi."), voting("bob"), waiting(5)]).unwrap(),
             Asked {
@@ -2800,10 +2951,39 @@ mod tests {
     }
 
     #[test]
+    fn in_a_day_that_is_not_ratified_a_vote_after_the_first_is_a_call_to_a_tool_not_offered() {
+        let candidates = ["ann".to_string(), "bob".to_string()];
+        let limit = Duration::from_secs(60);
+        let judged = |calls: &[Made], voting| {
+            super::asked(&Response::calling(calls), &candidates, limit, voting)
+        };
+        let offered = "the model called select, which is not a tool it was offered";
+        let twice = [voting("bob"), voting("ann")];
+        let error = judged(&twice, Voting::Once).unwrap_err();
+        assert_eq!(format!("{error:#}"), offered);
+        let error = judged(&[voting("bob")], Voting::Voted).unwrap_err();
+        assert_eq!(format!("{error:#}"), offered);
+        assert_eq!(
+            judged(&[speaking("Hi."), waiting(5)], Voting::Voted).unwrap(),
+            Asked {
+                sends: vec![Sending::Say("Hi.".to_string())],
+                wait: Some(Duration::from_secs(5)),
+            }
+        );
+        assert_eq!(judged(&twice, Voting::Ratified).unwrap().sends.len(), 2);
+        let names: Vec<String> = day_tools(&candidates, limit, Voting::Voted)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(names, [SPEAK, WAIT]);
+        assert_eq!(day_asked(Voting::Voted), "You may speak or wait.");
+    }
+
+    #[test]
     fn a_day_s_tools_offer_retract_only_in_a_ratified_day() {
         let candidates = placeholders();
         let names = |ratified| -> Vec<String> {
-            day_tools(&candidates, PROBE_DAY, ratified)
+            day_tools(&candidates, PROBE_DAY, Voting::of(ratified, false))
                 .into_iter()
                 .map(|tool| tool.name)
                 .collect()
@@ -2829,7 +3009,7 @@ mod tests {
                 let offered = request.tools.iter().any(|tool| tool.name == RETRACT);
                 assert_eq!(offered, ratified, "{ratify_limit:?}");
                 let asked = &request.messages[1].content;
-                let told = format!("{} {ANSWER}", day_asked(ratified));
+                let told = format!("{} {ANSWER}", day_asked(Voting::of(ratified, false)));
                 assert!(asked.ends_with(&told), "{ratify_limit:?}: {asked}");
             }
         }

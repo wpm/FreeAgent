@@ -129,20 +129,33 @@ Every table may be left out, and a key the file does not know is an error.
   always defined, and a file may not define it.
 - `[roles.werewolf]`, `[roles.villager]`, `[roles.doctor]` and
   `[roles.seer]`: `count`, how many of the role sit at the table;
-  `strategy`, the strategy every seat of the role plays; and
-  `[roles.<role>.strategies]`, how many seats of the role play each
-  strategy, whose seats add up to the role's count.
+  `strategy`, the strategy every seat of the role plays that its
+  `strategies` table does not allot; and `[roles.<role>.strategies]`, how
+  many seats of the role play each strategy.
 - `strategy`, at the top of the file: the strategy every role plays that
   is not allotted otherwise.
 - `[text]`: named blocks of text for the templates to use, so that the rules
   are written once.
 
-A role is allotted by its `strategies` table if it has one, otherwise by
-its `strategy`, otherwise by the file's `strategy`, otherwise to `random`.
-A count given on the command line or in the file that disagrees with a
-`strategies` table is an error naming the role and both numbers, and so is
-a strategy allotted that is not defined. A strategy defined and never
-allotted is fine.
+A role's `strategies` table allots its seats first, and the role's own
+`strategy` fills the rest, up to the role's count. These villagers are 2
+bold and 3 cautious:
+
+```toml
+[roles.villager]
+count = 5
+strategy = "cautious"
+
+[roles.villager.strategies]
+bold = 2
+```
+
+A role with a `strategies` table and no `strategy` of its own has as many
+seats as the table allots. A role with no table plays its `strategy`,
+otherwise the file's `strategy`, otherwise `random`. A count given on the
+command line or in the file that the table's seats do not fit is an error
+naming the role and both numbers, and so is a strategy allotted that is
+not defined. A strategy defined and never allotted is fine.
 
 The key itself is never in the file. `api_key_env` may be left out for a
 provider whose variable is known, such as OpenAI's `OPENAI_API_KEY` and
@@ -217,7 +230,8 @@ and may call several: `speak`, which says something to every other living
 player, and never to the environment, which does nothing with speech;
 `select`, which votes for a player, and in a ratified day may be called
 again to change the vote, while in a day that is not the first vote is
-final, as the tool tells the model; in a ratified day, `retract`, which
+final, as the tool tells the model, and `select` is offered until the
+player has voted; in a ratified day, `retract`, which
 withdraws the vote, so that the player is undecided again; and `wait`, which says nothing now and asks to be woken after some
 seconds unless something wakes the player sooner. The calls are carried out
 in the order the model made them. Wake-ups are debounced: a player has at
