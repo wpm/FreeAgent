@@ -1118,5 +1118,90 @@ fn avalon_refuses_an_invalid_table_saying_what_is_wrong() {
     );
     let stderr = refused(&["avalon", "--servants", "0"]);
     assert!(stderr.contains("5 to 10 players"), "{stderr}");
-    assert_usage_error(&["avalon", "game.toml"]);
+    assert_usage_error(&["avalon", "game.toml", "other.toml"]);
+}
+
+/// The configuration Avalon's log has right after the deal.
+fn avalon_configuration(events: &[Event<avalon::Entry>]) -> &avalon::config::Configuration {
+    match events.get(1).map(|event| &event.payload) {
+        Some(avalon::Entry::Configuration(configuration)) => configuration,
+        second => panic!("{second:?}"),
+    }
+}
+
+/// An Avalon example configuration file, by its name in the examples
+/// directory.
+fn avalon_example(name: &str) -> String {
+    format!("{}/examples/avalon/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
+#[test]
+fn avalon_logs_the_configuration_of_random_players_with_no_file_and_with_the_example() {
+    for args in [vec![], vec![avalon_example("random.toml")]] {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (events, printed) = played_avalon(&args);
+        use avalon::Role::{Assassin, Merlin, Minion, Servant};
+        assert_eq!(
+            avalon_roles(&events),
+            [Merlin, Servant, Servant, Assassin, Minion]
+        );
+        let configuration = avalon_configuration(&events);
+        assert!(configuration.models.is_empty(), "{configuration:?}");
+        assert!(configuration.prompts.is_empty(), "{configuration:?}");
+        assert_eq!(configuration.role_counts[&Servant], 2);
+        assert!(
+            matches!(
+                events.last().map(|event| &event.payload),
+                Some(avalon::Entry::End { .. })
+            ),
+            "{events:?}"
+        );
+        assert!(printed.starts_with("5 players:\n"), "{printed}");
+    }
+}
+
+/// A configuration file written for this test, holding `file`, in the
+/// target directory, at a path of its own so the tests do not collide.
+fn written(test: &str, file: &str) -> String {
+    let path = format!("{}/{test}.toml", env!("CARGO_TARGET_TMPDIR"));
+    std::fs::write(&path, file).unwrap();
+    path
+}
+
+#[test]
+fn avalon_hears_the_command_line_over_the_file() {
+    let config = written(
+        "avalon-hears",
+        "[phases]\nvote_limit = \"2m\"\nquest_limit = \"3m\"\n[roles.servant]\ncount = 3\n[roles.minion]\ncount = 2\n",
+    );
+    let (events, printed) = played_avalon(&[&config, "--minions", "1", "--quest-limit", "30s"]);
+    let configuration = avalon_configuration(&events);
+    assert_eq!(configuration.role_counts[&avalon::Role::Servant], 3);
+    assert_eq!(configuration.role_counts[&avalon::Role::Minion], 1);
+    assert_eq!(configuration.vote_limit, Duration::from_secs(120));
+    assert_eq!(configuration.quest_limit, Duration::from_secs(30));
+    assert!(printed.starts_with("6 players:\n"), "{printed}");
+    assert!(
+        printed.contains("A proposal waits 1m, a vote 2m, a quest 30s"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn avalon_refuses_a_prompted_strategy_at_the_table_and_a_file_it_cannot_read() {
+    let config = written(
+        "avalon-prompted",
+        "[models.qwen]\nbase_url = \"http://localhost:1234/v1\"\nid = \"qwen\"\n\
+         [strategies.schemer]\npolicy = \"prompted\"\nsystem = \"Hi.\"\n\
+         [roles.minion]\nstrategy = \"schemer\"\n",
+    );
+    let stderr = refused(&["avalon", &config]);
+    assert!(
+        stderr.contains(
+            "prompted players do not play Avalon yet; strategy schemer is allotted to the Minion"
+        ),
+        "{stderr}"
+    );
+    let stderr = refused(&["avalon", "no-such-file.toml"]);
+    assert!(stderr.contains("no-such-file.toml"), "{stderr}");
 }

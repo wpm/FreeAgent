@@ -7,6 +7,8 @@
 //! told from its speaker's action.
 
 use super::{Ballot, Choice, Deed, Entry, Message, PROPOSALS, Phase, Role, Tally, Victory, View};
+use crate::model::ToolChoice;
+use crate::model::window::{ContextWindow, Source};
 use crate::report::{in_order, whole_seconds};
 use crate::seat::PlayerId;
 use free_agent::Event;
@@ -18,7 +20,8 @@ use std::time::{Duration, SystemTime};
 /// Turns the events of a game, one at a time, into lines of prose. It
 /// reads the log's events through [`Narrator::narrate`] and tells the
 /// table, a player to a line with its role and strategy, and how long each
-/// phase waits, then each phase as it opens and how it came out, and how
+/// phase waits, then each model in play, its context window and whether
+/// its players are made to call a tool, then each phase as it opens and how it came out, and how
 /// long it took, then who won, how, and how long the whole game took. It
 /// names a player with its role in parentheses, and lists players in seat
 /// order. A blank line sets each phase off from what came before it, and
@@ -69,6 +72,18 @@ impl Narrator {
                     *quest_limit,
                     *assassinate_limit,
                 ])
+            }
+            Entry::Configuration(configuration) => {
+                let mut lines = Vec::new();
+                for (name, model) in &configuration.models {
+                    lines.push(context_window(name, model.context_window));
+                    if model.tool_choice == ToolChoice::Auto {
+                        lines.push(format!(
+                            "{name} does not accept a required tool call, so its players are asked to call one."
+                        ));
+                    }
+                }
+                lines
             }
             Entry::Action {
                 message: Message::Announce { seq, view, .. },
@@ -368,11 +383,25 @@ impl fmt::Display for Seat<'_> {
     }
 }
 
+/// The context window of the model `name` and where it came from, in a
+/// line.
+fn context_window(name: &str, ContextWindow { tokens, source }: ContextWindow) -> String {
+    let source = match source {
+        Source::File => "as the configuration file says",
+        Source::Provider => "as the provider reports",
+        Source::ProviderDefault => "the provider's default",
+        Source::Default => "the default",
+    };
+    format!("{name}'s context window is {tokens} tokens, {source}.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::avalon::tests::{dealt, five, logged, utterance, view_of};
+    use crate::avalon::config::Configuration;
+    use crate::avalon::tests::{configured, dealt, five, logged, utterance, view_of};
     use crate::avalon::{QuestResult, Rules};
+    use crate::model::spec::ModelInPlay;
     use crate::seat::ENVIRONMENT;
     use crate::strategy::RANDOM;
     use std::collections::HashSet;
@@ -817,5 +846,73 @@ mod tests {
         assert!(narrator.narrate(&logged(chose)).is_empty());
         assert_eq!(narrator.seat(&id("stranger")).to_string(), "stranger");
         assert_eq!(narrator.listed(&[]), "");
+    }
+
+    /// The configuration of a game whose requests to each of `models`, by
+    /// name, are made under its tool choice, within the default context
+    /// window, as the log records it.
+    fn configured_with(models: &[(&str, ToolChoice)]) -> Event<Entry> {
+        let models = models
+            .iter()
+            .map(|(name, tool_choice)| {
+                let model = ModelInPlay {
+                    base_url: "http://localhost:1234/v1".to_string(),
+                    id: format!("{name}-7b-instruct"),
+                    request_timeout: Duration::from_secs(10),
+                    api_key_env: None,
+                    tool_choice: *tool_choice,
+                    context_window: ContextWindow {
+                        tokens: 4096,
+                        source: Source::Default,
+                    },
+                };
+                (name.to_string(), model)
+            })
+            .collect();
+        logged(Entry::Configuration(Box::new(Configuration {
+            models,
+            ..configured(&five(), &Rules::default())
+        })))
+    }
+
+    #[test]
+    fn a_configuration_is_told_model_by_model_and_with_no_models_not_at_all() {
+        let configuration =
+            configured_with(&[("claude", ToolChoice::Auto), ("qwen", ToolChoice::Required)]);
+        assert_eq!(
+            Narrator::default().narrate(&configuration),
+            [
+                "claude's context window is 4096 tokens, the default.",
+                "claude does not accept a required tool call, \
+                 so its players are asked to call one.",
+                "qwen's context window is 4096 tokens, the default.",
+            ]
+        );
+        assert!(
+            Narrator::default()
+                .narrate(&configured_with(&[]))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_context_window_is_told_with_where_it_came_from() {
+        let told = |tokens, source| context_window("qwen", ContextWindow { tokens, source });
+        assert_eq!(
+            told(4096, Source::Default),
+            "qwen's context window is 4096 tokens, the default."
+        );
+        assert_eq!(
+            told(32768, Source::Provider),
+            "qwen's context window is 32768 tokens, as the provider reports."
+        );
+        assert_eq!(
+            told(128000, Source::ProviderDefault),
+            "qwen's context window is 128000 tokens, the provider's default."
+        );
+        assert_eq!(
+            told(8192, Source::File),
+            "qwen's context window is 8192 tokens, as the configuration file says."
+        );
     }
 }
