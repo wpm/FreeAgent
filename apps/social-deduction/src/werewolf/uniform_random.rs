@@ -135,9 +135,10 @@ pub(crate) mod tests {
         Played, between_the_deal_and_the_end, logged, observed_by_the_environment,
         one_wolf_against, run, seen, selection, selections, village,
     };
-    use crate::werewolf::{Phase, View, thinking_episode};
+    use crate::werewolf::{Phase, View, thinking_episode, to_the_players_but};
     use free_agent::{Think, ThinkBuilder};
     use std::collections::HashSet;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -155,14 +156,18 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// A player who says to the environment whatever its script says, when
-    /// the script says to, for a game with a player who is late, stale,
-    /// repeats itself, or changes its mind. It logs each selection it sends
-    /// as its action, and nothing it receives. What it says later is said
-    /// by its think loop, a [`Cue`].
+    /// A player who says whatever its script says, when the script says
+    /// to, for a game with a player who is late, stale, repeats itself,
+    /// changes its mind, or talks. An utterance goes to every other player
+    /// alive at the latest announcement; anything else goes to the
+    /// environment. It logs each message it sends as its action, and
+    /// nothing it receives. What it says later is said by its think loop,
+    /// a [`Cue`].
     pub struct Puppet {
         context: Context<Message, Entry>,
         script: Script,
+        /// Who was alive at the latest announcement, shared with the cue.
+        alive: Arc<Mutex<HashSet<PlayerId>>>,
     }
 
     #[async_trait]
@@ -176,9 +181,10 @@ pub(crate) mod tests {
 
         async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
             if let Message::Announce { seq, view, .. } = message {
+                *self.alive.lock().unwrap() = view.alive.clone();
                 for (after, said) in (self.script)(&self.context.id, *seq, view) {
                     if after.is_zero() {
-                        act(&self.context, said, to_the_environment(), None)?;
+                        say(&self.context, said, &self.alive)?;
                     } else {
                         self.context.think_after(after, said)?;
                     }
@@ -188,10 +194,25 @@ pub(crate) mod tests {
         }
     }
 
-    /// A puppet's think loop: says each message it is reminded of to the
-    /// environment when the time comes.
+    /// Send `message` from the puppet of `context`: an utterance to every
+    /// other player in `alive`, anything else to the environment.
+    fn say(
+        context: &Context<Message, Entry>,
+        message: Message,
+        alive: &Mutex<HashSet<PlayerId>>,
+    ) -> anyhow::Result<()> {
+        let to = match &message {
+            Message::Say { .. } => to_the_players_but(&context.id, &*alive.lock().unwrap()),
+            _ => to_the_environment(),
+        };
+        act(context, message, to, None)
+    }
+
+    /// A puppet's think loop: says each message it is reminded of when the
+    /// time comes.
     struct Cue {
         context: Context<Message, Entry>,
+        alive: Arc<Mutex<HashSet<PlayerId>>>,
     }
 
     #[async_trait]
@@ -199,21 +220,46 @@ pub(crate) mod tests {
         type Message = Message;
 
         async fn think(&mut self, message: &Message) -> anyhow::Result<()> {
-            act(&self.context, message.clone(), to_the_environment(), None)
+            say(&self.context, message.clone(), &self.alive)
         }
     }
 
     /// How a seat is built: the player's behavior, and its think loop if
     /// it has one.
-    pub(crate) type Seat = (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>);
+    pub(crate) type Seat<A = Actor> = (Builder<A>, Option<ThinkBuilder<Message, Entry>>);
+
+    impl Puppet {
+        /// A puppet following `script`, as the actor `wrap` makes of it.
+        pub(crate) fn init<A>(
+            script: Script,
+            wrap: impl FnOnce(Puppet) -> A + Send + 'static,
+        ) -> Seat<A>
+        where
+            A: Behavior<Message = Message, Log = Entry>,
+        {
+            let alive = Arc::new(Mutex::new(HashSet::new()));
+            let shared = Arc::clone(&alive);
+            let behavior: Builder<A> = Box::new(move |context| {
+                wrap(Puppet {
+                    context,
+                    script,
+                    alive,
+                })
+            });
+            let think: ThinkBuilder<Message, Entry> = Box::new(move |context| {
+                Box::new(Cue {
+                    context,
+                    alive: shared,
+                })
+            });
+            (behavior, Some(think))
+        }
+    }
 
     impl Actor {
         /// A puppet following `script`.
         pub(crate) fn puppet(script: Script) -> Seat {
-            let behavior: Builder<Actor> =
-                Box::new(|context| Actor::Puppet(Puppet { context, script }));
-            let think: ThinkBuilder<Message, Entry> = Box::new(|context| Box::new(Cue { context }));
-            (behavior, Some(think))
+            Puppet::init(script, Actor::Puppet)
         }
     }
 

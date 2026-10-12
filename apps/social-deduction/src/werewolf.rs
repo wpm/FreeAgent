@@ -19,8 +19,8 @@
 //! whole, once, and an observation of each receiver, which the receiver
 //! logs as a receipt naming the message by its sender and number. The
 //! environment logs the deal, its announcements, the selections it
-//! receives, each night's hunt, and the result; every player logs the
-//! announcements it receives and the selections it sends.
+//! receives, each night's hunt, and the result; every player logs what it
+//! receives and the selections and utterances it sends.
 //!
 //! Each variant's module holds what is particular to it: its environment,
 //! its players, the actor enum its episode holds, and the function that
@@ -545,9 +545,10 @@ impl Default for Rules {
 /// an actor sends to others is numbered by its sender, from 1, so that the
 /// pair of sender and number names a message in an episode: the
 /// environment numbers its announcements and tentative decisions, each
-/// player its selections. A message to several actors has one number, but
-/// each announcement is a message of its own, since each player is shown a
-/// different view. A reminder an actor sends itself is not numbered.
+/// player its selections and utterances together. A message to several
+/// actors has one number, but each announcement is a message of its own,
+/// since each player is shown a different view. A reminder an actor sends
+/// itself is not numbered.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Message {
     /// The environment opens a phase for one awake player. Phases are
@@ -593,6 +594,20 @@ pub enum Message {
         #[serde(with = "humantime_serde")]
         ratify: Duration,
     },
+    /// A player's utterance in the phase numbered `seq`, as the speaker knew
+    /// it: the latest phase the speaker was announced. By day it goes to
+    /// every other living player, and never to the environment, which does
+    /// nothing with speech.
+    Say {
+        /// The number of the phase.
+        seq: u64,
+        /// Who spoke, since a message does not carry its sender.
+        from: PlayerId,
+        /// The player's number for this message.
+        n: u64,
+        /// What they said.
+        text: String,
+    },
     /// The environment's own message to itself that the phase numbered
     /// `seq` is over.
     EndPhase {
@@ -609,6 +624,17 @@ pub enum Message {
         /// Which counting selection of the day set the timer.
         count: u64,
     },
+    /// A model player's own message to its think loop to call the model.
+    Wake,
+    /// A model player's own reminder, the `count`th it set, to be woken in
+    /// the phase numbered `seq`. A timer cannot be cancelled, so one whose
+    /// `count` is not the latest set, or whose phase has ended, is ignored.
+    Remind {
+        /// The number of the phase.
+        seq: u64,
+        /// Which reminder of the player's this is.
+        count: u64,
+    },
 }
 impl free_agent::Message for Message {}
 
@@ -619,16 +645,20 @@ impl Message {
         match self {
             Message::Announce { n, .. }
             | Message::Select { n, .. }
-            | Message::Tentative { n, .. } => Some(*n),
-            Message::EndPhase { .. } | Message::Ratify { .. } => None,
+            | Message::Tentative { n, .. }
+            | Message::Say { n, .. } => Some(*n),
+            Message::EndPhase { .. }
+            | Message::Ratify { .. }
+            | Message::Wake
+            | Message::Remind { .. } => None,
         }
     }
 
     /// Who sent this message: the environment, unless it is a player's
-    /// selection, which carries its sender.
+    /// selection or utterance, which carries its sender.
     pub fn sender(&self) -> ActorId {
         match self {
-            Message::Select { from, .. } => from.clone(),
+            Message::Select { from, .. } | Message::Say { from, .. } => from.clone(),
             _ => ENVIRONMENT.to_string(),
         }
     }
@@ -640,9 +670,9 @@ pub fn to_the_environment() -> HashSet<ActorId> {
     HashSet::from([ENVIRONMENT.to_string()])
 }
 
-/// The environment and everyone in `players` but `me`, as the receivers of
-/// a message: whom a player sends to when what it says is public.
-pub fn to_everyone_but<'a>(
+/// Everyone in `players` but `me`, as the receivers of a message: whom a
+/// player speaks to, since the environment does not hear speech.
+pub fn to_the_players_but<'a>(
     me: &PlayerId,
     players: impl IntoIterator<Item = &'a PlayerId>,
 ) -> HashSet<ActorId> {
@@ -650,8 +680,18 @@ pub fn to_everyone_but<'a>(
         .into_iter()
         .filter(|player| *player != me)
         .cloned()
-        .chain(to_the_environment())
         .collect()
+}
+
+/// The environment and everyone in `players` but `me`, as the receivers of
+/// a message: whom a player sends to when what it says is public.
+pub fn to_everyone_but<'a>(
+    me: &PlayerId,
+    players: impl IntoIterator<Item = &'a PlayerId>,
+) -> HashSet<ActorId> {
+    let mut to = to_the_players_but(me, players);
+    to.insert(ENVIRONMENT.to_string());
+    to
 }
 
 /// Send `message` from the actor of `context` to everyone in `to`, logging
@@ -689,14 +729,15 @@ pub fn observe(context: &Context<Message, Entry>, from: ActorId, n: u64, seq: u6
 
 /// What the log holds: the deal, the configuration of a model-played game,
 /// every message sent as the action of its sender and the observation of
-/// its receiver, each failure of a model player to select, each night's
-/// hunt, each day's vote, and the result. Every actor logs its own actions
-/// and observations: the environment logs the deal, the configuration, the
-/// hunts, the votes and the result besides, and a player its failures. Only
-/// the result summarizes anything; the rest is kept whole for whatever
-/// reads the log later. Every entry made during a phase names the phase in
-/// a field, so nothing about phases depends on the order entries reach the
-/// log or on their times.
+/// its receiver, each message a model player withheld because its phase had
+/// ended, each failure of a model player to act, each night's hunt, each
+/// day's vote, and the result. Every actor logs its own actions and
+/// observations: the environment logs the deal, the configuration, the
+/// hunts, the votes and the result besides, and a player what it withholds
+/// and its failures. Only the result summarizes anything; the rest is kept
+/// whole for whatever reads the log later. Every entry made during a phase
+/// names the phase in a field, so nothing about phases depends on the order
+/// entries reach the log or on their times.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Entry {
     /// The game begins: who plays what, under which variation, how long
@@ -759,8 +800,22 @@ pub enum Entry {
         /// in.
         seq: u64,
     },
-    /// `player` failed to select in the phase numbered `seq`: the model was
-    /// not reached, or answered with something that is not a selection.
+    /// `from` did not send `message`, which a model made from `seen` history
+    /// entries, because the phase it was made in had ended before the model
+    /// answered. It was never sent, so it has no number: its `n` is 0, and
+    /// the player does not remember it.
+    Withheld {
+        /// Who would have sent it.
+        from: PlayerId,
+        /// What it would have sent.
+        message: Message,
+        /// How many history entries the model was shown when it made the
+        /// call that produced the message.
+        seen: Option<usize>,
+    },
+    /// `player` failed to act in the phase numbered `seq`: the model was
+    /// not reached, or answered with something that is not a selection or
+    /// a well-formed day's response.
     Failed {
         /// Who failed.
         player: PlayerId,
@@ -1108,6 +1163,23 @@ mod tests {
                 error: "POST http://localhost:1234/v1/chat/completions: connection refused"
                     .to_string(),
             },
+            Entry::Action {
+                from: "seer".to_string(),
+                n: 2,
+                to: HashSet::from(["villager".to_string()]),
+                message: utterance(2, "seer", 2, "I trust villager."),
+                seen: Some(5),
+            },
+            Entry::Withheld {
+                from: "seer".to_string(),
+                message: utterance(2, "seer", 0, "Too late."),
+                seen: Some(7),
+            },
+            Entry::Withheld {
+                from: "seer".to_string(),
+                message: selection(2, "seer", 0, "wolf1"),
+                seen: None,
+            },
         ];
         for entry in entries {
             let json = serde_json::to_string(&entry).unwrap();
@@ -1151,14 +1223,18 @@ mod tests {
         assert_eq!(announcement(2, view).number(), Some(2));
         assert_eq!(selection(1, "wolf", 3, "ann").number(), Some(3));
         assert_eq!(tentative(2, 4, None).number(), Some(4));
+        assert_eq!(utterance(2, "wolf", 5, "Hello.").number(), Some(5));
         assert_eq!(Message::EndPhase { seq: 1 }.number(), None);
         assert_eq!(Message::Ratify { seq: 2, count: 3 }.number(), None);
+        assert_eq!(Message::Wake.number(), None);
+        assert_eq!(Message::Remind { seq: 2, count: 1 }.number(), None);
     }
 
     #[test]
-    fn a_selection_is_sent_by_its_player_and_everything_else_by_the_environment() {
+    fn a_selection_or_an_utterance_is_sent_by_its_player_and_everything_else_by_the_environment() {
         let view = seen(&["wolf"], &[("wolf", Role::Werewolf)]);
         assert_eq!(selection(1, "wolf", 3, "ann").sender(), "wolf");
+        assert_eq!(utterance(2, "ann", 1, "Hello.").sender(), "ann");
         assert_eq!(announcement(2, view).sender(), ENVIRONMENT);
         assert_eq!(tentative(2, 4, None).sender(), ENVIRONMENT);
     }
@@ -1178,6 +1254,12 @@ mod tests {
             to_everyone_but(&"dan".to_string(), &[]),
             to_the_environment()
         );
+        // The players alone, for speech, which the environment never hears.
+        assert_eq!(
+            to_the_players_but(&"bob".to_string(), &players),
+            HashSet::from(["ann".to_string(), "cat".to_string()])
+        );
+        assert!(to_the_players_but(&"dan".to_string(), &[]).is_empty());
     }
 
     #[test]
@@ -1332,6 +1414,17 @@ mod tests {
             from: from.to_string(),
             n,
             target: target.to_string(),
+        }
+    }
+
+    /// `from`'s utterance of `text` in the phase numbered `seq`, the `n`th
+    /// message `from` sent.
+    pub(super) fn utterance(seq: u64, from: &str, n: u64, text: &str) -> Message {
+        Message::Say {
+            seq,
+            from: from.to_string(),
+            n,
+            text: text.to_string(),
         }
     }
 
