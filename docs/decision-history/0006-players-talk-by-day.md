@@ -1,7 +1,9 @@
 # ADR-0006: Players talk by day
 
 **Status:** Accepted, amended by
-[ADR-0007](0007-a-tool-call-is-required-where-the-model-allows-it.md)
+[ADR-0007](0007-a-tool-call-is-required-where-the-model-allows-it.md),
+[ADR-0008](0008-werewolf-players-are-dealt-strategies.md) and
+[ADR-0009](0009-only-a-change-of-decision-restarts-the-ratify-timer.md)
 **Date:** 2026-10-11
 **Deciders:** Bill McNeill
 **Depends on:** [ADR-0002](0002-actors-perceive-think-and-act.md),
