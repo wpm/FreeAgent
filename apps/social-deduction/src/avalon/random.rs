@@ -116,12 +116,15 @@ fn choose(me: &PlayerId, view: &View) -> Option<Choice> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::avalon::config::{Config, Overrides};
     use crate::avalon::report::Narrator;
     use crate::avalon::tests::{
         Script, configured, dealt, five, logged, mute, observed_by, outcomes, play, quick, run,
         utterance, view_of,
     };
-    use crate::avalon::{PROPOSALS, Role, Rules, Table, game, sabotages_needed, team_size};
+    use crate::avalon::{
+        PROPOSALS, Role, RoleCounts, Rules, Table, game, sabotages_needed, team_size,
+    };
     use crate::seat::{ENVIRONMENT, to_the_environment};
     use crate::strategy::RANDOM;
     use free_agent::ActorId;
@@ -433,12 +436,34 @@ mod tests {
     /// How many of `games` all-random games at `table` good wins, played
     /// one after another without logging.
     async fn good_wins(table: &Table, games: usize) -> usize {
+        let roles = RoleCounts {
+            merlin: Some(table.merlin),
+            percival: Some(table.percival),
+            servants: Some(table.servants),
+            assassin: Some(table.assassin),
+            morgana: Some(table.morgana),
+            mordred: Some(table.mordred),
+            oberon: Some(table.oberon),
+            minions: Some(table.minions),
+        };
+        let overrides = Overrides {
+            roles,
+            ..Overrides::default()
+        };
+        let settings = Config::default().settle(overrides).unwrap();
+        let configuration = settings.configuration();
         let mut won = 0;
         for _ in 0..games {
             let (winner, result) = oneshot::channel();
             let (logger, _) = unbounded_channel();
-            let deal = table.deal();
-            let episode = game(deal, Rules::default(), winner, |_| Player::init(), logger);
+            let episode = game(
+                settings.deal(),
+                settings.rules.clone(),
+                configuration.clone(),
+                winner,
+                |_| Player::init(),
+                logger,
+            );
             episode.run(Duration::from_secs(60 * 60)).await.unwrap();
             if result.await.unwrap() == Team::Good {
                 won += 1;
