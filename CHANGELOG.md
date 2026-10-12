@@ -96,7 +96,8 @@ workflow takes a version's notes from here.
   announced with a `Tentative` and starts or stops the ratify timer. A
   retraction counts in a day with a ratify limit, from a player with a vote
   standing. The narration tells "player4 withdraws their vote and is
-  undecided again."
+  undecided again.", and a retraction with no vote standing as "player4
+  withdraws their vote, but the withdrawal does not count."
 
 ### Changed
 
