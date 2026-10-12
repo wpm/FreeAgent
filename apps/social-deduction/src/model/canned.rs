@@ -104,6 +104,22 @@ pub fn listing(ids: &[&str]) -> String {
     serde_json::json!({"object": "list", "data": data}).to_string()
 }
 
+/// A listing of `ids` as [`listing`] gives it, each model's entry
+/// reporting a context window of `tokens` as OpenRouter's does.
+pub fn listing_within(ids: &[&str], tokens: u64) -> String {
+    let data: Vec<_> = ids
+        .iter()
+        .map(|id| serde_json::json!({"id": id, "object": "model", "context_length": tokens}))
+        .collect();
+    serde_json::json!({"object": "list", "data": data}).to_string()
+}
+
+/// A provider that plays as [`playing`] does, its listing reporting a
+/// context window of `tokens` for each of `ids`.
+pub fn playing_within(ids: &[&str], tokens: u64) -> String {
+    serving_and(listing_within(ids, tokens), played)
+}
+
 /// A provider that serves `ids`: the root of an API that answers one
 /// request with their listing.
 pub fn serving(ids: &[&str]) -> String {
@@ -143,7 +159,7 @@ pub fn playing(ids: &[&str]) -> String {
 /// Request too, saying so. Anything else asked of it is not found.
 pub fn playing_only(ids: &[&str], selecting: &[&str]) -> String {
     let selecting: Vec<String> = selecting.iter().map(|id| id.to_string()).collect();
-    serving_and(ids, move |request| {
+    serving_and(listing(ids), move |request| {
         let Some(model) = request["model"].as_str() else {
             return response("400 Bad Request", &error("the request names no model"));
         };
@@ -161,7 +177,7 @@ pub fn playing_only(ids: &[&str], selecting: &[&str]) -> String {
 /// day's does, 400 Bad Request saying what [`day_refusal`] says, as a
 /// server that takes one tool at a time does.
 pub fn refusing_days(ids: &[&str]) -> String {
-    serving_and(ids, |request| {
+    serving_and(listing(ids), |request| {
         let offered = request["tools"].as_array().map_or(0, Vec::len);
         if offered > 1 {
             let model = request["model"].as_str().unwrap_or_default();
@@ -178,7 +194,7 @@ pub fn refusing_days(ids: &[&str]) -> String {
 /// [`required_refusal`] says, as a model that refuses to be made to call a
 /// tool is; any other is answered as [`playing`] answers it.
 pub fn refusing_required(ids: &[&str]) -> String {
-    serving_and(ids, |request| {
+    serving_and(listing(ids), |request| {
         if request["tool_choice"] == "required" {
             let model = request["model"].as_str().unwrap_or_default();
             response("400 Bad Request", &error(&required_refusal(model)))
@@ -193,7 +209,7 @@ pub fn refusing_required(ids: &[&str]) -> String {
 /// any other 429 Too Many Requests, as a provider out of patience does,
 /// kept for the rest of the process.
 pub fn refusing_required_then_busy(ids: &[&str]) -> String {
-    serving_and(ids, |request| {
+    serving_and(listing(ids), |request| {
         if request["tool_choice"] == "required" {
             let model = request["model"].as_str().unwrap_or_default();
             response("400 Bad Request", &error(&required_refusal(model)))
@@ -230,20 +246,20 @@ fn played(request: &serde_json::Value) -> String {
 /// Unauthorized, as one that wants an API key does, kept for the rest of
 /// the process.
 pub fn wanting_a_key(ids: &[&str]) -> String {
-    serving_and(ids, |_| {
+    serving_and(listing(ids), |_| {
         response("401 Unauthorized", &error("an API key is required"))
     })
 }
 
 /// A provider kept for the rest of the process that answers every listing
-/// request with `ids` and every completion request, parsed as JSON, with
-/// what `completing` makes of it. Anything else asked of it is not found.
+/// request with `listing` and every completion request, parsed as JSON,
+/// with what `completing` makes of it. Anything else asked of it is not
+/// found.
 fn serving_and(
-    ids: &[&str],
+    listing: String,
     completing: impl Fn(&serde_json::Value) -> String + Send + 'static,
 ) -> String {
     let (listener, base_url) = bound();
-    let listing = listing(ids);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
@@ -331,7 +347,7 @@ mod tests {
         let base_url = playing(&["qwen2.5-7b-instruct"]);
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
         assert_eq!(provider.models().await.unwrap(), ["qwen2.5-7b-instruct"]);
-        provider.check_serves("qwen2.5-7b-instruct").await.unwrap();
+        provider.listed("qwen2.5-7b-instruct").await.unwrap();
         for candidates in [&["player3", "player2"][..], &["player1"]] {
             assert_eq!(
                 provider.complete(&selecting(candidates)).await.unwrap(),
@@ -364,6 +380,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_provider_playing_within_a_window_reports_it_for_each_model_and_plays() {
+        let base_url = playing_within(&["qwen2.5-7b-instruct"], 32768);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        let listed = provider.listed("qwen2.5-7b-instruct").await.unwrap();
+        assert_eq!(listed.context_window, Some(32768));
+        assert_eq!(
+            provider.complete(&selecting(&["player2"])).await.unwrap(),
+            Response::tool_call("select", &json!({"target": "player2"}))
+        );
+    }
+
+    #[tokio::test]
     async fn the_provider_playing_only_some_models_refuses_a_completion_from_the_others() {
         let base_url = playing_only(&["qwen2.5-7b-instruct", "gpt-0"], &["qwen2.5-7b-instruct"]);
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
@@ -384,7 +412,7 @@ mod tests {
         // The refusing provider plays nothing.
         let base_url = refusing(&["qwen2.5-7b-instruct"]);
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
-        provider.check_serves("qwen2.5-7b-instruct").await.unwrap();
+        provider.listed("qwen2.5-7b-instruct").await.unwrap();
         let error = provider
             .complete(&selecting(&["player2"]))
             .await

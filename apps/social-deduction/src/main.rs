@@ -116,21 +116,23 @@ async fn main() -> anyhow::Result<()> {
             logging,
         }) => {
             let settings = Config::load(&config)?.settle(overrides)?;
-            // The key is read, every prompt rendered, and the model asked
-            // to play as by night and as by day before any actor is built,
-            // so that a variable that is not set, a template that is
-            // broken, or a model that does not play fails before anything
-            // else.
+            // The key is read, every prompt rendered, the context window
+            // settled, and the model asked to play as by night and as by
+            // day before any actor is built, so that a variable that is not
+            // set, a template that is broken, or a model that does not play
+            // fails before anything else.
             let model = &settings.config.model;
             let provider = model.provider()?;
             let prompts = settings.prompts()?;
-            provider.check_serves(&model.id).await?;
+            let listed = provider.listed(&model.id).await?;
+            let context_window = settings.context_window(listed.context_window);
             let tool_choice = match llm::check_plays(&provider, &model.id).await? {
                 Probed::Played(tool_choice) => tool_choice,
                 Probed::DidNotPlay(error) => return Err(error),
             };
             let roles = settings.table.deal();
-            let configuration = settings.configuration(&roles, &prompts, tool_choice)?;
+            let configuration =
+                settings.configuration(&roles, &prompts, tool_choice, context_window)?;
             let rules = settings.rules();
             play(logging.enabled(), |winner, logger| {
                 llm::game(
@@ -307,6 +309,7 @@ async fn play<A: Behavior<Log = Entry> + 'static>(
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    use social_deduction::model::CONTEXT_WINDOW;
     use social_deduction::model::canned::{self, refusal};
     use social_deduction::model::fake::{FakeModel, choosing_first};
     use std::collections::HashSet;
@@ -415,6 +418,7 @@ mod tests {
                     model: llm::ModelOverrides {
                         base_url: None,
                         id: Some("gpt-5.5".to_string()),
+                        context_window: None,
                     },
                 },
                 logging: Logging::default(),
@@ -439,6 +443,7 @@ mod tests {
         assert!(at("--werewolves") < at("\nModel:\n"), "{help}");
         assert!(at("\nModel:\n") < at("--model-base-url"), "{help}");
         assert!(at("--model-base-url") < at("--model-id"), "{help}");
+        assert!(at("--model-id") < at("--context-window"), "{help}");
     }
 
     #[test]
@@ -489,6 +494,8 @@ mod tests {
                 .into_iter()
                 .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()))
         };
+        let window =
+            |variant| (variant == "llm").then(|| ("--context-window", CONTEXT_WINDOW.to_string()));
         for variant in ["uniform-random", "llm"] {
             let help = CommandLine::command()
                 .find_subcommand_mut("werewolf")
@@ -497,7 +504,8 @@ mod tests {
                 .unwrap()
                 .render_help()
                 .to_string();
-            for (option, default) in counts.iter().cloned().chain(limits(variant)) {
+            let defaults = counts.iter().cloned().chain(limits(variant));
+            for (option, default) in defaults.chain(window(variant)) {
                 let line = help.lines().find(|line| line.contains(option)).unwrap();
                 assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
             }

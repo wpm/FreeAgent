@@ -4,10 +4,10 @@
 use free_agent::Event;
 use social_deduction::model::ToolChoice;
 use social_deduction::model::canned::{
-    day_refusal, playing, playing_only, refusal, refusing, refusing_days, refusing_required,
-    serving, unreachable, wanting_a_key,
+    day_refusal, playing, playing_only, playing_within, refusal, refusing, refusing_days,
+    refusing_required, serving, unreachable, wanting_a_key,
 };
-use social_deduction::werewolf::llm::Configuration;
+use social_deduction::werewolf::llm::{Configuration, ContextWindow, Source};
 use social_deduction::werewolf::{Ending, Entry, Message, PlayerId, Role};
 use std::collections::{HashMap, HashSet};
 use std::process::{Command, Output};
@@ -334,6 +334,55 @@ fn configuration(events: &[Event<Entry>]) -> &Configuration {
     configuration
 }
 
+/// What the account says of the model's context window when nothing gives
+/// one.
+const DEFAULT_WINDOW: &str = "The model's context window is 4096 tokens, the default.";
+
+#[test]
+fn the_context_window_the_provider_reports_is_used_unless_the_command_line_gives_one() {
+    let base_url = playing_within(&[EXAMPLE_MODEL], 32768);
+    let config = configured("window", "minimal.toml", &base_url, EXAMPLE_MODEL);
+    let args = [
+        &config,
+        "--night-limit",
+        "1s",
+        "--day-limit",
+        "2s",
+        "--ratify-limit",
+        "1s",
+    ];
+    let told = "The model's context window is 32768 tokens, as the provider reports.";
+    let (events, _) = assert_plays_the_default_table("llm", "LLM", &args, &[told]);
+    assert_eq!(
+        configuration(&events).context_window,
+        ContextWindow {
+            tokens: 32768,
+            source: Source::Provider,
+        }
+    );
+    let args = [&args[..], &["--context-window", "8192"]].concat();
+    let told = "The model's context window is 8192 tokens, as the command line says.";
+    let (events, _) = assert_plays_the_default_table("llm", "LLM", &args, &[told]);
+    assert_eq!(
+        configuration(&events).context_window,
+        ContextWindow {
+            tokens: 8192,
+            source: Source::CommandLine,
+        }
+    );
+}
+
+#[test]
+fn a_context_window_of_0_is_refused_before_anything_is_printed() {
+    let base_url = playing(&[EXAMPLE_MODEL]);
+    let config = configured("window-0", "minimal.toml", &base_url, EXAMPLE_MODEL);
+    let stderr = refused(&["werewolf", "llm", &config, "--context-window", "0"]);
+    assert!(
+        stderr.contains("--context-window is 0; a context window holds at least 1 token"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_to_the_result() {
     let base_url = playing(&[EXAMPLE_MODEL]);
@@ -349,7 +398,7 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
         "--ratify-limit",
         "1s",
     ];
-    let (events, printed) = assert_plays_the_default_table("llm", "LLM", &args, &[]);
+    let (events, printed) = assert_plays_the_default_table("llm", "LLM", &args, &[DEFAULT_WINDOW]);
     let (_, roles) = start(&events);
     let Entry::Start { ratify_limit, .. } = &events[0].payload else {
         panic!("{events:?}");
@@ -448,7 +497,7 @@ fn a_model_that_refuses_to_be_made_to_call_a_tool_plays_when_asked_to_call_one()
         "{EXAMPLE_MODEL} does not accept a required tool call, \
          so its players are asked to call one."
     );
-    let (events, _) = assert_plays_the_default_table("llm", "LLM", &args, &[&note]);
+    let (events, _) = assert_plays_the_default_table("llm", "LLM", &args, &[DEFAULT_WINDOW, &note]);
     assert_eq!(configuration(&events).tool_choice, ToolChoice::Auto);
     // Every player played: none of them failed.
     assert!(

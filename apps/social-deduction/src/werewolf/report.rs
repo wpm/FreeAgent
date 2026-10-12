@@ -8,7 +8,7 @@
 //! player and its number for the message. A player's memory holds the
 //! messages themselves, and its account reads them.
 
-use super::llm::Memory;
+use super::llm::{ContextWindow, Memory, Source};
 use super::{ENVIRONMENT, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Team, View, awake};
 use crate::model::ToolChoice;
 use free_agent::{ActorId, Event};
@@ -209,13 +209,15 @@ impl Narrator {
                 };
                 vec![]
             }
-            Entry::Configuration(configuration)
-                if configuration.tool_choice == ToolChoice::Auto =>
-            {
-                vec![format!(
-                    "{} does not accept a required tool call, so its players are asked to call one.",
-                    configuration.model
-                )]
+            Entry::Configuration(configuration) => {
+                let mut lines = vec![context_window(configuration.context_window)];
+                if configuration.tool_choice == ToolChoice::Auto {
+                    lines.push(format!(
+                        "{} does not accept a required tool call, so its players are asked to call one.",
+                        configuration.model
+                    ));
+                }
+                lines
             }
             Entry::Failed { player, seq, error } => {
                 let player = self.seat(player);
@@ -617,6 +619,17 @@ fn identity(me: &PlayerId, roles: &HashMap<PlayerId, Role>) -> String {
         Some(role) => format!("You are {me}, the {role}."),
         None => format!("You are {me}."),
     }
+}
+
+/// The model's context window and where it came from, in a line.
+fn context_window(ContextWindow { tokens, source }: ContextWindow) -> String {
+    let source = match source {
+        Source::CommandLine => "as the command line says",
+        Source::File => "as the configuration file says",
+        Source::Provider => "as the provider reports",
+        Source::Default => "the default",
+    };
+    format!("The model's context window is {tokens} tokens, {source}.")
 }
 
 /// A phase by its name: `Night 1`, `Day 1`.
@@ -2032,7 +2045,8 @@ mod tests {
     }
 
     /// The configuration of a game whose requests are made under
-    /// `tool_choice`, as the log records it.
+    /// `tool_choice`, within the default context window, as the log
+    /// records it.
     fn configured(tool_choice: ToolChoice) -> Event<Entry> {
         logged(Entry::Configuration(Box::new(Configuration {
             role_counts: BTreeMap::from([(Role::Werewolf, 1), (Role::Villager, 2)]),
@@ -2043,6 +2057,10 @@ mod tests {
             base_url: "http://localhost:1234/v1".to_string(),
             model: "qwen2.5-7b-instruct".to_string(),
             tool_choice,
+            context_window: ContextWindow {
+                tokens: 4096,
+                source: Source::Default,
+            },
             api_key_env: None,
             personas: BTreeMap::new(),
             prompts: BTreeMap::from([(id("wolf"), "You are wolf.".to_string())]),
@@ -2053,9 +2071,13 @@ mod tests {
     }
 
     #[test]
-    fn a_configuration_requiring_a_tool_call_adds_nothing_to_either_account() {
+    fn a_configuration_requiring_a_tool_call_tells_only_the_context_window_and_only_in_the_omniscient_account()
+     {
         let configuration = configured(ToolChoice::Required);
-        assert!(Narrator::default().narrate(&configuration).is_empty());
+        assert_eq!(
+            Narrator::default().narrate(&configuration),
+            ["The model's context window is 4096 tokens, the default."]
+        );
         assert!(
             Narrator::for_player(id("wolf"))
                 .narrate(&configuration)
@@ -2064,12 +2086,36 @@ mod tests {
     }
 
     #[test]
+    fn the_context_window_is_told_with_where_it_came_from() {
+        let told = |tokens, source| context_window(ContextWindow { tokens, source });
+        assert_eq!(
+            told(4096, Source::Default),
+            "The model's context window is 4096 tokens, the default."
+        );
+        assert_eq!(
+            told(32768, Source::Provider),
+            "The model's context window is 32768 tokens, as the provider reports."
+        );
+        assert_eq!(
+            told(8192, Source::File),
+            "The model's context window is 8192 tokens, as the configuration file says."
+        );
+        assert_eq!(
+            told(16384, Source::CommandLine),
+            "The model's context window is 16384 tokens, as the command line says."
+        );
+    }
+
+    #[test]
     fn a_configuration_allowing_a_tool_call_is_told_in_the_omniscient_account_alone() {
         let configuration = configured(ToolChoice::Auto);
         assert_eq!(
             Narrator::default().narrate(&configuration),
-            ["qwen2.5-7b-instruct does not accept a required tool call, \
-                 so its players are asked to call one."]
+            [
+                "The model's context window is 4096 tokens, the default.",
+                "qwen2.5-7b-instruct does not accept a required tool call, \
+                 so its players are asked to call one."
+            ]
         );
         assert!(
             Narrator::for_player(id("wolf"))
