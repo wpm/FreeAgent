@@ -1607,7 +1607,10 @@ impl Asked {
             }
             SELECT => self.sends.push(Sending::Select(target(call, candidates)?)),
             RETRACT => {
-                let Retraction {} = arguments(call)?;
+                // A provider may send no arguments as no text at all.
+                if !call.arguments.trim().is_empty() {
+                    let Retraction {} = arguments(call)?;
+                }
                 self.sends.push(Sending::Retract);
             }
             WAIT => {
@@ -4182,6 +4185,14 @@ player2 = \"Cautious.\"
                 wait: None,
             }
         );
+        // A provider may send a call with no arguments as no text at all.
+        let mut bare = Asked::default();
+        let call = model::Call {
+            name: RETRACT.to_string(),
+            arguments: String::new(),
+        };
+        bare.take(&call, &candidates, limit).unwrap();
+        assert_eq!(bare.sends, [Sending::Retract]);
         let wrong: [(&str, Vec<Made>, &str); 11] = [
             ("no tool call", vec![], "the model made no tool call"),
             (

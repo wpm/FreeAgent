@@ -264,6 +264,8 @@ pub fn retracting(ids: &[&str]) -> String {
 /// then vote against a player whose name sorts after the voter's own, which
 /// the story the request tells opens with. The canned player votes against
 /// its first candidate, so this is the first seat alive, voting by day.
+/// Names are compared as strings, as the default table's `player1` to
+/// `player7` sort.
 fn first_seat_voting(request: &serde_json::Value, calls: &[(String, serde_json::Value)]) -> bool {
     let [_, (_, vote)] = calls else {
         return false;
