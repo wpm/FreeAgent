@@ -32,13 +32,13 @@
 //! other living player, so the votes are public; in a ratified day,
 //! `retract`, which withdraws its vote, so that it is undecided again, and
 //! goes where a vote goes; and `wait`, which asks to be woken after some
-//! seconds unless something wakes the player sooner. A reminder is numbered so that only the latest set
-//! counts, and one for a phase that has ended is ignored. The calls are
-//! carried out in the order the model made them. Before carrying out
-//! anything a response asks for, by night as well as by day, the player
-//! checks that the phase the call began in is still the one it was last
-//! announced; if not, it sends nothing and logs each message it would have
-//! sent as [`Entry::Withheld`].
+//! seconds unless something wakes the player sooner. A reminder is
+//! numbered so that only the latest set counts, and one for a phase that
+//! has ended is ignored. The calls are carried out in the order the model
+//! made them. Before carrying out anything a response asks for, by night as
+//! well as by day, the player checks that the phase the call began in is
+//! still the one it was last announced; if not, it sends nothing and logs
+//! each message it would have sent as [`Entry::Withheld`].
 //!
 //! A model that is not reached, or an answer that is not well formed, is a
 //! failure: the player logs it as [`Entry::Failed`], carries nothing out,
@@ -431,12 +431,12 @@ impl Player {
 
     /// Ask the model what to do in the day numbered `seq`, which `view`
     /// shows and which lasts `limit`: speak, vote for one of `candidates`,
-    /// retract its vote, or wait, in any number and order, with one
-    /// response. A response that is not well formed, as [`asked`] judges
-    /// it, is an error, and nothing in it is carried out. Otherwise the
-    /// messages are sent in the order the model asked for them, each
-    /// utterance to every other living player and each selection and
-    /// retraction to them and the environment, and a wait
+    /// retract its vote in a ratified day, or wait, in any number and
+    /// order, with one response. A response that is not well formed, as
+    /// [`asked`] judges it, is an error, and nothing in it is carried out.
+    /// Otherwise the messages are sent in the order the model asked for
+    /// them, each utterance to every other living player and each
+    /// selection and retraction to them and the environment, and a wait
     /// sets a reminder; unless the day has ended by the time the model
     /// answers, and then the messages are withheld and no reminder is set.
     async fn play_by_day(
@@ -523,14 +523,14 @@ impl Behavior for Player {
     /// phase: it is remembered, and wakes the think loop if the player is
     /// awake in the phase. Anything else, another player's utterance,
     /// selection or retraction or the environment's tentative decision,
-    /// counts only if
-    /// it is tagged with that phase: then it is remembered and, by day,
-    /// wakes the think loop, so a player announced a night it sleeps
-    /// through is woken by nothing until the day. One tagged with another
-    /// phase is observed and nothing more, neither remembered nor woken
-    /// for: the player keeps to the phase it is in, as the environment does
-    /// when it drops a late selection, and the observation's `seq` beside
-    /// the message's shows it came late. A reminder to itself is ignored.
+    /// counts only if it is tagged with that phase: then it is remembered
+    /// and, by day, wakes the think loop, so a player announced a night it
+    /// sleeps through is woken by nothing until the day. One tagged with
+    /// another phase is observed and nothing more, neither remembered nor
+    /// woken for: the player keeps to the phase it is in, as the
+    /// environment does when it drops a late selection, and the
+    /// observation's `seq` beside the message's shows it came late. A
+    /// reminder to itself is ignored.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
         let Some(n) = message.number() else {
             return Ok(());
