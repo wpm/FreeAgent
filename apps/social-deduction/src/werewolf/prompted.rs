@@ -57,10 +57,11 @@
 
 use super::report::Story;
 use super::{
-    Actor, Entry, Message, Phase, PlayerId, Role, Seat, View, act, awake, candidates, observe,
-    receivers,
+    Actor, Entry, Message, Phase, Role, Seat, View, act, awake, candidates, observe, receivers,
 };
+use crate::model::spec::Probed;
 use crate::model::{self, Request, Response, Tool, ToolChoice};
+use crate::seat::PlayerId;
 use anyhow::{Context as _, anyhow, bail};
 use async_trait::async_trait;
 use free_agent::{ActorId, Behavior, Builder, Context, Event, Think, ThinkBuilder};
@@ -743,19 +744,6 @@ fn placeholders() -> [PlayerId; 2] {
 /// How long the probe's day lasts.
 const PROBE_DAY: Duration = Duration::from_secs(60);
 
-/// What [`check_plays`] found.
-#[derive(Debug)]
-pub enum Probed {
-    /// Asked as by night and as by day, the model answered both requests
-    /// as a player must, under the tool choice it is to be asked under.
-    Played(ToolChoice),
-    /// One of the requests the model did not answer as a player must: the
-    /// provider refused it as bad, or the answer was not well formed. The
-    /// error names the model and the request, and carries the cause
-    /// beneath it.
-    DidNotPlay(anyhow::Error),
-}
-
 /// Check that `model`, asked as a player is, plays, and find out whether
 /// it may be made to call a tool: two requests of a player's shape, one
 /// after the other, each with a short system prompt and over two
@@ -1102,10 +1090,11 @@ mod tests {
     use super::*;
     use crate::model::canned;
     use crate::model::fake::{FakeModel, SAID, canned_calls, choosing_first, voted_in_this_phase};
+    use crate::model::spec::{Handles, ModelInPlay};
+    use crate::model::window::{ContextWindow, Source};
     use crate::model::{CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT};
-    use crate::werewolf::config::{
-        self, Configuration, ContextWindow, Handles, ModelInPlay, Source, Strategy, players,
-    };
+    use crate::strategy::{Prompted, Strategy};
+    use crate::werewolf::config::{Configuration, players};
     use crate::werewolf::report::{FORGOTTEN, Narrator};
     use crate::werewolf::tests::{
         Played, announcement, at_once, between_the_deal_and_the_end, dealt, logged, mute,
@@ -1186,7 +1175,7 @@ mod tests {
                 source: Source::Default,
             },
         };
-        let strategy = Strategy::Prompted(config::Prompted {
+        let strategy = Strategy::Prompted(Prompted {
             system: "You are {{ name }}.".to_string(),
             model: MODEL.to_string(),
         });

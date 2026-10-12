@@ -5,8 +5,9 @@
 //! given there, otherwise from the file, otherwise from the code. With no
 //! file, every player is random.
 //!
-//! The file defines named [`Model`]s and named [`Strategy`]s, each a policy
-//! with its parameters, and allots each role's seats among the strategies.
+//! The file defines named models, each a [`Spec`], and named
+//! [`Strategy`]s, each a policy with its parameters, and allots each role's
+//! seats among the strategies.
 //! The strategy [`RANDOM`] is always defined. [`Settings::deal`] deals the
 //! (role, strategy) pairs the allotments make to the seats at random.
 //!
@@ -19,32 +20,30 @@
 //! seat. [`Settings::set_up`] sets up each model in play before any actor
 //! is built: it reads the key, settles the [`ContextWindow`] and asks the
 //! model to play. The API key never appears in the file. The file names
-//! the environment variable that holds it, and [`Model::api_key`] reads
-//! that variable into a [`SecretString`], which is redacted wherever it is
+//! the environment variable that holds it, and [`Spec::api_key`] reads
+//! that variable into a [`SecretString`](secrecy::SecretString), which is redacted wherever it is
 //! shown.
 //!
 //! The log records the [`Configuration`] a game ran under right after the
 //! deal, and [`players`] builds each seat's player from it.
 
-use super::prompted::{self, Probed};
-use super::{Dealt, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Seat, Table, random, ratified};
-use crate::model::{
-    self, CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable,
-};
+use super::prompted;
+use super::{Dealt, PhaseLimits, Role, RoleCounts, Rules, Seat, Table, random, ratified};
+use crate::model::Provider;
+use crate::model::spec::{self, Handles, Models, Spec};
+use crate::model::window::{self, ContextWindow};
+use crate::seat::PlayerId;
+use crate::strategy::{RANDOM, Random, RoleConfig, Strategy};
 use anyhow::{Context as _, anyhow, bail};
 use clap::Args;
 use humantime::format_duration;
 use minijinja::{Environment, UndefinedBehavior, Value, context};
 use rand::seq::SliceRandom;
-use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, btree_map};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-
-/// The name of the strategy that is always defined, with the random policy.
-pub const RANDOM: &str = "random";
 
 /// The variables every template has besides the text blocks.
 const VARIABLES: [&str; 2] = ["name", "role"];
@@ -79,7 +78,7 @@ pub struct Config {
     pub phases: Phases,
     /// The models, by name, and how to reach each.
     #[serde(default)]
-    pub models: BTreeMap<String, Model>,
+    pub models: BTreeMap<String, Spec>,
     /// Named blocks of text for the templates to use.
     #[serde(default)]
     pub text: BTreeMap<String, String>,
@@ -89,102 +88,6 @@ pub struct Config {
     /// How many of each role there are, and which strategies they play.
     #[serde(default)]
     pub roles: Roles,
-}
-
-/// A `[models.<name>]` table: one model from one provider.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Model {
-    /// The root of an OpenAI-compatible API, ending in `/v1`.
-    pub base_url: String,
-    /// The model's id, exactly as the provider lists it.
-    pub id: String,
-    /// The environment variable holding the API key, over the one known
-    /// for the provider.
-    pub api_key_env: Option<String>,
-    /// How long a request may take.
-    #[serde(default = "request_timeout", with = "humantime_serde")]
-    pub request_timeout: Duration,
-    /// The model's context window, in tokens, over what the provider
-    /// reports.
-    pub context_window: Option<u64>,
-}
-
-impl Model {
-    /// The environment variable holding the API key: `api_key_env` when
-    /// the file names one, else the one known for the provider, if any.
-    pub fn key_variable(&self) -> Option<&str> {
-        key_variable(&self.base_url, self.api_key_env.as_deref())
-    }
-
-    /// The API key, read from the variable [`Model::key_variable`] names.
-    /// A variable that is named but not set is an error. When none is
-    /// named there is no key, which is what a local server expects.
-    pub fn api_key(&self) -> anyhow::Result<Option<SecretString>> {
-        self.key_variable().map(api_key).transpose()
-    }
-
-    /// The provider the model is reached through, with its key read from
-    /// the environment as [`Model::api_key`] reads it.
-    pub fn provider(&self) -> anyhow::Result<Provider> {
-        Provider::new(&self.base_url, self.api_key()?, self.request_timeout)
-    }
-}
-
-/// The default `request_timeout`, for `serde`.
-fn request_timeout() -> Duration {
-    REQUEST_TIMEOUT
-}
-
-/// A `[strategies.<name>]` table: a policy, named by `policy`, with its
-/// parameters, and only those.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "policy", rename_all = "lowercase")]
-pub enum Strategy {
-    /// Select uniformly at random among the candidates, at once.
-    Random(Random),
-    /// Ask a language model.
-    Prompted(Prompted),
-}
-
-/// The random policy's parameters: none.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Random {}
-
-/// The prompted policy's parameters.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "PromptedTable")]
-pub struct Prompted {
-    /// The system prompt template.
-    pub system: String,
-    /// The name of the model asked. The file may leave it out when it
-    /// defines exactly one, which [`Config::parse`] fills in.
-    pub model: String,
-}
-
-/// The prompted policy's parameters, as written.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PromptedTable {
-    system: String,
-    model: Option<String>,
-}
-
-impl TryFrom<PromptedTable> for Prompted {
-    type Error = &'static str;
-
-    /// The parameters, with a model left out as no name yet. A model
-    /// named by the empty name is an error.
-    fn try_from(PromptedTable { system, model }: PromptedTable) -> Result<Self, Self::Error> {
-        match model {
-            Some(model) if model.is_empty() => Err("model is empty; name a model or leave it out"),
-            model => Ok(Prompted {
-                system,
-                model: model.unwrap_or_default(),
-            }),
-        }
-    }
 }
 
 /// The text of the configuration file at `path`.
@@ -237,19 +140,6 @@ impl Roles {
             Role::Seer => &self.seer,
         }
     }
-}
-
-/// What the file says about one role.
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RoleConfig {
-    /// How many of the role sit at the table.
-    pub count: Option<usize>,
-    /// The strategy every seat of the role plays that `strategies` does
-    /// not allot.
-    pub strategy: Option<String>,
-    /// How many seats of the role play each strategy, by name.
-    pub strategies: Option<BTreeMap<String, usize>>,
 }
 
 /// How many seats of each role play each strategy, by name.
@@ -458,12 +348,6 @@ pub struct SystemPrompt {
     pub text: String,
 }
 
-/// The models in play as the log records them, by name.
-pub type Models = BTreeMap<String, ModelInPlay>;
-
-/// The handle each model in play is asked through, by name.
-pub type Handles = BTreeMap<String, Arc<dyn model::Model>>;
-
 impl Settings {
     /// Each (role, strategy) pair at the table, in the order the roles are
     /// dealt and then by the strategy's name, with the strategy and how
@@ -504,7 +388,7 @@ impl Settings {
 
     /// The models in play, by name: those a prompted strategy at the table
     /// asks.
-    pub fn models_in_play(&self) -> BTreeMap<&str, &Model> {
+    pub fn models_in_play(&self) -> BTreeMap<&str, &Spec> {
         self.at_the_table()
             .filter_map(|(_, strategy, _, _)| self.model_of(strategy))
             .map(|name| (name, &self.config.models[name]))
@@ -557,48 +441,18 @@ impl Settings {
         Ok(prompts)
     }
 
-    /// The context window of the model `name`: the one its table gives,
-    /// otherwise `reported`, the one the provider's listing reports for
-    /// the model, otherwise the provider's default in `src/models.toml`,
-    /// otherwise [`CONTEXT_WINDOW`]. A window smaller than a request takes
-    /// before its story, by estimate, for the largest of `prompts` whose
-    /// strategy asks the model, is an error naming the model and where the
-    /// window came from.
+    /// The context window of the model `name`, settled as
+    /// [`window::settle`] settles it, against what a request takes before
+    /// its story, by estimate, for the largest of `prompts` whose strategy
+    /// asks the model.
     pub fn context_window(
         &self,
         name: &str,
         reported: Option<u64>,
         prompts: &[SystemPrompt],
     ) -> anyhow::Result<ContextWindow> {
-        let model = &self.config.models[name];
-        let given = |tokens, source| ContextWindow { tokens, source };
-        let known = model::known_context_window(&model.base_url);
-        let window = model
-            .context_window
-            .map(|tokens| given(tokens, Source::File))
-            .or(reported.map(|tokens| given(tokens, Source::Provider)))
-            .or(known.map(|tokens| given(tokens, Source::ProviderDefault)))
-            .unwrap_or(given(CONTEXT_WINDOW, Source::Default));
         let needed = self.unstoried(name, prompts)?;
-        if window.tokens < needed {
-            let setting = match window.source {
-                Source::File => format!("[models.{name}] context_window"),
-                Source::Provider => format!("the context window the provider reports for {name}"),
-                Source::ProviderDefault => {
-                    format!("the provider's default context window for {name}")
-                }
-                Source::Default => format!("the default context window for {name}"),
-            };
-            let remedy = match window.source {
-                Source::File => String::new(),
-                _ => format!("; context_window in [models.{name}] gives the window"),
-            };
-            bail!(
-                "{setting} is {} tokens, smaller than the {needed} a request takes before its story, by estimate{remedy}",
-                window.tokens
-            );
-        }
-        Ok(window)
+        window::settle(name, &self.config.models[name], reported, needed)
     }
 
     /// The most a request to the model `name` takes of the context window
@@ -618,43 +472,14 @@ impl Settings {
             })
     }
 
-    /// Set up each model in play, one at a time, since a local server loads
-    /// each model it is asked for: read its key, find it in its provider's
-    /// listing, settle its context window for `prompts`, and ask it to play
-    /// as by night and as by day, which settles the tool choice. Each, by
-    /// name, as the log records it, and the handle its players ask it
-    /// through. A model that cannot be set up is an error naming it. A
-    /// model the file defines and no strategy at the table asks is not
-    /// contacted.
+    /// Set up each model in play as [`spec::set_up`] sets it up, settling
+    /// its context window for `prompts` and asking it to play as by night
+    /// and as by day, which settles the tool choice. A model the file
+    /// defines and no strategy at the table asks is not contacted.
     pub async fn set_up(&self, prompts: &[SystemPrompt]) -> anyhow::Result<(Models, Handles)> {
-        let mut models = Models::new();
-        let mut handles = Handles::new();
-        for (name, model) in self.models_in_play() {
-            let set_up = async {
-                let provider = model.provider()?;
-                let listed = provider.listed(&model.id).await?;
-                let context_window = self.context_window(name, listed.context_window, prompts)?;
-                let tool_choice = match prompted::check_plays(&provider, &model.id).await? {
-                    Probed::Played(tool_choice) => tool_choice,
-                    Probed::DidNotPlay(error) => return Err(error),
-                };
-                let played = ModelInPlay {
-                    base_url: model.base_url.clone(),
-                    id: model.id.clone(),
-                    request_timeout: model.request_timeout,
-                    api_key_env: model.key_variable().map(String::from),
-                    tool_choice,
-                    context_window,
-                };
-                anyhow::Ok((played, provider))
-            };
-            let (played, provider) = set_up
-                .await
-                .with_context(|| format!("setting up the model {name}"))?;
-            models.insert(name.to_string(), played);
-            handles.insert(name.to_string(), Arc::new(provider));
-        }
-        Ok((models, handles))
+        let needed = |name: &str| self.unstoried(name, prompts);
+        let probe = async |provider: &Provider, id: &str| prompted::check_plays(provider, id).await;
+        spec::set_up(self.models_in_play(), needed, probe).await
     }
 
     /// The configuration a game of `deal` runs under, as the log records
@@ -710,50 +535,6 @@ impl Settings {
             ..Rules::default()
         }
     }
-}
-
-/// A model's context window, in tokens, and where it came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ContextWindow {
-    /// How many tokens the model takes in at once.
-    pub tokens: u64,
-    /// Where the window came from.
-    pub source: Source,
-}
-
-/// Where a context window came from, written as `file`, `provider`,
-/// `provider default` or `default`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Source {
-    /// The configuration file.
-    File,
-    /// The provider.
-    Provider,
-    /// What `src/models.toml` knows of the provider.
-    #[serde(rename = "provider default")]
-    ProviderDefault,
-    /// The code's default.
-    Default,
-}
-
-/// A model in play, as it was set up. The API key is never recorded.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModelInPlay {
-    /// The root of the provider's OpenAI-compatible API.
-    pub base_url: String,
-    /// The model's id, as the provider lists it.
-    pub id: String,
-    /// How long each request could take.
-    #[serde(with = "humantime_serde")]
-    pub request_timeout: Duration,
-    /// The name of the environment variable the key came from, if any.
-    pub api_key_env: Option<String>,
-    /// Whether each request made the model call a tool, as the probe
-    /// found the model would.
-    pub tool_choice: ToolChoice,
-    /// The model's context window and where it came from.
-    pub context_window: ContextWindow,
 }
 
 /// The configuration a game ran under, as it took effect once the command
@@ -830,12 +611,15 @@ pub fn players(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::canned::{self, playing, playing_within, serving};
+    use crate::model::canned::{self, playing};
     use crate::model::fake::{FakeModel, choosing_first};
+    use crate::model::spec::ModelInPlay;
+    use crate::model::window::Source;
+    use crate::model::{self, CONTEXT_WINDOW, REQUEST_TIMEOUT, ToolChoice};
+    use crate::strategy::Prompted;
     use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{between_the_deal_and_the_end, logged, run};
     use crate::werewolf::{Entry, Message, game};
-    use secrecy::ExposeSecret;
     use serde_json::json;
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::sync::oneshot;
@@ -1078,7 +862,6 @@ system = "{{ name }} the {{ role }}"
             format!("{PLAIN}[personas]\nplayer1 = \"\"\n"),
             format!("{PLAIN}[model]\nbase_url = \"\"\nid = \"\"\n"),
             format!("{PLAIN}[tuning]\n"),
-            PLAIN.replace("id = ", "temperature = 0.5\nid = "),
         ] {
             assert!(Config::parse(&file).is_err(), "{file}");
         }
@@ -1092,25 +875,7 @@ system = "{{ name }} the {{ role }}"
 
     #[test]
     fn a_duration_the_file_cannot_parse_is_an_error() {
-        let model = PLAIN.replace("id = ", "request_timeout = \"soon\"\nid = ");
-        assert!(Config::parse(&model).is_err());
-        let model = PLAIN.replace("id = ", "request_timeout = 10\nid = ");
-        assert!(Config::parse(&model).is_err());
         assert!(Config::parse("[phases]\nnight_limit = \"a while\"\n").is_err());
-    }
-
-    #[test]
-    fn the_request_timeout_comes_from_the_file_or_the_code() {
-        let settings = settle(PLAIN, Overrides::default());
-        assert_eq!(
-            settings.config.models["qwen"].request_timeout,
-            REQUEST_TIMEOUT
-        );
-        let file = PLAIN.replace("id = ", "request_timeout = \"10s\"\nid = ");
-        assert_eq!(
-            settle(&file, Overrides::default()).config.models["qwen"].request_timeout,
-            Duration::from_secs(10)
-        );
     }
 
     #[test]
@@ -1821,98 +1586,6 @@ strategy = \"smart\"
         assert!(models.is_empty() && handles.is_empty());
     }
 
-    #[tokio::test]
-    async fn a_model_that_cannot_be_set_up_is_an_error_naming_it() {
-        let shown = |error: anyhow::Error| format!("{error:#}");
-        // Not served.
-        let base_url = serving(&["llama-3.1-8b-instruct"]);
-        let settings = settle(
-            &PLAIN.replace("http://localhost:1234/v1", &base_url),
-            Overrides::default(),
-        );
-        let error = settings
-            .set_up(&settings.prompts().unwrap())
-            .await
-            .err()
-            .unwrap();
-        assert!(shown(error).starts_with("setting up the model qwen: "));
-        // Its key not set.
-        let file = PLAIN.replace(
-            "id = ",
-            "api_key_env = \"SOCIAL_DEDUCTION_NO_SUCH_KEY\"\nid = ",
-        );
-        let settings = settle(&file, Overrides::default());
-        let error = shown(settings.set_up(&[]).await.err().unwrap());
-        assert!(error.starts_with("setting up the model qwen: "), "{error}");
-        assert!(error.contains("SOCIAL_DEDUCTION_NO_SUCH_KEY"), "{error}");
-        // Not playing.
-        let base_url = canned::refusing(&["qwen2.5-7b-instruct"]);
-        let settings = settle(
-            &PLAIN.replace("http://localhost:1234/v1", &base_url),
-            Overrides::default(),
-        );
-        let error = shown(
-            settings
-                .set_up(&settings.prompts().unwrap())
-                .await
-                .err()
-                .unwrap(),
-        );
-        assert!(
-            error.starts_with(
-                "setting up the model qwen: qwen2.5-7b-instruct did not answer a night's request"
-            ),
-            "{error}"
-        );
-        // Its window too small.
-        let base_url = playing_within(&["qwen2.5-7b-instruct"], 100);
-        let settings = settle(
-            &PLAIN.replace("http://localhost:1234/v1", &base_url),
-            Overrides::default(),
-        );
-        let error = shown(
-            settings
-                .set_up(&settings.prompts().unwrap())
-                .await
-                .err()
-                .unwrap(),
-        );
-        assert!(
-            error.starts_with(
-                "setting up the model qwen: the context window the provider reports for qwen is 100 tokens"
-            ),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn the_context_window_falls_back_from_the_file_to_the_listing_to_the_provider_to_the_code() {
-        let window = |tokens, source| ContextWindow { tokens, source };
-        let settled = |file: &str, reported| {
-            settle(file, Overrides::default())
-                .context_window("qwen", reported, &[])
-                .unwrap()
-        };
-        let file = PLAIN.replace("id = ", "context_window = 8192\nid = ");
-        assert_eq!(settled(&file, Some(32768)), window(8192, Source::File));
-        assert_eq!(settled(PLAIN, Some(32768)), window(32768, Source::Provider));
-        assert_eq!(
-            settled(PLAIN, None),
-            window(CONTEXT_WINDOW, Source::Default)
-        );
-        assert_eq!(CONTEXT_WINDOW, 4096);
-        // A provider `src/models.toml` gives a window for.
-        let openai = PLAIN.replace("http://localhost:1234/v1", "https://api.openai.com/v1");
-        assert_eq!(
-            settled(&openai, Some(32768)),
-            window(32768, Source::Provider)
-        );
-        assert_eq!(
-            settled(&openai, None),
-            window(128000, Source::ProviderDefault)
-        );
-    }
-
     /// Every seat's prompt for the strategy `plain` as the werewolf, each
     /// `length` characters long but for one, which is `longest` long, and
     /// one prompt of the strategy `bold`, which is longer still.
@@ -1992,42 +1665,6 @@ strategy = \"smart\"
         assert_eq!(
             refused(&settle(&file, Overrides::default()), None),
             format!("[models.qwen] context_window is 2000 tokens, {too_small}")
-        );
-    }
-
-    #[test]
-    fn an_omitted_key_variable_means_no_key() {
-        let settings = settle(PLAIN, Overrides::default());
-        assert!(settings.config.models["qwen"].api_key().unwrap().is_none());
-    }
-
-    #[test]
-    fn the_key_is_read_from_the_named_variable_and_never_shown() {
-        // A variable Cargo sets for every test, since setting one is unsafe.
-        let name = "CARGO_MANIFEST_DIR";
-        let value = std::env::var(name).unwrap();
-        let file = PLAIN.replace("id = ", &format!("api_key_env = \"{name}\"\nid = "));
-        let settings = settle(&file, Overrides::default());
-        let key = settings.config.models["qwen"].api_key().unwrap().unwrap();
-        assert_eq!(key.expose_secret(), value);
-        let shown = format!("{key:?}\n{settings:?}");
-        assert!(shown.contains(name), "{shown}");
-        assert!(!shown.contains(&value), "{shown}");
-    }
-
-    #[test]
-    fn a_known_provider_s_key_variable_is_filled_in_unless_the_file_names_one() {
-        let openai = PLAIN.replace("http://localhost:1234/v1", "https://api.openai.com/v1");
-        let settings = settle(&openai, Overrides::default());
-        assert_eq!(
-            settings.config.models["qwen"].key_variable(),
-            Some("OPENAI_API_KEY")
-        );
-        let named = openai.replace("id = ", "api_key_env = \"MY_KEY\"\nid = ");
-        let settings = settle(&named, Overrides::default());
-        assert_eq!(
-            settings.config.models["qwen"].key_variable(),
-            Some("MY_KEY")
         );
     }
 

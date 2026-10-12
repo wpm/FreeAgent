@@ -82,13 +82,18 @@ pub fn choosing_first(request: &Request) -> anyhow::Result<Response> {
 /// request in the protocol's JSON, each as a tool's name and its arguments.
 /// Offered one tool, it calls that tool with the first value its enumerated
 /// parameter allows, as a player's `select` tool asks for a `target` from
-/// an `enum` of candidates. Offered several, as a player is by day, it says
-/// [`SAID`] with the tool taking a string and selects the first candidate,
-/// the first time it is asked in a phase, and asks to wait as long as the
-/// tool taking a bounded whole number allows after that. It knows it has
-/// been asked before from the story the request tells: the phase underway,
-/// which follows the story's last blank line, has it voting. A tool without
-/// the parameter the canned player needs is an error naming it.
+/// an `enum` of candidates. Offered several, as a Werewolf player is by day
+/// and an Avalon player always is, it says [`SAID`] with the tool taking a
+/// string, and calls the first tool whose every parameter it can fill in
+/// with the first value allowed, the first time it is asked in a phase: a
+/// Werewolf player selects the first candidate, and an Avalon leader
+/// proposes the first seats, a voter approves, a member of the team does
+/// the first deed offered, and the Assassin names the first target. After
+/// that it asks to wait as long as the tool taking a bounded whole number
+/// allows. It knows it has been asked before from the story the request
+/// tells: the phase underway, which follows the story's last blank line,
+/// has it voting or speaking. A tool without the parameter the canned
+/// player needs is an error naming it.
 pub fn canned_calls(request: &Value) -> anyhow::Result<Vec<(String, Value)>> {
     let tools: Vec<&Value> = request["tools"]
         .as_array()
@@ -108,7 +113,7 @@ pub fn canned_calls(request: &Value) -> anyhow::Result<Vec<(String, Value)>> {
         .as_array()
         .and_then(|messages| messages.last()?["content"].as_str())
         .unwrap_or_default();
-    if voted_in_this_phase(asked) {
+    if voted_in_this_phase(asked) || spoke_in_this_phase(asked) {
         let (tool, (parameter, most)) = tools
             .iter()
             .find_map(|tool| first_bounded(&tool["parameters"]).map(|found| (*tool, found)))
@@ -119,21 +124,63 @@ pub fn canned_calls(request: &Value) -> anyhow::Result<Vec<(String, Value)>> {
         .iter()
         .find_map(|tool| first_string(&tool["parameters"]).map(|found| (*tool, found)))
         .ok_or_else(|| anyhow!("no tool takes a string"))?;
-    let (select, (parameter, first)) =
-        select.ok_or_else(|| anyhow!("no tool has an enumerated parameter"))?;
-    Ok(vec![
-        (name(speak), json!({text: SAID})),
-        (name(select), json!({parameter: first})),
-    ])
+    let acting = tools
+        .iter()
+        .find_map(|tool| first_arguments(&tool["parameters"]).map(|found| (name(tool), found)));
+    Ok(std::iter::once((name(speak), json!({text: SAID})))
+        .chain(acting)
+        .collect())
 }
 
 /// Whether the story a request's user message `asked` tells has the player
 /// voting in the phase underway, which follows the story's last blank line.
 pub fn voted_in_this_phase(asked: &str) -> bool {
-    asked
-        .rsplit("\n\n")
-        .nth(1)
-        .is_some_and(|phase| phase.contains("You vote"))
+    this_phase(asked).is_some_and(|phase| phase.contains("You vote"))
+}
+
+/// Whether the story a request's user message `asked` tells has the player
+/// speaking in the phase underway.
+fn spoke_in_this_phase(asked: &str) -> bool {
+    this_phase(asked).is_some_and(|phase| phase.contains("You say"))
+}
+
+/// The phase underway in the story a request's user message `asked`
+/// tells: what follows the story's last blank line.
+fn this_phase(asked: &str) -> Option<&str> {
+    asked.rsplit("\n\n").nth(1)
+}
+
+/// The arguments that fill in every parameter of the JSON schema
+/// `parameters` with the first value [`first_allowed`] allows, if there are
+/// any parameters and it allows one for each.
+fn first_arguments(parameters: &Value) -> Option<Value> {
+    let arguments: Option<serde_json::Map<String, Value>> = properties(parameters)
+        .map(|(name, schema)| Some((name.to_string(), first_allowed(schema)?)))
+        .collect();
+    arguments
+        .filter(|arguments| !arguments.is_empty())
+        .map(Value::Object)
+}
+
+/// The first value the JSON schema `schema` allows, of the shapes a
+/// player's tools take: the first of an `enum`; `true` for a boolean; and
+/// for an array of an `enum`, its first values, as many as the array holds
+/// at least.
+fn first_allowed(schema: &Value) -> Option<Value> {
+    if let Some(first) = schema.get("enum").and_then(|allowed| allowed.get(0)) {
+        return Some(first.clone());
+    }
+    match schema["type"].as_str()? {
+        "boolean" => Some(Value::Bool(true)),
+        "array" => {
+            let allowed = schema["items"]["enum"].as_array()?;
+            let count = usize::try_from(schema["minItems"].as_u64()?).ok()?;
+            allowed
+                .get(..count)
+                .map(|first| Value::from(first.to_vec()))
+        }
+        _ => None,
+    }
 }
 
 /// The name of `function`, a tool in the protocol's JSON.
@@ -350,16 +397,108 @@ mod tests {
         assert_eq!(choosing_first(&request).unwrap().tool_calls().len(), 2);
     }
 
+    /// A request to speak, act or wait, as an Avalon player's is: `speak`,
+    /// `acting`, the tool the phase offers the player if any, and `wait`,
+    /// telling `story`.
+    fn in_avalon(acting: Option<Tool>, story: &str) -> Request {
+        let mut request = by_day(&[], 60, story);
+        request.tools.remove(1);
+        if let Some(tool) = acting {
+            request.tools.insert(1, tool);
+        }
+        request
+    }
+
+    /// A tool named `name` taking `parameter`, of `schema`.
+    fn taking(name: &str, parameter: &str, schema: Value) -> Tool {
+        Tool::new(
+            name,
+            "Act.",
+            json!({
+                "type": "object",
+                "properties": {parameter: schema},
+                "required": [parameter],
+            }),
+        )
+    }
+
+    #[test]
+    fn in_avalon_the_canned_player_speaks_and_acts_once_a_phase_then_waits() {
+        let seats = json!({"type": "string", "enum": ["player1", "player2", "player3"]});
+        let acts = [
+            (
+                taking(
+                    "propose",
+                    "team",
+                    json!({"type": "array", "items": seats, "minItems": 2, "maxItems": 2}),
+                ),
+                json!({"team": ["player1", "player2"]}),
+            ),
+            (
+                taking("vote", "approve", json!({"type": "boolean"})),
+                json!({"approve": true}),
+            ),
+            (
+                taking(
+                    "perform",
+                    "deed",
+                    json!({"type": "string", "enum": ["support", "sabotage"]}),
+                ),
+                json!({"deed": "support"}),
+            ),
+            (
+                taking("select", "target", seats.clone()),
+                json!({"target": "player1"}),
+            ),
+        ];
+        for (tool, arguments) in acts {
+            let name = tool.name.clone();
+            let request = in_avalon(Some(tool), "Quest 1.");
+            assert_eq!(
+                choosing_first(&request).unwrap(),
+                Response::calling(&[
+                    ("speak".to_string(), json!({"text": SAID})),
+                    (name, arguments),
+                ])
+            );
+        }
+        // A player the phase does not wait on speaks alone.
+        assert_eq!(
+            choosing_first(&in_avalon(None, "Quest 1.")).unwrap(),
+            Response::tool_call("speak", &json!({"text": SAID}))
+        );
+        // Once it has spoken in the phase, it waits.
+        let spoken = "Quest 1.\nYou say, \"I have nothing to add.\"";
+        let request = in_avalon(
+            Some(taking("vote", "approve", json!({"type": "boolean"}))),
+            spoken,
+        );
+        assert_eq!(
+            choosing_first(&request).unwrap(),
+            Response::tool_call("wait", &json!({"seconds": 60}))
+        );
+        // A tool it cannot fill in is not called.
+        for schema in [
+            json!({"type": "integer"}),
+            json!({"type": "array", "items": seats, "minItems": 4}),
+            json!({"type": "array", "items": seats}),
+            json!({"type": "array", "items": {"type": "string"}, "minItems": 1}),
+        ] {
+            let request = in_avalon(Some(taking("odd", "x", schema.clone())), "Quest 1.");
+            assert_eq!(
+                choosing_first(&request).unwrap().tool_calls().len(),
+                1,
+                "{schema}"
+            );
+        }
+    }
+
     #[test]
     fn the_canned_player_fails_a_day_s_request_missing_a_tool_it_needs() {
         let mut request = by_day(&["player2"], 60, "Day 1.");
         request.tools.remove(0);
         let error = choosing_first(&request).unwrap_err();
         assert!(format!("{error:#}").contains("string"), "{error:#}");
-        let mut request = by_day(&["player2"], 60, "Day 1.");
-        request.tools.remove(1);
-        let error = choosing_first(&request).unwrap_err();
-        assert!(format!("{error:#}").contains("enumerated"), "{error:#}");
         let mut request = by_day(&["player2"], 60, "Day 1.\nYou vote against player2.");
         request.tools.remove(2);
         let error = choosing_first(&request).unwrap_err();

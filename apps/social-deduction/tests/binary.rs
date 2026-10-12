@@ -3,13 +3,16 @@
 //! lines.
 
 use free_agent::Event;
+use social_deduction::avalon;
 use social_deduction::model::ToolChoice;
 use social_deduction::model::canned::{
     day_refusal, playing, playing_only, playing_within, refusal, refusing, refusing_days,
     refusing_required, retracting, serving, unreachable, wanting_a_key,
 };
-use social_deduction::werewolf::config::{Configuration, ContextWindow, Source};
-use social_deduction::werewolf::{Ending, Entry, Message, PlayerId, Role};
+use social_deduction::model::window::{ContextWindow, Source};
+use social_deduction::seat::PlayerId;
+use social_deduction::werewolf::config::Configuration;
+use social_deduction::werewolf::{Ending, Entry, Message, Role};
 use std::collections::{HashMap, HashSet};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -259,7 +262,7 @@ fn the_variants_and_the_model_options_are_gone() {
 fn help_lists_the_games_the_file_the_role_counts_and_the_limits() {
     let help = printed(&["--help"]);
     assert!(
-        help.contains("werewolf") && help.contains("models"),
+        help.contains("werewolf") && help.contains("avalon") && help.contains("models"),
         "{help}"
     );
     let help = printed(&["werewolf", "--help"]);
@@ -999,4 +1002,285 @@ fn the_models_command_refuses_a_key_variable_that_is_not_set_before_asking_anyon
     let stderr = refused(&["models", &base_url, "--api-key-env", name]);
     assert!(stderr.contains(name), "{stderr}");
     assert!(!stderr.contains(&base_url), "{stderr}");
+}
+
+/// Play Avalon with `args` after the game: the events on standard error,
+/// parsed, and what was printed.
+fn played_avalon(args: &[&str]) -> (Vec<Event<avalon::Entry>>, String) {
+    let output = succeeded(&[&["avalon"], args].concat());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let events = stderr
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    (events, String::from_utf8(output.stdout).unwrap())
+}
+
+/// Every role the deal Avalon's log opens with seats, in seat order.
+fn avalon_roles(events: &[Event<avalon::Entry>]) -> Vec<avalon::Role> {
+    let Some(avalon::Entry::Start {
+        roles, strategies, ..
+    }) = events.first().map(|event| &event.payload)
+    else {
+        panic!("{events:?}");
+    };
+    assert!(strategies.values().all(|strategy| strategy == "random"));
+    let mut roles: Vec<avalon::Role> = roles.values().copied().collect();
+    roles.sort_unstable();
+    roles
+}
+
+#[test]
+fn avalon_plays_the_default_table_to_the_end_and_tells_it() {
+    let (events, printed) = played_avalon(&[]);
+    let episode = events[0].episode;
+    assert!(events.iter().all(|event| event.episode == episode));
+    use avalon::Role::{Assassin, Merlin, Minion, Servant};
+    assert_eq!(
+        avalon_roles(&events),
+        [Merlin, Servant, Servant, Assassin, Minion]
+    );
+    let Some(avalon::Entry::End { winner, .. }) = events.last().map(|event| &event.payload) else {
+        panic!("{events:?}");
+    };
+    // The account opens with the table, a player to a line, then the
+    // limits, goes through the first proposal, set off by a blank line,
+    // and closes with the winner and how long the game took.
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines[0], "5 players:", "{printed}");
+    assert!(lines[1].ends_with(", plays random"), "{printed}");
+    assert_eq!(
+        lines[6], "A proposal waits 1m, a vote 1m, a quest 1m and the assassination 1m.",
+        "{printed}"
+    );
+    assert_eq!(lines[7], "", "{printed}");
+    assert!(
+        lines[8].starts_with("Quest 1, proposal 1 of 5. player1 ("),
+        "{printed}"
+    );
+    let won = match winner {
+        avalon::Team::Good => "Good wins ",
+        avalon::Team::Evil => "Evil wins ",
+    };
+    assert!(lines[lines.len() - 2].starts_with(won), "{printed}");
+    assert!(
+        lines[lines.len() - 1].starts_with("The game took "),
+        "{printed}"
+    );
+}
+
+#[test]
+fn avalon_plays_any_valid_table_under_the_limits_given() {
+    let args = [
+        "--servants",
+        "3",
+        "--minions",
+        "2",
+        "--percival",
+        "1",
+        "--morgana",
+        "1",
+        "--vote-limit",
+        "90s",
+    ];
+    let (events, printed) = played_avalon(&args);
+    use avalon::Role::{Assassin, Merlin, Minion, Morgana, Percival, Servant};
+    assert_eq!(
+        avalon_roles(&events),
+        [
+            Merlin, Percival, Servant, Servant, Servant, Assassin, Morgana, Minion, Minion
+        ]
+    );
+    assert!(printed.starts_with("9 players:\n"), "{printed}");
+    assert!(
+        printed.contains("A proposal waits 1m, a vote 1m 30s, a quest 1m"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn avalon_no_log_leaves_standard_error_empty() {
+    let output = succeeded(&["avalon", "--no-log"]);
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .starts_with("5 players:\n")
+    );
+}
+
+#[test]
+fn avalon_refuses_an_invalid_table_saying_what_is_wrong() {
+    let stderr = refused(&["avalon", "--merlin", "0", "--servants", "3"]);
+    assert!(
+        stderr.contains("a table has Merlin exactly when it has an Assassin"),
+        "{stderr}"
+    );
+    let stderr = refused(&["avalon", "--servants", "0"]);
+    assert!(stderr.contains("5 to 10 players"), "{stderr}");
+    assert_usage_error(&["avalon", "game.toml", "other.toml"]);
+}
+
+/// The configuration Avalon's log has right after the deal.
+fn avalon_configuration(events: &[Event<avalon::Entry>]) -> &avalon::config::Configuration {
+    match events.get(1).map(|event| &event.payload) {
+        Some(avalon::Entry::Configuration(configuration)) => configuration,
+        second => panic!("{second:?}"),
+    }
+}
+
+/// An Avalon example configuration file, by its name in the examples
+/// directory.
+fn avalon_example(name: &str) -> String {
+    format!("{}/examples/avalon/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
+#[test]
+fn avalon_logs_the_configuration_of_random_players_with_no_file_and_with_the_example() {
+    for args in [vec![], vec![avalon_example("random.toml")]] {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (events, printed) = played_avalon(&args);
+        use avalon::Role::{Assassin, Merlin, Minion, Servant};
+        assert_eq!(
+            avalon_roles(&events),
+            [Merlin, Servant, Servant, Assassin, Minion]
+        );
+        let configuration = avalon_configuration(&events);
+        assert!(configuration.models.is_empty(), "{configuration:?}");
+        assert!(configuration.prompts.is_empty(), "{configuration:?}");
+        assert_eq!(configuration.role_counts[&Servant], 2);
+        assert!(
+            matches!(
+                events.last().map(|event| &event.payload),
+                Some(avalon::Entry::End { .. })
+            ),
+            "{events:?}"
+        );
+        assert!(printed.starts_with("5 players:\n"), "{printed}");
+    }
+}
+
+/// A configuration file written for this test, holding `file`, in the
+/// target directory, at a path of its own so the tests do not collide.
+fn written(test: &str, file: &str) -> String {
+    let path = format!("{}/{test}.toml", env!("CARGO_TARGET_TMPDIR"));
+    std::fs::write(&path, file).unwrap();
+    path
+}
+
+#[test]
+fn avalon_hears_the_command_line_over_the_file() {
+    let config = written(
+        "avalon-hears",
+        "[phases]\nvote_limit = \"2m\"\nquest_limit = \"3m\"\n[roles.servant]\ncount = 3\n[roles.minion]\ncount = 2\n",
+    );
+    let (events, printed) = played_avalon(&[&config, "--minions", "1", "--quest-limit", "30s"]);
+    let configuration = avalon_configuration(&events);
+    assert_eq!(configuration.role_counts[&avalon::Role::Servant], 3);
+    assert_eq!(configuration.role_counts[&avalon::Role::Minion], 1);
+    assert_eq!(configuration.vote_limit, Duration::from_secs(120));
+    assert_eq!(configuration.quest_limit, Duration::from_secs(30));
+    assert!(printed.starts_with("6 players:\n"), "{printed}");
+    assert!(
+        printed.contains("A proposal waits 1m, a vote 2m, a quest 30s"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn avalon_refuses_a_file_it_cannot_read() {
+    let stderr = refused(&["avalon", "no-such-file.toml"]);
+    assert!(stderr.contains("no-such-file.toml"), "{stderr}");
+}
+
+/// A configuration file written for this test: Avalon's prompted example,
+/// its model served at `base_url` as [`EXAMPLE_MODEL`], with `rest` after
+/// it.
+fn avalon_prompted(test: &str, base_url: &str, rest: &str) -> String {
+    let example = std::fs::read_to_string(avalon_example("prompted.toml")).unwrap();
+    let file = example
+        .replace("http://localhost:1234/v1", base_url)
+        .replace(
+            "id = \"qwen2.5-7b-instruct-1m\"",
+            &format!("id = \"{EXAMPLE_MODEL}\""),
+        );
+    assert!(
+        file.contains(base_url) && file.contains(EXAMPLE_MODEL),
+        "{file}"
+    );
+    written(test, &format!("{file}{rest}"))
+}
+
+#[test]
+fn avalon_plays_a_table_of_random_evil_and_prompted_good_to_the_end() {
+    let base_url = playing(&[EXAMPLE_MODEL]);
+    let config = avalon_prompted(
+        "avalon-mixed",
+        &base_url,
+        "[roles.assassin]\nstrategy = \"random\"\n[roles.minion]\nstrategy = \"random\"\n",
+    );
+    let (events, printed) = played_avalon(&[&config]);
+    let Some(avalon::Entry::Start {
+        roles, strategies, ..
+    }) = events.first().map(|event| &event.payload)
+    else {
+        panic!("{events:?}");
+    };
+    for (seat, role) in roles {
+        let expected = match role.team() {
+            avalon::Team::Good => "everyone",
+            avalon::Team::Evil => "random",
+        };
+        assert_eq!(strategies[seat], expected, "{seat}");
+    }
+    // Only the good players are told prompts, each its own.
+    let configuration = avalon_configuration(&events);
+    assert_eq!(configuration.models["qwen"].id, EXAMPLE_MODEL);
+    let prompted: HashSet<&PlayerId> = configuration.prompts.keys().collect();
+    let good: HashSet<&PlayerId> = roles
+        .iter()
+        .filter(|(_, role)| role.team() == avalon::Team::Good)
+        .map(|(seat, _)| seat)
+        .collect();
+    assert_eq!(prompted, good);
+    for (seat, prompt) in &configuration.prompts {
+        let role = roles[seat];
+        let told = format!(
+            "You are {seat}, {}, on the {} side.",
+            role.told(),
+            role.team()
+        );
+        assert!(prompt.ends_with(&told), "{prompt}");
+    }
+    // A player stopped in the middle of a step may log after the end, so
+    // the end is somewhere in the log rather than last.
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event.payload, avalon::Entry::End { .. })),
+        "{events:?}"
+    );
+    // The prompted players talk, and the account tells it.
+    assert!(
+        printed.contains("qwen's context window is 4096 tokens, the default."),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("says, \"I have nothing to add.\""),
+        "{printed}"
+    );
+}
+
+#[test]
+fn avalon_refuses_a_model_that_does_not_play_naming_it_before_anything_is_printed() {
+    let base_url = refusing(&[EXAMPLE_MODEL]);
+    let config = avalon_prompted("avalon-refused", &base_url, "");
+    let stderr = refused(&["avalon", &config]);
+    for said in [
+        "setting up the model qwen".to_string(),
+        format!("{EXAMPLE_MODEL} did not answer as the leader"),
+    ] {
+        assert!(stderr.contains(&said), "{stderr}");
+    }
+    assert!(stderr.contains(&refusal(EXAMPLE_MODEL)), "{stderr}");
 }

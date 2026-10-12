@@ -93,7 +93,7 @@ fn choose(me: &PlayerId, view: &View) -> Option<PlayerId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::werewolf::config::RANDOM;
+    use crate::strategy::RANDOM;
     use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{
         Script, at_once, between_the_deal_and_the_end, configured, dealt, logged, mute,

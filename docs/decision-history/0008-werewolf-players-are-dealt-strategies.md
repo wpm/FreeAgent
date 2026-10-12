@@ -1,6 +1,6 @@
 # ADR-0008: Werewolf is one game whose players are dealt strategies
 
-**Status:** Accepted
+**Status:** Accepted, amended by [ADR-0010](0010-avalon-is-a-second-game-built-by-copying-werewolf.md)
 **Date:** 2026-10-12
 **Deciders:** Bill McNeill
 **Depends on:** [ADR-0001](0001-games-and-variants-are-modules-and-subcommands.md),

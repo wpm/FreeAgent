@@ -41,4 +41,4 @@ are not part of this repository's history.
 | [0007](0007-a-tool-call-is-required-where-the-model-allows-it.md) | A tool call is required where the model allows it | Accepted |
 | [0008](0008-werewolf-players-are-dealt-strategies.md) | Werewolf is one game whose players are dealt strategies | Accepted |
 | [0009](0009-only-a-change-of-decision-restarts-the-ratify-timer.md) | Only a change of decision restarts the ratify timer, and a vote may be retracted | Accepted |
-| [0010](0010-avalon-is-a-second-game-built-by-copying-werewolf.md) | Avalon is a second game, built by copying Werewolf | Proposed |
+| [0010](0010-avalon-is-a-second-game-built-by-copying-werewolf.md) | Avalon is a second game, built by copying Werewolf | Accepted |
