@@ -6,8 +6,8 @@ use social_deduction::model::canned::{
     playing, playing_only, refusal, refusing, serving, unreachable, wanting_a_key,
 };
 use social_deduction::werewolf::llm::Configuration;
-use social_deduction::werewolf::{Ending, Entry, PlayerId, Role};
-use std::collections::HashMap;
+use social_deduction::werewolf::{Ending, Entry, Message, PlayerId, Role};
+use std::collections::{HashMap, HashSet};
 use std::process::{Command, Output};
 use std::time::Duration;
 
@@ -72,12 +72,13 @@ fn assert_usage_error(args: &[&str]) {
 /// Play a game of `variant` with `args` after it, whose log must name
 /// `variation`, with the default table, and check that it is logged from
 /// the deal to the result under one episode id and told from the table to
-/// the winner. The events, for whatever else the variant logs.
+/// the winner. The events, for whatever else the variant logs, and what was
+/// printed.
 fn assert_plays_the_default_table(
     variant: &str,
     variation: &str,
     args: &[&str],
-) -> Vec<Event<Entry>> {
+) -> (Vec<Event<Entry>>, String) {
     let (events, printed) = played(variant, args);
 
     let episode = events[0].episode;
@@ -130,7 +131,7 @@ fn assert_plays_the_default_table(
             "{printed}"
         );
     }
-    events
+    (events, printed)
 }
 
 #[test]
@@ -342,7 +343,7 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
         "--ratify-limit",
         "1s",
     ];
-    let events = assert_plays_the_default_table("llm", "LLM", &args);
+    let (events, printed) = assert_plays_the_default_table("llm", "LLM", &args);
     let (_, roles) = start(&events);
     let Entry::Start { ratify_limit, .. } = &events[0].payload else {
         panic!("{events:?}");
@@ -359,6 +360,47 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
     assert!(
         endings.iter().all(|by| *by == Ending::Ratified),
         "{endings:?}"
+    );
+    // By day every living player speaks once, to every other living player
+    // and not to the environment, and the account tells what they say. The
+    // day's phases are the even-numbered ones, and each living player is
+    // announced each of them.
+    let said: Vec<(&PlayerId, &HashSet<PlayerId>)> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            Entry::Action {
+                from,
+                to,
+                message: Message::Say { .. },
+                ..
+            } => Some((from, to)),
+            _ => None,
+        })
+        .collect();
+    let announced_by_day = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.payload,
+                Entry::Action {
+                    message: Message::Announce { seq, .. },
+                    ..
+                } if seq % 2 == 0
+            )
+        })
+        .count();
+    assert!(!said.is_empty(), "{events:?}");
+    assert_eq!(said.len(), announced_by_day, "{events:?}");
+    for (from, to) in said {
+        assert!(!to.contains(from), "{from} spoke to itself");
+        assert!(
+            !to.contains("environment"),
+            "{from} spoke to the environment"
+        );
+    }
+    assert!(
+        printed.contains(" says, \"I have nothing to add.\""),
+        "{printed}"
     );
     // Each player was told the prompt for the role it was dealt.
     assert_eq!(configuration.prompts.len(), 7);

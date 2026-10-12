@@ -57,6 +57,17 @@ workflow takes a version's notes from here.
   every day ended as `Voted`, the start entry and the configuration carry
   the ratify limit, and the narration tells the votes as they come, each
   tentative decision, and whether the votes stood or the day ran out.
+- In `social-deduction werewolf llm` the players talk by day, with no
+  turns. A player is woken by every message it hears by day, debounced so
+  that it has at most one model call in progress and one waiting, and the
+  model chooses with one required call among `speak`, which goes to every
+  other living player and not to the environment, `select`, and `wait`,
+  which asks to be woken later; it may call several at once. A response
+  that comes back after the day has ended is withheld and logged as
+  `Withheld`. The log has `Say` messages, the narration tells what each
+  player says as they say it and a player's story tells it what others
+  said, talk heard after its day as said during that day. The night plays
+  as before.
 
 ### Changed
 

@@ -68,24 +68,48 @@ each player's rendered prompt, and the templates and text blocks as
 written, so a log says by itself what was played and under which prompts.
 The API key is never logged.
 
-Each phase, a player is told its prompt and the story of the game so far
-from its own point of view, and selects one of the living with a tool call.
-A player whose model fails to select, because the model was not reached or
-answered with something that is not a selection, has not selected, and its
-phase ends at its limit. The failure is logged with the phase and the error
-and told as it happens, and the game goes on; the player is not told of it.
+Each time a player is woken, it is told its prompt and the story of the
+game so far from its own point of view, what others said and how they
+voted included, and where the game stands, and the model answers with tool
+calls. By night a player is woken once, when the night is announced to it,
+and selects one of the living with one forced `select` call, which goes to
+the environment alone; the first selection counts, and the night ends when
+everyone awake has selected or at its limit. A player whose model fails,
+because it was not reached or answered with something that is not well
+formed, has done nothing, and the failure is logged with the phase and the
+error and told as it happens; the game goes on, and the player is not told
+of it.
 
-By day the votes are public and ratified. Each vote goes to every other
-living player as well as to the environment, a player's latest vote counts,
-and whenever the votes change who they select, or come to select nobody,
-the environment tells every living player so. A day ends once the votes
-have stood unchanged for the ratify limit, and the selected player is voted
+By day the players talk, with no turns. Every living player is woken when
+the day is announced to it and again by every message it hears, another
+player's utterance or vote and the environment's tentative decision, and
+the model is offered three tools, of which it must call one and may call
+several: `speak`, which says something to every other living player, and
+never to the environment, which does nothing with speech; `select`, which
+votes for a player, and may be called again to change the vote; and `wait`,
+which says nothing now and asks to be woken after some seconds unless
+something wakes the player sooner. The calls are carried out in the order
+the model made them. Wake-ups are debounced: a player has at most one model
+call in progress and one waiting, however fast the talk comes, and each
+call is made from everything the player had heard when it began. A model
+may answer from a context that is out of date by the time it answers; if
+the day has ended by then, the player sends nothing and logs what it
+withheld. Day talk that arrives by night is remembered and told in its own
+day, and does not wake the player.
+
+The votes are public and ratified. Each vote goes to every other living
+player as well as to the environment, a player's latest vote counts, and
+whenever the votes change who they select, or come to select nobody, the
+environment tells every living player so. A day ends once the votes have
+stood unchanged for the ratify limit, and the selected player is voted
 out; or at the day limit, whatever is standing, and nobody is. The ratify
 limit is `ratify_limit` under `[phases]`, or `--ratify-limit` on the
 command line, twenty seconds unless either says, and may not be longer
-than the day limit. The night is unchanged: selections go to the
-environment alone, the first counts, and the night ends when everyone
-awake has selected or at its limit.
+than the day limit. The account tells what everyone says as they say it,
+and a player's story tells it what others said and how they voted. The
+prompt is the configuration's to write: the program tells the model only
+what the three tools do and that it may speak, vote, or wait, so the rules
+text in the file should say that by day everyone may talk at any time.
 
 ### The configuration file
 
