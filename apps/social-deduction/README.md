@@ -418,9 +418,10 @@ social-deduction avalon examples/avalon/random.toml
 
 A prompted strategy may be allotted to any role, beside random ones, with
 one model or several, as in Werewolf. Its template has the variables
-`name`, `role` and every `[text]` block, and `role` is told as a sentence
-names it: "Merlin", "Percival", "a loyal servant of Arthur", "the
-Assassin", "Morgana", "Mordred", "Oberon" or "a minion of Mordred". Each
+`name`, `role`, `team` and every `[text]` block. `role` is told as a
+sentence names it: "Merlin", "Percival", "a loyal servant of Arthur", "the
+Assassin", "Morgana", "Mordred", "Oberon" or "a minion of Mordred"; `team`
+is `good` or `evil`. Each
 model in play is set up as in Werewolf, and asked four times before the
 game, as the leader proposing a team, a voter, an evil member of a team
 and the Assassin, each with that player's tools; a model that does not
@@ -434,8 +435,9 @@ request is the prompt, the player's story of the game so far, and where
 the game stands: the quest and the proposal, the leader, the team's size
 and the sabotages that fail it, the team proposed, how long the phase
 lasts, and what is asked of the player. The story opens with who the
-player is and what it sees, such as "You are player4, Percival. One of
-player1 and player3 is Merlin and the other Morgana.", and tells each
+player is, which side it is on, and what it sees, such as "You are
+player4, Percival, on the good side. One of player1 and player3 is Merlin
+and the other Morgana.", and tells each
 phase, how the one before came out, the player's own choices and all
 talk. Every announcement carries the record of every team, vote and
 quest, so a story that forgets old talk to fit the context window keeps

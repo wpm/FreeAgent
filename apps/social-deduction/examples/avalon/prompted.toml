@@ -22,8 +22,10 @@ and evil, and play at most five quests. Each quest has a leader, who
 proposes a team of the size the quest needs. Everyone votes on the team in
 secret, and it goes when more than half of all the players approve. Each
 member of a team that goes supports or sabotages the quest in secret, and
-enough sabotages fail it; only evil players may sabotage. Merlin is good
-and knows most of the evil players, and the evil players know each other.
+enough sabotages fail it; only evil players may sabotage. Merlin,
+Percival and the loyal servants of Arthur are good; the Assassin, Morgana,
+Mordred, Oberon and the minions of Mordred are evil. Merlin knows most of
+the evil players, and the evil players but Oberon know each other.
 Good wins with three successful quests, unless the Assassin then names
 Merlin. Evil wins with three failed quests, five failed proposals in a
 row, or Merlin named. Everyone may talk at any time, in every phase, with
@@ -36,5 +38,5 @@ policy = "prompted"
 system = """
 {{ rules }}
 
-You are {{ name }}, {{ role }}.
+You are {{ name }}, {{ role }}, on the {{ team }} side.
 """

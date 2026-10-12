@@ -129,7 +129,8 @@ workflow takes a version's notes from here.
   The log records the configuration right after the deal, and
   `examples/avalon/random.toml` plays the game of no file.
 - Prompted players play Avalon, beside random ones, with any number of
-  models. They talk in every phase with `speak` and `wait`, and the player
+  models. Each is told its role and its side, and a prompt template has
+  `team`, `good` or `evil`, beside `name` and `role`. They talk in every phase with `speak` and `wait`, and the player
   a phase waits on chooses with `propose`, `vote`, `perform` or `select`.
   Each model in play is asked four times before the game, as the leader, a
   voter, an evil member of a team and the Assassin, and a model that does

@@ -1374,7 +1374,7 @@ mod tests {
                 vec![
                     model::Message::system("You are player1."),
                     model::Message::user(
-                        "You are player1, Merlin. You see that player2 and player5 are evil.\n\
+                        "You are player1, Merlin, on the good side. You see that player2 and player5 are evil.\n\
                          \n\
                          Quest 1, proposal 1 of 5. You lead and need a team of 2.\n\
                          \n\
@@ -1638,7 +1638,7 @@ mod tests {
         let lines: Vec<&str> = last.lines().collect();
         assert_eq!(
             lines[0],
-            "You are player2, the Assassin. You see that player5 is evil."
+            "You are player2, the Assassin, on the evil side. You see that player5 is evil."
         );
         for told in [
             "Quest 1, proposal 1 of 5. player1 leads and needs a team of 2.",
@@ -2275,7 +2275,7 @@ mod tests {
             mind.story(u64::MAX),
             (
                 [
-                    "You are player3, a loyal servant of Arthur.",
+                    "You are player3, a loyal servant of Arthur, on the good side.",
                     "",
                     "Quest 1, proposal 1 of 5. player1 leads and needs a team of 2.",
                     "player1 says, \"Me and you.\"",

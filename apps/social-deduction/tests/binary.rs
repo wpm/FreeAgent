@@ -1244,7 +1244,12 @@ fn avalon_plays_a_table_of_random_evil_and_prompted_good_to_the_end() {
         .collect();
     assert_eq!(prompted, good);
     for (seat, prompt) in &configuration.prompts {
-        let told = format!("You are {seat}, {}.", roles[seat].told());
+        let role = roles[seat];
+        let told = format!(
+            "You are {seat}, {}, on the {} side.",
+            role.told(),
+            role.team()
+        );
         assert!(prompt.ends_with(&told), "{prompt}");
     }
     // A player stopped in the middle of a step may log after the end, so

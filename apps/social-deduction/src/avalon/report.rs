@@ -403,14 +403,14 @@ enum Line {
 
 /// A player's account of its own game, told a memory at a time, in the
 /// second person, with no table, no limits and no times. It opens with who
-/// the player is and what it sees of the others. Each phase is told as it
-/// is announced, set off by a blank line, and how the phase before it came
-/// out as the next one begins, from what the new announcement shows: the
-/// team proposed, or that the leader proposed nobody in time; the tally of
-/// the vote; or how the quest came out. The player's own choices are told
-/// as it makes them, and all talk, its own and others', as it is said or
-/// heard. Told within a budget, it forgets talk, oldest first, until it
-/// fits.
+/// the player is, which side it is on, and what it sees of the others.
+/// Each phase is told as it is announced, set off by a blank line, and how
+/// the phase before it came out as the next one begins, from what the new
+/// announcement shows: the team proposed, or that the leader proposed
+/// nobody in time; the tally of the vote; or how the quest came out. The
+/// player's own choices are told as it makes them, and all talk, its own
+/// and others', as it is said or heard. Told within a budget, it forgets
+/// talk, oldest first, until it fits.
 pub struct Story {
     /// Whose story this is.
     me: PlayerId,
@@ -528,8 +528,9 @@ impl Story {
         lines
     }
 
-    /// Who the player is, as its first `view` shows it: its name and its
-    /// role, and whom it sees as evil, or as Merlin or Morgana.
+    /// Who the player is, as its first `view` shows it: its name, its
+    /// role and its side, and whom it sees as evil, or as Merlin or
+    /// Morgana.
     fn identity(&self, view: &View) -> String {
         let seen = |as_seen| {
             in_order(view.sees.keys())
@@ -538,7 +539,12 @@ impl Story {
                 .cloned()
                 .collect::<Vec<PlayerId>>()
         };
-        let mut said = format!("You are {}, {}.", self.me, view.role.told());
+        let mut said = format!(
+            "You are {}, {}, on the {} side.",
+            self.me,
+            view.role.told(),
+            view.role.team()
+        );
         let evil = seen(Seen::Evil);
         if !evil.is_empty() {
             let are = if evil.len() == 1 { "is" } else { "are" };
@@ -1193,29 +1199,32 @@ mod tests {
         ];
         assert_eq!(
             opening(&everyone, "player1"),
-            "You are player1, Merlin. You see that player4, player5, player7 and player8 are evil."
+            "You are player1, Merlin, on the good side. You see that player4, player5, player7 and player8 are evil."
         );
         assert_eq!(
             opening(&everyone, "player2"),
-            "You are player2, Percival. One of player1 and player5 is Merlin and the other Morgana."
+            "You are player2, Percival, on the good side. One of player1 and player5 is Merlin and the other Morgana."
         );
         assert_eq!(
             opening(&everyone, "player3"),
-            "You are player3, a loyal servant of Arthur."
+            "You are player3, a loyal servant of Arthur, on the good side."
         );
         assert_eq!(
             opening(&everyone, "player4"),
-            "You are player4, the Assassin. You see that player5, player6 and player8 are evil."
+            "You are player4, the Assassin, on the evil side. You see that player5, player6 and player8 are evil."
         );
-        assert_eq!(opening(&everyone, "player7"), "You are player7, Oberon.");
+        assert_eq!(
+            opening(&everyone, "player7"),
+            "You are player7, Oberon, on the evil side."
+        );
         let five = [Merlin, Percival, Servant, Assassin, Minion];
         assert_eq!(
             opening(&five, "player2"),
-            "You are player2, Percival. You see that player1 is Merlin or Morgana."
+            "You are player2, Percival, on the good side. You see that player1 is Merlin or Morgana."
         );
         assert_eq!(
             opening(&five, "player5"),
-            "You are player5, a minion of Mordred. You see that player4 is evil."
+            "You are player5, a minion of Mordred, on the evil side. You see that player4 is evil."
         );
     }
 
@@ -1264,7 +1273,7 @@ mod tests {
         assert_eq!(
             told("player3", memories).lines(),
             [
-                "You are player3, a loyal servant of Arthur.",
+                "You are player3, a loyal servant of Arthur, on the good side.",
                 "",
                 "Quest 1, proposal 1 of 5. player1 leads and needs a team of 2.",
                 "player1 says, \"Pick me.\"",
@@ -1396,7 +1405,7 @@ mod tests {
         assert_eq!(
             told,
             [
-                "You are player3, a loyal servant of Arthur.",
+                "You are player3, a loyal servant of Arthur, on the good side.",
                 "",
                 "Quest 1, proposal 1 of 5. player1 leads and needs a team of 2.",
                 "player1 proposes nobody in time.",

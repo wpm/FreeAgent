@@ -44,7 +44,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// The variables every template has besides the text blocks.
-const VARIABLES: [&str; 2] = ["name", "role"];
+const VARIABLES: [&str; 3] = ["name", "role", "team"];
 
 /// What the command line may say over the file: the role counts and the
 /// phase limits. Each is unset unless given, so that the file can be
@@ -410,8 +410,8 @@ impl Settings {
     /// pair at the table whose strategy is prompted, since any seat may be
     /// dealt any of them, in seat order and then the order of the pairs.
     /// A prompt is rendered from its strategy's `system` template, with the
-    /// variables `name`, `role`, as [`Role::told`] tells it, and every
-    /// `[text]` block. An undefined variable is an error. A template that
+    /// variables `name`, `role`, as [`Role::told`] tells it, `team`,
+    /// `good` or `evil`, and every `[text]` block. An undefined variable is an error. A template that
     /// does not compile is an error naming the strategy; one that does not
     /// render, the strategy, the seat and the role.
     pub fn prompts(&self) -> anyhow::Result<Vec<SystemPrompt>> {
@@ -437,7 +437,12 @@ impl Settings {
         for seat in self.table.seats() {
             for &(role, name) in &pairs {
                 let text = templates[name]
-                    .render(context! { name => &seat, role => role.told(), ..blocks.clone() })
+                    .render(context! {
+                        name => &seat,
+                        role => role.told(),
+                        team => role.team().to_string(),
+                        ..blocks.clone()
+                    })
                     .with_context(|| {
                         format!("rendering the prompt of strategy {name} for {seat} as the {role}")
                     })?;
@@ -708,10 +713,13 @@ policy = "random"
         }
         let merlin = prompt(&prompts, "player3", Role::Merlin, "everyone");
         assert!(merlin.starts_with(rules.as_str()), "{merlin}");
-        assert!(merlin.ends_with("\n\nYou are player3, Merlin."), "{merlin}");
+        assert!(
+            merlin.ends_with("\n\nYou are player3, Merlin, on the good side."),
+            "{merlin}"
+        );
         let servant = prompt(&prompts, "player1", Role::Servant, "everyone");
         assert!(
-            servant.ends_with("\n\nYou are player1, a loyal servant of Arthur."),
+            servant.ends_with("\n\nYou are player1, a loyal servant of Arthur, on the good side."),
             "{servant}"
         );
     }
@@ -1523,22 +1531,23 @@ system = "{{ name }}, {{ role }}"
     }
 
     #[test]
-    fn every_role_is_rendered_as_a_sentence_names_it() {
-        let mut file = format!("{PLAIN}[roles.percival]\ncount = 1\n[roles.servant]\ncount = 1\n");
+    fn every_role_is_rendered_as_a_sentence_names_it_with_its_team() {
+        let mut file = PLAIN.replace("{{ role }}", "{{ role }}, on the {{ team }} side");
+        file.push_str("[roles.percival]\ncount = 1\n[roles.servant]\ncount = 1\n");
         for role in ["morgana", "mordred", "oberon"] {
             file.push_str(&format!("[roles.{role}]\ncount = 1\n"));
         }
         let settings = settle(&file, Overrides::default());
         let prompts = settings.prompts().unwrap();
         for (role, told) in [
-            (Role::Merlin, "Merlin"),
-            (Role::Percival, "Percival"),
-            (Role::Servant, "a loyal servant of Arthur"),
-            (Role::Assassin, "the Assassin"),
-            (Role::Morgana, "Morgana"),
-            (Role::Mordred, "Mordred"),
-            (Role::Oberon, "Oberon"),
-            (Role::Minion, "a minion of Mordred"),
+            (Role::Merlin, "Merlin, on the good side"),
+            (Role::Percival, "Percival, on the good side"),
+            (Role::Servant, "a loyal servant of Arthur, on the good side"),
+            (Role::Assassin, "the Assassin, on the evil side"),
+            (Role::Morgana, "Morgana, on the evil side"),
+            (Role::Mordred, "Mordred, on the evil side"),
+            (Role::Oberon, "Oberon, on the evil side"),
+            (Role::Minion, "a minion of Mordred, on the evil side"),
         ] {
             assert_eq!(
                 prompt(&prompts, "player1", role, "plain"),
