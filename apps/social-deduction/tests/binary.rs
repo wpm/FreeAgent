@@ -532,12 +532,15 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
 fn a_model_player_retracts_its_vote_and_everyone_hears_it() {
     let base_url = retracting(&[EXAMPLE_MODEL]);
     let config = configured("retracts", "minimal.toml", &base_url, EXAMPLE_MODEL);
+    // Each change of the tentative decision early in a day restarts the
+    // ratify timer, and on a slow machine the model calls behind them take
+    // a while, so the day limit leaves the votes ample time to stand.
     let args = [
         &config,
         "--night-limit",
         "1s",
         "--day-limit",
-        "2s",
+        "10s",
         "--ratify-limit",
         "1s",
     ];
