@@ -70,7 +70,7 @@ use super::announced;
 use super::report::Narrator;
 use super::{
     Entry, Message, Phase, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table, Team, View, act,
-    awake, candidates, observe, to_everyone_but, to_the_environment, to_the_players_but,
+    awake, candidates, observe, receivers,
 };
 use crate::model::{
     self, Provider, REQUEST_TIMEOUT, Request, Response, Tool, api_key, key_variable,
@@ -800,11 +800,17 @@ impl Mind {
         self.reminders.fetch_add(1, Ordering::Relaxed) + 1
     }
 
+    /// Whether the phase numbered `seq` is the one the player is in: the
+    /// latest it was announced.
+    fn in_phase(&self, seq: u64) -> bool {
+        seq == self.seq()
+    }
+
     /// Whether the reminder numbered `count` for the phase numbered `seq`
     /// counts: it is the latest set, and the phase is the one the player is
     /// in.
     fn reminder_counts(&self, seq: u64, count: u64) -> bool {
-        count == self.reminders.load(Ordering::Relaxed) && seq == self.seq()
+        count == self.reminders.load(Ordering::Relaxed) && self.in_phase(seq)
     }
 }
 
@@ -936,9 +942,7 @@ impl Player {
         let (request, seen) = self.request(view, limit, night_tools(candidates))?;
         let response = self.mind.model.complete(&request).await?;
         let target = selected(&response, candidates)?;
-        self.carry_out(seq, vec![Sending::Select(target)], seen, |_| {
-            to_the_environment()
-        })?;
+        self.carry_out(seq, view, vec![Sending::Select(target)], seen)?;
         Ok(())
     }
 
@@ -958,13 +962,10 @@ impl Player {
         limit: Duration,
         candidates: &[PlayerId],
     ) -> anyhow::Result<()> {
-        let me = &self.context.id;
         let (request, seen) = self.request(view, limit, day_tools(candidates, limit))?;
         let response = self.mind.model.complete(&request).await?;
         let Asked { sends, wait } = asked(&response, candidates, limit)?;
-        let still_on = self.carry_out(seq, sends, seen, |sending| {
-            sending.receivers(me, &view.alive)
-        })?;
+        let still_on = self.carry_out(seq, view, sends, seen)?;
         if still_on && let Some(after) = wait {
             self.remind(seq, after)?;
         }
@@ -972,24 +973,25 @@ impl Player {
     }
 
     /// Carry out `sends`, what a response made from `seen` memories asked
-    /// for in the phase numbered `seq`, if that is still the phase the
-    /// player was last announced: send each in order, numbered, to `to` of
-    /// it. A call may begin in one phase and end in the next, and then
-    /// nothing is sent, and each message is logged as withheld, unnumbered.
-    /// Says whether the phase was still on.
+    /// for in the phase numbered `seq`, which `view` shows, if that is
+    /// still the phase the player was last announced: send each in order,
+    /// numbered, to whom the rules of the game send it. A call may begin in
+    /// one phase and end in the next, and then nothing is sent, and each
+    /// message is logged as withheld, unnumbered. Says whether the phase
+    /// was still on.
     fn carry_out(
         &self,
         seq: u64,
+        view: &View,
         sends: Vec<Sending>,
         seen: usize,
-        to: impl Fn(&Sending) -> HashSet<ActorId>,
     ) -> anyhow::Result<bool> {
         let me = &self.context.id;
-        let still_on = self.mind.seq() == seq;
+        let still_on = self.mind.in_phase(seq);
         for sending in sends {
             if still_on {
-                let to = to(&sending);
                 let message = sending.message(seq, me, self.mind.number());
+                let to = receivers(&message, me, view);
                 self.send(message, to, seen)?;
             } else {
                 self.context.log(Entry::Withheld {
@@ -1055,11 +1057,7 @@ impl Behavior for Player {
                 self.mind.announce(*seq, view, *limit);
                 Some(awake(&self.context.id, view))
             }
-            Message::Say { seq, .. }
-            | Message::Select { seq, .. }
-            | Message::Tentative { seq, .. }
-                if *seq == self.mind.seq() =>
-            {
+            _ if message.seq().is_some_and(|seq| self.mind.in_phase(seq)) => {
                 Some(self.mind.by_day())
             }
             _ => None,
@@ -1352,7 +1350,8 @@ impl Asked {
     }
 }
 
-/// What a day's call has the player send.
+/// What a call has the player send: by day whatever it asked for, by
+/// night its one selection.
 #[derive(Debug, PartialEq)]
 enum Sending {
     /// Say `text` to every other living player.
@@ -1374,15 +1373,6 @@ impl Sending {
                 n,
                 target,
             },
-        }
-    }
-
-    /// Whom among `alive` this goes to from `me`: an utterance to the other
-    /// living players, a selection to them and the environment.
-    fn receivers(&self, me: &PlayerId, alive: &HashSet<PlayerId>) -> HashSet<ActorId> {
-        match self {
-            Sending::Say(_) => to_the_players_but(me, alive),
-            Sending::Select(_) => to_everyone_but(me, alive),
         }
     }
 }
@@ -1453,7 +1443,9 @@ mod tests {
         selections, selections_sent, tentative, utterance,
     };
     use crate::werewolf::uniform_random::tests::{Puppet, Script, Seat, at_once};
-    use crate::werewolf::{ENVIRONMENT, thinking_episode};
+    use crate::werewolf::{
+        ENVIRONMENT, thinking_episode, to_everyone_but, to_the_environment, to_the_players_but,
+    };
     use clap::Parser;
     use secrecy::ExposeSecret;
     use std::num::NonZero;
@@ -2460,6 +2452,15 @@ player2 = \"Cautious.\"
             .context("POST http://localhost:1234/v1/chat/completions failed"))
     }
 
+    /// The omniscient account of `entries`, line by line.
+    fn narrated(entries: Vec<Entry>) -> Vec<String> {
+        let mut narrator = Narrator::default();
+        entries
+            .into_iter()
+            .flat_map(|entry| narrator.narrate(&logged(entry)))
+            .collect()
+    }
+
     /// The failures the players logged, each as who failed, in which
     /// phase, and what went wrong, in the log's order.
     fn failed(logged: &[Entry]) -> Vec<(&str, u64, &str)> {
@@ -2673,11 +2674,7 @@ player2 = \"Cautious.\"
         assert_eq!(winner, Team::Werewolves);
         assert_eq!(took, quick().night_limit);
         assert!(selections(&entries).is_empty());
-        let mut narrator = Narrator::default();
-        let mut told: Vec<String> = entries
-            .into_iter()
-            .flat_map(|entry| narrator.narrate(&logged(entry)))
-            .collect();
+        let mut told = narrated(entries);
         // The werewolves fail side by side, in no particular order. The
         // night takes no time because every event is stamped at the epoch,
         // while the game took its night limit by the environment's clock.
@@ -2912,15 +2909,7 @@ player2 = \"Cautious.\"
         assert_eq!(seen_by(&logged, "wolf"), [Some(1), Some(7)]);
         // Every player logs observing bob's utterance, bob's vote and the
         // decision, in the phase it was in.
-        let decision = logged.iter().find_map(|entry| match entry {
-            Entry::Action {
-                n,
-                message: Message::Tentative { .. },
-                ..
-            } => Some(*n),
-            _ => None,
-        });
-        let decision = decision.unwrap();
+        let decision = decided(&logged);
         for player in ["wolf", "cat", "dan"] {
             let by_day: Vec<(&str, u64, u64)> = observed_by(&logged, player)
                 .into_iter()
@@ -2937,6 +2926,22 @@ player2 = \"Cautious.\"
                 ]
             );
         }
+    }
+
+    /// The number of the environment's first tentative decision.
+    fn decided(logged: &[Entry]) -> u64 {
+        logged
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Action {
+                    from,
+                    n,
+                    message: Message::Tentative { .. },
+                    ..
+                } if from == ENVIRONMENT => Some(*n),
+                _ => None,
+            })
+            .unwrap()
     }
 
     /// The number of the environment's announcement of the phase numbered
@@ -3540,11 +3545,7 @@ player2 = \"Cautious.\"
             ]
         );
         assert_eq!(asked_of(&model, "sam").len(), 3);
-        let mut narrator = Narrator::default();
-        let told: Vec<String> = entries
-            .into_iter()
-            .flat_map(|entry| narrator.narrate(&logged(entry)))
-            .collect();
+        let told = narrated(entries);
         for line in [
             format!("sam (seer) is too late to say, for day 1: \"{SAID}\""),
             "sam (seer) chooses bob (villager) for day 1 too late to count.".to_string(),
@@ -3750,18 +3751,7 @@ player2 = \"Cautious.\"
         // announcement and decision. A tentative decision names no sender,
         // so bob's are observed as the environment's.
         let announcement = announced_to(&logged, "pat", 2);
-        let decision = logged
-            .iter()
-            .find_map(|entry| match entry {
-                Entry::Action {
-                    from,
-                    n,
-                    message: Message::Tentative { .. },
-                    ..
-                } if from == ENVIRONMENT => Some(*n),
-                _ => None,
-            })
-            .unwrap();
+        let decision = decided(&logged);
         let by_day: Vec<(&str, u64, u64)> = observed_by(&logged, "pat")
             .into_iter()
             .filter(|(_, _, seq)| *seq == 2)
@@ -3840,13 +3830,8 @@ player2 = \"Cautious.\"
         assert_eq!(withheld[0].0, &selection(1, "sam", 0, "ann"));
         assert!(withheld[0].1.is_some());
         assert!(sent_by(&entries, "sam").is_empty(), "{entries:?}");
-        let mut narrator = Narrator::default();
-        let told: Vec<String> = entries
-            .into_iter()
-            .flat_map(|entry| narrator.narrate(&logged(entry)))
-            .collect();
         let line = "sam (seer) chooses ann (villager) for night 1 too late to count.".to_string();
-        assert!(told.contains(&line), "{told:?}");
+        assert!(narrated(entries).contains(&line));
     }
 
     #[tokio::test(start_paused = true)]

@@ -665,6 +665,22 @@ impl Message {
         }
     }
 
+    /// The phase this message is tagged with: for a message to others, the
+    /// phase its sender was in; for a reminder, the phase it is for. A
+    /// wake-up names none.
+    pub fn seq(&self) -> Option<u64> {
+        match self {
+            Message::Announce { seq, .. }
+            | Message::Select { seq, .. }
+            | Message::Tentative { seq, .. }
+            | Message::Say { seq, .. }
+            | Message::EndPhase { seq }
+            | Message::Ratify { seq, .. }
+            | Message::Remind { seq, .. } => Some(*seq),
+            Message::Wake => None,
+        }
+    }
+
     /// Who sent this message: the environment, unless it is a player's
     /// selection or utterance, which carries its sender.
     pub fn sender(&self) -> ActorId {
@@ -703,6 +719,19 @@ pub fn to_everyone_but<'a>(
     let mut to = to_the_players_but(me, players);
     to.insert(ENVIRONMENT.to_string());
     to
+}
+
+/// Whom `me` sends `message` to in the phase `view` shows, by the rules of
+/// the game: an utterance to every other living player, and never to the
+/// environment, which does nothing with speech; a selection to the
+/// environment, and by day to every other living player as well, since
+/// the votes are public; anything else to the environment.
+pub fn receivers(message: &Message, me: &PlayerId, view: &View) -> HashSet<ActorId> {
+    match (message, &view.phase) {
+        (Message::Say { .. }, _) => to_the_players_but(me, &view.alive),
+        (Message::Select { .. }, Phase::Day) => to_everyone_but(me, &view.alive),
+        _ => to_the_environment(),
+    }
 }
 
 /// Send `message` from the actor of `context` to everyone in `to`, logging
@@ -1248,6 +1277,39 @@ mod tests {
         assert_eq!(Message::Ratify { seq: 2, count: 3 }.number(), None);
         assert_eq!(Message::Wake.number(), None);
         assert_eq!(Message::Remind { seq: 2, count: 1 }.number(), None);
+    }
+
+    #[test]
+    fn every_message_but_a_wake_up_names_its_phase() {
+        let view = seen(&["wolf"], &[("wolf", Role::Werewolf)]);
+        assert_eq!(announcement(2, view).seq(), Some(2));
+        assert_eq!(selection(1, "wolf", 3, "ann").seq(), Some(1));
+        assert_eq!(tentative(2, 4, None).seq(), Some(2));
+        assert_eq!(utterance(3, "wolf", 5, "Hello.").seq(), Some(3));
+        assert_eq!(Message::EndPhase { seq: 1 }.seq(), Some(1));
+        assert_eq!(Message::Ratify { seq: 2, count: 3 }.seq(), Some(2));
+        assert_eq!(Message::Remind { seq: 4, count: 1 }.seq(), Some(4));
+        assert_eq!(Message::Wake.seq(), None);
+    }
+
+    #[test]
+    fn talk_goes_to_the_players_and_a_selection_to_the_environment_and_by_day_to_the_players_too() {
+        let everyone = ["wolf", "ann", "bob"];
+        let me = "wolf".to_string();
+        let night = seen(&everyone, &[]);
+        let day = seen_by_day(&everyone, &[]);
+        let others = HashSet::from(["ann".to_string(), "bob".to_string()]);
+        let said = utterance(2, "wolf", 1, "Hello.");
+        assert_eq!(receivers(&said, &me, &day), others);
+        assert_eq!(receivers(&said, &me, &night), others);
+        let chose = selection(1, "wolf", 2, "ann");
+        assert_eq!(receivers(&chose, &me, &night), to_the_environment());
+        assert_eq!(
+            receivers(&chose, &me, &day),
+            to_everyone_but(&me, &day.alive)
+        );
+        let reminder = Message::EndPhase { seq: 1 };
+        assert_eq!(receivers(&reminder, &me, &day), to_the_environment());
     }
 
     #[test]

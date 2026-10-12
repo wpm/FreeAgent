@@ -769,15 +769,21 @@ mod tests {
         })
     }
 
-    /// The environment's observation, in the phase numbered `observed_in`,
-    /// of the message `from` numbered `n`.
-    fn observed_by_the_environment(from: &str, n: u64, observed_in: u64) -> Event<Entry> {
+    /// `by`'s observation, in the phase numbered `observed_in`, of the
+    /// message `from` numbered `n`.
+    fn observed_by(by: &str, from: &str, n: u64, observed_in: u64) -> Event<Entry> {
         logged(Entry::Observation {
-            by: ENVIRONMENT.to_string(),
+            by: id(by),
             from: id(from),
             n,
             seq: observed_in,
         })
+    }
+
+    /// The environment's observation, in the phase numbered `observed_in`,
+    /// of the message `from` numbered `n`.
+    fn observed_by_the_environment(from: &str, n: u64, observed_in: u64) -> Event<Entry> {
+        observed_by(ENVIRONMENT, from, n, observed_in)
     }
 
     /// Tell `narrator` that `from` selected `target` for the phase numbered
@@ -1484,13 +1490,11 @@ mod tests {
         let everyone = ["wolf", "seer", "doctor", "ann"];
         narrator.narrate(&announced("wolf", 1, 1, Phase::Night, &everyone));
         // The wolf's observation of the announcement.
-        let announcement = logged(Entry::Observation {
-            by: id("wolf"),
-            from: ENVIRONMENT.to_string(),
-            n: 1,
-            seq: 1,
-        });
-        assert!(narrator.narrate(&announcement).is_empty());
+        assert!(
+            narrator
+                .narrate(&observed_by("wolf", ENVIRONMENT, 1, 1))
+                .is_empty()
+        );
         // An observation of a selection whose action never reached the log.
         assert!(
             narrator
@@ -1508,13 +1512,11 @@ mod tests {
         assert!(narrator.narrate(&acted("wolf", 2, "ann")).is_empty());
         // By day every player receives the vote; whether it counts is the
         // environment's to say.
-        let by_the_seer = logged(Entry::Observation {
-            by: id("seer"),
-            from: id("wolf"),
-            n: 2,
-            seq: 2,
-        });
-        assert!(narrator.narrate(&by_the_seer).is_empty());
+        assert!(
+            narrator
+                .narrate(&observed_by("seer", "wolf", 2, 2))
+                .is_empty()
+        );
         assert_eq!(
             narrator.narrate(&observed_by_the_environment("wolf", 2, 2)),
             ["wolf (werewolf) votes against ann (villager)."]
