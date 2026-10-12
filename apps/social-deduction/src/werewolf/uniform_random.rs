@@ -114,8 +114,8 @@ impl Behavior for Player {
     /// Log a message from another actor, which is any numbered one, as
     /// observed in the latest phase announced. Announced a phase, and awake
     /// in it, select someone at once; asleep, or with nobody to select, say
-    /// nothing. Anything else, another player's utterance or selection or
-    /// the environment's tentative decision, is observed and nothing more,
+    /// nothing. Anything else, another player's utterance, selection or
+    /// retraction or the environment's tentative decision, is observed and nothing more,
     /// whatever phase it is tagged with: the player keeps nothing it could
     /// put it in.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
@@ -192,8 +192,8 @@ pub(crate) mod tests {
     /// phase and says nothing. A message goes where the game's rules send
     /// it from a player: an utterance, or a tentative decision the puppet
     /// makes as if it were the environment, to every other player alive at
-    /// the latest announcement; a selection to the environment, and by day
-    /// to the other players too; anything else to the environment. It logs
+    /// the latest announcement; a selection or retraction to the
+    /// environment, and by day to the other players too; anything else to the environment. It logs
     /// each message it sends as its action and each message it receives as
     /// its observation, in the latest phase announced, and does nothing
     /// else with what it hears, whatever phase it is tagged with. What it
@@ -260,7 +260,9 @@ pub(crate) mod tests {
             (Message::Say { .. } | Message::Tentative { .. }, _) => {
                 to_the_players_but(me, &view.alive)
             }
-            (Message::Select { .. }, Phase::Day) => to_everyone_but(me, &view.alive),
+            (Message::Select { .. } | Message::Retract { .. }, Phase::Day) => {
+                to_everyone_but(me, &view.alive)
+            }
             _ => to_the_environment(),
         };
         act(context, message, to, None, None)

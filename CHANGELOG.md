@@ -88,6 +88,14 @@ workflow takes a version's notes from here.
   as too late to say if its phase has ended, and a player's story tells it
   what others said. A day's failure is narrated as a failure to play. The
   night plays as before.
+- In `social-deduction werewolf llm` a player may retract its vote by day
+  with the `retract` tool, and is undecided again. A `Retract` goes where a
+  vote goes, to the environment and every other living player, and is
+  handled like a change of vote: one that changes the tentative decision is
+  announced with a `Tentative` and starts or stops the ratify timer. A
+  retraction counts in a day with a ratify limit, from a player with a vote
+  standing. The narration tells "player4 withdraws their vote and is
+  undecided again."
 
 ### Changed
 

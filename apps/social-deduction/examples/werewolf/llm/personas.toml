@@ -21,7 +21,8 @@ alternates between night and day. By night the werewolves choose a villager
 to kill, the doctor chooses one player to save from that kill, and the seer
 learns one player's side. By day everyone may talk at any time, with no
 turns: whenever you are woken, you may speak to every other living player,
-vote, or wait, and you may change your vote while the day is open. Once one
+vote, or wait. While the day is open you may change your vote, or withdraw
+it and be undecided again. Once one
 player has had the most votes for 20s without the decision changing, that
 player is eliminated. A tie eliminates nobody. The villagers win when
 the last werewolf is dead. The werewolves win when they are at least as

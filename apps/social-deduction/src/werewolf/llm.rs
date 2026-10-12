@@ -43,18 +43,19 @@
 //! By night a player is woken once, by its announcement, and has the model
 //! select one of its [candidates] with one `select` call, sent to
 //! the environment alone. By day it is woken by every message it receives:
-//! the announcement, another player's utterance or selection, and the
-//! environment's tentative decision. Wake-ups are debounced: the perceive
-//! loop remembers each message and wakes the think loop only when no
-//! wake-up is already waiting, and the think loop takes the history as it
-//! stands when it is woken, so a player has at most one call in progress
-//! and one waiting, however fast the talk comes. A day's request offers
-//! three tools, of which the model calls one and may call several:
+//! the announcement, another player's utterance, selection or retraction,
+//! and the environment's tentative decision. Wake-ups are debounced: the
+//! perceive loop remembers each message and wakes the think loop only when
+//! no wake-up is already waiting, and the think loop takes the history as
+//! it stands when it is woken, so a player has at most one call in
+//! progress and one waiting, however fast the talk comes. A day's request
+//! offers four tools, of which the model calls one and may call several:
 //! `speak`, which sends what it says to every other living player and not
 //! to the environment; `select`, which sends its vote to the environment
-//! and every other living player, so the votes are public; and `wait`,
-//! which asks to be woken after some seconds unless something wakes the
-//! player sooner. A reminder is numbered so that only the latest set
+//! and every other living player, so the votes are public; `retract`,
+//! which withdraws its vote, so that it is undecided again, and goes where
+//! a vote goes; and `wait`, which asks to be woken after some seconds
+//! unless something wakes the player sooner. A reminder is numbered so that only the latest set
 //! counts, and one for a phase that has ended is ignored. The calls are
 //! carried out in the order the model made them. Before carrying out
 //! anything a response asks for, by night as well as by day, the player
@@ -65,8 +66,8 @@
 //! A model that is not reached, or an answer that is not well formed, is a
 //! failure: the player logs it as [`Entry::Failed`], carries nothing out,
 //! and the game goes on. The player logs an [`Entry::Observation`] for each
-//! message it receives and an [`Entry::Action`] for each utterance and
-//! selection it sends, numbered together from 1, with how many memories the
+//! message it receives and an [`Entry::Action`] for each utterance,
+//! selection and retraction it sends, numbered together from 1, with how many memories the
 //! model was shown when it made the call that produced the message and how
 //! many lines of talk that call forgot. Before a game begins,
 //! [`check_plays`] asks the model once as a player would by night and once
@@ -1156,11 +1157,12 @@ impl Player {
 
     /// Ask the model what to do in the day numbered `seq`, which `view`
     /// shows and which lasts `limit`: speak, vote for one of `candidates`,
-    /// or wait, in any number and order, with one response. A response
-    /// that is not well formed, as [`asked`] judges it, is an error, and
-    /// nothing in it is carried out. Otherwise the messages are sent in the
-    /// order the model asked for them, each utterance to every other living
-    /// player and each selection to them and the environment, and a wait
+    /// retract its vote, or wait, in any number and order, with one
+    /// response. A response that is not well formed, as [`asked`] judges
+    /// it, is an error, and nothing in it is carried out. Otherwise the
+    /// messages are sent in the order the model asked for them, each
+    /// utterance to every other living player and each selection and
+    /// retraction to them and the environment, and a wait
     /// sets a reminder; unless the day has ended by the time the model
     /// answers, and then the messages are withheld and no reminder is set.
     async fn play_by_day(
@@ -1244,8 +1246,9 @@ impl Behavior for Player {
     /// Log a message from another actor, which is any numbered one, as
     /// observed in the latest phase announced. An announcement is of a new
     /// phase: it is remembered, and wakes the think loop if the player is
-    /// awake in the phase. Anything else, another player's utterance or
-    /// selection or the environment's tentative decision, counts only if
+    /// awake in the phase. Anything else, another player's utterance,
+    /// selection or retraction or the environment's tentative decision,
+    /// counts only if
     /// it is tagged with that phase: then it is remembered and, by day,
     /// wakes the think loop, so a player announced a night it sleeps
     /// through is woken by nothing until the day. One tagged with another
@@ -1306,7 +1309,7 @@ impl Think for Player {
 
 /// Where the game stands for `me` as `view` shows it, how long the phase
 /// lasts, and what is asked of it: by night, what its role does, and by
-/// day, that it may speak, vote, or wait. A player awake by night is a
+/// day, that it may speak, vote, retract its vote, or wait. A player awake by night is a
 /// werewolf, the doctor or the seer, and is shown its own role.
 fn situation(me: &PlayerId, view: &View, limit: Duration) -> anyhow::Result<String> {
     let (phase, asked) = match (&view.phase, view.roles.get(me)) {
@@ -1358,13 +1361,14 @@ fn night_tools(candidates: &[PlayerId]) -> Vec<Tool> {
 }
 
 /// The tools a player is offered by day: [`speak`], [`vote`] over
-/// `candidates`, and [`wait`] up to `limit`, how long the day lasts.
+/// `candidates`, [`retract`], and [`wait`] up to `limit`, how long the day
+/// lasts.
 fn day_tools(candidates: &[PlayerId], limit: Duration) -> Vec<Tool> {
-    vec![speak(), vote(candidates), wait(limit)]
+    vec![speak(), vote(candidates), retract(), wait(limit)]
 }
 
 /// What a player is asked to do by day.
-const DAY_ASKED: &str = "You may speak, vote, or wait.";
+const DAY_ASKED: &str = "You may speak, vote, retract your vote, or wait.";
 
 /// The two placeholder candidates the probe asks about.
 fn placeholders() -> [PlayerId; 2] {
@@ -1393,8 +1397,8 @@ pub enum Probed {
 /// placeholder candidates. The night's asks for a selection with the
 /// `select` tool, and is judged as a player's night answer is by
 /// `selected`; the day's says it is day and the player may speak, vote,
-/// or wait, offers the day's three tools over a day of one minute, and is
-/// judged as a player's day answer is by `asked`.
+/// retract its vote, or wait, offers the day's four tools over a day of
+/// one minute, and is judged as a player's day answer is by `asked`.
 ///
 /// The night's request requires a tool call. If the provider refuses that
 /// as bad, it is asked again allowing one, and both refusals are given if
@@ -1467,6 +1471,9 @@ const SELECT: &str = "select";
 /// The name of the tool a player speaks with, by day.
 const SPEAK: &str = "speak";
 
+/// The name of the tool a player retracts its vote with, by day.
+const RETRACT: &str = "retract";
+
 /// The name of the tool a player waits with, by day.
 const WAIT: &str = "wait";
 
@@ -1518,6 +1525,20 @@ fn speak() -> Tool {
     )
 }
 
+/// The tool a player retracts its vote with by day: `retract`, taking no
+/// arguments.
+fn retract() -> Tool {
+    Tool::new(
+        RETRACT,
+        "Withdraw your vote, so that you are undecided again.",
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        }),
+    )
+}
+
 /// The tool a player waits with by day: `wait`, taking `seconds`, a whole
 /// number from 1 to the day's `limit` in whole seconds.
 fn wait(limit: Duration) -> Tool {
@@ -1544,6 +1565,11 @@ struct Selection {
 struct Speech {
     text: String,
 }
+
+/// The arguments of a [`retract`] call: none.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Retraction {}
 
 /// The arguments of a [`wait`] call.
 #[derive(Deserialize)]
@@ -1580,6 +1606,10 @@ impl Asked {
                 self.sends.push(Sending::Say(text));
             }
             SELECT => self.sends.push(Sending::Select(target(call, candidates)?)),
+            RETRACT => {
+                let Retraction {} = arguments(call)?;
+                self.sends.push(Sending::Retract);
+            }
             WAIT => {
                 let Waiting { seconds } = arguments(call)?;
                 if !(1..=limit.as_secs()).contains(&seconds) {
@@ -1604,6 +1634,8 @@ enum Sending {
     Say(String),
     /// Vote for `target`.
     Select(PlayerId),
+    /// Withdraw the vote.
+    Retract,
 }
 
 impl Sending {
@@ -1619,6 +1651,7 @@ impl Sending {
                 n,
                 target,
             },
+            Sending::Retract => Message::Retract { seq, from, n },
         }
     }
 }
@@ -1640,11 +1673,11 @@ fn selected(response: &Response, candidates: &[PlayerId]) -> anyhow::Result<Play
 
 /// What a day's `response` asks for, its calls taken in the order the
 /// model made them. The response is judged as a whole: no tool call, a
-/// call to a tool other than [`speak`], [`select`] and [`wait`], arguments
-/// that do not parse, a target who is not one of `candidates`, text that is
-/// empty once trimmed, or seconds not between 1 and `limit` in whole
-/// seconds is an error, and
-/// then nothing in it is carried out.
+/// call to a tool other than [`speak`], [`select`], [`retract`] and
+/// [`wait`], arguments that do not parse, a target who is not one of
+/// `candidates`, text that is empty once trimmed, or seconds not between 1
+/// and `limit` in whole seconds is an error, and then nothing in it is
+/// carried out.
 fn asked(response: &Response, candidates: &[PlayerId], limit: Duration) -> anyhow::Result<Asked> {
     let made = response.tool_calls();
     if made.is_empty() {
@@ -1686,8 +1719,8 @@ mod tests {
     use crate::werewolf::report::{FORGOTTEN, Narrator};
     use crate::werewolf::tests::{
         Played, announcement, between_the_deal_and_the_end, logged, observed_by,
-        observed_by_the_environment, one_wolf_against, received, run, seen, seen_by_day, selection,
-        selections, selections_sent, tentative, utterance,
+        observed_by_the_environment, one_wolf_against, received, retraction, run, seen,
+        seen_by_day, selection, selections, selections_sent, tentative, utterance,
     };
     use crate::werewolf::uniform_random::tests::{Puppet, Script, Seat, at_once};
     use crate::werewolf::{
@@ -1738,7 +1771,8 @@ id = "qwen2.5-7b-instruct"
             assert!(!prompts.is_empty(), "{name}");
             // Each example sets the ratify limit, and tells the players
             // that a player is eliminated once they have had the most votes
-            // for that long, and that by day they may speak, vote, or wait.
+            // for that long, and that by day they may speak, vote, or wait,
+            // and withdraw their vote.
             let ratify = settings.config.phases.ratify_limit.unwrap();
             assert_eq!(ratify, settings.ratify_limit, "{name}");
             let rules = &settings.config.text["rules"];
@@ -1748,6 +1782,7 @@ id = "qwen2.5-7b-instruct"
             );
             assert!(rules.contains("speak"), "{name}: {rules}");
             assert!(rules.contains("vote, or wait"), "{name}: {rules}");
+            assert!(rules.contains("withdraw"), "{name}: {rules}");
         }
     }
 
@@ -2784,6 +2819,11 @@ player2 = \"Cautious.\"
         (SELECT.to_string(), json!({"target": target}))
     }
 
+    /// A call to `retract`.
+    fn retracting() -> Made {
+        (RETRACT.to_string(), json!({}))
+    }
+
     /// A call to `wait` for `seconds`.
     fn waiting(seconds: u64) -> Made {
         (WAIT.to_string(), json!({"seconds": seconds}))
@@ -3389,11 +3429,13 @@ player2 = \"Cautious.\"
                 "It is night 1, which lasts 1m. Choose whom the werewolves should kill."
                     .to_string(),
                 "It is night 1, which lasts 1m. Choose whom to protect.".to_string(),
-                "It is day 1, which lasts 1m. You may speak, vote, or wait.".to_string(),
+                "It is day 1, which lasts 1m. You may speak, vote, retract your vote, or wait."
+                    .to_string(),
                 "It is night 2, which lasts 1m. Choose whom the werewolves should kill."
                     .to_string(),
                 "It is night 2, which lasts 1m. Choose whom to protect.".to_string(),
-                "It is day 2, which lasts 1m. You may speak, vote, or wait.".to_string(),
+                "It is day 2, which lasts 1m. You may speak, vote, retract your vote, or wait."
+                    .to_string(),
             ])
         );
     }
@@ -3513,6 +3555,59 @@ player2 = \"Cautious.\"
         }
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_response_that_votes_and_retracts_sends_both_in_turn_and_the_others_remember_it() {
+        // Bob votes against cat and retracts at once, by day 1, and everyone
+        // else waits. Nobody is selected after that, so the day runs out
+        // with nobody voted out. Nobody votes the next day either, and the
+        // werewolf wins on the third night.
+        let roles = one_wolf_against(&["ann", "bob", "cat", "dan"]);
+        let model = Arc::new(by_day(|request| {
+            let bob = request.messages[0] == model::Message::system(told("bob"));
+            let calls = if bob && !voted_in_this_phase(&request.messages[1].content) {
+                vec![voting("cat"), retracting()]
+            } else {
+                vec![waiting(10)]
+            };
+            Ok(Response::calling(&calls))
+        }));
+        let (winner, logged, took) = play(roles, quick(), Arc::clone(&model)).await.unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        assert_eq!(took, quick().day_limit * 2);
+        let bob = "bob".to_string();
+        let others = ["wolf", "cat", "dan"].map(String::from);
+        // The vote and the retraction each go to the environment and every
+        // other living player, in the order the model made the calls.
+        let sent = sent_by(&logged, &bob);
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert_eq!(sent[0].0, &selection(2, "bob", 1, "cat"));
+        assert_eq!(sent[1].0, &retraction(2, "bob", 2));
+        for (_, to, _) in &sent {
+            assert_eq!(*to, &to_everyone_but(&bob, &others));
+        }
+        let observed: Vec<_> = observed_by_the_environment(&logged)
+            .into_iter()
+            .filter(|(from, _, _)| *from == "bob")
+            .collect();
+        assert_eq!(observed, [("bob", 1, 2), ("bob", 2, 2)]);
+        // The werewolf is woken by the retraction and remembers it, and bob
+        // remembers its own.
+        let wolf = asked_of(&model, "wolf");
+        assert!(
+            wolf.iter()
+                .any(|asked| asked.contains("bob withdraws their vote and is undecided again.")),
+            "{wolf:?}"
+        );
+        let asked = asked_of(&model, "bob");
+        assert!(
+            asked
+                .last()
+                .unwrap()
+                .contains("You withdraw your vote and are undecided again."),
+            "{asked:?}"
+        );
+    }
+
     /// The number of the environment's first tentative decision.
     fn decided(logged: &[Entry]) -> u64 {
         logged
@@ -3569,7 +3664,7 @@ player2 = \"Cautious.\"
         day.round = NonZero::new(2).unwrap();
         assert_eq!(
             situation(&me("ann"), &day, Duration::from_secs(60)).unwrap(),
-            "It is day 2, which lasts 1m. You may speak, vote, or wait."
+            "It is day 2, which lasts 1m. You may speak, vote, retract your vote, or wait."
         );
         // A villager sleeps by night, and a player is shown its own role.
         assert!(situation(&me("ann"), &night(&[("ann", Role::Villager)]), limit).is_err());
@@ -3596,7 +3691,7 @@ player2 = \"Cautious.\"
             assert_eq!(request.messages[1].role, model::Role::User);
         }
         // The night's request offers a player's one tool by night, and the
-        // day's a player's three by day, over the same candidates and a day
+        // day's a player's four by day, over the same candidates and a day
         // of a minute, and says what a day says.
         assert_eq!(requests[0].tools, night_tools(&placeholders()));
         assert_eq!(requests[1].tools, day_tools(&placeholders(), PROBE_DAY));
@@ -3605,6 +3700,17 @@ player2 = \"Cautious.\"
                 .content
                 .ends_with(&format!("{DAY_ASKED} {ANSWER}"))
         );
+    }
+
+    #[tokio::test]
+    async fn the_probe_accepts_a_retraction_as_an_answer_to_the_day_s_request() {
+        let model = by_day(|_| Ok(Response::calling(&[retracting()])));
+        let probed = check_plays(&model, MODEL_ID).await;
+        assert!(
+            matches!(probed, Ok(Probed::Played(ToolChoice::Required))),
+            "{probed:?}"
+        );
+        assert_eq!(model.requests().len(), 2);
     }
 
     #[tokio::test]
@@ -3822,8 +3928,8 @@ player2 = \"Cautious.\"
     }
 
     #[tokio::test(start_paused = true)]
-    async fn by_day_the_request_offers_the_three_tools_and_says_the_player_may_speak_vote_or_wait()
-    {
+    async fn by_day_the_request_offers_the_four_tools_and_says_the_player_may_speak_vote_retract_or_wait()
+     {
         // Pat, a villager, sleeps through night 1 and is woken by day 1 by
         // its announcement, asks to wait nine seconds, and is woken again by
         // that reminder, to the same request, since nobody else says
@@ -3852,7 +3958,7 @@ player2 = \"Cautious.\"
                     model::Message::system("You are pat."),
                     model::Message::user(
                         "You are pat, a villager.\n\nNight 1.\nYou sleep.\nann dies.\n\nDay 1.\n\n\
-                         It is day 1, which lasts 10s. You may speak, vote, or wait. \
+                         It is day 1, which lasts 10s. You may speak, vote, retract your vote, or wait. \
                          Answer by calling one of the tools."
                     ),
                 ],
@@ -3874,6 +3980,15 @@ player2 = \"Cautious.\"
                             "type": "object",
                             "properties": {"target": {"type": "string", "enum": candidates}},
                             "required": ["target"],
+                            "additionalProperties": false,
+                        }),
+                    ),
+                    Tool::new(
+                        "retract",
+                        "Withdraw your vote, so that you are undecided again.",
+                        json!({
+                            "type": "object",
+                            "properties": {},
                             "additionalProperties": false,
                         }),
                     ),
@@ -4051,7 +4166,23 @@ player2 = \"Cautious.\"
                 wait: None,
             }
         );
-        let wrong: [(&str, Vec<Made>, &str); 10] = [
+        // A vote then a retraction leaves the player undecided, and a
+        // retraction then a vote leaves it with the vote: each is sent.
+        assert_eq!(
+            judged(&[voting("bob"), retracting()]).unwrap(),
+            Asked {
+                sends: vec![Sending::Select("bob".to_string()), Sending::Retract],
+                wait: None,
+            }
+        );
+        assert_eq!(
+            judged(&[retracting(), voting("ann")]).unwrap(),
+            Asked {
+                sends: vec![Sending::Retract, Sending::Select("ann".to_string())],
+                wait: None,
+            }
+        );
+        let wrong: [(&str, Vec<Made>, &str); 11] = [
             ("no tool call", vec![], "the model made no tool call"),
             (
                 "another tool",
@@ -4097,6 +4228,14 @@ player2 = \"Cautious.\"
                 "a wait that is not a number",
                 vec![(WAIT.to_string(), json!({"seconds": "soon"}))],
                 "the arguments of the model's wait call",
+            ),
+            (
+                "a retraction with arguments",
+                vec![
+                    voting("bob"),
+                    (RETRACT.to_string(), json!({"target": "bob"})),
+                ],
+                "the arguments of the model's retract call",
             ),
         ];
         for (what, calls, said) in wrong {
