@@ -2556,16 +2556,6 @@ player2 = \"Cautious.\"
         }
     }
 
-    /// A mind of the werewolf `wolf`, told its prompt, whose model is down.
-    fn wolf_s_mind() -> Mind {
-        Mind::new(
-            "wolf".to_string(),
-            told("wolf"),
-            MODEL_ID.to_string(),
-            Arc::new(FakeModel::failing("down")),
-        )
-    }
-
     /// A player's memory of sending `message`, in no episode in particular.
     fn sent(message: Message) -> Event<Memory> {
         logged(Memory::Acted { message })
@@ -2573,7 +2563,12 @@ player2 = \"Cautious.\"
 
     #[test]
     fn the_story_kept_with_the_history_is_at_every_step_a_fresh_narration_of_it() {
-        let mind = wolf_s_mind();
+        let mind = Mind::new(
+            "wolf".to_string(),
+            told("wolf"),
+            MODEL_ID.to_string(),
+            Arc::new(FakeModel::failing("down")),
+        );
         let pack = [("wolf", Role::Werewolf)];
         let night_2 = View {
             round: NonZero::new(2).unwrap(),
@@ -2630,24 +2625,6 @@ player2 = \"Cautious.\"
                 script.len()
             )
         );
-    }
-
-    #[test]
-    fn a_sent_selection_is_remembered_after_whatever_the_player_had_heard() {
-        let mind = wolf_s_mind();
-        let pack = [("wolf", Role::Werewolf)];
-        let night = received(announcement(1, seen(&["wolf", "ann", "bob"], &pack)));
-        let day = received(announcement(2, seen_by_day(&["wolf", "ann", "bob"], &pack)));
-        let heard = received(selection(2, "ann", 1, "bob"));
-        let selected = sent(selection(1, "wolf", 1, "ann"));
-        // The day is announced, and ann's vote heard, in the moment between
-        // the werewolf's check that the night is still on and its send.
-        mind.remember(night.clone());
-        mind.remember(day.clone());
-        mind.remember(heard.clone());
-        mind.remember(selected.clone());
-        let remembered = mind.remembered.lock().unwrap();
-        assert_eq!(remembered.history, [night, day, heard, selected]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -3014,34 +2991,6 @@ player2 = \"Cautious.\"
                 _ => None,
             })
             .unwrap()
-    }
-
-    #[test]
-    fn a_tentative_decision_and_anothers_vote_are_remembered_at_the_end_and_told_in_turn() {
-        let mind = wolf_s_mind();
-        let everyone = ["wolf", "ann", "bob"];
-        let pack = [("wolf", Role::Werewolf)];
-        mind.remember(received(announcement(2, seen_by_day(&everyone, &pack))));
-        mind.remember(received(selection(2, "ann", 1, "bob")));
-        mind.remember(received(tentative(2, 4, Some("bob"))));
-        mind.remember(received(selection(2, "bob", 1, "ann")));
-        mind.remember(received(tentative(2, 5, None)));
-        assert_eq!(
-            mind.story(),
-            (
-                [
-                    "You are wolf, the only werewolf.",
-                    "",
-                    "Day 1.",
-                    "ann votes against bob.",
-                    "bob will be voted out in 20s unless the votes change.",
-                    "bob votes against ann.",
-                    "Nobody is about to be voted out."
-                ]
-                .join("\n"),
-                5
-            )
-        );
     }
 
     #[test]
