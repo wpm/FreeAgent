@@ -21,15 +21,16 @@
 //! after its votes stop changing, or at the day limit with nobody voted
 //! out. A player remembers what it is shown, what it hears and what it
 //! does, as a [`Memory`] of each message stamped when it was received or
-//! sent. Every living player is announced every phase, so a player knows
-//! which phase it is in, and it ignores a message tagged with any other:
-//! it logs the receipt, as it does every message's, and neither remembers
-//! the message nor wakes for it. Each time it is woken, it tells the model
-//! that history as a story
-//! from its own point of view and where the game stands, with how long the
-//! phase lasts, and carries out what the model answers. The call is made in
-//! the player's think loop, so the player keeps perceiving while the model
-//! works.
+//! sent, and keeps with the history the story that tells it from its own
+//! point of view: each memory adds its lines to the story as it is
+//! remembered, so the story is never told over. Every living player is
+//! announced every phase, so a player knows which phase it is in, and it
+//! ignores a message tagged with any other: it logs the receipt, as it does
+//! every message's, and neither remembers the message nor wakes for it.
+//! Each time it is woken, it tells the model the story so far and where the
+//! game stands, with how long the phase lasts, and carries out what the
+//! model answers. The call is made in the player's think loop, so the
+//! player keeps perceiving while the model works.
 //!
 //! By night a player is woken once, by its announcement, and has the model
 //! select one of its [candidates] with one forced `select` call, sent to
@@ -592,7 +593,7 @@ pub fn game(
         let prompt = prompts
             .remove(id)
             .unwrap_or_else(|| panic!("no system prompt for {id}"));
-        Player::init(prompt, model_id.clone(), Arc::clone(&model))
+        Player::init(id.clone(), prompt, model_id.clone(), Arc::clone(&model))
     };
     super::thinking_episode(environment, players, player, logger)
 }
@@ -661,13 +662,13 @@ pub enum Memory {
 }
 
 /// What a player's two loops share: what it has been shown and what it has
-/// done, the phase it is in, whether a wake-up is waiting, how many
-/// reminders it has set, what it is told, and whom it asks.
+/// done, with the story that tells it, the phase it is in, whether a
+/// wake-up is waiting, how many reminders it has set, what it is told, and
+/// whom it asks.
 struct Mind {
-    /// The history, in order: each message received and each selection or
-    /// utterance sent, stamped when the player remembered it. Never locked
-    /// across an await.
-    history: Mutex<Vec<Event<Memory>>>,
+    /// The history and the story told from it. Never locked across an
+    /// await.
+    remembered: Mutex<Remembered>,
     /// The number of the last message the player sent to others.
     n: AtomicU64,
     /// The latest phase the player was announced: the phase it is in, so far
@@ -690,6 +691,19 @@ struct Mind {
     model: Arc<dyn model::Model>,
 }
 
+/// A player's history and the story that tells it, kept together so that
+/// the story is always the narration of exactly the history, and a request
+/// joins the story's lines instead of narrating every memory again.
+struct Remembered {
+    /// The history, in order: each message received and each selection or
+    /// utterance sent, stamped when the player remembered it.
+    history: Vec<Event<Memory>>,
+    /// The player's narrator, which has read every memory in the history.
+    narrator: Narrator,
+    /// The lines the narrator told from the history, in order.
+    story: Vec<String>,
+}
+
 /// A phase as a player was announced it: its number, what the player may
 /// see of it, and how long it lasts.
 #[derive(Clone)]
@@ -700,11 +714,15 @@ struct Announced {
 }
 
 impl Mind {
-    /// A mind with nothing in its history yet, told `prompt`, asking
-    /// `model` as the model `model_id`.
-    fn new(prompt: String, model_id: String, model: Arc<dyn model::Model>) -> Self {
+    /// The mind of `me` with nothing in its history yet, told `prompt`,
+    /// asking `model` as the model `model_id`.
+    fn new(me: PlayerId, prompt: String, model_id: String, model: Arc<dyn model::Model>) -> Self {
         Self {
-            history: Mutex::new(Vec::new()),
+            remembered: Mutex::new(Remembered {
+                history: Vec::new(),
+                narrator: Narrator::for_player(me),
+                story: Vec::new(),
+            }),
             n: AtomicU64::new(0),
             announced: Mutex::new(None),
             waking: AtomicBool::new(false),
@@ -715,32 +733,23 @@ impl Mind {
         }
     }
 
-    /// Add `event` to the history. A message received, or an utterance
-    /// sent, goes at the end. A selection sent goes at the end of its own
-    /// phase: before the first announcement of a later phase, if one has
-    /// come, which is where it belongs in the story. One made after a later
-    /// phase was announced, which the environment has dropped, was still
-    /// made in its own phase, and is not told as a deed of the phase that
-    /// followed.
+    /// Add `event` to the end of the history, and what it adds to the
+    /// account to the end of the story, together. A message is remembered
+    /// when it is received or sent, so a selection sent in the moment
+    /// between the check that its phase is still on and the send comes
+    /// after the next phase's announcement, and is told in that phase.
     fn remember(&self, event: Event<Memory>) {
-        let mut history = self.history.lock().unwrap();
-        let at = match &event.payload {
-            Memory::Acted {
-                message: Message::Select { seq, .. },
-            } => history
-                .iter()
-                .position(|remembered| {
-                    matches!(
-                        &remembered.payload,
-                        Memory::Observed {
-                            message: Message::Announce { seq: announced, .. },
-                        } if announced > seq
-                    )
-                })
-                .unwrap_or(history.len()),
-            _ => history.len(),
-        };
-        history.insert(at, event);
+        let mut remembered = self.remembered.lock().unwrap();
+        let lines = remembered.narrator.recall(&event);
+        remembered.story.extend(lines);
+        remembered.history.push(event);
+    }
+
+    /// The story so far, its lines joined, and how many memories it was
+    /// told from.
+    fn story(&self) -> (String, usize) {
+        let remembered = self.remembered.lock().unwrap();
+        (remembered.story.join("\n"), remembered.history.len())
     }
 
     /// The next number for a message to others: one up from the last.
@@ -828,13 +837,15 @@ pub struct Player {
 impl Player {
     /// Builds a player's two loops once the episode has made their
     /// contexts: the perceive loop as the actor, and the think loop. The
-    /// player is told `prompt`, and asks `model` as the model `model_id`.
+    /// player `me` is told `prompt`, and asks `model` as the model
+    /// `model_id`.
     pub fn init(
+        me: PlayerId,
         prompt: String,
         model_id: String,
         model: Arc<dyn model::Model>,
     ) -> (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>) {
-        let mind = Arc::new(Mind::new(prompt, model_id, model));
+        let mind = Arc::new(Mind::new(me, prompt, model_id, model));
         let shared = Arc::clone(&mind);
         let behavior: Builder<Actor> =
             Box::new(move |context| Actor::Player(Player { context, mind }));
@@ -847,7 +858,7 @@ impl Player {
         (behavior, Some(think))
     }
 
-    /// Add `memory` to the history, stamped now, where it belongs in the
+    /// Add `memory` to the history, stamped now, and what it tells to the
     /// story.
     fn remember(&self, memory: Memory) {
         self.mind.remember(Event::now(self.context.episode, memory));
@@ -862,9 +873,9 @@ impl Player {
     }
 
     /// The request for a decision in the phase `view` shows, which lasts
-    /// `limit`: the system prompt, then the history as a story told to the
-    /// player, a blank line, and where the game stands, with `tools` to
-    /// answer with. With it, how many memories the story was told from.
+    /// `limit`: the system prompt, then the story so far, a blank line, and
+    /// where the game stands, with `tools` to answer with. With it, how
+    /// many memories the story was told from.
     fn request(
         &self,
         view: &View,
@@ -872,16 +883,8 @@ impl Player {
         tools: Vec<Tool>,
     ) -> anyhow::Result<(Request, usize)> {
         let me = &self.context.id;
-        let mut narrator = Narrator::for_player(me.clone());
-        let (story, seen) = {
-            let history = self.mind.history.lock().unwrap();
-            let story: Vec<String> = history
-                .iter()
-                .flat_map(|event| narrator.recall(event))
-                .collect();
-            (story, history.len())
-        };
-        let asked = format!("{}\n\n{}", story.join("\n"), situation(me, view, limit)?);
+        let (story, seen) = self.mind.story();
+        let asked = format!("{story}\n\n{}", situation(me, view, limit)?);
         let request = request(&self.mind.model_id, &self.mind.prompt, asked, tools);
         Ok((request, seen))
     }
@@ -2268,7 +2271,12 @@ player2 = \"Cautious.\"
             players,
             |id| {
                 puppets.remove(id.as_str()).unwrap_or_else(|| {
-                    Player::init(told(id), MODEL_ID.to_string(), Arc::clone(&model))
+                    Player::init(
+                        id.clone(),
+                        told(id),
+                        MODEL_ID.to_string(),
+                        Arc::clone(&model),
+                    )
                 })
             },
             logger,
@@ -2548,50 +2556,74 @@ player2 = \"Cautious.\"
         }
     }
 
+    /// A player's memory of sending `message`, in no episode in particular.
+    fn sent(message: Message) -> Event<Memory> {
+        logged(Memory::Acted { message })
+    }
+
     #[test]
-    fn a_late_selection_is_remembered_at_the_end_of_its_own_phase_and_told_there() {
+    fn the_story_kept_with_the_history_is_at_every_step_a_fresh_narration_of_it() {
         let mind = Mind::new(
+            "wolf".to_string(),
             told("wolf"),
             MODEL_ID.to_string(),
             Arc::new(FakeModel::failing("down")),
         );
-        let everyone = ["wolf", "ann", "bob"];
         let pack = [("wolf", Role::Werewolf)];
-        let selected = |seq| {
-            logged(Memory::Acted {
-                message: selection(seq, "wolf", seq, "ann"),
-            })
+        let night_2 = View {
+            round: NonZero::new(2).unwrap(),
+            ..seen(&["wolf", "bob"], &pack)
         };
-        let night = received(announcement(1, seen(&everyone, &pack)));
-        let day = received(announcement(2, seen_by_day(&everyone, &pack)));
-        let heard = received(selection(2, "ann", 1, "bob"));
-        // The day is announced, and ann's vote heard, while the model is
-        // still deciding the night; the werewolf then decides the day too.
-        mind.remember(night.clone());
-        mind.remember(day.clone());
-        mind.remember(heard.clone());
-        mind.remember(selected(1));
-        mind.remember(selected(2));
-        let history = mind.history.lock().unwrap();
-        assert_eq!(*history, [night, selected(1), day, heard, selected(2)]);
-        let mut narrator = Narrator::for_player("wolf".to_string());
-        let story: Vec<String> = history
-            .iter()
-            .flat_map(|event| narrator.recall(event))
-            .collect();
+        // A night, a day of talk and changing votes, and the next night,
+        // each message remembered as it is heard or sent.
+        let script = [
+            received(announcement(1, seen(&["wolf", "ann", "bob"], &pack))),
+            sent(selection(1, "wolf", 1, "ann")),
+            received(announcement(2, seen_by_day(&["wolf", "bob"], &pack))),
+            received(utterance(2, "bob", 1, "Who killed ann?")),
+            sent(utterance(2, "wolf", 2, "Not me.")),
+            received(selection(2, "bob", 2, "wolf")),
+            received(tentative(2, 3, Some("wolf"))),
+            sent(selection(2, "wolf", 3, "bob")),
+            received(tentative(2, 4, None)),
+            received(announcement(3, night_2)),
+        ];
+        for (n, event) in script.iter().enumerate() {
+            mind.remember(event.clone());
+            let remembered = mind.remembered.lock().unwrap();
+            assert_eq!(remembered.history, script[..=n]);
+            let mut narrator = Narrator::for_player("wolf".to_string());
+            let fresh: Vec<String> = remembered
+                .history
+                .iter()
+                .flat_map(|event| narrator.recall(event))
+                .collect();
+            assert_eq!(remembered.story, fresh, "after {} memories", n + 1);
+        }
         assert_eq!(
-            story,
-            [
-                "You are wolf, the only werewolf.",
-                "",
-                "Night 1.",
-                "You vote to kill ann.",
-                "Nobody dies.",
-                "",
-                "Day 1.",
-                "ann votes against bob.",
-                "You vote against ann."
-            ]
+            mind.story(),
+            (
+                [
+                    "You are wolf, the only werewolf.",
+                    "",
+                    "Night 1.",
+                    "You vote to kill ann.",
+                    "ann dies.",
+                    "",
+                    "Day 1.",
+                    "bob says, \"Who killed ann?\"",
+                    "You say, \"Not me.\"",
+                    "bob votes against wolf (werewolf).",
+                    "wolf (werewolf) will be voted out in 20s unless the votes change.",
+                    "You vote against bob.",
+                    "Nobody is about to be voted out.",
+                    "Nobody dies.",
+                    "",
+                    "Night 2.",
+                ]
+                .join("\n"),
+                script.len()
+            )
         );
     }
 
@@ -2959,40 +2991,6 @@ player2 = \"Cautious.\"
                 _ => None,
             })
             .unwrap()
-    }
-
-    #[test]
-    fn a_tentative_decision_and_anothers_vote_are_remembered_at_the_end_and_told_in_turn() {
-        let mind = Mind::new(
-            told("wolf"),
-            MODEL_ID.to_string(),
-            Arc::new(FakeModel::failing("down")),
-        );
-        let everyone = ["wolf", "ann", "bob"];
-        let pack = [("wolf", Role::Werewolf)];
-        mind.remember(received(announcement(2, seen_by_day(&everyone, &pack))));
-        mind.remember(received(selection(2, "ann", 1, "bob")));
-        mind.remember(received(tentative(2, 4, Some("bob"))));
-        mind.remember(received(selection(2, "bob", 1, "ann")));
-        mind.remember(received(tentative(2, 5, None)));
-        let history = mind.history.lock().unwrap();
-        let mut narrator = Narrator::for_player("wolf".to_string());
-        let story: Vec<String> = history
-            .iter()
-            .flat_map(|event| narrator.recall(event))
-            .collect();
-        assert_eq!(
-            story,
-            [
-                "You are wolf, the only werewolf.",
-                "",
-                "Day 1.",
-                "ann votes against bob.",
-                "bob will be voted out in 20s unless the votes change.",
-                "bob votes against ann.",
-                "Nobody is about to be voted out."
-            ]
-        );
     }
 
     #[test]

@@ -272,9 +272,11 @@ utterance whose phase has ended as too late to say, with the words it uses
 for a withheld one, and a day's failure as a failure to play, since a day's
 response may speak, vote or wait.
 
-The history is still only appended to, apart from the placement of a
-selection at the end of its own phase that ADR-0003 already allowed, so
-prompt prefix caching still works.
+The history is only appended to, so prompt prefix caching still works. The
+player keeps the story with the history and appends each memory's lines as
+it remembers, so a request joins the story rather than narrating every
+memory again, and a day of M messages costs M narrations rather than
+M²/2.
 
 ### Logging
 
