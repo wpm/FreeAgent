@@ -1,32 +1,29 @@
-//! Play a social deduction game: name the game and its variant, deal the
-//! roles, run one game, log it to standard error as JSON lines, and tell it
-//! on standard output as it happens. Or list the models a provider serves,
-//! which belongs to no game.
+//! Play a social deduction game: name the game and its configuration file,
+//! deal the roles and strategies, run one game, log it to standard error as
+//! JSON lines, and tell it on standard output as it happens. Or list the
+//! models a provider serves, which belongs to no game.
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser};
 use free_agent::{Episode, Logger};
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
 };
-use social_deduction::werewolf::prompted::{self, Config, Probed};
-use social_deduction::werewolf::random;
+use social_deduction::werewolf::config::{self, Config, Overrides};
+use social_deduction::werewolf::prompted::{self, Probed};
 use social_deduction::werewolf::report::Narrator;
-use social_deduction::werewolf::{self, Actor, Entry, PhaseLimits, RoleCounts, Rules, Table, Team};
+use social_deduction::werewolf::{self, Actor, Entry, Team};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::oneshot;
 
-/// The command line: a game, which is a subcommand that names one of its
-/// variants, or a command that belongs to no game.
+/// The command line: a game, or a command that belongs to no game.
 #[derive(Parser, Debug, PartialEq)]
 #[command(version, about)]
 enum CommandLine {
     /// Werewolf: werewolves against villagers, by night and by day.
-    #[command(subcommand)]
     Werewolf(Werewolf),
     /// List the models a provider serves, and which of them play when
     /// asked.
@@ -46,34 +43,22 @@ enum CommandLine {
     },
 }
 
-/// The variants of Werewolf, each with its own arguments.
-#[derive(Subcommand, Debug, PartialEq)]
-enum Werewolf {
-    /// Every player answers each announcement at once with a choice made
-    /// uniformly at random: the model-played game, without a model.
-    UniformRandom {
-        #[command(flatten)]
-        roles: RoleCounts,
-        #[command(flatten)]
-        limits: PhaseLimits,
-        #[command(flatten)]
-        logging: Logging,
-    },
-    /// Every player is a language model, set up by a configuration file.
-    Llm {
-        /// The TOML configuration file
-        config: PathBuf,
-        #[command(flatten)]
-        overrides: prompted::Overrides,
-        #[command(flatten)]
-        logging: Logging,
-    },
+/// A game of Werewolf: its configuration file, if any, and what the
+/// command line says over it.
+#[derive(Args, Debug, PartialEq)]
+struct Werewolf {
+    /// The TOML configuration file; without one, every player is random
+    config: Option<PathBuf>,
+    #[command(flatten)]
+    overrides: Overrides,
+    #[command(flatten)]
+    logging: Logging,
 }
 
-/// Whether the game is logged, for every variant to flatten into its
-/// command line arguments. It is logged unless `--no-log` says otherwise,
-/// and when both flags are given the last one wins, as `clap` has
-/// paired flags behave.
+/// Whether the game is logged, for a game to flatten into its command
+/// line arguments. It is logged unless `--no-log` says otherwise, and when
+/// both flags are given the last one wins, as `clap` has paired flags
+/// behave.
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct Logging {
     /// Log the game to standard error as JSON Lines [default]
@@ -97,52 +82,27 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match CommandLine::parse() {
-        CommandLine::Werewolf(Werewolf::UniformRandom {
-            roles,
-            limits,
-            logging,
-        }) => {
-            let roles = roles.or(Table::default()).deal();
-            let rules = limits.or(Rules::default());
-            play(logging.enabled(), |winner, logger| {
-                werewolf::game(
-                    roles,
-                    rules,
-                    None,
-                    winner,
-                    |_| random::Player::init(),
-                    logger,
-                )
-            })
-            .await
-        }
-        CommandLine::Werewolf(Werewolf::Llm {
+        CommandLine::Werewolf(Werewolf {
             config,
             overrides,
             logging,
         }) => {
-            let settings = Config::load(&config)?.settle(overrides)?;
-            // The key is read, every prompt rendered, the context window
-            // settled, and the model asked to play as by night and as by
-            // day before any actor is built, so that a variable that is not
-            // set, a template that is broken, or a model that does not play
-            // fails before anything else.
-            let model = &settings.config.model;
-            let provider = model.provider()?;
-            let prompts = settings.prompts()?;
-            let listed = provider.listed(&model.id).await?;
-            let context_window = settings.context_window(listed.context_window, &prompts)?;
-            let tool_choice = match prompted::check_plays(&provider, &model.id).await? {
-                Probed::Played(tool_choice) => tool_choice,
-                Probed::DidNotPlay(error) => return Err(error),
+            let config = match config {
+                Some(path) => Config::load(&path)?,
+                None => Config::default(),
             };
-            let roles = settings.table.deal();
-            let configuration =
-                settings.configuration(&roles, &prompts, tool_choice, context_window)?;
+            let settings = config.settle(overrides)?;
+            // Every prompt is rendered, and every model in play set up,
+            // before any actor is built, so that a template that is broken
+            // or a model that does not play fails before anything else.
+            let prompts = settings.prompts()?;
+            let (models, handles) = settings.set_up(&prompts).await?;
+            let deal = settings.deal();
+            let configuration = settings.configuration(&deal, &prompts, models)?;
+            let players = config::players(&configuration, &deal, &handles);
             let rules = settings.rules();
-            let players = prompted::players(&configuration, Arc::new(provider));
             play(logging.enabled(), |winner, logger| {
-                werewolf::game(roles, rules, Some(configuration), winner, players, logger)
+                werewolf::game(deal, rules, configuration, winner, players, logger)
             })
             .await
         }
@@ -310,9 +270,9 @@ async fn play(
 mod tests {
     use super::*;
     use clap::CommandFactory;
-    use social_deduction::model::CONTEXT_WINDOW;
     use social_deduction::model::canned::{self, refusal};
     use social_deduction::model::fake::{FakeModel, choosing_first};
+    use social_deduction::werewolf::{PhaseLimits, RoleCounts, Rules, Table};
     use std::collections::HashSet;
 
     /// The command line `args` parse to, after the binary's name.
@@ -320,24 +280,43 @@ mod tests {
         CommandLine::parse_from([&["social-deduction"], args].concat())
     }
 
+    /// The command line `args` parse to, after the binary's and the
+    /// game's names.
+    fn werewolf(args: &[&str]) -> CommandLine {
+        parsed(&[&["werewolf"], args].concat())
+    }
+
+    /// The command line of a game of Werewolf with `logging` and nothing
+    /// else.
+    fn logged(logging: Logging) -> CommandLine {
+        CommandLine::Werewolf(Werewolf {
+            config: None,
+            overrides: Overrides::default(),
+            logging,
+        })
+    }
+
     #[test]
-    fn the_command_line_is_a_game_then_a_variant_that_tells_unset_from_given() {
+    fn the_command_line_is_a_game_that_tells_unset_from_given() {
         CommandLine::command().debug_assert();
         assert_eq!(
-            parsed(&["werewolf", "uniform-random", "--werewolves", "1"]),
-            CommandLine::Werewolf(Werewolf::UniformRandom {
-                roles: RoleCounts {
-                    werewolves: Some(1),
-                    ..RoleCounts::default()
+            parsed(&["werewolf", "--werewolves", "1"]),
+            CommandLine::Werewolf(Werewolf {
+                config: None,
+                overrides: Overrides {
+                    roles: RoleCounts {
+                        werewolves: Some(1),
+                        ..RoleCounts::default()
+                    },
+                    ..Overrides::default()
                 },
-                limits: PhaseLimits::default(),
                 logging: Logging::default(),
             })
         );
     }
 
     #[test]
-    fn every_variant_takes_the_log_flags_and_the_last_of_the_two_wins() {
+    fn werewolf_takes_the_log_flags_and_the_last_of_the_two_wins() {
         let off = || Logging {
             log: false,
             no_log: true,
@@ -346,27 +325,13 @@ mod tests {
             log: true,
             no_log: false,
         };
+        assert_eq!(werewolf(&["--no-log"]), logged(off()));
+        assert_eq!(werewolf(&["--no-log", "--log"]), logged(on()));
         assert_eq!(
-            parsed(&["werewolf", "uniform-random", "--no-log"]),
-            CommandLine::Werewolf(Werewolf::UniformRandom {
-                roles: RoleCounts::default(),
-                limits: PhaseLimits::default(),
-                logging: off(),
-            })
-        );
-        assert_eq!(
-            parsed(&["werewolf", "uniform-random", "--no-log", "--log"]),
-            CommandLine::Werewolf(Werewolf::UniformRandom {
-                roles: RoleCounts::default(),
-                limits: PhaseLimits::default(),
-                logging: on(),
-            })
-        );
-        assert_eq!(
-            parsed(&["werewolf", "llm", "game.toml", "--log", "--no-log"]),
-            CommandLine::Werewolf(Werewolf::Llm {
-                config: PathBuf::from("game.toml"),
-                overrides: prompted::Overrides::default(),
+            werewolf(&["game.toml", "--log", "--no-log"]),
+            CommandLine::Werewolf(Werewolf {
+                config: Some(PathBuf::from("game.toml")),
+                overrides: Overrides::default(),
                 logging: off(),
             })
         );
@@ -392,35 +357,32 @@ mod tests {
     }
 
     #[test]
-    fn the_llm_variant_takes_the_file_the_role_counts_the_limits_and_the_model() {
+    fn werewolf_takes_a_file_the_role_counts_and_the_limits() {
         let args = [
             "game.toml",
             "--seers",
             "2",
             "--night-limit",
             "30s",
-            "--model-id",
-            "gpt-5.5",
+            "--day-limit",
+            "1m 30s",
+            "--ratify-limit",
+            "15s",
         ];
         assert_eq!(
-            parsed(&[&["werewolf", "llm"], &args[..]].concat()),
-            CommandLine::Werewolf(Werewolf::Llm {
-                config: PathBuf::from("game.toml"),
-                overrides: prompted::Overrides {
+            werewolf(&args),
+            CommandLine::Werewolf(Werewolf {
+                config: Some(PathBuf::from("game.toml")),
+                overrides: Overrides {
                     roles: RoleCounts {
                         seers: Some(2),
                         ..RoleCounts::default()
                     },
                     limits: PhaseLimits {
                         night_limit: Some(Duration::from_secs(30)),
-                        day_limit: None,
+                        day_limit: Some(Duration::from_secs(90)),
                     },
-                    ratify_limit: None,
-                    model: prompted::ModelOverrides {
-                        base_url: None,
-                        id: Some("gpt-5.5".to_string()),
-                        context_window: None,
-                    },
+                    ratify_limit: Some(Duration::from_secs(15)),
                 },
                 logging: Logging::default(),
             })
@@ -428,49 +390,24 @@ mod tests {
     }
 
     #[test]
-    fn the_llm_help_lists_the_model_options_under_a_heading_of_their_own() {
-        let help = CommandLine::command()
-            .find_subcommand_mut("werewolf")
-            .unwrap()
-            .find_subcommand_mut("llm")
-            .unwrap()
-            .render_help()
-            .to_string();
-        let at = |text: &str| {
-            help.find(text)
-                .unwrap_or_else(|| panic!("{text} in {help}"))
+    fn werewolf_takes_durations_in_humantime_form_and_one_file_at_most() {
+        let refused = |args: &[&str]| {
+            CommandLine::try_parse_from([&["social-deduction", "werewolf"], args].concat()).is_err()
         };
-        assert!(at("Options:") < at("--werewolves"), "{help}");
-        assert!(at("--werewolves") < at("\nModel:\n"), "{help}");
-        assert!(at("\nModel:\n") < at("--model-base-url"), "{help}");
-        assert!(at("--model-base-url") < at("--model-id"), "{help}");
-        assert!(at("--model-id") < at("--context-window"), "{help}");
+        assert!(refused(&["--night-limit", "soon"]));
+        assert!(refused(&["--day-limit", "30"]));
+        assert!(refused(&["--ratify-limit", "soon"]));
+        assert!(refused(&["llm", "game.toml"]));
     }
 
     #[test]
-    fn the_uniform_random_variant_takes_the_role_counts_and_the_limits() {
-        let args = [
-            "werewolf",
-            "uniform-random",
-            "--villagers",
-            "4",
-            "--day-limit",
-            "2m",
-        ];
-        assert_eq!(
-            parsed(&args),
-            CommandLine::Werewolf(Werewolf::UniformRandom {
-                roles: RoleCounts {
-                    villagers: Some(4),
-                    ..RoleCounts::default()
-                },
-                limits: PhaseLimits {
-                    night_limit: None,
-                    day_limit: Some(Duration::from_secs(120)),
-                },
-                logging: Logging::default(),
-            })
-        );
+    fn werewolf_takes_no_model_options() {
+        for option in ["--model-base-url", "--model-id", "--context-window"] {
+            assert!(
+                CommandLine::try_parse_from(["social-deduction", "werewolf", option, "x"]).is_err(),
+                "{option}"
+            );
+        }
     }
 
     #[test]
@@ -488,30 +425,16 @@ mod tests {
             ("--day-limit", rules.day_limit),
         ]
         .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()));
-        let window =
-            |variant| (variant == "llm").then(|| ("--context-window", CONTEXT_WINDOW.to_string()));
-        for variant in ["uniform-random", "llm"] {
-            let help = CommandLine::command()
-                .find_subcommand_mut("werewolf")
-                .unwrap()
-                .find_subcommand_mut(variant)
-                .unwrap()
-                .render_help()
-                .to_string();
-            let defaults = counts.iter().cloned().chain(limits.iter().cloned());
-            for (option, default) in defaults.chain(window(variant)) {
-                let line = help.lines().find(|line| line.contains(option)).unwrap();
-                assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
-            }
-        }
-        // The ratify limit's default, zero, is told in words.
         let help = CommandLine::command()
             .find_subcommand_mut("werewolf")
             .unwrap()
-            .find_subcommand_mut("llm")
-            .unwrap()
             .render_help()
             .to_string();
+        for (option, default) in counts.into_iter().chain(limits) {
+            let line = help.lines().find(|line| line.contains(option)).unwrap();
+            assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
+        }
+        // The ratify limit's default, zero, is told in words.
         let line = help
             .lines()
             .find(|line| line.contains("--ratify-limit"))
@@ -520,6 +443,7 @@ mod tests {
             line.ends_with("zero, the default, means a day is not ratified"),
             "{line}"
         );
+        assert!(help.contains("[CONFIG]"), "{help}");
     }
 
     #[test]
@@ -546,7 +470,13 @@ mod tests {
                 check: None,
             }
         );
-        assert!(CommandLine::try_parse_from(["social-deduction", "werewolf", "models"]).is_err());
+        let args = [
+            "social-deduction",
+            "werewolf",
+            "models",
+            "http://localhost:1234/v1",
+        ];
+        assert!(CommandLine::try_parse_from(args).is_err());
     }
 
     #[test]

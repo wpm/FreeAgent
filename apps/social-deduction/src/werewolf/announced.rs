@@ -15,7 +15,7 @@
 //! fires, and the selected player is voted out, or at the day limit,
 //! whatever is standing, and nobody is.
 //!
-//! The environment logs the deal, then the configuration if there is one;
+//! The environment logs the deal, then the configuration;
 //! an [`Entry::Action`] for each announcement and tentative decision it
 //! sends, numbered in one series from 1; an [`Entry::Observation`] for each
 //! selection it receives, stale or not, with the phase it was in when the
@@ -24,7 +24,8 @@
 //! are not logged.
 
 use super::{
-    Choices, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Rules, State, Team, act, observe,
+    Choices, Dealt, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Rules, State, Team, act,
+    observe,
 };
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Context, Think};
@@ -35,21 +36,27 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 /// Everything the episode needs to run the environment for a game of
-/// `roles` under `rules`, as the actor `wrap` makes of it: it may send to
-/// and stop every player, holds the logger, and thinks. It logs the deal,
-/// then `configuration` if there is one, before it opens the first night.
-/// The winning team is sent on `winner` when the game ends.
+/// `deal`, every player's role and strategy, under `rules`, as the actor
+/// `wrap` makes of it: it may send to and stop every
+/// player, holds the logger, and thinks. It logs the deal, then
+/// `configuration`, before it opens the first night. The winning team is
+/// sent on `winner` when the game ends.
 pub fn init<A>(
-    roles: HashMap<PlayerId, Role>,
+    deal: HashMap<PlayerId, Dealt>,
     rules: Rules,
-    configuration: Option<Entry>,
+    configuration: Entry,
     winner: oneshot::Sender<Team>,
     wrap: impl FnOnce(Environment) -> A + Send + 'static,
 ) -> ActorInit<A>
 where
     A: Behavior<Message = Message, Log = Entry>,
 {
-    let players: HashSet<PlayerId> = roles.keys().cloned().collect();
+    let players: HashSet<PlayerId> = deal.keys().cloned().collect();
+    let opening = Box::new([rules.start(&deal), configuration]);
+    let roles = deal
+        .into_iter()
+        .map(|(id, dealt)| (id, dealt.role))
+        .collect();
     let game = Arc::new(Mutex::new(Game::new(roles, rules, winner)));
     let shared = Arc::clone(&game);
     ActorInit {
@@ -57,14 +64,14 @@ where
             wrap(Environment {
                 context,
                 game,
-                configuration: configuration.map(Box::new),
+                opening: Some(opening),
             })
         }),
         think: Some(Box::new(move |context| {
             Box::new(Environment {
                 context,
                 game: shared,
-                configuration: None,
+                opening: None,
             })
         })),
         can_send_to: players.clone(),
@@ -340,10 +347,10 @@ struct Opened {
 pub struct Environment {
     context: Context<Message, Entry>,
     game: Arc<Mutex<Game>>,
-    /// The entry the perceive loop logs right after the deal, if any.
-    /// Taken when logged. Boxed to keep the environment no larger than a
-    /// player in [`Actor`](super::Actor).
-    configuration: Option<Box<Entry>>,
+    /// The entries the perceive loop opens the log with: the deal, then
+    /// the configuration. Taken when logged. Boxed to keep the environment
+    /// no larger than a player in [`Actor`](super::Actor).
+    opening: Option<Box<[Entry; 2]>>,
 }
 
 impl Environment {
@@ -465,16 +472,11 @@ impl Behavior for Environment {
         Ok(())
     }
 
-    /// Log the deal and the limits, then the configuration if there is
-    /// one, and open the first night.
+    /// Log the deal and the limits, then the configuration, and open the
+    /// first night.
     async fn start(&mut self) -> anyhow::Result<()> {
-        let start = {
-            let game = self.game();
-            game.rules.start(game.state.roles.clone())
-        };
-        self.context.log(start);
-        if let Some(configuration) = self.configuration.take() {
-            self.context.log(*configuration);
+        for entry in self.opening.take().into_iter().flat_map(|opening| *opening) {
+            self.context.log(entry);
         }
         self.open_phase()
     }
