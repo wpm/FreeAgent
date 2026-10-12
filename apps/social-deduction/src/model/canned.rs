@@ -3,7 +3,7 @@
 //! but tests uses this module.
 
 use super::fake::canned_calls;
-use crate::werewolf::report::seat_order;
+use crate::report::seat_order;
 use std::cmp::Ordering;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

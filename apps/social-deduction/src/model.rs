@@ -19,6 +19,8 @@ pub mod canned;
 mod completion;
 #[doc(hidden)]
 pub mod fake;
+pub mod spec;
+pub mod window;
 
 pub use completion::*;
 

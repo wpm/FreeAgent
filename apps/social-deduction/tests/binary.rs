@@ -8,8 +8,10 @@ use social_deduction::model::canned::{
     day_refusal, playing, playing_only, playing_within, refusal, refusing, refusing_days,
     refusing_required, retracting, serving, unreachable, wanting_a_key,
 };
-use social_deduction::werewolf::config::{Configuration, ContextWindow, Source};
-use social_deduction::werewolf::{Ending, Entry, Message, PlayerId, Role};
+use social_deduction::model::window::{ContextWindow, Source};
+use social_deduction::seat::PlayerId;
+use social_deduction::werewolf::config::Configuration;
+use social_deduction::werewolf::{Ending, Entry, Message, Role};
 use std::collections::{HashMap, HashSet};
 use std::process::{Command, Output};
 use std::time::Duration;

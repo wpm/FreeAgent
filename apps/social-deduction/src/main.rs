@@ -5,11 +5,12 @@
 
 use clap::{Args, Parser};
 use free_agent::{Episode, Logger};
+use social_deduction::model::spec::Probed;
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
 };
 use social_deduction::werewolf::config::{self, Config, Overrides};
-use social_deduction::werewolf::prompted::{self, Probed};
+use social_deduction::werewolf::prompted;
 use social_deduction::werewolf::report::Narrator;
 use social_deduction::werewolf::{self, Actor, Entry, Team};
 use std::fmt::Write as _;
