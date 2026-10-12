@@ -71,7 +71,7 @@
 //! settings, the deal and the rendered prompts.
 
 use super::announced;
-use super::report::Narrator;
+use super::report::Story;
 use super::{
     Entry, Message, Phase, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table, Team, View, act,
     awake, candidates, observe, receivers,
@@ -716,10 +716,8 @@ struct Remembered {
     /// The history, in order: each message received and each selection or
     /// utterance sent, stamped when the player remembered it.
     history: Vec<Event<Memory>>,
-    /// The player's narrator, which has read every memory in the history.
-    narrator: Narrator,
-    /// The lines the narrator told from the history, in order.
-    story: Vec<String>,
+    /// The story told from the history.
+    story: Story,
 }
 
 /// A phase as a player was announced it: its number, what the player may
@@ -744,8 +742,7 @@ impl Mind {
         Self {
             remembered: Mutex::new(Remembered {
                 history: Vec::new(),
-                narrator: Narrator::for_player(me),
-                story: Vec::new(),
+                story: Story::of(me),
             }),
             n: AtomicU64::new(0),
             announced: Mutex::new(None),
@@ -765,8 +762,7 @@ impl Mind {
     /// after the next phase's announcement, and is told in that phase.
     fn remember(&self, event: Event<Memory>) {
         let mut remembered = self.remembered.lock().unwrap();
-        let lines = remembered.narrator.recall(&event);
-        remembered.story.extend(lines);
+        remembered.story.recall(&event);
         remembered.history.push(event);
     }
 
@@ -774,7 +770,10 @@ impl Mind {
     /// told from.
     fn story(&self) -> (String, usize) {
         let remembered = self.remembered.lock().unwrap();
-        (remembered.story.join("\n"), remembered.history.len())
+        (
+            remembered.story.lines().join("\n"),
+            remembered.history.len(),
+        )
     }
 
     /// The next number for a message to others: one up from the last.
@@ -1509,6 +1508,7 @@ mod tests {
     use super::*;
     use crate::model::canned;
     use crate::model::fake::{FakeModel, SAID, choosing_first, voted_in_this_phase};
+    use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{
         Played, announcement, between_the_deal_and_the_end, logged, observed_by,
         observed_by_the_environment, one_wolf_against, received, run, seen, seen_by_day, selection,
@@ -2663,16 +2663,20 @@ player2 = \"Cautious.\"
     }
 
     #[tokio::test(start_paused = true)]
-    async fn each_request_begins_with_the_history_of_the_one_before() {
+    async fn each_request_begins_with_the_history_of_the_one_before_up_to_its_last_day() {
         // The doctor is asked once a night and at least once a day, and
         // each request is told from everything it had heard and done by
-        // then.
+        // then, a past day's votes giving way to its tally.
         let model = answering(choosing_first);
         play(doctored(), rules(), Arc::clone(&model)).await.unwrap();
         let asked = asked_of(&model, "doc");
         assert!(asked.len() >= 4, "{asked:?}");
         for pair in asked.windows(2) {
-            assert!(pair[1].starts_with(story(&pair[0])), "{pair:?}");
+            let before = story(&pair[0]);
+            let kept = before
+                .rfind("\n\nDay ")
+                .map_or(before, |day| &before[..day]);
+            assert!(pair[1].starts_with(kept), "{pair:?}");
         }
     }
 
@@ -2698,14 +2702,15 @@ player2 = \"Cautious.\"
         // A night, a day of talk and changing votes, and the next night,
         // each message remembered as it is heard or sent.
         let script = [
-            received(announcement(1, seen(&["wolf", "ann", "bob"], &pack))),
+            received(announcement(1, seen(&["wolf", "ann", "bob", "cat"], &pack))),
             sent(selection(1, "wolf", 1, "ann")),
-            received(announcement(2, seen_by_day(&["wolf", "bob"], &pack))),
+            received(announcement(2, seen_by_day(&["wolf", "bob", "cat"], &pack))),
             received(utterance(2, "bob", 1, "Who killed ann?")),
             sent(utterance(2, "wolf", 2, "Not me.")),
             received(selection(2, "bob", 2, "wolf")),
             received(tentative(2, 3, Some("wolf"))),
-            sent(selection(2, "wolf", 3, "bob")),
+            sent(selection(2, "wolf", 3, "cat")),
+            sent(selection(2, "wolf", 4, "bob")),
             received(tentative(2, 4, None)),
             received(announcement(3, night_2)),
         ];
@@ -2713,13 +2718,11 @@ player2 = \"Cautious.\"
             mind.remember(event.clone());
             let remembered = mind.remembered.lock().unwrap();
             assert_eq!(remembered.history, script[..=n]);
-            let mut narrator = Narrator::for_player("wolf".to_string());
-            let fresh: Vec<String> = remembered
-                .history
-                .iter()
-                .flat_map(|event| narrator.recall(event))
-                .collect();
-            assert_eq!(remembered.story, fresh, "after {} memories", n + 1);
+            let mut fresh = Story::of("wolf".to_string());
+            for event in &remembered.history {
+                fresh.recall(event);
+            }
+            assert_eq!(remembered.story.lines(), fresh.lines());
         }
         assert_eq!(
             mind.story(),
@@ -2735,10 +2738,9 @@ player2 = \"Cautious.\"
                     "bob says, \"Who killed ann?\"",
                     "You say, \"Not me.\"",
                     "bob votes against wolf (werewolf).",
-                    "wolf (werewolf) will be voted out in 20s unless the votes change.",
+                    "cat does not vote.",
                     "You vote against bob.",
-                    "Nobody is about to be voted out.",
-                    "Nobody dies.",
+                    "cat dies.",
                     "",
                     "Night 2.",
                 ]
@@ -3051,7 +3053,9 @@ player2 = \"Cautious.\"
              Day 1.\n\
              bob says, \"Vote cat.\"\n\
              bob votes against cat.\n\
-             cat will be voted out in 5s unless the votes change.\n\
+             cat does not vote.\n\
+             dan does not vote.\n\
+             You do not vote.\n\
              cat dies.\n\
              \n\
              Night 2.\n\
@@ -3788,6 +3792,10 @@ player2 = \"Cautious.\"
              ann dies.\n\
              \n\
              Day 1.\n\
+             bob does not vote.\n\
+             cat does not vote.\n\
+             dan does not vote.\n\
+             You do not vote.\n\
              Nobody dies.\n\
              \n\
              Night 2.\n\
@@ -3892,10 +3900,13 @@ player2 = \"Cautious.\"
              ann dies.\n\
              \n\
              Day 1.\n\
-             bob votes against cat.\n\
-             cat will be voted out in 1s unless the votes change.\n\
              bob says, \"Going quiet.\"\n\
              bob says, \"Really.\"\n\
+             bob votes against cat.\n\
+             cat does not vote.\n\
+             dan does not vote.\n\
+             You do not vote.\n\
+             wolf does not vote.\n\
              cat dies.\n\
              \n\
              Night 2.\n\
