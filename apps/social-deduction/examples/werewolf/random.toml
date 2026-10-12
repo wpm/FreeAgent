@@ -1,0 +1,16 @@
+# Every role played by the random strategy, which is always defined: the
+# same game as no file at all, with no models. Run it with
+#
+#     social-deduction werewolf random.toml
+
+[roles.werewolf]
+strategy = "random"
+
+[roles.villager]
+strategy = "random"
+
+[roles.doctor]
+strategy = "random"
+
+[roles.seer]
+strategy = "random"

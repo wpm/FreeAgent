@@ -1,4 +1,4 @@
-//! The announcing environment, shared by every variant: it opens each
+//! The announcing environment, which runs every game: it opens each
 //! phase with a message to every living player, awake in it or not, takes
 //! the awake players' selections as they come, and ends the phase. A
 //! player announced a phase it sleeps through learns the phase has begun,
@@ -16,7 +16,7 @@
 //! day ends when the timer fires, and the selected player is voted out, or
 //! at the day limit, whatever is standing, and nobody is.
 //!
-//! The environment logs the deal, then the configuration if there is one;
+//! The environment logs the deal, then the configuration;
 //! an [`Entry::Action`] for each announcement and tentative decision it
 //! sends, numbered in one series from 1; an [`Entry::Observation`] for each
 //! selection and retraction it receives, stale or not, with the phase it
@@ -25,7 +25,8 @@
 //! are not logged.
 
 use super::{
-    Choices, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Rules, State, Team, act, observe,
+    Choices, Dealt, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Rules, State, Team, act,
+    observe,
 };
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Context, Think};
@@ -36,21 +37,27 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 /// Everything the episode needs to run the environment for a game of
-/// `roles` under `rules`, as the actor `wrap` makes of it: it may send to
-/// and stop every player, holds the logger, and thinks. It logs the deal,
-/// then `configuration` if there is one, before it opens the first night.
-/// The winning team is sent on `winner` when the game ends.
+/// `deal`, every player's role and strategy, under `rules`, as the actor
+/// `wrap` makes of it: it may send to and stop every
+/// player, holds the logger, and thinks. It logs the deal, then
+/// `configuration`, before it opens the first night. The winning team is
+/// sent on `winner` when the game ends.
 pub fn init<A>(
-    roles: HashMap<PlayerId, Role>,
+    deal: HashMap<PlayerId, Dealt>,
     rules: Rules,
-    configuration: Option<Entry>,
+    configuration: Entry,
     winner: oneshot::Sender<Team>,
     wrap: impl FnOnce(Environment) -> A + Send + 'static,
 ) -> ActorInit<A>
 where
     A: Behavior<Message = Message, Log = Entry>,
 {
-    let players: HashSet<PlayerId> = roles.keys().cloned().collect();
+    let players: HashSet<PlayerId> = deal.keys().cloned().collect();
+    let opening = Box::new([rules.start(&deal), configuration]);
+    let roles = deal
+        .into_iter()
+        .map(|(id, dealt)| (id, dealt.role))
+        .collect();
     let game = Arc::new(Mutex::new(Game::new(roles, rules, winner)));
     let shared = Arc::clone(&game);
     ActorInit {
@@ -58,14 +65,14 @@ where
             wrap(Environment {
                 context,
                 game,
-                configuration: configuration.map(Box::new),
+                opening: Some(opening),
             })
         }),
         think: Some(Box::new(move |context| {
             Box::new(Environment {
                 context,
                 game: shared,
-                configuration: None,
+                opening: None,
             })
         })),
         can_send_to: players.clone(),
@@ -171,11 +178,13 @@ impl Game {
         })
     }
 
-    /// The ratify limit, if the current phase is a day with one.
+    /// The ratify limit, if the current phase is a day with one above
+    /// zero. A day whose limit is zero is not ratified, so no timer of
+    /// zero ever starts.
     fn ratifying(&self) -> Option<Duration> {
         match self.state.phase {
-            Phase::Day => self.rules.ratify_limit,
-            Phase::Night => None,
+            Phase::Day if self.rules.ratified() => Some(self.rules.ratify_limit),
+            _ => None,
         }
     }
 
@@ -354,15 +363,16 @@ struct Opened {
 /// The actor that holds the game. Its perceive loop and its think loop are
 /// each an `Environment` with a context of its own over the one shared
 /// game: the perceive loop opens the first night, takes selections and
-/// announces tentative decisions, and the think loop ends phases. A
-/// variant's actor enum holds the perceive loop's, built by [`init`].
+/// announces tentative decisions, and the think loop ends phases.
+/// [`Actor::Environment`](super::Actor::Environment) holds the perceive
+/// loop's, built by [`init`].
 pub struct Environment {
     context: Context<Message, Entry>,
     game: Arc<Mutex<Game>>,
-    /// The entry the perceive loop logs right after the deal, if any.
-    /// Taken when logged. Boxed to keep the environment no larger than a
-    /// player in a variant's actor enum.
-    configuration: Option<Box<Entry>>,
+    /// The entries the perceive loop opens the log with: the deal, then
+    /// the configuration. Taken when logged. Boxed to keep the environment
+    /// no larger than a player in [`Actor`](super::Actor).
+    opening: Option<Box<[Entry; 2]>>,
 }
 
 impl Environment {
@@ -486,16 +496,11 @@ impl Behavior for Environment {
         Ok(())
     }
 
-    /// Log the deal and the limits, then the configuration if there is
-    /// one, and open the first night.
+    /// Log the deal and the limits, then the configuration, and open the
+    /// first night.
     async fn start(&mut self) -> anyhow::Result<()> {
-        let start = {
-            let game = self.game();
-            game.rules.start(game.state.roles.clone())
-        };
-        self.context.log(start);
-        if let Some(configuration) = self.configuration.take() {
-            self.context.log(*configuration);
+        for entry in self.opening.take().into_iter().flat_map(|opening| *opening) {
+            self.context.log(entry);
         }
         self.open_phase()
     }
@@ -526,10 +531,10 @@ mod tests {
     use super::*;
     use crate::werewolf::candidates;
     use crate::werewolf::tests::{
-        self, observed_by_the_environment, one_wolf_against, retraction, selection, village,
+        self, Script, at_once, mute, observed_by_the_environment, one_wolf_against, play, quick,
+        retraction, selection, village,
     };
-    use crate::werewolf::uniform_random::Actor;
-    use crate::werewolf::uniform_random::tests::{Script, Seat, at_once, mute, play, quick};
+    use crate::werewolf::{Actor, Seat};
 
     fn id(name: &str) -> PlayerId {
         name.to_string()
@@ -717,14 +722,19 @@ mod tests {
     }
 
     #[test]
-    fn a_day_without_a_ratify_limit_ends_by_everyone_selecting_or_at_its_limit() {
+    fn a_day_with_a_ratify_limit_of_zero_ends_by_everyone_selecting_or_at_its_limit() {
         let roles = one_wolf_against(&["ann", "bob", "cat"]);
         let (mut game, Opened { seq, .. }) = opened_under(roles, Rules::default());
+        assert_eq!(game.rules.ratify_limit, Duration::ZERO);
         game.end(seq);
         let day = game.open().unwrap().seq;
-        for voter in ["wolf", "ann", "bob", "cat"] {
-            game.select(day, &id(voter), &id("ann"));
+        // Each first vote counts, and tells nobody of a tentative decision
+        // and sets no timer; a second does not count.
+        for voter in ["wolf", "ann", "bob"] {
+            assert_eq!(game.select(day, &id(voter), &id("ann")), counted());
         }
+        assert_eq!(game.select(day, &id("wolf"), &id("bob")), None);
+        assert_eq!(game.select(day, &id("cat"), &id("ann")), last());
         let ended = game.end(day).unwrap();
         assert_eq!(
             ended.outcome,
@@ -769,7 +779,7 @@ mod tests {
     /// shared [`tests::tentative`] has them.
     fn ratified() -> Rules {
         Rules {
-            ratify_limit: Some(RATIFY),
+            ratify_limit: RATIFY,
             ..Rules::default()
         }
     }
@@ -1080,7 +1090,7 @@ mod tests {
     /// of short phases.
     fn ratifying_quickly() -> Rules {
         Rules {
-            ratify_limit: Some(Duration::from_secs(5)),
+            ratify_limit: Duration::from_secs(5),
             ..quick()
         }
     }

@@ -32,42 +32,178 @@ knows what it has discovered, and everyone else knows only their own role and
 who is still alive. The villagers win when the last werewolf is dead. The
 werewolves win when they are at least as many as the villagers.
 
-The command line names the game, then its variant. In `uniform-random`
-the environment announces each phase to every living player and waits for
-the awake players' selections, as it does for language models, and every
-player awake in the phase selects at once, at random among those it may
-choose: by night the living whose roles it does not know, by day everyone
-else living. A player with nothing to do in the phase sleeps. It plays the
-model-played game with no model, provider, API key or configuration file,
-so a game finishes in moments.
-
 ```sh
-social-deduction werewolf uniform-random [--werewolves N] [--villagers N] [--doctors N] [--seers N] [--night-limit 30s] [--day-limit 2m]
+social-deduction werewolf [CONFIG] [--werewolves N] [--villagers N] [--doctors N] [--seers N] [--night-limit 30s] [--day-limit 2m] [--ratify-limit 20s] [--log | --no-log]
 ```
 
 The table seats two werewolves, three villagers, a doctor and a seer unless
 the counts say otherwise, and each phase waits a minute for its selections
 unless a limit says otherwise. The game is told on standard output as it
-happens and logged to standard error as JSON Lines. Every variant takes
-`--no-log`, which leaves the log out, and `--log`, which keeps it; the last
-one given wins.
+happens and logged to standard error as JSON Lines. `--no-log` leaves the
+log out, and `--log` keeps it; the last one given wins.
 
-In `llm` every player is a language model, set up by a TOML configuration
-file that names the model, how to reach it, and the prompts each role is
-given. The [examples](examples/werewolf/llm) show how one is written.
+Each player plays a *strategy*, dealt to its seat with its role. A strategy
+is a *policy*, a kind of player written in Rust, with its parameters:
+
+- `random` selects at once, at random among those it may choose: by night
+  the living whose roles it does not know, by day everyone else living.
+- `prompted` is a language model, told a system prompt and asked to play.
+
+Without a configuration file every player plays the strategy `random`, so a
+game needs no model, provider, API key or file, and finishes in moments.
+The configuration file defines named models and named strategies, and
+allots each role's seats among the strategies, so a table may mix players:
+random werewolves against prompted villagers, or two werewolves with
+different prompts. The roles and strategies are dealt together at random:
+a seat is as likely as any other to get each role, and each seat of a role
+as likely as any other to get each of that role's strategies. The
+[examples](examples/werewolf) show a table of random players and a table
+of one prompted strategy for everyone:
 
 ```sh
-social-deduction werewolf llm game.toml [role counts] [limits] [--ratify-limit 20s] [--model-base-url URL] [--model-id ID] [--context-window TOKENS]
+social-deduction werewolf examples/werewolf/random.toml
+social-deduction werewolf examples/werewolf/prompted.toml
 ```
 
 A setting comes from the command line if it is given there, otherwise from
-the file, otherwise from a default in the code. The model and its provider
-may be given on the command line too, for trying another without editing
-the file. The game is told and logged as the other variants are, and the
-log's second entry is the configuration as it took effect: every setting,
-each player's rendered prompt, and the templates and text blocks as
-written, so a log says by itself what was played and under which prompts.
-The API key is never logged.
+the file, otherwise from a default in the code. The log's second entry is
+the configuration as it took effect: the role counts and limits, every
+strategy as written, the allotments, each model in play with what was
+settled for it, each prompted player's rendered prompt, and the text
+blocks as written, so a log says by itself what was played and under which
+prompts. The API key is never logged.
+
+### The configuration file
+
+```toml
+strategy = "cautious"         # every role not allotted otherwise; random unless it says
+
+[phases]
+ratify_limit = "20s"
+
+[models.qwen]
+base_url = "http://localhost:1234/v1"
+id = "qwen2.5-7b-instruct"
+
+[text]
+rules = """Werewolf is a game of hidden roles. …"""
+
+[strategies.cautious]
+policy = "prompted"
+system = """{{ rules }}
+
+You are {{ name }}, a {{ role }}. You are slow to accuse."""
+
+[strategies.bold]
+policy = "prompted"
+system = """{{ rules }}
+
+You are {{ name }}, a {{ role }}. You trust your instincts and say so."""
+
+[roles.werewolf.strategies]   # one random werewolf and one bold one
+random = 1
+bold = 1
+
+[roles.doctor]
+count = 0
+```
+
+Every table may be left out, and a key the file does not know is an error.
+
+- `[phases]`: `night_limit` and `day_limit`, how long each phase waits for
+  the players' selections, a minute each unless they say; and
+  `ratify_limit`, how long a day's votes must stand to be ratified, zero
+  unless it says, which means a day is not ratified. The ratify limit may
+  not be longer than the day limit. Durations are written as `30s` or
+  `1m 30s`.
+- `[models.<name>]`: one model and how to reach it. `base_url`, the root of
+  the provider's OpenAI-compatible API, ending in `/v1`; `id`, the model's
+  id exactly as the provider lists it; `api_key_env`, the environment
+  variable holding the API key, over the one known for the provider;
+  `request_timeout`, how long one request may take, a minute unless it
+  says; and `context_window`, the model's context window in tokens.
+- `[strategies.<name>]`: a `policy` and that policy's parameters, and only
+  those. `random` takes none. `prompted` takes `system`, its system prompt
+  template, and `model`, the name of one of the file's models, which may be
+  left out when the file defines exactly one. The strategy `random` is
+  always defined, and a file may not define it.
+- `[roles.werewolf]`, `[roles.villager]`, `[roles.doctor]` and
+  `[roles.seer]`: `count`, how many of the role sit at the table;
+  `strategy`, the strategy every seat of the role plays that its
+  `strategies` table does not allot; and `[roles.<role>.strategies]`, how
+  many seats of the role play each strategy.
+- `strategy`, at the top of the file: the strategy every role plays that
+  is not allotted otherwise.
+- `[text]`: named blocks of text for the templates to use, so that the rules
+  are written once.
+
+A role's `strategies` table allots its seats first, and the role's own
+`strategy` fills the rest, up to the role's count. These villagers are 2
+bold and 3 cautious:
+
+```toml
+[roles.villager]
+count = 5
+strategy = "cautious"
+
+[roles.villager.strategies]
+bold = 2
+```
+
+A role with a `strategies` table and no `strategy` of its own has as many
+seats as the table allots. A role with no table plays its `strategy`,
+otherwise the file's `strategy`, otherwise `random`. A count given on the
+command line or in the file that the table's seats do not fit is an error
+naming the role and both numbers, and so is a strategy allotted that is
+not defined. A strategy defined and never allotted is fine.
+
+The key itself is never in the file. `api_key_env` may be left out for a
+provider whose variable is known, such as OpenAI's `OPENAI_API_KEY` and
+Anthropic's `ANTHROPIC_API_KEY`, and for a local server, which wants none.
+
+A game may play several models, each through the strategies that name it,
+so a stronger model can play a weaker one. Here the werewolves play a
+Claude model and everyone else a local Qwen model:
+
+```toml
+strategy = "local"
+
+[models.qwen]
+base_url = "http://localhost:1234/v1"
+id = "qwen2.5-7b-instruct"
+
+[models.claude]
+base_url = "https://api.anthropic.com/v1"
+id = "claude-sonnet-4-5"
+
+[strategies.local]
+policy = "prompted"
+model = "qwen"
+system = "You are {{ name }}, a {{ role }}."
+
+[strategies.smart]
+policy = "prompted"
+model = "claude"
+system = "You are {{ name }}, a {{ role }}."
+
+[roles.werewolf]
+strategy = "smart"
+```
+
+### Prompts
+
+A prompted player's system prompt is rendered from its strategy's `system`,
+a [minijinja](https://docs.rs/minijinja) template with the variables `name`,
+the player's seat; `role`, the role it was dealt; and every block in
+`[text]` by its name. A strategy reads differently by role through
+conditionals such as `{% if role == "werewolf" %}`, and players differ by
+playing different strategies. Every seat's prompt is rendered for every
+(role, strategy) pair at the table whose strategy is prompted before the
+game begins, so a template that does not compile, naming the strategy, or
+one with a variable it does not have, naming the strategy, the seat and the
+role, stops the program at once.
+
+### Prompted players
 
 Every living player is told each phase as it begins, awake in it or not,
 since only the environment knows when a phase ends. A player with nothing
@@ -89,12 +225,14 @@ of it.
 By day the players talk, with no turns. Every living player is woken when
 the day is announced to it and again by every message it hears, another
 player's utterance, vote or retraction and the environment's tentative
-decision, and the model is offered four tools, of which it must call one
+decision, and the model is offered these tools, of which it must call one
 and may call several: `speak`, which says something to every other living
 player, and never to the environment, which does nothing with speech;
-`select`, which votes for a player, and may be called again to change the
-vote; `retract`, which withdraws the vote, so that the player is undecided
-again; and `wait`, which says nothing now and asks to be woken after some
+`select`, which votes for a player, and in a ratified day may be called
+again to change the vote, while in a day that is not the first vote is
+final, as the tool tells the model, and `select` is offered until the
+player has voted; in a ratified day, `retract`, which
+withdraws the vote, so that the player is undecided again; and `wait`, which says nothing now and asks to be woken after some
 seconds unless something wakes the player sooner. The calls are carried out
 in the order the model made them. Wake-ups are debounced: a player has at
 most one model call in progress and one waiting, however fast the talk
@@ -106,87 +244,54 @@ from a phase it is not in, and a tentative decision too: it logs the
 receipt and neither remembers the message nor wakes for it, so day talk
 that arrives by night is forgotten.
 
-The votes are public and ratified. Each vote and each retraction goes to
-every other living player as well as to the environment, and a player's
-latest vote counts unless it has retracted it since and is undecided
-again. Whenever the votes change who they select, or come to select
-nobody, the environment tells every living player so. A day ends once the
-tentative decision has stood unchanged for the ratify limit, and the
-selected player is voted out; or at the day limit, whatever is standing,
-and nobody is. A vote or retraction that leaves the decision as it was
-leaves the deadline as it was, so a player selected is voted out one
-ratify limit after the tentative decision naming them, unless another
-follows first. The ratify limit is `ratify_limit` under `[phases]`, or
-`--ratify-limit` on the command line, twenty seconds unless either says,
-and may not be longer than the day limit. The account tells what everyone
-says as they say it, and a player's story tells it what others said and
-how they voted. The current day is told in full, every vote, retraction
-and tentative decision as it came. A past day is told by its talk, in
-order, then a tally of each player alive that day, in seat order, with the
-vote that counted or that it did not vote, then who died. The prompt is
-the configuration's to write: the program tells the model only what the
-four tools do and that it may speak, vote, retract its vote, or wait, so
-the rules text in the file should say that by day everyone may talk at
-any time.
-
-### The configuration file
-
-Every table but `[model]` may be left out, and a key the file does not know
-is an error.
-
-- `[model]`: `base_url`, the root of the provider's OpenAI-compatible API,
-  ending in `/v1`; `id`, the model's id exactly as the provider lists it;
-  `api_key_env`, the environment variable holding the API key, over the one
-  known for the provider; `request_timeout`, how long one request may
-  take, a minute unless it says; and `context_window`, the model's context
-  window in tokens.
-- `[phases]`: `night_limit` and `day_limit`, how long each phase waits for
-  the players' selections, a minute each unless they say; and
-  `ratify_limit`, how long a day's votes must stand to be ratified, twenty
-  seconds unless it says. Durations are written as `30s` or `1m 30s`.
-- `[roles.werewolf]`, `[roles.villager]`, `[roles.doctor]` and
-  `[roles.seer]`: `count`, how many of the role sit at the table, and
-  `system`, the role's own system prompt template over the default.
-- `[prompt]`: `system`, the system prompt template every role falls back on.
-- `[text]`: named blocks of text for the templates to use, so that the rules
-  are written once.
-- `[personas]`: what a seat, `player1` onward, is like, for the seats that
-  are anyone in particular.
-
-The key itself is never in the file. `api_key_env` may be left out for a
-provider whose variable is known, such as OpenAI's `OPENAI_API_KEY` and
-Anthropic's `ANTHROPIC_API_KEY`, and for a local server, which wants none.
-
-### Prompts
-
-Each player's system prompt is rendered from a
-[minijinja](https://docs.rs/minijinja) template: the role's own `system`
-when `[roles.<role>]` has one, otherwise `[prompt] system`. A template has
-the variables `name`, the player's seat; `role`, the role it was dealt;
-`persona`, its seat's persona, empty for a seat without one; and every block
-in `[text]` by its name. One template for everyone ignores `role`; prompts
-that differ by role are conditionals, text blocks or a role's own template;
-prompts that differ by player are personas, which belong to a seat while
-the roles are still dealt at random. Every seat's prompt is rendered for
-every role at the table before the game begins, so a template that does not
-compile, a variable it does not have, a role at the table with no template,
-or a persona for a seat that is not there stops the program at once.
+The votes are public. Each vote and each retraction goes to every other
+living player as well as to the environment. With a ratify limit above zero
+the day is ratified: a player's latest vote counts unless it has retracted
+it since and is undecided again, and whenever the votes change who they
+select, or come to select nobody, the environment tells every living player
+so. A day ends once the tentative decision has stood unchanged for the
+ratify limit, and the selected player is voted out; or at the day limit,
+whatever is standing, and nobody is. A vote or retraction that leaves the
+decision as it was leaves the deadline as it was, so a player selected is
+voted out one ratify limit after the tentative decision naming them, unless
+another follows first. The ratify limit is `ratify_limit` under
+`[phases]`, or `--ratify-limit` on the command line, and may not be longer
+than the day limit. It is zero unless either says, and a day whose ratify
+limit is zero is not ratified: each player's first vote counts, a
+retraction does not, and the day ends when everyone has voted or at its
+limit. The account tells what everyone says as they say it, and a player's
+story tells it what others said and how they voted. The current day is
+told in full, every vote, retraction and tentative decision as it came. A
+past day is told by its talk, in order, then a tally of each player alive
+that day, in seat order, with the vote that counted or that it did not
+vote, then who died. The prompt is the configuration's to write: the
+program tells the model only what the tools do and that it may speak,
+vote, retract its vote in a ratified day, or wait, so the rules text in the
+file should say that by day everyone may talk at any time.
 
 ### Before a game begins
 
-The model is checked before any player is built, so a model that cannot
-play fails at launch. The provider's listing must have the model's id, and
-the model is then asked twice exactly as a player is, once as by night and
+A model is in play when a prompted strategy that names it is dealt to a
+seat. Only the models in play are set up, one at a time in name order,
+since a local server loads each model it is asked for. A model the file
+defines and no strategy at the table uses is not contacted, and its key
+need not be set. Each model in play is checked before any player is built,
+so a model that cannot play fails at launch, and the error names it. Its
+key is read, the provider's listing must have its id, and it is then asked
+twice exactly as a player is, once as by night and
 once as by day: a short prompt, two candidates, and the tools a player has
-in that phase, `select` by night and `speak`, `select` and `wait` by day.
+in that phase, `select` by night and `speak`, `select`, `retract` and
+`wait` by day, the tools of a ratified day whatever the ratify limit.
 A model that does not answer both requests as a player must stops the
 program, and the error names the request that failed and says why in the
 provider's own words, such as a server that rejects the request or an
-answer that makes no tool call. Any model that passes can play.
+answer that makes no tool call. Any model that passes can play. Each model
+in play keeps its own client, tool choice and context window, and each
+prompted player asks its strategy's model with them.
 
-The model's context window, in tokens, is settled before the game begins:
-from `--context-window` if given, otherwise from `context_window` in
-`[model]`, otherwise from the provider's listing of the model, otherwise
+A model's context window, in tokens, is settled before the game begins:
+from `context_window` in its `[models.<name>]` table if given, otherwise
+from the provider's listing of the model, otherwise
 from the provider's default in `src/models.toml`, otherwise 4096 tokens, a
 size most models can run in. The listing gives it when the model's entry
 carries one of the fields named in `src/models.toml`, such as vLLM's
@@ -194,9 +299,10 @@ carries one of the fields named in `src/models.toml`, such as vLLM's
 number. The provider's default covers a listing that carries none, as
 OpenAI's and Anthropic's do: 128000 tokens for OpenAI and 200000 for
 Anthropic. A window of 0 stops the program, and so does one with no room
-for a story: smaller than the reply, the longest system prompt, the day's
-tools and a situation, by estimate. The account tells the window and where
-it came from, and the configuration in the log records both.
+for a story: smaller than the reply, the longest system prompt of the
+strategies asking the model, the day's tools and a situation, by estimate.
+The account tells each model's window and where it came from, and the
+configuration in the log records both.
 
 Each request fits the context window. The window keeps 1024 tokens for the
 reply, which the request leaves to the provider's default length, and the
@@ -218,7 +324,8 @@ The night's request is made with `tool_choice` set to `"required"`; if the
 provider refuses it as a bad request, it is made again with `"auto"`, which
 asks the model to call a tool without making it, and both refusals are
 given if that is refused too. The game's requests are made the way the
-night's was answered, and the account says so when that is `"auto"`. Under
+night's was answered, and the account says so, naming the model, when
+that is `"auto"`. Under
 `"auto"`, an answer that makes no tool call is a failure to play, as any
 other answer a player cannot carry out is. Every request ends "Answer by
 calling one of the tools."
@@ -227,11 +334,12 @@ To play against a local [LM Studio](https://lmstudio.ai) server, download
 `qwen2.5-7b-instruct` there and start its server, which listens at
 `http://localhost:1234/v1`. `social-deduction models http://localhost:1234/v1 --check`
 lists what it serves and marks the models that play when asked, and
-[`examples/werewolf/llm/minimal.toml`](examples/werewolf/llm/minimal.toml)
-plays it:
+[`examples/werewolf/prompted.toml`](examples/werewolf/prompted.toml)
+plays it, once its `[models.qwen]` table names the model and server you
+have running:
 
 ```sh
-social-deduction werewolf llm examples/werewolf/llm/minimal.toml
+social-deduction werewolf examples/werewolf/prompted.toml
 ```
 
 ## Models

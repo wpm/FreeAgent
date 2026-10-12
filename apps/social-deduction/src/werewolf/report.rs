@@ -8,8 +8,11 @@
 //! player and its number for the message. A player's memory holds the
 //! messages themselves, and its account reads them.
 
-use super::llm::{ContextWindow, Memory, Source};
-use super::{ENVIRONMENT, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Team, View, awake};
+use super::config::{ContextWindow, Source};
+use super::prompted::Memory;
+use super::{
+    ENVIRONMENT, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Team, View, awake, ratified,
+};
 use crate::model::{ToolChoice, tokens};
 use free_agent::{ActorId, Event};
 use humantime::format_duration;
@@ -31,8 +34,9 @@ enum Voice {
 
 /// Turns the events of a game, one at a time, into lines of prose. The
 /// omniscient narrator reads the log's events through [`Narrator::narrate`]
-/// and tells the table, a player to a line, how long a night and a day
-/// wait, and how long a vote must stand if the day's vote is ratified, then
+/// and tells the table, a player to a line with its role and strategy, how
+/// long a night and a day wait, and how long a vote must stand if the
+/// day's vote is ratified, then what it was told of each model in play,
 /// each night and day with what every player did, how it ended, and how
 /// long it took, then who won, how long the whole game took, and the
 /// survivors, a player to a line. A player's narrator reads the player's
@@ -84,6 +88,8 @@ pub struct Narrator {
     /// Every role known so far: from the deal, and from what players are
     /// shown.
     roles: HashMap<PlayerId, Role>,
+    /// Every player's strategy, from the deal.
+    strategies: HashMap<PlayerId, String>,
     /// Who was alive when the current phase began.
     alive: HashSet<PlayerId>,
     /// The phase being told, once one has begun.
@@ -172,16 +178,17 @@ impl Narrator {
         }
         match &event.payload {
             Entry::Start {
-                variation,
                 roles,
+                strategies,
                 night_limit,
                 day_limit,
                 ratify_limit,
             } => {
                 self.roles = roles.clone();
+                self.strategies = strategies.clone();
                 self.alive = roles.keys().cloned().collect();
-                self.ratified = ratify_limit.is_some();
-                self.table(variation, *night_limit, *day_limit, *ratify_limit)
+                self.ratified = ratified(*ratify_limit);
+                self.table(*night_limit, *day_limit, *ratify_limit)
             }
             Entry::Action {
                 message: Message::Announce { seq, view, .. },
@@ -258,12 +265,14 @@ impl Narrator {
                 vec![]
             }
             Entry::Configuration(configuration) => {
-                let mut lines = vec![context_window(configuration.context_window)];
-                if configuration.tool_choice == ToolChoice::Auto {
-                    lines.push(format!(
-                        "{} does not accept a required tool call, so its players are asked to call one.",
-                        configuration.model
-                    ));
+                let mut lines = Vec::new();
+                for (name, model) in &configuration.models {
+                    lines.push(context_window(name, model.context_window));
+                    if model.tool_choice == ToolChoice::Auto {
+                        lines.push(format!(
+                            "{name} does not accept a required tool call, so its players are asked to call one."
+                        ));
+                    }
                 }
                 lines
             }
@@ -414,26 +423,29 @@ impl Narrator {
         self.show(view, time)
     }
 
-    /// The deal: how many players, then each with its role on a line of
-    /// its own, then how long a night and a day wait for them, and how long
-    /// a vote must stand if the day's vote is ratified.
+    /// The deal: how many players, then each with its role and its
+    /// strategy on a line of its own, then how long a night and a day wait
+    /// for them, and how long a vote must stand if the day's vote is
+    /// ratified, which it is when the ratify limit is above zero.
     fn table(
         &self,
-        variation: &str,
         night_limit: Duration,
         day_limit: Duration,
-        ratify_limit: Option<Duration>,
+        ratify_limit: Duration,
     ) -> Vec<String> {
-        let heading = format!("{variation} with {} players:", self.roles.len());
-        let seats = in_order(self.roles.keys())
-            .into_iter()
-            .map(|player| self.seat(player).to_string());
+        let heading = format!("{} players:", self.roles.len());
+        let seats = in_order(self.roles.keys()).into_iter().map(|player| {
+            format!(
+                "{player}, a {}, plays {}",
+                self.roles[player], self.strategies[player]
+            )
+        });
         let mut limits = format!(
             "A night waits {} and a day {}",
             format_duration(night_limit),
             format_duration(day_limit)
         );
-        if let Some(ratify_limit) = ratify_limit {
+        if ratified(ratify_limit) {
             write!(
                 limits,
                 ", and a vote stands after {}",
@@ -860,16 +872,16 @@ fn identity(me: &PlayerId, roles: &HashMap<PlayerId, Role>) -> String {
     }
 }
 
-/// The model's context window and where it came from, in a line.
-fn context_window(ContextWindow { tokens, source }: ContextWindow) -> String {
+/// The context window of the model `name` and where it came from, in a
+/// line.
+fn context_window(name: &str, ContextWindow { tokens, source }: ContextWindow) -> String {
     let source = match source {
-        Source::CommandLine => "as the command line says",
         Source::File => "as the configuration file says",
         Source::Provider => "as the provider reports",
         Source::ProviderDefault => "the provider's default",
         Source::Default => "the default",
     };
-    format!("The model's context window is {tokens} tokens, {source}.")
+    format!("{name}'s context window is {tokens} tokens, {source}.")
 }
 
 /// A phase by its name: `Night 1`, `Day 1`.
@@ -929,11 +941,11 @@ mod tests {
     use super::*;
 
     use crate::model::estimate;
-    use crate::werewolf::llm::Configuration;
+    use crate::werewolf::config::{Configuration, ModelInPlay, RANDOM, Random, Strategy};
     use crate::werewolf::tests::{
         announcement, logged, received, retraction, selection, tentative, utterance,
     };
-    use crate::werewolf::{ENVIRONMENT, Rules, to_the_environment};
+    use crate::werewolf::{Dealt, ENVIRONMENT, Rules, to_the_environment};
     use std::collections::BTreeMap;
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -1138,20 +1150,35 @@ mod tests {
         })
     }
 
-    /// The deal of `roles`, with a night waiting a minute and a day two,
-    /// and the day's vote ratified after `ratify_limit` if there is one.
-    fn dealt_under(roles: HashMap<PlayerId, Role>, ratify_limit: Option<Duration>) -> Event<Entry> {
+    /// The deal of `roles`, the werewolves playing the strategy `bold` and
+    /// everyone else `random`, with a night waiting a minute and a day two,
+    /// and the day's vote ratified after `ratify_limit` if it is above zero.
+    fn dealt_under(roles: HashMap<PlayerId, Role>, ratify_limit: Duration) -> Event<Entry> {
         let rules = Rules {
             day_limit: Duration::from_secs(120),
             ratify_limit,
             ..Rules::default()
         };
-        logged(rules.start(roles))
+        let deal = roles
+            .into_iter()
+            .map(|(player, role)| {
+                let strategy = match role {
+                    Role::Werewolf => "bold",
+                    _ => "random",
+                };
+                let dealt = Dealt {
+                    role,
+                    strategy: strategy.to_string(),
+                };
+                (player, dealt)
+            })
+            .collect();
+        logged(rules.start(&deal))
     }
 
     /// The deal of `roles`, with a night waiting a minute and a day two.
     fn dealt(roles: HashMap<PlayerId, Role>) -> Event<Entry> {
-        dealt_under(roles, None)
+        dealt_under(roles, Duration::ZERO)
     }
 
     fn start() -> Event<Entry> {
@@ -1161,7 +1188,7 @@ mod tests {
     /// The deal of [`roles`] under rules that ratify the day's vote after
     /// twenty seconds.
     fn ratified() -> Event<Entry> {
-        dealt_under(roles(), Some(Duration::from_secs(20)))
+        dealt_under(roles(), Duration::from_secs(20))
     }
 
     /// The environment's action of sending the tentative decision numbered
@@ -1216,18 +1243,18 @@ mod tests {
         assert_eq!(
             narrator.narrate(&start()),
             [
-                "Uniform Random with 4 players:",
-                "ann (villager)",
-                "doctor (doctor)",
-                "seer (seer)",
-                "wolf (werewolf)",
+                "4 players:",
+                "ann, a villager, plays random",
+                "doctor, a doctor, plays random",
+                "seer, a seer, plays random",
+                "wolf, a werewolf, plays bold",
                 "A night waits 1m and a day 2m."
             ]
         );
     }
 
     #[test]
-    fn the_limits_line_adds_the_ratify_limit_when_there_is_one() {
+    fn the_limits_line_adds_the_ratify_limit_when_it_is_above_zero() {
         let mut narrator = Narrator::default();
         assert_eq!(
             narrator.narrate(&ratified())[5],
@@ -2109,10 +2136,10 @@ mod tests {
         assert_eq!(
             narrator.narrate(&dealt(roles)),
             [
-                "Uniform Random with 3 players:",
-                "player1 (seer)",
-                "player2 (werewolf)",
-                "player10 (villager)",
+                "3 players:",
+                "player1, a seer, plays random",
+                "player2, a werewolf, plays bold",
+                "player10, a villager, plays random",
                 "A night waits 1m and a day 2m."
             ]
         );
@@ -2855,28 +2882,36 @@ mod tests {
         );
     }
 
-    /// The configuration of a game whose requests are made under
-    /// `tool_choice`, within the default context window, as the log
-    /// records it.
-    fn configured(tool_choice: ToolChoice) -> Event<Entry> {
+    /// The configuration of a game whose requests to each of `models`, by
+    /// name, are made under its tool choice, within the default context
+    /// window, as the log records it.
+    fn configured(models: &[(&str, ToolChoice)]) -> Event<Entry> {
+        let models = models
+            .iter()
+            .map(|(name, tool_choice)| {
+                let model = ModelInPlay {
+                    base_url: "http://localhost:1234/v1".to_string(),
+                    id: format!("{name}-7b-instruct"),
+                    request_timeout: Duration::from_secs(10),
+                    api_key_env: None,
+                    tool_choice: *tool_choice,
+                    context_window: ContextWindow {
+                        tokens: 4096,
+                        source: Source::Default,
+                    },
+                };
+                (name.to_string(), model)
+            })
+            .collect();
         logged(Entry::Configuration(Box::new(Configuration {
             role_counts: BTreeMap::from([(Role::Werewolf, 1), (Role::Villager, 2)]),
             night_limit: Duration::from_secs(30),
             day_limit: Duration::from_secs(60),
             ratify_limit: Duration::from_secs(20),
-            request_timeout: Duration::from_secs(10),
-            base_url: "http://localhost:1234/v1".to_string(),
-            model: "qwen2.5-7b-instruct".to_string(),
-            tool_choice,
-            context_window: ContextWindow {
-                tokens: 4096,
-                source: Source::Default,
-            },
-            api_key_env: None,
-            personas: BTreeMap::new(),
+            strategies: BTreeMap::from([(RANDOM.to_string(), Strategy::Random(Random {}))]),
+            allotments: BTreeMap::new(),
+            models,
             prompts: BTreeMap::from([(id("wolf"), "You are wolf.".to_string())]),
-            default_template: Some("You are {{ name }}.".to_string()),
-            role_templates: BTreeMap::new(),
             text: BTreeMap::new(),
         })))
     }
@@ -2884,10 +2919,10 @@ mod tests {
     #[test]
     fn a_configuration_requiring_a_tool_call_tells_only_the_context_window_and_only_in_the_omniscient_account()
      {
-        let configuration = configured(ToolChoice::Required);
+        let configuration = configured(&[("qwen", ToolChoice::Required)]);
         assert_eq!(
             Narrator::default().narrate(&configuration),
-            ["The model's context window is 4096 tokens, the default."]
+            ["qwen's context window is 4096 tokens, the default."]
         );
         assert!(
             Narrator::for_player(id("wolf"))
@@ -2898,37 +2933,33 @@ mod tests {
 
     #[test]
     fn the_context_window_is_told_with_where_it_came_from() {
-        let told = |tokens, source| context_window(ContextWindow { tokens, source });
+        let told = |tokens, source| context_window("qwen", ContextWindow { tokens, source });
         assert_eq!(
             told(4096, Source::Default),
-            "The model's context window is 4096 tokens, the default."
+            "qwen's context window is 4096 tokens, the default."
         );
         assert_eq!(
             told(32768, Source::Provider),
-            "The model's context window is 32768 tokens, as the provider reports."
+            "qwen's context window is 32768 tokens, as the provider reports."
         );
         assert_eq!(
             told(128000, Source::ProviderDefault),
-            "The model's context window is 128000 tokens, the provider's default."
+            "qwen's context window is 128000 tokens, the provider's default."
         );
         assert_eq!(
             told(8192, Source::File),
-            "The model's context window is 8192 tokens, as the configuration file says."
-        );
-        assert_eq!(
-            told(16384, Source::CommandLine),
-            "The model's context window is 16384 tokens, as the command line says."
+            "qwen's context window is 8192 tokens, as the configuration file says."
         );
     }
 
     #[test]
     fn a_configuration_allowing_a_tool_call_is_told_in_the_omniscient_account_alone() {
-        let configuration = configured(ToolChoice::Auto);
+        let configuration = configured(&[("qwen", ToolChoice::Auto)]);
         assert_eq!(
             Narrator::default().narrate(&configuration),
             [
-                "The model's context window is 4096 tokens, the default.",
-                "qwen2.5-7b-instruct does not accept a required tool call, \
+                "qwen's context window is 4096 tokens, the default.",
+                "qwen does not accept a required tool call, \
                  so its players are asked to call one."
             ]
         );
@@ -2937,5 +2968,21 @@ mod tests {
                 .narrate(&configuration)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_configuration_is_told_model_by_model_and_with_no_models_not_at_all() {
+        let configuration =
+            configured(&[("claude", ToolChoice::Auto), ("qwen", ToolChoice::Required)]);
+        assert_eq!(
+            Narrator::default().narrate(&configuration),
+            [
+                "claude's context window is 4096 tokens, the default.",
+                "claude does not accept a required tool call, \
+                 so its players are asked to call one.",
+                "qwen's context window is 4096 tokens, the default.",
+            ]
+        );
+        assert!(Narrator::default().narrate(&configured(&[])).is_empty());
     }
 }

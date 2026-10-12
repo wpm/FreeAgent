@@ -20,9 +20,9 @@ workflow takes a version's notes from here.
   before the game begins, and its log opens with the configuration the game
   was played under. A model that refuses to be made to call a tool is asked
   to call one instead.
-- The model's context window, settled before a `werewolf llm` game begins
-  from `--context-window`, `context_window` in `[model]`, the provider's
-  listing of the model, the provider's default in `src/models.toml`
+- The model's context window, settled before a model-played game begins
+  from `context_window` in the model's table, the provider's listing of
+  the model, the provider's default in `src/models.toml`
   (128000 tokens for OpenAI, 200000 for Anthropic), or a default of 4096
   tokens, and told and logged with where it came from. A window with no
   room for a story is refused.
@@ -36,10 +36,10 @@ workflow takes a version's notes from here.
   `--check` asks each model to play as by night and as by day and marks
   those that answer both requests well, and those that do only when not
   made to call a tool.
-- `--night-limit` and `--day-limit` on `social-deduction werewolf
-  uniform-random`, how long each phase waits for the players' selections,
-  with defaults in the code.
-- `--log` and `--no-log` on every Werewolf variant, saying whether the game
+- `--night-limit` and `--day-limit` on `social-deduction werewolf`, how
+  long each phase waits for the players' selections, with defaults in the
+  code.
+- `--log` and `--no-log` on `social-deduction werewolf`, saying whether the game
   is logged to standard error. It is unless `--no-log` says otherwise, and
   the last one given wins.
 - The log records each night's hunt: whom the werewolves elected and which
@@ -61,20 +61,29 @@ workflow takes a version's notes from here.
   or answered with something that is not a selection, is logged as
   `Failed` with the phase and the error, and narrated as it happens. The
   player has not selected, and the game goes on.
-- In `social-deduction werewolf llm` the day's vote is ratified: a player
-  may change its vote while the day is open and its latest vote counts,
-  every vote goes to every other living player as well as to the
-  environment, and the environment sends every living player a
-  `Tentative` whenever the votes change whom they select. A day ends one
-  ratify limit after a `Tentative` naming a player, unless another follows
-  first, voting that player out, or at the day limit with nobody voted out.
-  A vote that leaves the decision as it was leaves the deadline as it was.
-  The ratify limit is `ratify_limit` under `[phases]` or `--ratify-limit`,
-  twenty seconds by default, and may not be longer than the day limit. The
-  log records how every day ended as `Voted`, the start entry and the
-  configuration carry the ratify limit, and the narration tells the votes
-  as they come, each tentative decision, and whether the votes stood or the
-  day ran out.
+- In `social-deduction werewolf llm` the day's vote may be ratified: with
+  a ratify limit above zero, a player may change its vote while the day is
+  open and its latest vote counts, and the environment sends every living
+  player a `Tentative` whenever the votes change whom they select. A day
+  ends one ratify limit after a `Tentative` naming a player, unless another
+  follows first, voting that player out, or at the day limit with nobody
+  voted out. A vote that leaves the decision as it was leaves the deadline
+  as it was. The ratify limit is `ratify_limit` under `[phases]` or
+  `--ratify-limit`, and may not be longer than the day limit. It is zero by
+  default, and a day whose ratify limit is zero is not ratified: each
+  player's first vote counts, and the day ends when everyone has voted or
+  at the day limit. A model player's `select` tool says which vote counts:
+  the latest in a ratified day, and otherwise the first, which is final,
+  and in a day that is not ratified it is offered until the player has
+  voted.
+  The log records how every day ended as `Voted`, the
+  start entry carries the ratify limit, `"0s"` for a day that is not
+  ratified, as does the configuration, and the narration tells the ratify
+  limit when it is above zero, the votes as they come, each tentative
+  decision, and whether the votes stood or the day ran out.
+- The votes are public: by day every player's vote, a uniform-random
+  player's as well as a model player's, goes to every other living player
+  as well as to the environment, and each of them logs observing it.
 - In `social-deduction werewolf llm` the players talk by day, with no
   turns. A player is woken by every message it hears by day, debounced so
   that it has at most one model call in progress and one waiting, and the
@@ -89,14 +98,21 @@ workflow takes a version's notes from here.
   as too late to say if its phase has ended, and a player's story tells it
   what others said. A day's failure is narrated as a failure to play. The
   night plays as before.
+- A Werewolf game may play several models, so a stronger model can play a
+  weaker one: each model in play is set up and probed before the game, one
+  at a time in name order, its context window checked against the
+  strategies that name it, and each prompted player asks its strategy's
+  model. The narration tells each model's context window, and each model
+  that does not accept a required tool call, by name.
 - In `social-deduction werewolf llm` a player may retract its vote by day
   with the `retract` tool, and is undecided again. A `Retract` goes where a
   vote goes, to the environment and every other living player, and is
   handled like a change of vote: one that changes the tentative decision is
   announced with a `Tentative` and starts or stops the ratify timer. A
-  retraction counts in a day with a ratify limit, from a player with a vote
-  standing. The narration tells "player4 withdraws their vote and is
-  undecided again.", and a retraction with no vote standing as "player4
+  retraction counts in a day with a ratify limit above zero, from a player
+  with a vote standing, and a model player is offered `retract` only in
+  such a day. The narration tells "player4 withdraws their vote and is
+  undecided again.", and a retraction that does not count as "player4
   withdraws their vote, but the withdrawal does not count."
 
 ### Changed
@@ -141,5 +157,33 @@ workflow takes a version's notes from here.
   the vote that counted or that it did not vote, then the day's outcome.
   The current phase is told in full, every vote and tentative decision
   included. The omniscient account reads as before.
+- Every Werewolf episode holds one kind of actor, `werewolf::Actor`: the
+  environment, a random player or a prompted player. `werewolf::game`
+  builds every episode, with each seat's player built for it, so a table
+  may seat players of both policies. The player modules are named after
+  their policies: `werewolf::uniform_random` is `werewolf::random`, and
+  `werewolf::llm` is `werewolf::prompted`.
+- **Breaking:** Werewolf is one game, played by one command,
+  `social-deduction werewolf [CONFIG]`, whose players are dealt
+  strategies. `werewolf uniform-random` and `werewolf llm` are gone.
+  Without a file every player is random, as in 0.1.0's game. The
+  configuration file defines named models under `[models.<name>]` and
+  named strategies under `[strategies.<name>]`, each a policy, `random` or
+  `prompted`, with its parameters, a prompted one its `system` template and
+  its `model`; and allots each role's seats among the strategies by a
+  `[roles.<role>.strategies]` table, with the role's own `strategy`
+  filling the seats it leaves; by a role's `strategy`; or by the file's
+  top-level `strategy`, otherwise `random`. Roles and strategies are dealt
+  together at random. Only the models in play are set up, and a game may
+  play several, each with its own tool choice and context window. The `[model]`, `[prompt]` and `[personas]`
+  tables, each role's `system` template and the `persona` variable are
+  gone, and so are the command line's `--model-base-url`, `--model-id` and
+  `--context-window`: a model is changed in its `[models.<name>]` table,
+  where its context window may be given too. The log's `Start` carries
+  every player's strategy and no longer a variation, `Configuration` is
+  logged in every game and records the strategies, the allotments and each
+  model in play, and the narration tells each player's strategy with its
+  role and each model's context window by name. The examples are
+  `examples/werewolf/random.toml` and `examples/werewolf/prompted.toml`.
 
 [Unreleased]: https://github.com/wpm/FreeAgent/compare/main...HEAD

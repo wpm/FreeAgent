@@ -7,6 +7,7 @@ use crate::werewolf::report::seat_order;
 use std::cmp::Ordering;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 /// A listener on a port of the OS's choosing, and the root of the API it
@@ -147,6 +148,18 @@ pub fn unreachable() -> String {
 /// waits after that. Anything else asked of it is not found.
 pub fn playing(ids: &[&str]) -> String {
     playing_only(ids, ids)
+}
+
+/// A provider that plays as [`playing`] does and keeps every completion
+/// request it is sent, as JSON, in order, for a test to read.
+pub fn recording(ids: &[&str]) -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let kept = Arc::clone(&requests);
+    let base_url = serving_and(listing(ids, None), move |request| {
+        kept.lock().unwrap().push(request.clone());
+        played(request)
+    });
+    (base_url, requests)
 }
 
 /// A provider that serves `ids` but plays only `selecting` of them, kept

@@ -1,5 +1,5 @@
-//! What every variant of Werewolf shares: the rules and the types they are
-//! written in.
+//! Werewolf: the rules, the types they are written in, the one kind of
+//! actor every game holds, and the function that builds every game.
 //!
 //! A game is an episode of [free agents](free_agent): the rules in one
 //! actor, the environment, and a player in each of the others. The
@@ -22,23 +22,30 @@
 //! receives, each night's hunt, and the result; every player logs what it
 //! receives and the selections and utterances it sends.
 //!
-//! Each variant's module holds what is particular to it: its environment,
-//! its players, the actor enum its episode holds, and the function that
-//! builds its episode.
+//! The environment is [`announced`]'s, and each of an episode's players
+//! follows the policy of the strategy it is dealt with its role: a
+//! [`random`] player selects at random, and a [`prompted`] player asks a
+//! language model. The [`config`] says which strategies are dealt, and how
+//! each is played. An episode holds one kind of actor, [`Actor`], which is
+//! the environment or a player of either policy, and [`game`] builds every
+//! episode, with each seat's player built for it.
 
 pub mod announced;
-pub mod llm;
+pub mod config;
+pub mod prompted;
+pub mod random;
 pub mod report;
-pub mod uniform_random;
 
+use async_trait::async_trait;
 use clap::Args;
 use free_agent::{ActorId, ActorInit, Behavior, Builder, Context, Episode, Logger, ThinkBuilder};
-use rand::seq::{IndexedRandom, SliceRandom};
+use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::num::NonZero;
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 /// A player is an actor, named as the episode names it.
 pub type PlayerId = ActorId;
@@ -46,35 +53,36 @@ pub type PlayerId = ActorId;
 /// The environment's name in the episode.
 pub const ENVIRONMENT: &str = "environment";
 
-/// An episode of a game: `environment`, which runs it, and a player for
-/// each of `players` built by `player`. Everyone holds `logger`. A player
-/// may send to the environment alone, stops nobody, and does not think.
-pub fn episode<A>(
-    environment: ActorInit<A>,
-    players: impl IntoIterator<Item = PlayerId>,
-    mut player: impl FnMut(&PlayerId) -> Builder<A>,
-    logger: Logger<Entry>,
-) -> Episode<A>
-where
-    A: Behavior<Message = Message, Log = Entry>,
-{
-    thinking_episode(environment, players, |id| (player(id), None), logger)
+/// How a seat is built: its player's behavior, and its think loop if it
+/// has one.
+pub type Seat = (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>);
+
+/// What a seat is dealt: a role, and the strategy its player plays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dealt {
+    /// The role.
+    pub role: Role,
+    /// The name of the strategy.
+    pub strategy: String,
 }
 
-/// The episode of [`episode`], whose players may think: `player` builds
-/// each player's behavior and its think loop, if it has one. Everyone
-/// holds `logger`. A player may send to the environment and to every other
-/// player, and stops nobody.
-pub fn thinking_episode<A>(
-    environment: ActorInit<A>,
-    players: impl IntoIterator<Item = PlayerId>,
-    mut player: impl FnMut(&PlayerId) -> (Builder<A>, Option<ThinkBuilder<Message, Entry>>),
+/// An episode of a game of `deal` under `rules`: the announcing
+/// environment, which may reach and stop every player, logs
+/// `configuration` right after the deal, and sends the winning team on
+/// `winner` when the game ends; and in each seat the player `player`
+/// builds for it. Everyone holds `logger`. A player may send to the
+/// environment and to every other player, and stops nobody.
+pub fn game(
+    deal: HashMap<PlayerId, Dealt>,
+    rules: Rules,
+    configuration: config::Configuration,
+    winner: oneshot::Sender<Team>,
+    mut player: impl FnMut(&PlayerId) -> Seat,
     logger: Logger<Entry>,
-) -> Episode<A>
-where
-    A: Behavior<Message = Message, Log = Entry>,
-{
-    let players: Vec<PlayerId> = players.into_iter().collect();
+) -> Episode<Actor> {
+    let players: Vec<PlayerId> = deal.keys().cloned().collect();
+    let configuration = Entry::Configuration(Box::new(configuration));
+    let environment = announced::init(deal, rules, configuration, winner, Actor::Environment);
     let mut init = HashMap::from([(ENVIRONMENT.to_string(), environment)]);
     for id in &players {
         let (behavior, think) = player(id);
@@ -90,6 +98,57 @@ where
         );
     }
     Episode::new(init, logger)
+}
+
+/// What an actor in a game of Werewolf does: run it, or play in it by
+/// one of the policies. An episode holds one kind of actor, so every side
+/// meets here and each method goes to whichever side this is.
+pub enum Actor {
+    /// The side that holds the game.
+    Environment(announced::Environment),
+    /// A player who selects at random.
+    Random(random::Player),
+    /// A player whose decisions a language model makes.
+    Prompted(prompted::Player),
+    /// A player who says whatever its script says.
+    #[cfg(test)]
+    Puppet(tests::Puppet),
+}
+
+#[async_trait]
+impl Behavior for Actor {
+    type Message = Message;
+    type Log = Entry;
+
+    fn context(&self) -> &Context<Message, Entry> {
+        match self {
+            Actor::Environment(environment) => environment.context(),
+            Actor::Random(player) => player.context(),
+            Actor::Prompted(player) => player.context(),
+            #[cfg(test)]
+            Actor::Puppet(puppet) => puppet.context(),
+        }
+    }
+
+    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.receive(message).await,
+            Actor::Random(player) => player.receive(message).await,
+            Actor::Prompted(player) => player.receive(message).await,
+            #[cfg(test)]
+            Actor::Puppet(puppet) => puppet.receive(message).await,
+        }
+    }
+
+    async fn start(&mut self) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.start().await,
+            Actor::Random(player) => player.start().await,
+            Actor::Prompted(player) => player.start().await,
+            #[cfg(test)]
+            Actor::Puppet(puppet) => puppet.start().await,
+        }
+    }
 }
 
 /// What the awake players chose in a phase: each player's choice of another.
@@ -155,6 +214,16 @@ impl fmt::Display for Role {
 }
 
 impl Role {
+    /// The role's plural: `werewolves`, `villagers`, `doctors`, `seers`.
+    pub fn plural(self) -> &'static str {
+        match self {
+            Role::Werewolf => "werewolves",
+            Role::Villager => "villagers",
+            Role::Doctor => "doctors",
+            Role::Seer => "seers",
+        }
+    }
+
     /// Which side this role wins with.
     pub fn team(self) -> Team {
         match self {
@@ -164,10 +233,10 @@ impl Role {
     }
 }
 
-/// How many of each role sit at the table, for a variant to flatten into its
+/// How many of each role sit at the table, for a game to flatten into its
 /// command line arguments. A count left unset has no `clap` default, so
-/// that a variant can tell it apart from a count that was given, and fill
-/// it in from [`Table::default`] or from somewhere else.
+/// that the game can tell it apart from a count that was given, and fill
+/// it in from the configuration file or [`Table::default`].
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 pub struct RoleCounts {
     /// How many werewolves.
@@ -184,16 +253,33 @@ pub struct RoleCounts {
     pub seers: Option<usize>,
 }
 
+impl RoleCounts {
+    /// How many of `role` were given, if any.
+    pub fn get(&self, role: Role) -> Option<usize> {
+        match role {
+            Role::Werewolf => self.werewolves,
+            Role::Villager => self.villagers,
+            Role::Doctor => self.doctors,
+            Role::Seer => self.seers,
+        }
+    }
+
+    /// The flag that gives how many of `role`, such as `--werewolves`.
+    pub fn flag(role: Role) -> String {
+        format!("--{}", role.plural())
+    }
+}
+
 /// The help for a count of `what`, naming the `default` the code fills in
 /// when the count is left unset.
 fn how_many(what: &str, default: usize) -> String {
     format!("How many {what} [default: {default}]")
 }
 
-/// How long each phase waits for the players, for a variant to flatten into
+/// How long each phase waits for the players, for a game to flatten into
 /// its command line arguments. A limit left unset has no `clap` default, so
-/// that a variant can tell it apart from a limit that was given, and fill it
-/// in from [`Rules::default`] or from somewhere else.
+/// that the game can tell it apart from a limit that was given, and fill it
+/// in from the configuration file or [`Rules::default`].
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 pub struct PhaseLimits {
     /// How long the night waits for a player.
@@ -211,30 +297,6 @@ fn how_long(phase: &str, default: Duration) -> String {
         "How long the {phase} waits for a player [default: {}]",
         humantime::format_duration(default)
     )
-}
-
-impl PhaseLimits {
-    /// `rules`, with each limit given here in place of its own.
-    pub fn or(&self, rules: Rules) -> Rules {
-        Rules {
-            night_limit: self.night_limit.unwrap_or(rules.night_limit),
-            day_limit: self.day_limit.unwrap_or(rules.day_limit),
-            ..rules
-        }
-    }
-}
-
-impl RoleCounts {
-    /// The table these counts seat, with any count left unset taken from
-    /// `default`.
-    pub fn or(&self, default: Table) -> Table {
-        Table {
-            werewolves: self.werewolves.unwrap_or(default.werewolves),
-            villagers: self.villagers.unwrap_or(default.villagers),
-            doctors: self.doctors.unwrap_or(default.doctors),
-            seers: self.seers.unwrap_or(default.seers),
-        }
-    }
 }
 
 /// How many of each role sit at the table.
@@ -279,26 +341,15 @@ impl Table {
         let players: usize = self.counts().iter().map(|(_, count)| count).sum();
         (1..=players).map(|seat| format!("player{seat}"))
     }
-
-    /// Deal the roles at random to the seats.
-    pub fn deal(&self) -> HashMap<PlayerId, Role> {
-        let mut roles = Vec::new();
-        for (role, count) in self.counts() {
-            roles.extend(std::iter::repeat_n(role, count));
-        }
-        roles.shuffle(&mut rand::rng());
-        self.seats().zip(roles).collect()
-    }
 }
 
 impl fmt::Display for Table {
     /// The counts in the order the roles are dealt, each in its number:
     /// `2 werewolves, 3 villagers, 1 doctor, 1 seer`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let counted = self.counts().map(|(role, count)| match (count, role) {
-            (1, _) => format!("1 {role}"),
-            (_, Role::Werewolf) => format!("{count} werewolves"),
-            _ => format!("{count} {role}s"),
+        let counted = self.counts().map(|(role, count)| match count {
+            1 => format!("1 {role}"),
+            _ => format!("{count} {}", role.plural()),
         });
         f.write_str(&counted.join(", "))
     }
@@ -500,8 +551,6 @@ impl State {
 /// How a game is played: the vote each phase is decided by, how long each
 /// phase waits for the players, and whether the day's vote is ratified.
 pub struct Rules {
-    /// The name of the variation played, for the log.
-    pub variation: String,
     /// How the werewolves' choices become a victim.
     pub night_vote: Box<dyn Vote>,
     /// How the village's choices become a victim.
@@ -513,21 +562,36 @@ pub struct Rules {
     /// ignored.
     pub day_limit: Duration,
     /// How long the day's votes must stand for the player they select to
-    /// be voted out. With a ratify limit, a player may change its vote
-    /// while the day is open, its latest vote counts, and the day ends one
-    /// ratify limit after the votes stop moving, or at the day limit with
-    /// nobody voted out. Without one, the first vote counts and the day
-    /// ends when everyone has voted or at its limit.
-    pub ratify_limit: Option<Duration>,
+    /// be voted out. Above zero, a player may change its vote while the
+    /// day is open, its latest vote counts, and the day ends one ratify
+    /// limit after the votes stop moving, or at the day limit with nobody
+    /// voted out. At zero, the day is not ratified: the first vote counts
+    /// and the day ends when everyone has voted or at its limit.
+    pub ratify_limit: Duration,
 }
 
 impl Rules {
-    /// The entry that opens a game of `roles` under these rules: the
-    /// variation, the deal, and the limits.
-    pub fn start(&self, roles: HashMap<PlayerId, Role>) -> Entry {
+    /// Whether the day's vote is ratified, which it is when the ratify
+    /// limit is above zero.
+    pub fn ratified(&self) -> bool {
+        ratified(self.ratify_limit)
+    }
+
+    /// The entry that opens a game of `deal` under these rules: every
+    /// player's role and strategy, and the limits.
+    pub fn start(&self, deal: &HashMap<PlayerId, Dealt>) -> Entry {
+        let (roles, strategies) = deal
+            .iter()
+            .map(|(id, dealt)| {
+                (
+                    (id.clone(), dealt.role),
+                    (id.clone(), dealt.strategy.clone()),
+                )
+            })
+            .unzip();
         Entry::Start {
-            variation: self.variation.clone(),
             roles,
+            strategies,
             night_limit: self.night_limit,
             day_limit: self.day_limit,
             ratify_limit: self.ratify_limit,
@@ -535,18 +599,22 @@ impl Rules {
     }
 }
 
+/// Whether a day with `ratify_limit` is ratified: whether the limit is
+/// above zero.
+pub fn ratified(ratify_limit: Duration) -> bool {
+    !ratify_limit.is_zero()
+}
+
 impl Default for Rules {
-    /// Uniform Random: the werewolves break ties at random, the village
-    /// does not, each phase waits a minute, and the day's vote is not
-    /// ratified.
+    /// The werewolves break ties at random, the village does not, each
+    /// phase waits a minute, and the day's vote is not ratified.
     fn default() -> Self {
         Self {
-            variation: "Uniform Random".to_string(),
             night_vote: Box::new(RandomTieBreak),
             day_vote: Box::new(NoTieBreak),
             night_limit: Duration::from_secs(60),
             day_limit: Duration::from_secs(60),
-            ratify_limit: None,
+            ratify_limit: Duration::ZERO,
         }
     }
 }
@@ -578,8 +646,8 @@ pub enum Message {
         limit: Duration,
     },
     /// A player's selection for the phase numbered `seq`. By night it goes
-    /// to the environment alone; by day, when the vote is ratified, to every
-    /// other living player as well.
+    /// to the environment alone; by day to every other living player as
+    /// well, since the votes are public.
     Select {
         /// The number of the phase.
         seq: u64,
@@ -800,33 +868,28 @@ pub fn observe(context: &Context<Message, Entry>, from: ActorId, n: u64, seq: u6
 /// entries reach the log or on their times.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Entry {
-    /// The game begins: who plays what, under which variation, how long
+    /// The game begins: who plays what, with which strategy, how long
     /// each phase waits for the players, and how long a day's votes must
-    /// stand, if they are ratified. The limits are written as `humantime`
-    /// writes them, such as `"60s"`.
+    /// stand, zero when they are not ratified. The limits are written as
+    /// `humantime` writes them, such as `"60s"`.
     Start {
-        /// The name of the variation played, such as "Uniform Random".
-        variation: String,
         /// Every player's role.
         roles: HashMap<PlayerId, Role>,
+        /// The name of every player's strategy.
+        strategies: HashMap<PlayerId, String>,
         /// How long a night waits for the players.
         #[serde(with = "humantime_serde")]
         night_limit: Duration,
         /// How long a day waits for the players.
         #[serde(with = "humantime_serde")]
         day_limit: Duration,
-        /// How long a day's votes must stand to be ratified, if they are.
-        /// Left out when they are not.
-        #[serde(
-            default,
-            with = "humantime_serde",
-            skip_serializing_if = "Option::is_none"
-        )]
-        ratify_limit: Option<Duration>,
+        /// How long a day's votes must stand to be ratified, `"0s"` when
+        /// they are not.
+        #[serde(with = "humantime_serde")]
+        ratify_limit: Duration,
     },
-    /// The configuration a model-played game ran under, logged right after
-    /// the deal.
-    Configuration(Box<llm::Configuration>),
+    /// The configuration the game ran under, logged right after the deal.
+    Configuration(Box<config::Configuration>),
     /// `from` sent `message`, which it numbered `n`, to everyone in `to`.
     /// Logged by the sender.
     Action {
@@ -840,7 +903,7 @@ pub enum Entry {
         message: Message,
         /// How many history entries the model was shown when it made the
         /// call that produced the message, and `None` for a message no
-        /// model made: the environment's, or a uniform-random player's.
+        /// model made: the environment's, or a random player's.
         seen: Option<usize>,
         /// How many lines of talk the call that produced the message left
         /// out to fit the context window, `None` when it left out none.
@@ -1033,52 +1096,15 @@ pub fn awake(me: &PlayerId, view: &View) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::llm::Memory;
+pub(crate) mod tests {
+    use super::config::{Configuration, RANDOM, Strategy};
+    use super::prompted::Memory;
     use super::*;
-    use free_agent::Event;
-    use tokio::sync::mpsc::UnboundedReceiver;
-    use tokio::sync::oneshot;
+    use free_agent::{Event, Think};
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
     use tokio::time::Instant;
-
-    #[test]
-    fn a_limit_given_replaces_the_rules_own_and_one_left_unset_keeps_it() {
-        let limits = PhaseLimits {
-            night_limit: Some(Duration::from_secs(5)),
-            day_limit: None,
-        };
-        let rules = limits.or(Rules::default());
-        assert_eq!(rules.night_limit, Duration::from_secs(5));
-        assert_eq!(rules.day_limit, Rules::default().day_limit);
-        assert_eq!(rules.variation, "Uniform Random");
-    }
-
-    #[test]
-    fn unset_counts_are_filled_from_the_defaults() {
-        let roles = RoleCounts {
-            werewolves: Some(1),
-            ..RoleCounts::default()
-        };
-        assert_eq!(
-            roles.or(Table::default()),
-            Table {
-                werewolves: 1,
-                ..Table::default()
-            }
-        );
-        assert_eq!(RoleCounts::default().or(Table::default()), Table::default());
-    }
-
-    #[test]
-    fn the_deal_seats_every_role_as_many_times_as_asked() {
-        let roles = Table::default().deal();
-        let count = |role| roles.values().filter(|r| **r == role).count();
-        assert_eq!(roles.len(), 7);
-        assert_eq!(count(Role::Werewolf), 2);
-        assert_eq!(count(Role::Villager), 3);
-        assert_eq!(count(Role::Doctor), 1);
-        assert_eq!(count(Role::Seer), 1);
-    }
 
     #[test]
     fn the_seats_are_numbered_from_one_up_to_the_number_of_players() {
@@ -1093,36 +1119,24 @@ mod tests {
     }
 
     #[test]
-    fn the_deal_names_players_without_giving_away_their_roles() {
-        let table = Table {
-            werewolves: 1,
-            villagers: 2,
-            doctors: 0,
-            seers: 0,
+    fn role_counts_give_each_roles_count_under_the_flag_clap_derives() {
+        let counts = RoleCounts {
+            werewolves: Some(1),
+            villagers: None,
+            doctors: Some(2),
+            seers: None,
         };
-        let mut names: Vec<_> = table.deal().into_keys().collect();
-        names.sort();
-        assert_eq!(names, ["player1", "player2", "player3"]);
-    }
-
-    #[test]
-    fn the_deal_is_shuffled() {
-        let table = Table {
-            werewolves: 1,
-            villagers: 1,
-            doctors: 0,
-            seers: 0,
-        };
-        let wolves: HashSet<PlayerId> = (0..50)
-            .flat_map(|_| {
-                table
-                    .deal()
-                    .into_iter()
-                    .filter(|(_, role)| *role == Role::Werewolf)
-                    .map(|(name, _)| name)
-            })
+        let got = Table::default().counts().map(|(role, _)| counts.get(role));
+        assert_eq!(got, [Some(1), None, Some(2), None]);
+        let flags: Vec<String> = RoleCounts::augment_args(clap::Command::new("werewolf"))
+            .get_arguments()
+            .filter_map(|arg| arg.get_long().map(|long| format!("--{long}")))
             .collect();
-        assert_eq!(wolves.len(), 2, "{wolves:?}");
+        let named = Table::default()
+            .counts()
+            .map(|(role, _)| RoleCounts::flag(role));
+        assert_eq!(flags, named);
+        assert_eq!(named[0], "--werewolves");
     }
 
     #[test]
@@ -1144,34 +1158,44 @@ mod tests {
     }
 
     #[test]
+    fn a_day_is_ratified_when_its_ratify_limit_is_above_zero() {
+        assert!(!ratified(Duration::ZERO));
+        assert!(ratified(Duration::from_millis(1)));
+        assert!(!Rules::default().ratified());
+        let rules = Rules {
+            ratify_limit: Duration::from_secs(20),
+            ..Rules::default()
+        };
+        assert!(rules.ratified());
+    }
+
+    #[test]
     fn the_start_carries_the_limits_as_humantime_writes_them_and_survives_a_trip_through_json() {
         let rules = Rules {
             night_limit: Duration::from_secs(90),
             day_limit: Duration::from_secs(40),
             ..Rules::default()
         };
-        let start = rules.start(village().roles);
-        assert!(
-            matches!(&start, Entry::Start { variation, roles, .. }
-                if variation == "Uniform Random" && roles.len() == 4),
-            "{start:?}"
-        );
+        let start = rules.start(&dealt(&village().roles, "random"));
         let json = serde_json::to_value(&start).unwrap();
+        // Each player's strategy beside its role.
+        assert_eq!(json["Start"]["roles"]["wolf1"], "Werewolf");
+        assert_eq!(json["Start"]["strategies"]["wolf1"], "random");
         assert_eq!(json["Start"]["night_limit"], "1m 30s");
         assert_eq!(json["Start"]["day_limit"], "40s");
-        // Without a ratify limit, the start is written as it always was.
-        assert!(json["Start"].get("ratify_limit").is_none(), "{json}");
+        // By default the day is not ratified: its ratify limit is zero.
+        assert_eq!(json["Start"]["ratify_limit"], "0s");
         let back: Entry = serde_json::from_value(json).unwrap();
         assert_eq!(back, start);
     }
 
     #[test]
-    fn the_start_carries_the_ratify_limit_when_there_is_one() {
+    fn the_start_carries_a_ratify_limit_above_zero() {
         let rules = Rules {
-            ratify_limit: Some(Duration::from_secs(20)),
+            ratify_limit: Duration::from_secs(20),
             ..Rules::default()
         };
-        let start = rules.start(village().roles);
+        let start = rules.start(&dealt(&village().roles, "random"));
         let json = serde_json::to_value(&start).unwrap();
         assert_eq!(json["Start"]["ratify_limit"], "20s");
         let back: Entry = serde_json::from_value(json).unwrap();
@@ -1464,17 +1488,33 @@ mod tests {
         ]))
     }
 
-    /// Everything `logged` between the deal and the end of the game,
-    /// checking that the deal is of `roles` under `rules`, whose variation
-    /// and limits it carries, and that the end names `winner` and survivors
-    /// from among the players.
+    /// Everything `logged` between the deal, with the configuration after
+    /// it, and the end of the game, checking that the deal is of `roles`
+    /// under `rules`, whose limits it carries, and that the end names
+    /// `winner` and survivors from among the players.
     pub(super) fn between_the_deal_and_the_end<'a>(
         logged: &'a [Entry],
         rules: &Rules,
         roles: &HashMap<PlayerId, Role>,
         winner: Team,
     ) -> &'a [Entry] {
-        assert_eq!(logged.first(), Some(&rules.start(roles.clone())));
+        let first = logged.first();
+        assert!(
+            matches!(
+                first,
+                Some(Entry::Start { roles: dealt, night_limit, day_limit, ratify_limit, .. })
+                    if dealt == roles
+                        && *night_limit == rules.night_limit
+                        && *day_limit == rules.day_limit
+                        && *ratify_limit == rules.ratify_limit
+            ),
+            "{first:?}"
+        );
+        let second = logged.get(1);
+        assert!(
+            matches!(second, Some(Entry::Configuration(_))),
+            "{second:?}"
+        );
         let last = logged.last();
         assert!(
             matches!(
@@ -1486,7 +1526,45 @@ mod tests {
             ),
             "{last:?}"
         );
-        &logged[1..logged.len() - 1]
+        &logged[2..logged.len() - 1]
+    }
+
+    /// `roles`, each dealt with the strategy `strategy`.
+    pub(crate) fn dealt(
+        roles: &HashMap<PlayerId, Role>,
+        strategy: &str,
+    ) -> HashMap<PlayerId, Dealt> {
+        roles
+            .iter()
+            .map(|(id, role)| {
+                let dealt = Dealt {
+                    role: *role,
+                    strategy: strategy.to_string(),
+                };
+                (id.clone(), dealt)
+            })
+            .collect()
+    }
+
+    /// The configuration of a game of `roles` under `rules` with every
+    /// player random.
+    pub(crate) fn configured(roles: &HashMap<PlayerId, Role>, rules: &Rules) -> Configuration {
+        let count = |role| roles.values().filter(|r| **r == role).count();
+        let roles = [Role::Werewolf, Role::Villager, Role::Doctor, Role::Seer];
+        Configuration {
+            role_counts: roles.into_iter().map(|role| (role, count(role))).collect(),
+            night_limit: rules.night_limit,
+            day_limit: rules.day_limit,
+            ratify_limit: rules.ratify_limit,
+            strategies: BTreeMap::from([(RANDOM.to_string(), Strategy::Random(config::Random {}))]),
+            allotments: roles
+                .into_iter()
+                .map(|role| (role, BTreeMap::from([(RANDOM.to_string(), count(role))])))
+                .collect(),
+            models: BTreeMap::new(),
+            prompts: BTreeMap::new(),
+            text: BTreeMap::new(),
+        }
     }
 
     /// What a game reports: the winner, everything the environment
@@ -1508,6 +1586,187 @@ mod tests {
             logged.push(event.payload);
         }
         Ok((won.await?, logged, took))
+    }
+
+    /// What a puppet says to the environment on being announced a phase,
+    /// given its own name, the phase's number, and what it may see: each
+    /// message, and how long after the announcement it says it. A
+    /// selection carries the number the script gives it.
+    pub(super) type Script = Box<dyn Fn(&PlayerId, u64, &View) -> Vec<(Duration, Message)> + Send>;
+
+    /// `messages`, each said as soon as the phase is announced.
+    pub(super) fn at_once(messages: Vec<Message>) -> Vec<(Duration, Message)> {
+        messages
+            .into_iter()
+            .map(|message| (Duration::ZERO, message))
+            .collect()
+    }
+
+    /// The latest phase a puppet was announced: its number and what the
+    /// puppet saw of it.
+    type Announced = Arc<Mutex<Option<(u64, View)>>>;
+
+    /// A player who says whatever its script says, when the script says to,
+    /// for a game with a player who is late, stale, repeats itself, changes
+    /// its mind, or talks. Its script is consulted for each phase it is
+    /// awake in; announced a phase it sleeps through, it notes the phase
+    /// and says nothing. A message goes where the game's rules send it from
+    /// a player: an utterance, or a tentative decision the puppet makes as
+    /// if it were the environment, to every other player alive at the
+    /// latest announcement; a selection or retraction to the environment,
+    /// and by day to the other players too; anything else to the
+    /// environment. It logs each message it sends as its action and each
+    /// message it receives as its observation, in the latest phase
+    /// announced, and does nothing else with what it hears, whatever phase
+    /// it is tagged with. What it says later is said by its think loop, a
+    /// [`Cue`].
+    pub struct Puppet {
+        context: Context<Message, Entry>,
+        script: Script,
+        /// The latest phase announced, shared with the cue.
+        announced: Announced,
+    }
+
+    #[async_trait]
+    impl Behavior for Puppet {
+        type Message = Message;
+        type Log = Entry;
+
+        fn context(&self) -> &Context<Message, Entry> {
+            &self.context
+        }
+
+        async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
+            let Some(n) = message.number() else {
+                return Ok(());
+            };
+            let Message::Announce { seq, view, .. } = message else {
+                let seq = self
+                    .announced
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map_or(0, |(seq, _)| *seq);
+                observe(&self.context, message.sender(), n, seq);
+                return Ok(());
+            };
+            *self.announced.lock().unwrap() = Some((*seq, view.clone()));
+            observe(&self.context, ENVIRONMENT.to_string(), n, *seq);
+            if !awake(&self.context.id, view) {
+                return Ok(());
+            }
+            for (after, said) in (self.script)(&self.context.id, *seq, view) {
+                if after.is_zero() {
+                    say(&self.context, said, &self.announced)?;
+                } else {
+                    self.context.think_after(after, said)?;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// Send `message` from the puppet of `context`, which was announced
+    /// `announced` last, to whom the game's rules send it from a player.
+    fn say(
+        context: &Context<Message, Entry>,
+        message: Message,
+        announced: &Announced,
+    ) -> anyhow::Result<()> {
+        let announced = announced.lock().unwrap();
+        let (_, view) = announced
+            .as_ref()
+            .expect("a puppet speaks only once announced");
+        let me = &context.id;
+        let to = match (&message, &view.phase) {
+            (Message::Say { .. } | Message::Tentative { .. }, _) => {
+                to_the_players_but(me, &view.alive)
+            }
+            (Message::Select { .. } | Message::Retract { .. }, Phase::Day) => {
+                to_everyone_but(me, &view.alive)
+            }
+            _ => to_the_environment(),
+        };
+        act(context, message, to, None, None)
+    }
+
+    /// A puppet's think loop: says each message it is reminded of when the
+    /// time comes.
+    struct Cue {
+        context: Context<Message, Entry>,
+        announced: Announced,
+    }
+
+    #[async_trait]
+    impl Think for Cue {
+        type Message = Message;
+
+        async fn think(&mut self, message: &Message) -> anyhow::Result<()> {
+            say(&self.context, message.clone(), &self.announced)
+        }
+    }
+
+    impl Actor {
+        /// A puppet following `script`.
+        pub(super) fn puppet(script: Script) -> Seat {
+            let announced = Announced::default();
+            let shared = Arc::clone(&announced);
+            let behavior: Builder<Actor> = Box::new(move |context| {
+                Actor::Puppet(Puppet {
+                    context,
+                    script,
+                    announced,
+                })
+            });
+            let think: ThinkBuilder<Message, Entry> = Box::new(move |context| {
+                Box::new(Cue {
+                    context,
+                    announced: shared,
+                })
+            });
+            (behavior, Some(think))
+        }
+    }
+
+    /// A player who never selects.
+    pub(super) fn mute() -> Seat {
+        Actor::puppet(Box::new(|_, _, _| vec![]))
+    }
+
+    /// Run a game of `roles` under `rules`, each player choosing at random
+    /// except those in `puppets`, who follow their own scripts.
+    pub(super) async fn play(
+        roles: HashMap<PlayerId, Role>,
+        rules: Rules,
+        mut puppets: HashMap<&str, Seat>,
+    ) -> anyhow::Result<Played> {
+        let (winner, won) = oneshot::channel();
+        let (logger, log) = unbounded_channel();
+        let player = |id: &PlayerId| {
+            puppets
+                .remove(id.as_str())
+                .unwrap_or_else(random::Player::init)
+        };
+        let configuration = configured(&roles, &rules);
+        let episode = game(
+            dealt(&roles, RANDOM),
+            rules,
+            configuration,
+            winner,
+            player,
+            logger,
+        );
+        run(episode, won, log).await
+    }
+
+    /// Short limits, so a phase that waits them out is told apart from
+    /// one that does not.
+    pub(super) fn quick() -> Rules {
+        Rules {
+            night_limit: Duration::from_secs(10),
+            day_limit: Duration::from_secs(10),
+            ..Rules::default()
+        }
     }
 
     /// `payload`, an entry or a memory, as an event logged or remembered
