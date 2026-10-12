@@ -39,3 +39,5 @@ are not part of this repository's history.
 | [0005](0005-actors-talk-by-sending-messages-alone.md) | Actors talk by sending messages alone | Accepted |
 | [0006](0006-players-talk-by-day.md) | Players talk by day | Accepted |
 | [0007](0007-a-tool-call-is-required-where-the-model-allows-it.md) | A tool call is required where the model allows it | Accepted |
+| [0008](0008-werewolf-players-are-dealt-strategies.md) | Werewolf is one game whose players are dealt strategies | Accepted |
+| [0009](0009-only-a-change-of-decision-restarts-the-ratify-timer.md) | Only a change of decision restarts the ratify timer, and a vote may be retracted | Accepted |
