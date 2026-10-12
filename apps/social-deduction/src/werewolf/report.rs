@@ -43,42 +43,40 @@ enum Voice {
 /// role, except in reporting its death, and lists players in seat order.
 /// A blank line sets each phase off from what came before it, and another
 /// the winner from the last.
-/// Both learn who died from who is shown as alive next, so a phase's
-/// result is told as the next one begins, and the omniscient narrator
-/// holds the phase's deeds until then too, to tell them in seat order,
-/// then whom the werewolves chose and who protected them, which no player
-/// is shown, or how a day's vote ended; a player's narrator tells the
-/// player's own deed as it is done. In a day whose vote is ratified, votes
-/// may change or be retracted and their order matters, so the omniscient
-/// narrator tells each vote and retraction as the environment observes it,
-/// and both tell each tentative decision as it is announced, and a
-/// player's narrator tells the other players' votes and retractions as the
-/// player hears them, and as the day ends its tally: each player alive
-/// that day, in seat order, with its vote standing or that it did not
-/// vote, which takes the place of the day's votes, retractions and
-/// tentative decisions in the player's account. Both tell a retraction
-/// with no vote standing for it to take back as not counting. A phase
-/// begins at its
-/// first announcement and ends at the next phase's, or at the end of the
-/// game, and the omniscient narrator tells the time between, to the
-/// nearest second, after who died. The omniscient narrator tells a
-/// selection or retraction when the environment logs observing it, joined
-/// to its own action by the player and its number for the message: it is
-/// a deed of the phase it was for, unless the environment observed it in a
-/// later phase, and then it is told as too late to count, for the phase it
-/// was for. The
-/// other players' observations of a public vote add nothing. A player's
-/// failure to act is told by the omniscient narrator as it happens, with
-/// what went wrong, as a failure to select by night and to play by day,
-/// and for the phase it was for if that phase has ended; a player's
-/// narrator leaves it out, since the player is not told of it. Talk is
-/// told as it comes: the omniscient narrator tells each utterance from its
-/// speaker's action, in order with the day's votes, or as too late to say
-/// if its phase has ended, and a player's narrator tells each it made or
-/// heard. A message a player withheld because its phase had ended is told
-/// by the omniscient narrator as too late to say, or too late to count. A
-/// player's memory holds only the phases it lived through, in order, so
-/// nothing in it is late.
+/// Both learn who died from who is shown as alive next, so a phase's result
+/// is told as the next one begins, and the omniscient narrator holds the
+/// phase's deeds until then too, to tell them in seat order, then whom the
+/// werewolves chose and who protected them, which no player is shown, or
+/// how a day's vote ended; a player's narrator tells the player's own deed
+/// as it is done. In a day whose vote is ratified, votes may change or be
+/// retracted and their order matters, so the omniscient narrator tells each
+/// vote and retraction as the environment observes it, and both tell each
+/// tentative decision as it is announced, and a player's narrator tells the
+/// other players' votes and retractions as the player hears them, and as
+/// the day ends its tally: each player alive that day, in seat order, with
+/// its vote standing or that it did not vote, which takes the place of the
+/// day's votes, retractions and tentative decisions in the player's
+/// account. Both tell a retraction with no vote standing for it to take
+/// back as not counting. A phase begins at its first announcement and ends
+/// at the next phase's, or at the end of the game, and the omniscient
+/// narrator tells the time between, to the nearest second, after who died.
+/// The omniscient narrator tells a selection or retraction when the
+/// environment logs observing it, joined to its own action by the player
+/// and its number for the message: it is a deed of the phase it was for,
+/// unless the environment observed it in a later phase, and then it is told
+/// as too late to count, for the phase it was for. The other players'
+/// observations of a public vote add nothing. A player's failure to act is
+/// told by the omniscient narrator as it happens, with what went wrong, as
+/// a failure to select by night and to play by day, and for the phase it
+/// was for if that phase has ended; a player's narrator leaves it out,
+/// since the player is not told of it. Talk is told as it comes: the
+/// omniscient narrator tells each utterance from its speaker's action, in
+/// order with the day's votes, or as too late to say if its phase has
+/// ended, and a player's narrator tells each it made or heard. A message a
+/// player withheld because its phase had ended is told by the omniscient
+/// narrator as too late to say, or too late to count. A player's memory
+/// holds only the phases it lived through, in order, so nothing in it is
+/// late.
 #[derive(Debug, Default)]
 pub struct Narrator {
     /// Whose account this is.

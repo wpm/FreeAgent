@@ -115,9 +115,9 @@ impl Behavior for Player {
     /// observed in the latest phase announced. Announced a phase, and awake
     /// in it, select someone at once; asleep, or with nobody to select, say
     /// nothing. Anything else, another player's utterance, selection or
-    /// retraction or the environment's tentative decision, is observed and nothing more,
-    /// whatever phase it is tagged with: the player keeps nothing it could
-    /// put it in.
+    /// retraction or the environment's tentative decision, is observed and
+    /// nothing more, whatever phase it is tagged with: the player keeps
+    /// nothing it could put it in.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
         let Some(n) = message.number() else {
             return Ok(());
@@ -185,19 +185,20 @@ pub(crate) mod tests {
     /// puppet saw of it.
     type Announced = Arc<Mutex<Option<(u64, View)>>>;
 
-    /// A player who says whatever its script says, when the script says
-    /// to, for a game with a player who is late, stale, repeats itself,
-    /// changes its mind, or talks. Its script is consulted for each phase
-    /// it is awake in; announced a phase it sleeps through, it notes the
-    /// phase and says nothing. A message goes where the game's rules send
-    /// it from a player: an utterance, or a tentative decision the puppet
-    /// makes as if it were the environment, to every other player alive at
-    /// the latest announcement; a selection or retraction to the
-    /// environment, and by day to the other players too; anything else to the environment. It logs
-    /// each message it sends as its action and each message it receives as
-    /// its observation, in the latest phase announced, and does nothing
-    /// else with what it hears, whatever phase it is tagged with. What it
-    /// says later is said by its think loop, a [`Cue`].
+    /// A player who says whatever its script says, when the script says to,
+    /// for a game with a player who is late, stale, repeats itself, changes
+    /// its mind, or talks. Its script is consulted for each phase it is
+    /// awake in; announced a phase it sleeps through, it notes the phase
+    /// and says nothing. A message goes where the game's rules send it from
+    /// a player: an utterance, or a tentative decision the puppet makes as
+    /// if it were the environment, to every other player alive at the
+    /// latest announcement; a selection or retraction to the environment,
+    /// and by day to the other players too; anything else to the
+    /// environment. It logs each message it sends as its action and each
+    /// message it receives as its observation, in the latest phase
+    /// announced, and does nothing else with what it hears, whatever phase
+    /// it is tagged with. What it says later is said by its think loop, a
+    /// [`Cue`].
     pub struct Puppet {
         context: Context<Message, Entry>,
         script: Script,

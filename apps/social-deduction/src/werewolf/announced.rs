@@ -209,10 +209,9 @@ impl Game {
 
     /// Remove `from`'s vote in the phase numbered `seq` if the retraction
     /// counts: the phase is the one underway, a day with a ratify limit,
-    /// and `from` has a vote standing in it, which only a player awake in it
-    /// can. Returns what the
-    /// environment does about a retraction that counted, and nothing for
-    /// one that did not.
+    /// and `from` has a vote standing in it, which only a player awake in
+    /// it can. Returns what the environment does about a retraction that
+    /// counted, and nothing for one that did not.
     fn retract(&mut self, seq: u64, from: &PlayerId) -> Option<Counted> {
         if seq != self.seq {
             return None;
