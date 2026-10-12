@@ -74,12 +74,13 @@ fn assert_usage_error(args: &[&str]) {
 /// Play a game of `variant` with `args` after it, whose log must name
 /// `variation`, with the default table, and check that it is logged from
 /// the deal to the result under one episode id and told from the table to
-/// the winner. The events, for whatever else the variant logs, and what was
-/// printed.
+/// the winner, with `notes` told after the limits. The events, for whatever
+/// else the variant logs, and what was printed.
 fn assert_plays_the_default_table(
     variant: &str,
     variation: &str,
     args: &[&str],
+    notes: &[&str],
 ) -> (Vec<Event<Entry>>, String) {
     let (events, printed) = played(variant, args);
 
@@ -93,8 +94,8 @@ fn assert_plays_the_default_table(
         panic!("{events:?}");
     };
     // The account opens with the table, a player to a line, then the
-    // limits, and the tool choice when it is not the usual one, goes
-    // through the first night, set off by a blank line, tells
+    // limits and the notes, goes through the first night, set off by a
+    // blank line, tells
     // how long the last phase took, and closes with the winner, how long
     // the game took, and the survivors, a player to a line.
     let lines: Vec<&str> = printed.lines().collect();
@@ -113,13 +114,9 @@ fn assert_plays_the_default_table(
         lines[8].starts_with("A night waits ") && lines[8].contains(" and a day "),
         "{printed}"
     );
-    let blank = lines.iter().position(|line| line.is_empty()).unwrap();
-    for told in &lines[9..blank] {
-        assert!(
-            told.ends_with(" so its players are asked to call one."),
-            "{printed}"
-        );
-    }
+    let blank = 9 + notes.len();
+    assert_eq!(lines[9..blank], *notes, "{printed}");
+    assert_eq!(lines[blank], "", "{printed}");
     assert_eq!(lines[blank + 1], "Night 1.", "{printed}");
     let won = lines
         .iter()
@@ -145,7 +142,7 @@ fn assert_plays_the_default_table(
 
 #[test]
 fn the_log_runs_from_the_deal_to_the_result_under_one_episode_id() {
-    assert_plays_the_default_table("uniform-random", "Uniform Random", &[]);
+    assert_plays_the_default_table("uniform-random", "Uniform Random", &[], &[]);
 }
 
 #[test]
@@ -352,7 +349,7 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
         "--ratify-limit",
         "1s",
     ];
-    let (events, printed) = assert_plays_the_default_table("llm", "LLM", &args);
+    let (events, printed) = assert_plays_the_default_table("llm", "LLM", &args, &[]);
     let (_, roles) = start(&events);
     let Entry::Start { ratify_limit, .. } = &events[0].payload else {
         panic!("{events:?}");
@@ -364,7 +361,6 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
     assert_eq!(configuration.night_limit, Duration::from_secs(1));
     assert_eq!(configuration.ratify_limit, Duration::from_secs(1));
     assert_eq!(configuration.tool_choice, ToolChoice::Required);
-    assert!(!printed.contains("tool call"), "{printed}");
     // Everyone votes at once, so each day's votes stand after the ratify
     // limit and the selected player is voted out.
     let endings = endings(&events);
@@ -448,15 +444,12 @@ fn a_model_that_refuses_to_be_made_to_call_a_tool_plays_when_asked_to_call_one()
         "--ratify-limit",
         "1s",
     ];
-    let (events, printed) = assert_plays_the_default_table("llm", "LLM", &args);
-    assert_eq!(configuration(&events).tool_choice, ToolChoice::Auto);
-    assert!(
-        printed.contains(&format!(
-            "{EXAMPLE_MODEL} does not accept a required tool call, \
-             so its players are asked to call one."
-        )),
-        "{printed}"
+    let note = format!(
+        "{EXAMPLE_MODEL} does not accept a required tool call, \
+         so its players are asked to call one."
     );
+    let (events, _) = assert_plays_the_default_table("llm", "LLM", &args, &[&note]);
+    assert_eq!(configuration(&events).tool_choice, ToolChoice::Auto);
     // Every player played: none of them failed.
     assert!(
         !events

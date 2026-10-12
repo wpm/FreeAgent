@@ -188,6 +188,21 @@ pub fn refusing_required(ids: &[&str]) -> String {
     })
 }
 
+/// A provider that serves `ids`, refuses every completion request whose
+/// `tool_choice` is `"required"` as [`refusing_required`] does, and answers
+/// any other 429 Too Many Requests, as a provider out of patience does,
+/// kept for the rest of the process.
+pub fn refusing_required_then_busy(ids: &[&str]) -> String {
+    serving_and(ids, |request| {
+        if request["tool_choice"] == "required" {
+            let model = request["model"].as_str().unwrap_or_default();
+            response("400 Bad Request", &error(&required_refusal(model)))
+        } else {
+            response("429 Too Many Requests", &error("slow down"))
+        }
+    })
+}
+
 /// What a canned provider says when `model` is asked for a completion that
 /// requires a tool call, which it does not accept.
 pub fn required_refusal(model: &str) -> String {

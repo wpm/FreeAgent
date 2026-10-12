@@ -176,23 +176,26 @@ impl std::error::Error for Rejection {}
 /// own. A request that never reached the provider, or that it answered
 /// with any other status, says nothing about the model.
 pub(crate) fn concerns_the_model(error: &anyhow::Error) -> bool {
-    error.chain().all(|cause| {
-        cause.downcast_ref::<reqwest::Error>().is_none()
-            && cause
-                .downcast_ref::<Rejection>()
-                .is_none_or(|rejection| rejection.status == StatusCode::BAD_REQUEST)
-    })
+    let reached = error
+        .chain()
+        .all(|cause| cause.downcast_ref::<reqwest::Error>().is_none());
+    reached && rejected_with(error).is_none_or(|status| status == StatusCode::BAD_REQUEST)
 }
 
 /// Whether `error`, from a completion, is the provider refusing the
 /// request as bad, 400: refusing its shape, such as a tool choice the
 /// model does not accept, whatever the provider's words for it.
 pub(crate) fn refused(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause
-            .downcast_ref::<Rejection>()
-            .is_some_and(|rejection| rejection.status == StatusCode::BAD_REQUEST)
-    })
+    rejected_with(error) == Some(StatusCode::BAD_REQUEST)
+}
+
+/// The status the provider answered with, if `error` is the provider
+/// answering a request with anything but success.
+fn rejected_with(error: &anyhow::Error) -> Option<StatusCode> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<Rejection>())
+        .map(|rejection| rejection.status)
 }
 
 /// A status that is not success, in words: the status, what it is likely

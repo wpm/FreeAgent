@@ -8,10 +8,8 @@
 //! read for the tool calls it carries. Unknown fields in a response are
 //! ignored, so a provider's additions do not break parsing.
 
-use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
-use std::fmt;
 
 /// One request for a completion: the model asked, the messages it is
 /// shown, the tools it is offered, and whether it must call one of them.
@@ -21,7 +19,7 @@ use std::fmt;
 /// `"auto"`, which leaves the model free to answer in prose instead.
 /// Whether the model may call several at once is left to the provider's
 /// default, which allows it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Request {
     /// The model's id, exactly as the provider lists it.
     pub model: String,
@@ -61,26 +59,6 @@ pub enum ToolChoice {
     /// The model may call one of the tools offered, or answer in prose,
     /// for a model that refuses to be made to call one.
     Auto,
-}
-
-impl fmt::Display for ToolChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            ToolChoice::Required => "required",
-            ToolChoice::Auto => "auto",
-        })
-    }
-}
-
-impl Serialize for Request {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut request = serializer.serialize_struct("Request", 4)?;
-        request.serialize_field("model", &self.model)?;
-        request.serialize_field("messages", &self.messages)?;
-        request.serialize_field("tools", &self.tools)?;
-        request.serialize_field("tool_choice", &self.tool_choice)?;
-        request.end()
-    }
 }
 
 /// One message the model is shown.
@@ -334,7 +312,6 @@ mod tests {
                 serde_json::from_value::<ToolChoice>(json!(written)).unwrap(),
                 choice
             );
-            assert_eq!(choice.to_string(), written);
         }
     }
 

@@ -915,7 +915,7 @@ impl Player {
             &self.mind.model_id,
             self.mind.tool_choice,
             &self.mind.prompt,
-            &asked,
+            asked,
             tools,
         );
         Ok((request, seen))
@@ -1161,15 +1161,14 @@ fn request(
     model_id: &str,
     tool_choice: ToolChoice,
     prompt: &str,
-    asked: &str,
+    mut asked: String,
     tools: Vec<Tool>,
 ) -> Request {
+    asked.push(' ');
+    asked.push_str(ANSWER);
     Request::offering(
         model_id,
-        vec![
-            model::Message::system(prompt),
-            model::Message::user(format!("{asked} {ANSWER}")),
-        ],
+        vec![model::Message::system(prompt), model::Message::user(asked)],
         tools,
         tool_choice,
     )
@@ -1238,7 +1237,7 @@ pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Re
             model_id,
             tool_choice,
             PROBE_PROMPT,
-            "Select one of the candidates.",
+            "Select one of the candidates.".to_string(),
             night_tools(&candidates),
         );
         let response = model.complete(&night).await?;
@@ -1253,22 +1252,23 @@ pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Re
             model_id,
             tool_choice,
             PROBE_PROMPT,
-            &situation,
+            situation,
             day_tools(&candidates, PROBE_DAY),
         );
         let response = model.complete(&day).await?;
         asked(&response, &candidates, PROBE_DAY).map(drop)
     };
     let (tool_choice, night) = match by_night(ToolChoice::Required).await {
-        Err(required) if model::refused(&required) => match by_night(ToolChoice::Auto).await {
-            Err(auto) if model::concerns_the_model(&auto) => (
-                ToolChoice::Auto,
-                Err(anyhow!(
-                    "made to call a tool: {required:#}\nasked to call one: {auto:#}"
-                )),
-            ),
-            night => (ToolChoice::Auto, night),
-        },
+        Err(required) if model::refused(&required) => {
+            let night = by_night(ToolChoice::Auto).await.map_err(|auto| {
+                if model::concerns_the_model(&auto) {
+                    anyhow!("made to call a tool: {required:#}\nasked to call one: {auto:#}")
+                } else {
+                    auto
+                }
+            });
+            (ToolChoice::Auto, night)
+        }
         night => (ToolChoice::Required, night),
     };
     let failed = match night {
@@ -2284,10 +2284,7 @@ player2 = \"Cautious.\"
     /// every request ends with.
     fn asked(asked: &str) -> &str {
         let ending = asked.rsplit_once("\n\n").unwrap().1;
-        ending
-            .strip_suffix(ANSWER)
-            .and_then(|situation| situation.strip_suffix(' '))
-            .unwrap()
+        ending.strip_suffix(&format!(" {ANSWER}")).unwrap()
     }
 
     /// The configuration of a game of `roles` under [`MODEL`], whose every
@@ -3222,6 +3219,22 @@ player2 = \"Cautious.\"
             check_plays(&provider, MODEL_ID).await.unwrap(),
             Probed::Played(ToolChoice::Auto)
         ));
+    }
+
+    #[tokio::test]
+    async fn the_probe_tells_a_model_that_could_not_be_asked_after_refusing_to_be_made_to_call_a_tool()
+     {
+        let base_url = canned::refusing_required_then_busy(&[MODEL_ID]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        let error = check_plays(&provider, MODEL_ID).await.unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(
+            shown.starts_with(&format!(
+                "{MODEL_ID} could not be asked to play: POST {base_url}/chat/completions \
+                 was answered 429 Too Many Requests"
+            )),
+            "{shown}"
+        );
     }
 
     #[tokio::test]
