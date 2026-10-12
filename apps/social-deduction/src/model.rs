@@ -6,7 +6,8 @@
 //! a [`Provider`] serves, and a model-played game checks that its model is
 //! in the listing before it begins. Each decision is one [`Request`] to
 //! the provider, forcing a tool call, and the [`Response`] it is answered
-//! with. A player depends only on the [`Model`] trait, so a test gives it
+//! with. Every request asks for a reply of at most [`MAX_TOKENS`], and
+//! [`estimate`] counts what the rest of it takes. A player depends only on the [`Model`] trait, so a test gives it
 //! a [`fake::FakeModel`] and no test reaches a model.
 //!
 //! The API key is a [`SecretString`], exposed only where the
@@ -39,6 +40,23 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// The context window, in tokens, of a model nothing else gives one for:
 /// a size most models can run in.
 pub const CONTEXT_WINDOW: u64 = 4096;
+
+/// The most tokens a reply may take, which every request asks for. A
+/// reply cut short is not well formed.
+pub const MAX_TOKENS: u64 = 1024;
+
+/// How many tokens `text` takes, by estimate: one for every 3.5
+/// characters, rounded up. A provider offers no tokenizer, and an estimate
+/// over the mark is safer than one under it.
+pub fn estimate(text: &str) -> u64 {
+    tokens(text.chars().count())
+}
+
+/// How many tokens a text of `chars` characters takes, by the estimate
+/// [`estimate`] makes.
+pub fn tokens(chars: usize) -> u64 {
+    (chars as u64 * 2).div_ceil(7)
+}
 
 /// How much of what a provider said about a failure an error repeats.
 const SAID_AT_MOST: usize = 500;
@@ -482,6 +500,18 @@ mod tests {
 
     /// Long enough for a request to a listener in this process.
     const TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn a_text_is_estimated_at_a_token_for_every_three_and_a_half_characters_rounded_up() {
+        assert_eq!(estimate(""), 0);
+        assert_eq!(estimate("a"), 1);
+        assert_eq!(estimate("abc"), 1);
+        assert_eq!(estimate("abcd"), 2);
+        assert_eq!(estimate("abcdefg"), 2);
+        assert_eq!(estimate("abcdefgh"), 3);
+        // Characters, not bytes.
+        assert_eq!(estimate("ééééééé"), 2);
+    }
 
     #[test]
     fn the_known_providers_are_told_in_the_file_s_order() {
