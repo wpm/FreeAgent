@@ -9,7 +9,7 @@
 //! messages themselves, and its account reads them.
 
 use super::llm::Memory;
-use super::{Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Team, View};
+use super::{Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Team, View, awake};
 use free_agent::{ActorId, Event};
 use humantime::format_duration;
 use std::cmp::Ordering;
@@ -242,7 +242,8 @@ impl Narrator {
     }
 
     /// The lines a player's memory `event` adds to its account, often
-    /// none: an announcement it heard begins a phase; a selection it made,
+    /// none: an announcement it heard begins a phase, and one of a phase it
+    /// sleeps through says so; a selection it made,
     /// or heard another player make, is a deed, or too late to count if a
     /// later phase has been announced since; an utterance it made, or heard,
     /// is told as said, or as said during its phase if a later one has been
@@ -382,7 +383,8 @@ impl Narrator {
 
     /// A phase begins when a player is first shown it, at `time`. The
     /// phase before it ends then, with whoever is no longer alive, and a
-    /// blank line sets the new phase off from what came before it.
+    /// blank line sets the new phase off from what came before it. In a
+    /// player's account, a phase the player sleeps through says so.
     fn begin(&mut self, view: &View, time: SystemTime) -> Vec<String> {
         let phase = (view.round, view.phase.clone());
         if self.phase.as_ref().is_some_and(|told| told.phase == phase) {
@@ -396,6 +398,11 @@ impl Narrator {
         self.alive = view.alive.clone();
         lines.push(String::new());
         lines.push(format!("{}.", title(&phase)));
+        if let Voice::Player(me) = &self.voice
+            && !awake(me, view)
+        {
+            lines.push("You sleep.".to_string());
+        }
         self.phase = Some(Told { phase, began: time });
         lines
     }
@@ -1744,7 +1751,7 @@ mod tests {
     }
 
     #[test]
-    fn a_player_shown_no_role_is_named_alone() {
+    fn a_player_shown_no_role_is_named_alone_and_is_awake_by_day() {
         let mut narrator = Narrator::for_player(id("ann"));
         assert_eq!(
             narrator.recall(&heard(1, Phase::Day, &["wolf", "ann"], &[])),
@@ -1812,18 +1819,34 @@ mod tests {
     }
 
     #[test]
-    fn a_villager_sleeps_through_the_nights() {
+    fn a_villager_is_told_it_sleeps_through_each_night_and_who_died_as_the_night_begins() {
         let mut narrator = Narrator::for_player(id("ann"));
         let everyone = ["wolf", "seer", "doctor", "ann"];
         let known = [("ann", Role::Villager)];
         assert_eq!(
+            narrator.recall(&heard(1, Phase::Night, &everyone, &known)),
+            ["You are ann, a villager.", "", "Night 1.", "You sleep."]
+        );
+        assert_eq!(
             narrator.recall(&heard(1, Phase::Day, &everyone, &known)),
-            ["You are ann, a villager.", "", "Day 1."]
+            ["Nobody dies.", "", "Day 1."]
         );
         assert_eq!(
             narrator.recall(&chose("ann", 2, "wolf")),
             ["You vote against wolf."]
         );
+        assert_eq!(
+            narrator.recall(&heard(2, Phase::Night, &["seer", "doctor", "ann"], &known)),
+            ["wolf dies.", "", "Night 2.", "You sleep."]
+        );
+    }
+
+    #[test]
+    fn a_player_announced_phases_it_was_not_shown_between_is_told_who_died_in_the_past_tense() {
+        let mut narrator = Narrator::for_player(id("ann"));
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        let known = [("ann", Role::Villager)];
+        narrator.recall(&heard(1, Phase::Day, &everyone, &known));
         assert_eq!(
             narrator.recall(&heard(2, Phase::Day, &["seer", "doctor", "ann"], &known)),
             ["wolf died.", "", "Day 2."]
@@ -1831,6 +1854,28 @@ mod tests {
         assert_eq!(
             narrator.recall(&heard(3, Phase::Day, &["seer", "doctor", "ann"], &known)),
             ["Nobody died.", "", "Day 3."]
+        );
+    }
+
+    #[test]
+    fn a_player_awake_by_night_is_not_told_it_sleeps_and_the_omniscient_account_tells_no_sleep() {
+        let mut narrator = Narrator::for_player(id("seer"));
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        assert_eq!(
+            narrator.recall(&heard(1, Phase::Night, &everyone, &[("seer", Role::Seer)])),
+            ["You are seer, the seer.", "", "Night 1."]
+        );
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        assert_eq!(
+            narrator.narrate(&told(
+                "ann",
+                1,
+                Phase::Night,
+                &everyone,
+                &[("ann", Role::Villager)]
+            )),
+            ["", "Night 1."]
         );
     }
 
