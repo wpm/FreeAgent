@@ -99,9 +99,11 @@ the model made them. Wake-ups are debounced: a player has at most one model
 call in progress and one waiting, however fast the talk comes, and each
 call is made from everything the player had heard when it began. A model
 may answer from a context that is out of date by the time it answers; if
-the day has ended by then, the player sends nothing and logs what it
-withheld. Day talk that arrives by night is remembered and told in its own
-day, and does not wake the player.
+the phase has ended by then, by night or by day, the player sends nothing
+and logs what it withheld. A player ignores talk and votes from a phase it
+is not in, and a tentative decision too: it logs the receipt and neither
+remembers the message nor wakes for it, so day talk that arrives by night
+is forgotten.
 
 The votes are public and ratified. Each vote goes to every other living
 player as well as to the environment, a player's latest vote counts, and
