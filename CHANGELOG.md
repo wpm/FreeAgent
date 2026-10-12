@@ -68,12 +68,13 @@ workflow takes a version's notes from here.
   `Tentative` whenever the votes change whom they select. A day ends one
   ratify limit after a `Tentative` naming a player, unless another follows
   first, voting that player out, or at the day limit with nobody voted out.
-  A vote that leaves the decision as it was leaves the deadline as it was. The ratify limit is
-  `ratify_limit` under `[phases]` or `--ratify-limit`, twenty seconds by
-  default, and may not be longer than the day limit. The log records how
-  every day ended as `Voted`, the start entry and the configuration carry
-  the ratify limit, and the narration tells the votes as they come, each
-  tentative decision, and whether the votes stood or the day ran out.
+  A vote that leaves the decision as it was leaves the deadline as it was.
+  The ratify limit is `ratify_limit` under `[phases]` or `--ratify-limit`,
+  twenty seconds by default, and may not be longer than the day limit. The
+  log records how every day ended as `Voted`, the start entry and the
+  configuration carry the ratify limit, and the narration tells the votes
+  as they come, each tentative decision, and whether the votes stood or the
+  day ran out.
 - In `social-deduction werewolf llm` the players talk by day, with no
   turns. A player is woken by every message it hears by day, debounced so
   that it has at most one model call in progress and one waiting, and the
@@ -95,7 +96,8 @@ workflow takes a version's notes from here.
   announced with a `Tentative` and starts or stops the ratify timer. A
   retraction counts in a day with a ratify limit, from a player with a vote
   standing. The narration tells "player4 withdraws their vote and is
-  undecided again."
+  undecided again.", and a retraction with no vote standing as "player4
+  withdraws their vote, but the withdrawal does not count."
 
 ### Changed
 

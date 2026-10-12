@@ -864,10 +864,11 @@ pub enum Entry {
         /// in.
         seq: u64,
     },
-    /// `from` did not send `message`, which a model made from `seen` history
-    /// entries, having forgotten `forgot` lines of talk, because the phase it
-    /// was made in had ended before the model answered. It was never sent, so it has no number: its `n` is 0, and
-    /// the player does not remember it.
+    /// `from` did not send `message`, which a model made from `seen`
+    /// history entries, having forgotten `forgot` lines of talk, because
+    /// the phase it was made in had ended before the model answered. It was
+    /// never sent, so it has no number: its `n` is 0, and the player does
+    /// not remember it.
     Withheld {
         /// Who would have sent it.
         from: PlayerId,

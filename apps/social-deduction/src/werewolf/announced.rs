@@ -209,10 +209,9 @@ impl Game {
 
     /// Remove `from`'s vote in the phase numbered `seq` if the retraction
     /// counts: the phase is the one underway, a day with a ratify limit,
-    /// and `from` has a vote standing in it, which only a player awake in it
-    /// can. Returns what the
-    /// environment does about a retraction that counted, and nothing for
-    /// one that did not.
+    /// and `from` has a vote standing in it, which only a player awake in
+    /// it can. Returns what the environment does about a retraction that
+    /// counted, and nothing for one that did not.
     fn retract(&mut self, seq: u64, from: &PlayerId) -> Option<Counted> {
         if seq != self.seq {
             return None;
@@ -1112,32 +1111,17 @@ mod tests {
         play(roles, ratifying_quickly(), puppets).await.unwrap()
     }
 
-    /// A villager, announced the day alone, who votes against each of
-    /// `targets` in turn, the first `first` after the day is announced and
-    /// each of the rest `every` after the one before.
-    fn voter(first: Duration, targets: &'static [&'static str], every: Duration) -> Seat {
-        Actor::puppet(Box::new(move |me, seq, _| {
-            targets
-                .iter()
-                .enumerate()
-                .map(|(i, target)| {
-                    let after = first + every * u32::try_from(i).unwrap();
-                    (after, selection(seq, me, i as u64 + 1, target))
-                })
-                .collect()
-        }))
-    }
-
     /// A villager, announced the day alone, who casts each of `ballots` in
-    /// turn, `every` apart from the day's announcement on: a vote against
-    /// the player it names, or a retraction where it names nobody.
-    fn ballots(every: Duration, ballots: &'static [Option<&'static str>]) -> Seat {
+    /// turn, the first `first` after the day is announced and each of the
+    /// rest `every` after the one before: a vote against the player it
+    /// names, or a retraction where it names nobody.
+    fn voter(first: Duration, ballots: &'static [Option<&'static str>], every: Duration) -> Seat {
         Actor::puppet(Box::new(move |me, seq, _| {
             ballots
                 .iter()
                 .enumerate()
                 .map(|(i, ballot)| {
-                    let after = every * u32::try_from(i).unwrap();
+                    let after = first + every * u32::try_from(i).unwrap();
                     let n = i as u64 + 1;
                     let message = match ballot {
                         Some(target) => selection(seq, me, n, target),
@@ -1189,8 +1173,8 @@ mod tests {
         // Bob votes against the werewolf at once and cat piles on three
         // seconds later, which leaves the decision as it was, so the day
         // ends five seconds in, one ratify limit after bob's vote.
-        let bob = voter(Duration::ZERO, &["wolf"], Duration::ZERO);
-        let cat = voter(Duration::from_secs(3), &["wolf"], Duration::ZERO);
+        let bob = voter(Duration::ZERO, &[Some("wolf")], Duration::ZERO);
+        let cat = voter(Duration::from_secs(3), &[Some("wolf")], Duration::ZERO);
         let (winner, logged, took) = play_a_day(bob, cat).await;
         assert_eq!(winner, Team::Villagers);
         assert_eq!(took, Duration::from_secs(5));
@@ -1206,7 +1190,11 @@ mod tests {
         // Bob votes against cat at once, then changes to the werewolf three
         // seconds in: the day ends eight seconds in, and the werewolf is
         // out, not cat.
-        let bob = voter(Duration::ZERO, &["cat", "wolf"], Duration::from_secs(3));
+        let bob = voter(
+            Duration::ZERO,
+            &[Some("cat"), Some("wolf")],
+            Duration::from_secs(3),
+        );
         let (winner, logged, took) = play_a_day(bob, mute()).await;
         assert_eq!(winner, Team::Villagers);
         assert_eq!(took, Duration::from_secs(8));
@@ -1227,8 +1215,8 @@ mod tests {
         // first vote's timer fires five seconds in and is ignored, and the
         // day runs out at ten with nobody voted out. The werewolf then kills
         // bob and wins.
-        let bob = voter(Duration::ZERO, &["cat"], Duration::ZERO);
-        let cat = voter(Duration::from_secs(2), &["bob"], Duration::ZERO);
+        let bob = voter(Duration::ZERO, &[Some("cat")], Duration::ZERO);
+        let cat = voter(Duration::from_secs(2), &[Some("bob")], Duration::ZERO);
         let (winner, logged, took) = play_a_day(bob, cat).await;
         assert_eq!(winner, Team::Werewolves);
         assert_eq!(took, Duration::from_secs(10));
@@ -1247,7 +1235,7 @@ mod tests {
         // werewolf voted out.
         let bob = voter(
             Duration::ZERO,
-            &["wolf", "wolf", "wolf", "wolf"],
+            &[Some("wolf"), Some("wolf"), Some("wolf"), Some("wolf")],
             Duration::from_secs(3),
         );
         let (winner, logged, took) = play_a_day(bob, mute()).await;
@@ -1269,7 +1257,7 @@ mod tests {
         // ignored.
         let bob = voter(
             Duration::ZERO,
-            &["cat", "wolf", "cat", "wolf"],
+            &[Some("cat"), Some("wolf"), Some("cat"), Some("wolf")],
             Duration::from_secs(3),
         );
         let (winner, logged, took) = play_a_day(bob, mute()).await;
@@ -1293,7 +1281,11 @@ mod tests {
         // Bob votes against the werewolf at once and retracts two seconds
         // in, which stops the timer, so the day runs out at ten with nobody
         // voted out. The werewolf then kills bob or cat and wins.
-        let bob = ballots(Duration::from_secs(2), &[Some("wolf"), None]);
+        let bob = voter(
+            Duration::ZERO,
+            &[Some("wolf"), None],
+            Duration::from_secs(2),
+        );
         let (winner, logged, took) = play_a_day(bob, mute()).await;
         assert_eq!(winner, Team::Werewolves);
         assert_eq!(took, Duration::from_secs(10));
@@ -1316,7 +1308,11 @@ mod tests {
         // Bob votes against the werewolf at once, retracts two seconds in,
         // and votes against it again at four, so the day ends at nine with
         // the werewolf voted out.
-        let bob = ballots(Duration::from_secs(2), &[Some("wolf"), None, Some("wolf")]);
+        let bob = voter(
+            Duration::ZERO,
+            &[Some("wolf"), None, Some("wolf")],
+            Duration::from_secs(2),
+        );
         let (winner, logged, took) = play_a_day(bob, mute()).await;
         assert_eq!(winner, Team::Villagers);
         assert_eq!(took, Duration::from_secs(9));

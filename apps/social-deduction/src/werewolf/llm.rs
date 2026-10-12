@@ -41,21 +41,21 @@
 //! while the model works.
 //!
 //! By night a player is woken once, by its announcement, and has the model
-//! select one of its [candidates] with one `select` call, sent to
-//! the environment alone. By day it is woken by every message it receives:
-//! the announcement, another player's utterance, selection or retraction,
-//! and the environment's tentative decision. Wake-ups are debounced: the
+//! select one of its [candidates] with one `select` call, sent to the
+//! environment alone. By day it is woken by every message it receives: the
+//! announcement, another player's utterance, selection or retraction, and
+//! the environment's tentative decision. Wake-ups are debounced: the
 //! perceive loop remembers each message and wakes the think loop only when
 //! no wake-up is already waiting, and the think loop takes the history as
-//! it stands when it is woken, so a player has at most one call in
-//! progress and one waiting, however fast the talk comes. A day's request
-//! offers four tools, of which the model calls one and may call several:
-//! `speak`, which sends what it says to every other living player and not
-//! to the environment; `select`, which sends its vote to the environment
-//! and every other living player, so the votes are public; `retract`,
-//! which withdraws its vote, so that it is undecided again, and goes where
-//! a vote goes; and `wait`, which asks to be woken after some seconds
-//! unless something wakes the player sooner. A reminder is numbered so that only the latest set
+//! it stands when it is woken, so a player has at most one call in progress
+//! and one waiting, however fast the talk comes. A day's request offers
+//! four tools, of which the model calls one and may call several: `speak`,
+//! which sends what it says to every other living player and not to the
+//! environment; `select`, which sends its vote to the environment and every
+//! other living player, so the votes are public; `retract`, which withdraws
+//! its vote, so that it is undecided again, and goes where a vote goes; and
+//! `wait`, which asks to be woken after some seconds unless something wakes
+//! the player sooner. A reminder is numbered so that only the latest set
 //! counts, and one for a phase that has ended is ignored. The calls are
 //! carried out in the order the model made them. Before carrying out
 //! anything a response asks for, by night as well as by day, the player
@@ -67,16 +67,16 @@
 //! failure: the player logs it as [`Entry::Failed`], carries nothing out,
 //! and the game goes on. The player logs an [`Entry::Observation`] for each
 //! message it receives and an [`Entry::Action`] for each utterance,
-//! selection and retraction it sends, numbered together from 1, with how many memories the
-//! model was shown when it made the call that produced the message and how
-//! many lines of talk that call forgot. Before a game begins,
-//! [`check_plays`] asks the model once as a player would by night and once
-//! as by day, so a model that does not answer either request well fails at
-//! launch, in the provider's words. Every request makes the model call a
-//! tool, unless the probe finds the model refuses that, and then every
-//! request asks it to call one, and an answer in prose is a failure like
-//! any other. [`game`] builds the episode from the deal, the rules, the
-//! model, and the [`Configuration`] the log opens with, which
+//! selection and retraction it sends, numbered together from 1, with how
+//! many memories the model was shown when it made the call that produced
+//! the message and how many lines of talk that call forgot. Before a game
+//! begins, [`check_plays`] asks the model once as a player would by night
+//! and once as by day, so a model that does not answer either request well
+//! fails at launch, in the provider's words. Every request makes the model
+//! call a tool, unless the probe finds the model refuses that, and then
+//! every request asks it to call one, and an answer in prose is a failure
+//! like any other. [`game`] builds the episode from the deal, the rules,
+//! the model, and the [`Configuration`] the log opens with, which
 //! [`Settings::configuration`] records from the settings, the deal and the
 //! rendered prompts.
 
@@ -1309,8 +1309,9 @@ impl Think for Player {
 
 /// Where the game stands for `me` as `view` shows it, how long the phase
 /// lasts, and what is asked of it: by night, what its role does, and by
-/// day, that it may speak, vote, retract its vote, or wait. A player awake by night is a
-/// werewolf, the doctor or the seer, and is shown its own role.
+/// day, that it may speak, vote, retract its vote, or wait. A player awake
+/// by night is a werewolf, the doctor or the seer, and is shown its own
+/// role.
 fn situation(me: &PlayerId, view: &View, limit: Duration) -> anyhow::Result<String> {
     let (phase, asked) = match (&view.phase, view.roles.get(me)) {
         (Phase::Day, _) => ("day", DAY_ASKED),
@@ -1607,10 +1608,7 @@ impl Asked {
             }
             SELECT => self.sends.push(Sending::Select(target(call, candidates)?)),
             RETRACT => {
-                // A provider may send no arguments as no text at all.
-                if !call.arguments.trim().is_empty() {
-                    let Retraction {} = arguments(call)?;
-                }
+                let Retraction {} = arguments(call)?;
                 self.sends.push(Sending::Retract);
             }
             WAIT => {
@@ -1693,10 +1691,15 @@ fn asked(response: &Response, candidates: &[PlayerId], limit: Duration) -> anyho
     Ok(asked)
 }
 
-/// The arguments of `call`, parsed. Arguments that do not parse are an
+/// The arguments of `call`, parsed. A provider may send no arguments as no
+/// text at all, which parses as `{}`. Arguments that do not parse are an
 /// error naming the tool and showing them.
 fn arguments<T: DeserializeOwned>(call: &model::Call) -> anyhow::Result<T> {
-    serde_json::from_str(&call.arguments).with_context(|| {
+    let text = match call.arguments.trim() {
+        "" => "{}",
+        _ => &call.arguments,
+    };
+    serde_json::from_str(text).with_context(|| {
         format!(
             "the arguments of the model's {} call: {}",
             call.name, call.arguments
@@ -4185,14 +4188,6 @@ player2 = \"Cautious.\"
                 wait: None,
             }
         );
-        // A provider may send a call with no arguments as no text at all.
-        let mut bare = Asked::default();
-        let call = model::Call {
-            name: RETRACT.to_string(),
-            arguments: String::new(),
-        };
-        bare.take(&call, &candidates, limit).unwrap();
-        assert_eq!(bare.sends, [Sending::Retract]);
         let wrong: [(&str, Vec<Made>, &str); 11] = [
             ("no tool call", vec![], "the model made no tool call"),
             (
@@ -4256,6 +4251,19 @@ player2 = \"Cautious.\"
         // A response with no choice makes no tool call.
         let none = super::asked(&answered(json!({"choices": []})), &candidates, limit);
         assert!(none.is_err());
+    }
+
+    #[test]
+    fn arguments_sent_as_no_text_or_only_whitespace_are_no_arguments() {
+        let call = |arguments: &str| model::Call {
+            name: RETRACT.to_string(),
+            arguments: arguments.to_string(),
+        };
+        for bare in ["", " \n"] {
+            let Retraction {} = arguments(&call(bare)).unwrap();
+            assert!(arguments::<Speech>(&call(bare)).is_err());
+        }
+        let Retraction {} = arguments(&call("{}")).unwrap();
     }
 
     #[tokio::test(start_paused = true)]
