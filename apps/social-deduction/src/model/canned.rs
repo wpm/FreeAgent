@@ -3,6 +3,8 @@
 //! but tests uses this module.
 
 use super::fake::canned_calls;
+use crate::werewolf::report::seat_order;
+use std::cmp::Ordering;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread::JoinHandle;
@@ -246,9 +248,9 @@ fn answered(calls: anyhow::Result<Vec<(String, serde_json::Value)>>) -> String {
 }
 
 /// A provider that plays as [`playing`] does, kept for the rest of the
-/// process, except that the first seat alive retracts its vote by day: the
-/// first time it is asked in a day, it speaks, votes, and then calls
-/// `retract`.
+/// process, except that the first seat alive retracts its vote by day:
+/// whenever the canned player would speak and vote, it calls `retract`
+/// after.
 pub fn retracting(ids: &[&str]) -> String {
     serving_and(listing(ids, None), |request| {
         answered(canned_calls(request).map(|mut calls| {
@@ -260,14 +262,13 @@ pub fn retracting(ids: &[&str]) -> String {
     })
 }
 
-/// Whether `calls`, the canned player's answer to `request`, speak and
-/// then vote against a player whose name sorts after the voter's own, which
-/// the story the request tells opens with. The canned player votes against
-/// its first candidate, so this is the first seat alive, voting by day.
-/// Names are compared as strings, as the default table's `player1` to
-/// `player7` sort.
+/// Whether `calls`, the canned player's answer to `request`, are `speak`
+/// then `select`, from a voter who comes before every candidate `select`
+/// offers in seat order. The voter is named by the story the request tells,
+/// which opens with who the player is, and by day the candidates are every
+/// other player alive, so this is the first seat alive, voting by day.
 fn first_seat_voting(request: &serde_json::Value, calls: &[(String, serde_json::Value)]) -> bool {
-    let [_, (_, vote)] = calls else {
+    let [(speak, _), (select, _)] = calls else {
         return false;
     };
     let asked = request["messages"]
@@ -276,8 +277,21 @@ fn first_seat_voting(request: &serde_json::Value, calls: &[(String, serde_json::
         .unwrap_or_default();
     let me = asked
         .strip_prefix("You are ")
-        .and_then(|rest| rest.split([',', '.']).next());
-    matches!((me, vote["target"].as_str()), (Some(me), Some(target)) if me < target)
+        .and_then(|rest| rest.split([',', '.']).next())
+        .unwrap_or_default()
+        .to_string();
+    let mut candidates = request["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|tool| &tool["function"])
+        .filter(|function| function["name"] == "select")
+        .filter_map(|function| function["parameters"]["properties"]["target"]["enum"].as_array())
+        .flatten()
+        .filter_map(serde_json::Value::as_str);
+    (speak.as_str(), select.as_str()) == ("speak", "select")
+        && !me.is_empty()
+        && candidates.all(|candidate| seat_order(&me, &candidate.to_string()) == Ordering::Less)
 }
 
 /// A provider that serves `ids` but answers every completion request 401
@@ -453,6 +467,28 @@ mod tests {
                 ("select".to_string(), json!({"target": "player1"})),
             ])
         );
+        // Seats are in the order of their numbers, and the first is the one
+        // that sorts before every candidate, not only the one it votes
+        // against.
+        let seated = |me: &str, candidates: &[&str]| {
+            by_day(
+                candidates,
+                60,
+                &format!("You are {me}, a villager.\n\nDay 1."),
+            )
+        };
+        let tenth = provider
+            .complete(&seated("player2", &["player10", "player3"]))
+            .await
+            .unwrap();
+        assert_eq!(tenth.tool_calls().len(), 3);
+        for (me, candidates) in [
+            ("player10", &["player2", "player11"][..]),
+            ("player3", &["player4", "player1"]),
+        ] {
+            let other = provider.complete(&seated(me, candidates)).await.unwrap();
+            assert_eq!(other.tool_calls().len(), 2, "{me}");
+        }
         // So does the first seat once it has voted, and by night.
         let again = provider
             .complete(&by_day(
