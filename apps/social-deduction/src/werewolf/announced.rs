@@ -24,7 +24,8 @@
 //! are not logged.
 
 use super::{
-    Choices, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Rules, State, Team, act, observe,
+    Choices, Dealt, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Rules, State, Team, act,
+    observe,
 };
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Context, Think};
@@ -35,14 +36,13 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 /// Everything the episode needs to run the environment for a game of
-/// `roles`, each played with its player's strategy in `strategies`, under
-/// `rules`, as the actor `wrap` makes of it: it may send to and stop every
+/// `deal`, every player's role and strategy, under `rules`, as the actor
+/// `wrap` makes of it: it may send to and stop every
 /// player, holds the logger, and thinks. It logs the deal, then
 /// `configuration`, before it opens the first night. The winning team is
 /// sent on `winner` when the game ends.
 pub fn init<A>(
-    roles: HashMap<PlayerId, Role>,
-    strategies: HashMap<PlayerId, String>,
+    deal: HashMap<PlayerId, Dealt>,
     rules: Rules,
     configuration: Entry,
     winner: oneshot::Sender<Team>,
@@ -51,8 +51,12 @@ pub fn init<A>(
 where
     A: Behavior<Message = Message, Log = Entry>,
 {
-    let players: HashSet<PlayerId> = roles.keys().cloned().collect();
-    let opening = Box::new([rules.start(roles.clone(), strategies), configuration]);
+    let players: HashSet<PlayerId> = deal.keys().cloned().collect();
+    let opening = Box::new([rules.start(&deal), configuration]);
+    let roles = deal
+        .into_iter()
+        .map(|(id, dealt)| (id, dealt.role))
+        .collect();
     let game = Arc::new(Mutex::new(Game::new(roles, rules, winner)));
     let shared = Arc::clone(&game);
     ActorInit {

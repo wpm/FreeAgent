@@ -81,23 +81,8 @@ pub fn game(
     logger: Logger<Entry>,
 ) -> Episode<Actor> {
     let players: Vec<PlayerId> = deal.keys().cloned().collect();
-    let roles = deal
-        .iter()
-        .map(|(id, dealt)| (id.clone(), dealt.role))
-        .collect();
-    let strategies = deal
-        .into_iter()
-        .map(|(id, dealt)| (id, dealt.strategy))
-        .collect();
     let configuration = Entry::Configuration(Box::new(configuration));
-    let environment = announced::init(
-        roles,
-        strategies,
-        rules,
-        configuration,
-        winner,
-        Actor::Environment,
-    );
+    let environment = announced::init(deal, rules, configuration, winner, Actor::Environment);
     let mut init = HashMap::from([(ENVIRONMENT.to_string(), environment)]);
     for id in &players {
         let (behavior, think) = player(id);
@@ -560,13 +545,18 @@ pub struct Rules {
 }
 
 impl Rules {
-    /// The entry that opens a game of `roles` and `strategies` under these
-    /// rules: the deal and the limits.
-    pub fn start(
-        &self,
-        roles: HashMap<PlayerId, Role>,
-        strategies: HashMap<PlayerId, String>,
-    ) -> Entry {
+    /// The entry that opens a game of `deal` under these rules: every
+    /// player's role and strategy, and the limits.
+    pub fn start(&self, deal: &HashMap<PlayerId, Dealt>) -> Entry {
+        let (roles, strategies) = deal
+            .iter()
+            .map(|(id, dealt)| {
+                (
+                    (id.clone(), dealt.role),
+                    (id.clone(), dealt.strategy.clone()),
+                )
+            })
+            .unzip();
         Entry::Start {
             roles,
             strategies,
@@ -1096,12 +1086,7 @@ pub(crate) mod tests {
             day_limit: Duration::from_secs(40),
             ..Rules::default()
         };
-        let roles = village().roles;
-        let strategies = dealt(&roles, "random")
-            .into_iter()
-            .map(|(id, dealt)| (id, dealt.strategy))
-            .collect();
-        let start = rules.start(roles, strategies);
+        let start = rules.start(&dealt(&village().roles, "random"));
         let json = serde_json::to_value(&start).unwrap();
         // Each player's strategy beside its role.
         assert_eq!(json["Start"]["roles"]["wolf1"], "Werewolf");
@@ -1120,7 +1105,7 @@ pub(crate) mod tests {
             ratify_limit: Duration::from_secs(20),
             ..Rules::default()
         };
-        let start = rules.start(village().roles, HashMap::new());
+        let start = rules.start(&dealt(&village().roles, "random"));
         let json = serde_json::to_value(&start).unwrap();
         assert_eq!(json["Start"]["ratify_limit"], "20s");
         let back: Entry = serde_json::from_value(json).unwrap();

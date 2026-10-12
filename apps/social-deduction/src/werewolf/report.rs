@@ -865,7 +865,7 @@ mod tests {
     use crate::model::estimate;
     use crate::werewolf::config::{Configuration, ModelInPlay, RANDOM, Random, Strategy};
     use crate::werewolf::tests::{announcement, logged, received, selection, tentative, utterance};
-    use crate::werewolf::{ENVIRONMENT, Rules, to_the_environment};
+    use crate::werewolf::{Dealt, ENVIRONMENT, Rules, to_the_environment};
     use std::collections::BTreeMap;
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -1056,17 +1056,21 @@ mod tests {
             ratify_limit,
             ..Rules::default()
         };
-        let strategies = roles
-            .iter()
+        let deal = roles
+            .into_iter()
             .map(|(player, role)| {
                 let strategy = match role {
                     Role::Werewolf => "bold",
                     _ => "random",
                 };
-                (player.clone(), strategy.to_string())
+                let dealt = Dealt {
+                    role,
+                    strategy: strategy.to_string(),
+                };
+                (player, dealt)
             })
             .collect();
-        logged(rules.start(roles, strategies))
+        logged(rules.start(&deal))
     }
 
     /// The deal of `roles`, with a night waiting a minute and a day two.
