@@ -272,7 +272,8 @@ impl Config {
     /// Parse `file`, the text of a configuration file. A `[text]` block
     /// named like one of the template variables is an error, since the
     /// templates could not tell them apart, and so is a model's context
-    /// window of 0, a strategy named [`RANDOM`], and a prompted strategy
+    /// window of 0, a strategy named [`RANDOM`], a file's `strategy` that
+    /// is not defined, and a prompted strategy
     /// naming a model the file does not define, or naming none when the
     /// file does not define exactly one.
     pub fn parse(file: &str) -> anyhow::Result<Self> {
@@ -289,6 +290,12 @@ impl Config {
         }
         if config.strategies.contains_key(RANDOM) {
             bail!("[strategies.{RANDOM}] is built in, and may not be defined");
+        }
+        if let Some(name) = &config.strategy
+            && name != RANDOM
+            && !config.strategies.contains_key(name)
+        {
+            bail!("the file's strategy is {name}, which is not a strategy");
         }
         for (name, strategy) in &config.strategies {
             if let Strategy::Prompted(prompted) = strategy {
@@ -1165,13 +1172,22 @@ dice = 1
                 format!("the {role} is allotted wild, which is not a strategy")
             );
         }
-        let file = PLAIN.replace("strategy = \"plain\"", "strategy = \"wild\"");
-        assert_eq!(
-            unsettled(&file, Overrides::default()),
-            "the werewolf is allotted wild, which is not a strategy"
-        );
         // A strategy defined and never allotted is no error.
         settle(&three(), Overrides::default());
+    }
+
+    #[test]
+    fn the_file_s_strategy_must_be_defined_even_when_every_role_is_allotted_otherwise() {
+        let mut file = PLAIN.replace("strategy = \"plain\"", "strategy = \"cautous\"");
+        for role in ["werewolf", "villager", "doctor", "seer"] {
+            file.push_str(&format!("[roles.{role}]\nstrategy = \"plain\"\n"));
+        }
+        assert_eq!(
+            unsettled(&file, Overrides::default()),
+            "the file's strategy is cautous, which is not a strategy"
+        );
+        let file = PLAIN.replace("strategy = \"plain\"", &format!("strategy = \"{RANDOM}\""));
+        settle(&file, Overrides::default());
     }
 
     #[test]
