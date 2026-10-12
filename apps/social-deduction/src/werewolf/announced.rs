@@ -1,4 +1,4 @@
-//! The announcing environment, shared by every variant: it opens each
+//! The announcing environment, which runs every game: it opens each
 //! phase with a message to every living player, awake in it or not, takes
 //! the awake players' selections as they come, and ends the phase. A
 //! player announced a phase it sleeps through learns the phase has begun,
@@ -334,14 +334,15 @@ struct Opened {
 /// The actor that holds the game. Its perceive loop and its think loop are
 /// each an `Environment` with a context of its own over the one shared
 /// game: the perceive loop opens the first night, takes selections and
-/// announces tentative decisions, and the think loop ends phases. A
-/// variant's actor enum holds the perceive loop's, built by [`init`].
+/// announces tentative decisions, and the think loop ends phases.
+/// [`Actor::Environment`](super::Actor::Environment) holds the perceive
+/// loop's, built by [`init`].
 pub struct Environment {
     context: Context<Message, Entry>,
     game: Arc<Mutex<Game>>,
     /// The entry the perceive loop logs right after the deal, if any.
     /// Taken when logged. Boxed to keep the environment no larger than a
-    /// player in a variant's actor enum.
+    /// player in [`Actor`](super::Actor).
     configuration: Option<Box<Entry>>,
 }
 
@@ -503,9 +504,10 @@ impl Think for Environment {
 mod tests {
     use super::*;
     use crate::werewolf::candidates;
-    use crate::werewolf::tests::{self, one_wolf_against, selection, village};
-    use crate::werewolf::uniform_random::Actor;
-    use crate::werewolf::uniform_random::tests::{Script, Seat, at_once, mute, play, quick};
+    use crate::werewolf::tests::{
+        self, Script, at_once, mute, one_wolf_against, play, quick, selection, village,
+    };
+    use crate::werewolf::{Actor, Seat};
 
     fn id(name: &str) -> PlayerId {
         name.to_string()

@@ -136,5 +136,11 @@ workflow takes a version's notes from here.
   the vote that counted or that it did not vote, then the day's outcome.
   The current phase is told in full, every vote and tentative decision
   included. The omniscient account reads as before.
+- Every Werewolf episode holds one kind of actor, `werewolf::Actor`: the
+  environment, a random player or a prompted player. `werewolf::game`
+  builds every episode, with each seat's player built for it, so a table
+  may seat players of both policies. The player modules are named after
+  their policies: `werewolf::uniform_random` is `werewolf::random`, and
+  `werewolf::llm` is `werewolf::prompted`. Both subcommands play as before.
 
 [Unreleased]: https://github.com/wpm/FreeAgent/compare/main...HEAD

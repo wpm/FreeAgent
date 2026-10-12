@@ -4,14 +4,14 @@
 //! which belongs to no game.
 
 use clap::{Args, Parser, Subcommand};
-use free_agent::{Behavior, Episode, Logger};
+use free_agent::{Episode, Logger};
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
 };
-use social_deduction::werewolf::llm::{self, Config, Probed};
+use social_deduction::werewolf::prompted::{self, Config, Probed};
+use social_deduction::werewolf::random;
 use social_deduction::werewolf::report::Narrator;
-use social_deduction::werewolf::uniform_random;
-use social_deduction::werewolf::{Entry, PhaseLimits, RoleCounts, Rules, Table, Team};
+use social_deduction::werewolf::{self, Actor, Entry, PhaseLimits, RoleCounts, Rules, Table, Team};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -64,7 +64,7 @@ enum Werewolf {
         /// The TOML configuration file
         config: PathBuf,
         #[command(flatten)]
-        overrides: llm::Overrides,
+        overrides: prompted::Overrides,
         #[command(flatten)]
         logging: Logging,
     },
@@ -105,7 +105,14 @@ async fn main() -> anyhow::Result<()> {
             let roles = roles.or(Table::default()).deal();
             let rules = limits.or(Rules::default());
             play(logging.enabled(), |winner, logger| {
-                uniform_random::game(roles, rules, winner, logger)
+                werewolf::game(
+                    roles,
+                    rules,
+                    None,
+                    winner,
+                    |_| random::Player::init(),
+                    logger,
+                )
             })
             .await
         }
@@ -125,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
             let prompts = settings.prompts()?;
             let listed = provider.listed(&model.id).await?;
             let context_window = settings.context_window(listed.context_window, &prompts)?;
-            let tool_choice = match llm::check_plays(&provider, &model.id).await? {
+            let tool_choice = match prompted::check_plays(&provider, &model.id).await? {
                 Probed::Played(tool_choice) => tool_choice,
                 Probed::DidNotPlay(error) => return Err(error),
             };
@@ -133,15 +140,9 @@ async fn main() -> anyhow::Result<()> {
             let configuration =
                 settings.configuration(&roles, &prompts, tool_choice, context_window)?;
             let rules = settings.rules();
+            let players = prompted::players(&configuration, Arc::new(provider));
             play(logging.enabled(), |winner, logger| {
-                llm::game(
-                    roles,
-                    rules,
-                    configuration,
-                    Arc::new(provider),
-                    winner,
-                    logger,
-                )
+                werewolf::game(roles, rules, Some(configuration), winner, players, logger)
             })
             .await
         }
@@ -217,7 +218,7 @@ async fn checked(
     let mut marked = Vec::new();
     for id in ids {
         let mark = if check.is_empty() || check.contains(&id) {
-            match llm::check_plays(model, &id).await? {
+            match prompted::check_plays(model, &id).await? {
                 Probed::Played(tool_choice) => Some(Mark::Played(tool_choice)),
                 Probed::DidNotPlay(error) => {
                     reason(reasons, &id, &error)?;
@@ -278,9 +279,9 @@ fn listing(models: &[(String, Option<Mark>)]) -> String {
 /// winner and the logger the environment holds. The narration goes to
 /// standard output as the game happens, and so does the log to standard
 /// error as JSON lines when `logging` is on.
-async fn play<A: Behavior<Log = Entry> + 'static>(
+async fn play(
     logging: bool,
-    game: impl FnOnce(oneshot::Sender<Team>, Logger<Entry>) -> Episode<A>,
+    game: impl FnOnce(oneshot::Sender<Team>, Logger<Entry>) -> Episode<Actor>,
 ) -> anyhow::Result<()> {
     // The winner reaches the log too, which is where it is read from here.
     let (winner, _won) = oneshot::channel();
@@ -365,7 +366,7 @@ mod tests {
             parsed(&["werewolf", "llm", "game.toml", "--log", "--no-log"]),
             CommandLine::Werewolf(Werewolf::Llm {
                 config: PathBuf::from("game.toml"),
-                overrides: llm::Overrides::default(),
+                overrides: prompted::Overrides::default(),
                 logging: off(),
             })
         );
@@ -405,7 +406,7 @@ mod tests {
             parsed(&[&["werewolf", "llm"], &args[..]].concat()),
             CommandLine::Werewolf(Werewolf::Llm {
                 config: PathBuf::from("game.toml"),
-                overrides: llm::Overrides {
+                overrides: prompted::Overrides {
                     roles: RoleCounts {
                         seers: Some(2),
                         ..RoleCounts::default()
@@ -415,7 +416,7 @@ mod tests {
                         day_limit: None,
                     },
                     ratify_limit: None,
-                    model: llm::ModelOverrides {
+                    model: prompted::ModelOverrides {
                         base_url: None,
                         id: Some("gpt-5.5".to_string()),
                         context_window: None,

@@ -1,5 +1,6 @@
-//! The model-played variant: every player is a language model, set up by
-//! a TOML configuration file.
+//! The prompted policy: a player whose decisions a language model makes,
+//! set up, with the rest of a game of such players, by a TOML configuration
+//! file.
 //!
 //! The configuration is the [`Config`] the file is parsed into, the
 //! [`Overrides`] the command line may give, and the [`Settings`] that take
@@ -22,12 +23,12 @@
 //! provider, otherwise from the code. A window with no room for a story is
 //! refused.
 //!
-//! The game is the announcing environment's, with a model [`Player`] in
-//! every seat. With a ratify limit above zero the day's vote is ratified:
-//! a day ends one ratify limit after its votes stop changing, or at the day
-//! limit with nobody voted out. With the default of zero, each player's
-//! first vote counts, and the day ends when everyone has voted or at its
-//! limit. A player remembers what it is shown, what it hears and what it
+//! A game of prompted players is the announcing environment's, with a
+//! model [`Player`] in every seat. With a ratify limit above zero the
+//! day's vote is ratified: a day ends one ratify limit after its votes stop
+//! changing, or at the day limit with nobody voted out. With the default of
+//! zero, each player's first vote counts, and the day ends when everyone
+//! has voted or at its limit. A player remembers what it is shown, what it hears and what it
 //! does, as a [`Memory`] of each message stamped when it was received or
 //! sent, and keeps with the history the story that tells it from its own
 //! point of view: each memory adds its lines to the story as it is
@@ -76,16 +77,14 @@
 //! launch, in the provider's words. Every request makes the model call a
 //! tool, unless the probe finds the model refuses that, and then every
 //! request asks it to call one, and an answer in prose is a failure like
-//! any other. [`game`] builds the episode from the deal, the rules, the
-//! model, and the [`Configuration`] the log opens with, which
-//! [`Settings::configuration`] records from the settings, the deal and the
-//! rendered prompts.
+//! any other. [`players`] builds each seat's player from the model and the
+//! [`Configuration`] the log opens with, which [`Settings::configuration`]
+//! records from the settings, the deal and the rendered prompts.
 
-use super::announced;
 use super::report::Story;
 use super::{
-    Entry, Message, Phase, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table, Team, View, act,
-    awake, candidates, observe, receivers,
+    Actor, Entry, Message, Phase, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Seat, Table,
+    View, act, awake, candidates, observe, receivers,
 };
 use crate::model::{
     self, CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT, Request, Response, Tool, ToolChoice, api_key,
@@ -94,9 +93,7 @@ use crate::model::{
 use anyhow::{Context as _, anyhow, bail};
 use async_trait::async_trait;
 use clap::Args;
-use free_agent::{
-    ActorId, Behavior, Builder, Context, Episode, Event, Logger, Think, ThinkBuilder,
-};
+use free_agent::{ActorId, Behavior, Builder, Context, Event, Think, ThinkBuilder};
 use humantime::format_duration;
 use minijinja::{Environment, UndefinedBehavior, Value, context};
 use secrecy::SecretString;
@@ -109,7 +106,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::oneshot;
 
 /// What the command line may say over the file: the role counts, the
 /// phase limits, the ratify limit, and the model. Each is unset unless
@@ -603,8 +599,8 @@ impl Settings {
         })
     }
 
-    /// The rules a game is played under: the variant's, with the limits
-    /// that took effect.
+    /// The rules a game is played under: [`rules`], with the limits that
+    /// took effect.
     pub fn rules(&self) -> Rules {
         Rules {
             night_limit: self.night_limit,
@@ -620,8 +616,8 @@ fn request_timeout() -> Duration {
     REQUEST_TIMEOUT
 }
 
-/// The rules of the model-played variant: the uniform-random variant's,
-/// played as "LLM".
+/// The rules of a game of prompted players: the default rules, played as
+/// "LLM".
 pub fn rules() -> Rules {
     Rules {
         variation: "LLM".to_string(),
@@ -705,35 +701,19 @@ pub struct Configuration {
     pub text: BTreeMap<String, String>,
 }
 
-/// An episode of a game of `roles` under `rules`: the announcing
-/// environment, which may reach and stop every player and holds `logger`,
-/// and a model player for each role, who may send to the environment and
-/// to every other player. The environment logs `configuration` right after
-/// the deal. Each player is told its system prompt, which `configuration`
-/// has for every player in `roles`, and makes each selection by asking
-/// `model` as the model `configuration` names. The winning team is sent on
-/// `winner` when the game ends.
-pub fn game(
-    roles: HashMap<PlayerId, Role>,
-    rules: Rules,
-    configuration: Configuration,
+/// Each seat's model player, as `configuration` sets it up: told its
+/// system prompt, which `configuration` has for every seat at the table,
+/// and making each selection by asking `model` as the model
+/// `configuration` names.
+pub fn players(
+    configuration: &Configuration,
     model: Arc<dyn model::Model>,
-    winner: oneshot::Sender<Team>,
-    logger: Logger<Entry>,
-) -> Episode<Actor> {
+) -> impl FnMut(&PlayerId) -> Seat + use<> {
     let mut prompts = configuration.prompts.clone();
     let model_id = configuration.model.clone();
     let tool_choice = configuration.tool_choice;
     let context_window = configuration.context_window.tokens;
-    let players: Vec<PlayerId> = roles.keys().cloned().collect();
-    let environment = announced::init(
-        roles,
-        rules,
-        Some(Entry::Configuration(Box::new(configuration))),
-        winner,
-        Actor::Environment,
-    );
-    let player = |id: &PlayerId| {
+    move |id: &PlayerId| {
         let prompt = prompts
             .remove(id)
             .unwrap_or_else(|| panic!("no system prompt for {id}"));
@@ -745,53 +725,6 @@ pub fn game(
             context_window,
             Arc::clone(&model),
         )
-    };
-    super::thinking_episode(environment, players, player, logger)
-}
-
-/// What an actor in the game does: run it, or play in it. An episode holds
-/// one kind of actor, so the two sides meet here and each method goes to
-/// whichever side this is.
-pub enum Actor {
-    /// The side that holds the game.
-    Environment(announced::Environment),
-    /// A side that sees only what it is shown.
-    Player(Player),
-    /// A player who says whatever its script says.
-    #[cfg(test)]
-    Puppet(super::uniform_random::tests::Puppet),
-}
-
-#[async_trait]
-impl Behavior for Actor {
-    type Message = Message;
-    type Log = Entry;
-
-    fn context(&self) -> &Context<Message, Entry> {
-        match self {
-            Actor::Environment(environment) => environment.context(),
-            Actor::Player(player) => player.context(),
-            #[cfg(test)]
-            Actor::Puppet(puppet) => puppet.context(),
-        }
-    }
-
-    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        match self {
-            Actor::Environment(environment) => environment.receive(message).await,
-            Actor::Player(player) => player.receive(message).await,
-            #[cfg(test)]
-            Actor::Puppet(puppet) => puppet.receive(message).await,
-        }
-    }
-
-    async fn start(&mut self) -> anyhow::Result<()> {
-        match self {
-            Actor::Environment(environment) => environment.start().await,
-            Actor::Player(player) => player.start().await,
-            #[cfg(test)]
-            Actor::Puppet(puppet) => puppet.start().await,
-        }
     }
 }
 
@@ -1003,7 +936,7 @@ impl Mind {
 /// loop and its think loop are each a `Player` with a context of its own
 /// over one shared mind: the perceive loop remembers each message it is
 /// sent and wakes the think loop, which tells the model the history as a
-/// story and carries out what the model answers. A variant's actor enum
+/// story and carries out what the model answers. [`Actor::Prompted`]
 /// holds the perceive loop's, built by [`Player::init`].
 pub struct Player {
     context: Context<Message, Entry>,
@@ -1022,7 +955,7 @@ impl Player {
         tool_choice: ToolChoice,
         context_window: u64,
         model: Arc<dyn model::Model>,
-    ) -> (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>) {
+    ) -> Seat {
         let mind = Arc::new(Mind::new(
             me,
             prompt,
@@ -1033,7 +966,7 @@ impl Player {
         ));
         let shared = Arc::clone(&mind);
         let behavior: Builder<Actor> =
-            Box::new(move |context| Actor::Player(Player { context, mind }));
+            Box::new(move |context| Actor::Prompted(Player { context, mind }));
         let think: ThinkBuilder<Message, Entry> = Box::new(move |context| {
             Box::new(Player {
                 context,
@@ -1674,18 +1607,18 @@ mod tests {
     use crate::model::fake::{FakeModel, SAID, canned_calls, choosing_first, voted_in_this_phase};
     use crate::werewolf::report::{FORGOTTEN, Narrator};
     use crate::werewolf::tests::{
-        Played, announcement, between_the_deal_and_the_end, logged, observed_by,
+        Played, announcement, at_once, between_the_deal_and_the_end, logged, mute, observed_by,
         observed_by_the_environment, one_wolf_against, received, run, seen, seen_by_day, selection,
         selections, selections_sent, tentative, utterance,
     };
-    use crate::werewolf::uniform_random::tests::{Puppet, Script, Seat, at_once};
     use crate::werewolf::{
-        ENVIRONMENT, thinking_episode, to_everyone_but, to_the_environment, to_the_players_but,
+        ENVIRONMENT, Team, game, to_everyone_but, to_the_environment, to_the_players_but,
     };
     use clap::Parser;
     use secrecy::ExposeSecret;
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::mpsc::unbounded_channel;
+    use tokio::sync::oneshot;
 
     /// A file naming only the model, which is all that is required.
     const MODEL: &str = r#"
@@ -2663,7 +2596,8 @@ player2 = \"Cautious.\"
     ) -> anyhow::Result<Played> {
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
-        let episode = game(roles, rules, configuration, model, winner, logger);
+        let players = players(&configuration, model);
+        let episode = game(roles, rules, Some(configuration), winner, players, logger);
         run(episode, won, log).await
     }
 
@@ -2674,60 +2608,38 @@ player2 = \"Cautious.\"
         roles: HashMap<PlayerId, Role>,
         rules: Rules,
         model: Arc<FakeModel>,
-        mut puppets: HashMap<&str, Seat<Actor>>,
+        mut puppets: HashMap<&str, Seat>,
     ) -> anyhow::Result<Played> {
-        let configuration = Entry::Configuration(Box::new(configuration(&roles)));
+        let configuration = configuration(&roles);
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
-        let players: Vec<PlayerId> = roles.keys().cloned().collect();
-        let environment = announced::init(
-            roles,
-            rules,
-            Some(configuration),
-            winner,
-            Actor::Environment,
-        );
         let model: Arc<dyn model::Model> = model;
-        let episode = thinking_episode(
-            environment,
-            players,
-            |id| {
-                puppets.remove(id.as_str()).unwrap_or_else(|| {
-                    Player::init(
-                        id.clone(),
-                        told(id),
-                        MODEL_ID.to_string(),
-                        ToolChoice::Required,
-                        CONTEXT_WINDOW,
-                        Arc::clone(&model),
-                    )
-                })
-            },
-            logger,
-        );
+        let player = |id: &PlayerId| {
+            puppets.remove(id.as_str()).unwrap_or_else(|| {
+                Player::init(
+                    id.clone(),
+                    told(id),
+                    MODEL_ID.to_string(),
+                    ToolChoice::Required,
+                    CONTEXT_WINDOW,
+                    Arc::clone(&model),
+                )
+            })
+        };
+        let episode = game(roles, rules, Some(configuration), winner, player, logger);
         run(episode, won, log).await
-    }
-
-    /// A puppet following `script`.
-    fn puppet(script: Script) -> Seat<Actor> {
-        Puppet::init(script, Actor::Puppet)
-    }
-
-    /// A player who never says anything.
-    fn mute() -> Seat<Actor> {
-        puppet(Box::new(|_, _, _| vec![]))
     }
 
     /// A werewolf who kills its first candidate `after` each night begins,
     /// and says nothing by day.
-    fn hunting_after(after: Duration) -> Seat<Actor> {
+    fn hunting_after(after: Duration) -> Seat {
         hunting_after_each(move |_| after)
     }
 
     /// A werewolf who kills its first candidate `after` the night numbered
     /// `seq` begins, and says nothing by day.
-    fn hunting_after_each(after: impl Fn(u64) -> Duration + Send + 'static) -> Seat<Actor> {
-        puppet(Box::new(move |me, seq, view| match view.phase {
+    fn hunting_after_each(after: impl Fn(u64) -> Duration + Send + 'static) -> Seat {
+        Actor::puppet(Box::new(move |me, seq, view| match view.phase {
             Phase::Night => vec![(
                 after(seq),
                 selection(seq, me, seq, &candidates(me, view)[0]),
@@ -2738,7 +2650,7 @@ player2 = \"Cautious.\"
 
     /// A werewolf who kills its first candidate at once the first night and
     /// three seconds into every night after.
-    fn hunting_at_once_then_after_three_seconds() -> Seat<Actor> {
+    fn hunting_at_once_then_after_three_seconds() -> Seat {
         hunting_after_each(|seq| Duration::from_secs(if seq == 1 { 0 } else { 3 }))
     }
 
@@ -3890,7 +3802,7 @@ player2 = \"Cautious.\"
         // progress: they wake pat once more, and that call is told them all.
         let model = Arc::new(by_day(waiting_out(10)).taking(Duration::from_secs(2)));
         // Bob is a villager, announced by day alone.
-        let bob = puppet(Box::new(|me, seq, _| {
+        let bob = Actor::puppet(Box::new(|me, seq, _| {
             (1..=5)
                 .map(|i| {
                     let point = utterance(seq, me, i, &format!("Point {i}."));
@@ -4116,7 +4028,7 @@ player2 = \"Cautious.\"
             .taking(Duration::from_secs(3)),
         );
         // Bob is a villager, announced by day alone.
-        let bob = puppet(Box::new(|me, seq, _| {
+        let bob = Actor::puppet(Box::new(|me, seq, _| {
             at_once(vec![selection(seq, me, 1, "cat")])
         }));
         let puppets = HashMap::from([
@@ -4178,7 +4090,7 @@ player2 = \"Cautious.\"
         // never told it.
         let model = Arc::new(by_day(waiting_out(10)).taking(Duration::from_secs(2)));
         // Dan is a villager, announced by day alone.
-        let dan = puppet(Box::new(|me, seq, _| {
+        let dan = Actor::puppet(Box::new(|me, seq, _| {
             vec![(
                 Duration::from_millis(10_500),
                 utterance(seq, me, 1, "Anyone there?"),
@@ -4243,7 +4155,7 @@ player2 = \"Cautious.\"
         // day 2 dan votes the werewolf out.
         let model = Arc::new(by_day(waiting_out(2)).taking(Duration::from_millis(100)));
         let wolf = hunting_at_once_then_after_three_seconds();
-        let bob = puppet(Box::new(|me, seq, _| {
+        let bob = Actor::puppet(Box::new(|me, seq, _| {
             vec![
                 (Duration::ZERO, selection(seq, me, 1, "cat")),
                 (
@@ -4257,7 +4169,7 @@ player2 = \"Cautious.\"
                 ),
             ]
         }));
-        let dan = puppet(Box::new(|me, seq, _| match seq {
+        let dan = Actor::puppet(Box::new(|me, seq, _| match seq {
             4 => at_once(vec![selection(seq, me, 1, "wolf")]),
             _ => vec![],
         }));
@@ -4347,7 +4259,7 @@ player2 = \"Cautious.\"
         // the werewolf stands, and the village wins nine seconds in.
         let model = Arc::new(by_day(waiting_out(10)).taking(Duration::from_secs(1)));
         // Bob is a villager, announced by day alone.
-        let bob = puppet(Box::new(|me, seq, _| {
+        let bob = Actor::puppet(Box::new(|me, seq, _| {
             vec![
                 (Duration::ZERO, utterance(seq - 1, me, 1, "Night talk.")),
                 (Duration::ZERO, selection(seq - 1, me, 2, "pat")),
@@ -4426,7 +4338,7 @@ player2 = \"Cautious.\"
         // so nothing is sent, and the selection is logged as withheld. Bob
         // votes sam out at once, and the werewolf wins four seconds in.
         let model = Arc::new(by_day(waiting_out(10)).taking(Duration::from_secs(3)));
-        let bob = puppet(Box::new(|me, seq, _| {
+        let bob = Actor::puppet(Box::new(|me, seq, _| {
             at_once(vec![selection(seq, me, 1, "sam")])
         }));
         let puppets = HashMap::from([
