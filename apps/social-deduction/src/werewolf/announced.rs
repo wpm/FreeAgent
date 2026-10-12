@@ -1,7 +1,9 @@
 //! The announcing environment, shared by every variant: it opens each
-//! phase with a message to every awake player, takes their selections as
-//! they come, and ends the phase. Players who take seconds to decide hold
-//! nothing up.
+//! phase with a message to every living player, awake in it or not, takes
+//! the awake players' selections as they come, and ends the phase. A
+//! player announced a phase it sleeps through learns the phase has begun,
+//! and its selections do not count. Players who take seconds to decide
+//! hold nothing up.
 //!
 //! A night, and a day without a ratify limit, take each player's first
 //! selection and end once everyone awake has selected or at the limit,
@@ -135,8 +137,9 @@ impl Game {
         }
     }
 
-    /// Open the next phase: number it, wake its players, and write each one
-    /// its announcement, numbered in turn.
+    /// Open the next phase: number it, write every living player its
+    /// announcement, numbered in turn in name order, and wait on the
+    /// players awake in it.
     fn open(&mut self) -> anyhow::Result<Opened> {
         self.seq += 1;
         let awake = self.state.awake();
@@ -144,8 +147,10 @@ impl Game {
             Phase::Night => self.rules.night_limit,
             Phase::Day => self.rules.day_limit,
         };
+        let mut alive: Vec<&PlayerId> = self.state.alive.iter().collect();
+        alive.sort();
         let mut announcements = Vec::new();
-        for player in &awake {
+        for player in alive {
             self.n += 1;
             let message = Message::Announce {
                 seq: self.seq,
@@ -315,8 +320,8 @@ impl Outcome {
     }
 }
 
-/// A phase just opened: its number, the announcement for each awake
-/// player, and how long it waits for them.
+/// A phase just opened: its number, the announcement for each living
+/// player, and how long it waits for the awake ones.
 struct Opened {
     seq: u64,
     announcements: Vec<(PlayerId, Message)>,
@@ -344,7 +349,7 @@ impl Environment {
         self.game.lock().unwrap()
     }
 
-    /// Open the next phase: show each awake player what it may see of it
+    /// Open the next phase: show each living player what it may see of it
     /// and how long it lasts, each announcement an action of its own, and
     /// set the timer that ends it at its limit.
     fn open_phase(&self) -> anyhow::Result<()> {
@@ -535,27 +540,37 @@ mod tests {
         (to, numbers)
     }
 
+    /// The players the phase underway waits on, in name order.
+    fn awake(game: &Game) -> Vec<&PlayerId> {
+        let mut awake: Vec<&PlayerId> = game.underway.as_ref().unwrap().awake.iter().collect();
+        awake.sort();
+        awake
+    }
+
     #[test]
-    fn opening_a_phase_numbers_it_from_one_and_announces_it_to_the_awake() {
+    fn opening_a_phase_numbers_it_from_one_announces_it_to_the_living_and_waits_on_the_awake() {
         let (mut game, night) = opened();
         assert_eq!(night.seq, 1);
         let (to, _) = announced(&night);
-        assert_eq!(to, ["seer", "wolf1", "wolf2"]);
+        assert_eq!(to, ["seer", "villager", "wolf1", "wolf2"]);
+        assert_eq!(awake(&game), ["seer", "wolf1", "wolf2"]);
         assert_eq!(night.limit, Rules::default().night_limit);
+        game.state.alive.remove("villager");
         game.state.next();
         let day = game.open().unwrap();
         assert_eq!(day.seq, 2);
-        assert_eq!(day.announcements.len(), 4);
+        assert_eq!(announced(&day).0, ["seer", "wolf1", "wolf2"]);
+        assert_eq!(awake(&game), ["seer", "wolf1", "wolf2"]);
         assert_eq!(day.limit, Rules::default().day_limit);
     }
 
     #[test]
     fn each_announcement_is_numbered_in_one_series_from_one_and_carries_its_phase_and_limit() {
         let (mut game, night) = opened();
-        assert_eq!(announced(&night).1, [1, 2, 3]);
+        assert_eq!(announced(&night).1, [1, 2, 3, 4]);
         game.state.next();
         let day = game.open().unwrap();
-        assert_eq!(announced(&day).1, [4, 5, 6, 7]);
+        assert_eq!(announced(&day).1, [5, 6, 7, 8]);
         for (_, message) in &day.announcements {
             assert!(
                 matches!(message, Message::Announce { seq: 2, limit, .. }
@@ -596,9 +611,37 @@ mod tests {
 
     #[test]
     fn a_selection_by_a_player_who_is_not_awake_does_not_count() {
+        // The villager is announced the night and sleeps through it: its
+        // selection is not kept, and the night still waits on the awake.
         let (mut game, Opened { seq, .. }) = opened();
         assert_eq!(game.select(seq, &id("villager"), &id("wolf1")), None);
         assert!(selections(&game).is_empty());
+        assert_eq!(game.select(seq, &id("wolf1"), &id("villager")), counted());
+        assert_eq!(game.select(seq, &id("wolf2"), &id("villager")), counted());
+        assert_eq!(game.select(seq, &id("seer"), &id("wolf1")), last());
+    }
+
+    #[test]
+    fn in_a_ratified_day_a_selection_by_a_player_who_is_not_awake_neither_counts_nor_restarts_the_timer()
+     {
+        // Ann dies the first night, so by day she is not awake; her vote
+        // selects nobody, tells nobody, and sets no timer.
+        let roles = one_wolf_against(&["ann", "bob", "cat"]);
+        let (mut game, Opened { seq, .. }) = opened_under(roles, ratified());
+        game.select(seq, &id("wolf"), &id("ann"));
+        game.end(seq);
+        let day = game.open().unwrap().seq;
+        assert_eq!(game.select(day, &id("ann"), &id("wolf")), None);
+        assert!(selections(&game).is_empty());
+        assert_eq!(game.underway.as_ref().unwrap().count, 0);
+        assert_eq!(
+            game.select(day, &id("bob"), &id("wolf")),
+            Some(Counted {
+                last: false,
+                tentative: tentative_to(day, 8, Some("wolf"), &["wolf", "bob", "cat"]),
+                ratify: timer(day, 1),
+            })
+        );
     }
 
     #[test]
@@ -719,10 +762,22 @@ mod tests {
     }
 
     /// The tentative decision for the day numbered `seq`, the `n`th message
-    /// the environment sent, naming `target` or nobody, to everyone alive.
+    /// the environment sent, naming `target` or nobody, to everyone alive,
+    /// which is everyone.
     fn tentative(seq: u64, n: u64, target: Option<&str>) -> Option<(Message, HashSet<PlayerId>)> {
-        let everyone = ["wolf", "ann", "bob", "cat"].map(id).into();
-        Some((tests::tentative(seq, n, target), everyone))
+        tentative_to(seq, n, target, &["wolf", "ann", "bob", "cat"])
+    }
+
+    /// The tentative decision for the day numbered `seq`, the `n`th message
+    /// the environment sent, naming `target` or nobody, to everyone in `to`.
+    fn tentative_to(
+        seq: u64,
+        n: u64,
+        target: Option<&str>,
+        to: &[&str],
+    ) -> Option<(Message, HashSet<PlayerId>)> {
+        let to = to.iter().map(|name| id(name)).collect();
+        Some((tests::tentative(seq, n, target), to))
     }
 
     /// The ratify timer set by the `count`th counting selection of the day
@@ -734,13 +789,14 @@ mod tests {
     #[test]
     fn in_a_ratified_day_the_first_selection_selects_a_player_and_starts_the_timer() {
         let (mut game, day) = ratifying_day();
-        // The environment has announced the day to four players.
-        assert_eq!(game.n, 5);
+        // The environment has announced the night and the day to four
+        // players each.
+        assert_eq!(game.n, 8);
         assert_eq!(
             game.select(day, &id("ann"), &id("wolf")),
             Some(Counted {
                 last: false,
-                tentative: tentative(day, 6, Some("wolf")),
+                tentative: tentative(day, 9, Some("wolf")),
                 ratify: timer(day, 1),
             })
         );
@@ -777,7 +833,7 @@ mod tests {
             game.select(day, &id("wolf"), &id("ann")),
             Some(Counted {
                 last: false,
-                tentative: tentative(day, 7, None),
+                tentative: tentative(day, 10, None),
                 ratify: None,
             })
         );
@@ -788,7 +844,7 @@ mod tests {
             game.select(day, &id("bob"), &id("wolf")),
             Some(Counted {
                 last: false,
-                tentative: tentative(day, 8, Some("wolf")),
+                tentative: tentative(day, 11, Some("wolf")),
                 ratify: timer(day, 3),
             })
         );
@@ -802,7 +858,7 @@ mod tests {
             game.select(day, &id("ann"), &id("bob")),
             Some(Counted {
                 last: false,
-                tentative: tentative(day, 7, Some("bob")),
+                tentative: tentative(day, 10, Some("bob")),
                 ratify: timer(day, 2),
             })
         );

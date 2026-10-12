@@ -66,7 +66,7 @@ use super::announced;
 use super::report::Narrator;
 use super::{
     Entry, Message, Phase, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table, Team, View, act,
-    candidates, observe, to_everyone_but, to_the_environment, to_the_players_but,
+    awake, candidates, observe, to_everyone_but, to_the_environment, to_the_players_but,
 };
 use crate::model::{
     self, Provider, REQUEST_TIMEOUT, Request, Response, Tool, api_key, key_variable,
@@ -882,16 +882,19 @@ impl Player {
     /// failure with the phase and what went wrong, causes included, which
     /// is all there is to do about it: the player has not acted, and the
     /// game goes on. The failure is not remembered, so the model is never
-    /// told of it. With nobody to select, the model is not asked. Being
-    /// woken before any phase was announced is an error.
+    /// told of it. In a phase the player sleeps through, which a wake-up
+    /// from the day before can arrive in, or with nobody to select, the
+    /// model is not asked. Being woken before any phase was announced is an
+    /// error.
     async fn decide(&self) -> anyhow::Result<()> {
         self.mind.woken();
         let Announced { seq, view, limit } = self
             .mind
             .announced()
             .context("woken before any phase was announced")?;
-        let candidates = candidates(&self.context.id, &view);
-        if candidates.is_empty() {
+        let me = &self.context.id;
+        let candidates = candidates(me, &view);
+        if !awake(me, &view) || candidates.is_empty() {
             return Ok(());
         }
         let acted = match view.phase {
@@ -1006,26 +1009,28 @@ impl Behavior for Player {
 
     /// Log a message from another actor, which is any numbered one, as
     /// observed in the latest phase announced, and remember it. An
-    /// announcement is of a new phase, and wakes the think loop. By day so
-    /// does everything else heard: another player's utterance or
-    /// selection, and the environment's tentative decision. By night those
-    /// are remembered and nothing more. Anything else is ignored.
+    /// announcement is of a new phase, and wakes the think loop if the
+    /// player is awake in it. By day so does everything else heard: another
+    /// player's utterance or selection, and the environment's tentative
+    /// decision. By night those are remembered and nothing more, so a
+    /// player announced a night it sleeps through is woken by nothing until
+    /// the day. Anything else is ignored.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
         if let Some(n) = message.number() {
-            let announced = if let Message::Announce {
+            let wakes = if let Message::Announce {
                 seq, view, limit, ..
             } = message
             {
                 self.mind.announce(*seq, view, *limit);
-                true
+                awake(&self.context.id, view)
             } else {
-                false
+                self.mind.by_day()
             };
             observe(&self.context, message.sender(), n, self.mind.seq());
             self.remember(Memory::Observed {
                 message: message.clone(),
             });
-            if announced || self.mind.by_day() {
+            if wakes {
                 self.wake()?;
             }
         }
@@ -2673,21 +2678,24 @@ player2 = \"Cautious.\"
             between[0],
             Entry::Configuration(Box::new(configuration(&roles)))
         );
-        assert_eq!(
-            between[1],
-            Entry::Action {
-                from: ENVIRONMENT.to_string(),
-                n: 1,
-                to: HashSet::from(["wolf".to_string()]),
-                message: Message::Announce {
-                    seq: 1,
-                    n: 1,
-                    view: seen(&["wolf", "ann", "bob"], &[("wolf", Role::Werewolf)]),
-                    limit: rules().night_limit,
-                },
-                seen: None,
-            }
-        );
+        // Every living player is announced the night, in name order, each
+        // shown its own view.
+        let everyone = ["wolf", "ann", "bob"];
+        let announced = |n: u64, to: &str, known: Role| Entry::Action {
+            from: ENVIRONMENT.to_string(),
+            n,
+            to: HashSet::from([to.to_string()]),
+            message: Message::Announce {
+                seq: 1,
+                n,
+                view: seen(&everyone, &[(to, known)]),
+                limit: rules().night_limit,
+            },
+            seen: None,
+        };
+        assert_eq!(between[1], announced(1, "ann", Role::Villager));
+        assert_eq!(between[2], announced(2, "bob", Role::Villager));
+        assert_eq!(between[3], announced(3, "wolf", Role::Werewolf));
         // The configuration is logged once.
         let configurations = between[1..]
             .iter()
@@ -2704,28 +2712,37 @@ player2 = \"Cautious.\"
             .await
             .unwrap();
         assert_eq!(winner, Team::Werewolves);
-        let announced: Vec<&Phase> =
+        // Each announcement, as whom it went to and what it showed.
+        let announced: Vec<(&PlayerId, &View)> =
             between_the_deal_and_the_end(&logged, &rules(), &roles, winner)
                 .iter()
                 .filter_map(|entry| match entry {
                     Entry::Action {
+                        to,
                         message: Message::Announce { view, .. },
                         ..
-                    } => Some(&view.phase),
+                    } => Some((to.iter().next().unwrap(), view)),
                     _ => None,
                 })
                 .collect();
+        let awake = announced
+            .iter()
+            .filter(|(to, view)| super::awake(to, view))
+            .count();
         let by_day = announced
             .iter()
-            .filter(|phase| ***phase == Phase::Day)
+            .filter(|(_, view)| view.phase == Phase::Day)
             .count();
-        // Every announcement was asked about, and by day every player was
-        // asked again about what it heard. Every player selected once a
-        // phase, and spoke once a day.
-        assert_eq!(announced.len(), 11);
+        // Every living player is announced every phase: two nights of four
+        // and three, and two days of the same. Every announcement of a
+        // phase the player is awake in was asked about, and by day every
+        // player was asked again about what it heard. Every player awake
+        // selected once a phase, and spoke once a day.
+        assert_eq!(announced.len(), 14);
+        assert_eq!(awake, 11);
         assert_eq!(by_day, 7);
-        assert!(model.requests().len() >= announced.len());
-        assert_eq!(selections(&logged).len(), announced.len());
+        assert!(model.requests().len() >= awake);
+        assert_eq!(selections(&logged).len(), awake);
         assert_eq!(utterances(&logged).len(), by_day);
         let situations: HashSet<String> = model
             .requests()
@@ -3171,9 +3188,10 @@ player2 = \"Cautious.\"
     #[tokio::test(start_paused = true)]
     async fn by_day_the_request_offers_the_three_tools_and_says_the_player_may_speak_vote_or_wait()
     {
-        // Pat, a villager, is woken by day 1 by its announcement, asks to
-        // wait nine seconds, and is woken again by that reminder, to the
-        // same request, since nobody else says anything.
+        // Pat, a villager, sleeps through night 1 and is woken by day 1 by
+        // its announcement, asks to wait nine seconds, and is woken again by
+        // that reminder, to the same request, since nobody else says
+        // anything.
         let model = Arc::new(by_day(waiting_out(9)));
         let puppets = HashMap::from([
             ("wolf", hunting_after(Duration::ZERO)),
@@ -3197,7 +3215,7 @@ player2 = \"Cautious.\"
                 vec![
                     model::Message::system("You are pat."),
                     model::Message::user(
-                        "You are pat, a villager.\n\nDay 1.\n\n\
+                        "You are pat, a villager.\n\nNight 1.\nYou sleep.\nann dies.\n\nDay 1.\n\n\
                          It is day 1, which lasts 10s. You may speak, vote, or wait."
                     ),
                 ],
@@ -3582,6 +3600,111 @@ player2 = \"Cautious.\"
         assert!(
             observed_by(&logged, "wolf").contains(&("dan", 1, 3)),
             "{logged:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_player_announced_a_night_it_sleeps_through_is_woken_by_nothing_until_the_day() {
+        // Pat, a villager, takes a tenth of a second to answer and asks to
+        // wait two seconds whenever asked. The werewolf kills ann at once
+        // the first night, and bob three seconds into the second. By day 1
+        // bob votes against cat at once, whose vote stands a second later,
+        // and says two things just before the day ends and one more during
+        // night 2, which bob does not know has begun. By day 2 dan votes
+        // the werewolf out.
+        let model = Arc::new(by_day(waiting_out(2)).taking(Duration::from_millis(100)));
+        let wolf = puppet(Box::new(|me, seq, view| match view.phase {
+            Phase::Night => {
+                let after = if seq == 1 { 0 } else { 3 };
+                let kill = selection(seq, me, seq, &candidates(me, view)[0]);
+                vec![(Duration::from_secs(after), kill)]
+            }
+            Phase::Day => vec![],
+        }));
+        let bob = puppet(Box::new(|me, seq, _| {
+            vec![
+                (Duration::ZERO, selection(seq, me, 1, "cat")),
+                (
+                    Duration::from_millis(950),
+                    utterance(seq, me, 2, "Going quiet."),
+                ),
+                (Duration::from_millis(970), utterance(seq, me, 3, "Really.")),
+                (
+                    Duration::from_millis(2_500),
+                    utterance(seq, me, 4, "Anyone there?"),
+                ),
+            ]
+        }));
+        let dan = puppet(Box::new(|me, seq, _| match seq {
+            4 => at_once(vec![selection(seq, me, 1, "wolf")]),
+            _ => vec![],
+        }));
+        let puppets = HashMap::from([
+            ("wolf", wolf),
+            ("ann", mute()),
+            ("bob", bob),
+            ("cat", mute()),
+            ("dan", dan),
+        ]);
+        let roles = one_wolf_against(&["ann", "bob", "cat", "dan", "pat"]);
+        let rules = Rules {
+            ratify_limit: Some(Duration::from_secs(1)),
+            ..quick()
+        };
+        let (winner, logged, took) = play_with(roles, rules, Arc::clone(&model), puppets)
+            .await
+            .unwrap();
+        assert_eq!(winner, Team::Villagers);
+        // Night 1 ends at once, day 1 a second later, night 2 three seconds
+        // after that, and day 2 a second after it opens.
+        assert_eq!(took, Duration::from_secs(5));
+        assert!(failed(&logged).is_empty(), "{logged:?}");
+        // Pat observes each night's announcement in it, and bob's last
+        // utterance in night 2, and is asked nothing by night. Its day
+        // reminders fall in night 2 and are ignored.
+        let pat = observed_by(&logged, "pat");
+        for night in [1, 3] {
+            let announcement = announced_to(&logged, "pat", night);
+            assert!(pat.contains(&(ENVIRONMENT, announcement, night)), "{pat:?}");
+        }
+        assert!(pat.contains(&("bob", 4, 3)), "{pat:?}");
+        let asked = asked_of(&model, "pat");
+        assert!(
+            asked.iter().all(|asked| !asked.contains("It is night")),
+            "{asked:?}"
+        );
+        // By day 1 pat is asked three times: by the announcement, by the
+        // decision, and by bob's first utterance. That call is in progress
+        // when bob's second arrives and when night 2 is announced, and the
+        // wake-up waiting behind it finds pat asleep. By day 2 it is asked
+        // twice: by the announcement, and once for dan's vote and the
+        // decision together.
+        let by_day_1 = asked
+            .iter()
+            .filter(|asked| asked.contains("It is day 1"))
+            .count();
+        assert_eq!(by_day_1, 3, "{asked:?}");
+        assert_eq!(asked.len(), 5, "{asked:?}");
+        assert_eq!(
+            story(&asked[3]),
+            "You are pat, a villager.\n\
+             \n\
+             Night 1.\n\
+             You sleep.\n\
+             ann dies.\n\
+             \n\
+             Day 1.\n\
+             cat will be voted out in 1s unless the votes change.\n\
+             bob says, \"Going quiet.\"\n\
+             bob says, \"Really.\"\n\
+             cat dies.\n\
+             \n\
+             Night 2.\n\
+             You sleep.\n\
+             During day 1, bob said, \"Anyone there?\"\n\
+             bob dies.\n\
+             \n\
+             Day 2."
         );
     }
 }

@@ -1,14 +1,14 @@
 //! The uniform-random variant: the announcing environment, played by
-//! players who answer each announcement at once with a selection made at
-//! random. A player logs an [`Entry::Observation`] for each announcement
-//! it receives and an [`Entry::Action`] for each selection it sends,
-//! numbering its selections from 1; no model made them, so `seen` is
-//! `None`.
+//! players who answer each announcement of a phase they are awake in at
+//! once with a selection made at random, and sleep through the rest. A
+//! player logs an [`Entry::Observation`] for each announcement it receives
+//! and an [`Entry::Action`] for each selection it sends, numbering its
+//! selections from 1; no model made them, so `seen` is `None`.
 
 use super::announced::{self, Environment};
 use super::{
-    ENVIRONMENT, Entry, Message, PlayerId, Role, Rules, Team, View, act, candidates, observe,
-    to_the_environment,
+    ENVIRONMENT, Entry, Message, PlayerId, Role, Rules, Team, View, act, awake, candidates,
+    observe, to_the_environment,
 };
 use async_trait::async_trait;
 use free_agent::{Behavior, Builder, Context, Episode, Logger};
@@ -84,8 +84,9 @@ impl Behavior for Actor {
     }
 }
 
-/// A player who answers each announcement at once, selecting one of its
-/// [`candidates`] uniformly at random. It has no think loop.
+/// A player who answers each announcement of a phase it is [`awake`] in at
+/// once, selecting one of its [`candidates`] uniformly at random, and does
+/// nothing about one it sleeps through. It has no think loop.
 pub struct Player {
     context: Context<Message, Entry>,
     /// The number of the last selection it sent.
@@ -101,12 +102,14 @@ impl Behavior for Player {
         &self.context
     }
 
-    /// Announced a phase, log the announcement as observed in it, and
-    /// select someone in it at once. With nobody to select, say nothing.
+    /// Announced a phase, log the announcement as observed in it, and, if
+    /// awake in it, select someone at once. Asleep, or with nobody to
+    /// select, say nothing.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
         if let Message::Announce { seq, n, view, .. } = message {
             observe(&self.context, ENVIRONMENT.to_string(), *n, *seq);
-            if let Some(target) = choose(&self.context.id, view) {
+            let me = &self.context.id;
+            if let Some(target) = awake(me, view).then(|| choose(me, view)).flatten() {
                 self.n += 1;
                 let selection = Message::Select {
                     seq: *seq,
@@ -132,7 +135,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{
-        Played, between_the_deal_and_the_end, logged, observed_by_the_environment,
+        Played, between_the_deal_and_the_end, logged, observed_by, observed_by_the_environment,
         one_wolf_against, run, seen, selection, selections, village,
     };
     use crate::werewolf::{Phase, View, thinking_episode, to_the_players_but};
@@ -158,7 +161,9 @@ pub(crate) mod tests {
 
     /// A player who says whatever its script says, when the script says
     /// to, for a game with a player who is late, stale, repeats itself,
-    /// changes its mind, or talks. An utterance goes to every other player
+    /// changes its mind, or talks. Its script is consulted for each phase
+    /// it is awake in; announced a phase it sleeps through, it notes who is
+    /// alive and says nothing. An utterance goes to every other player
     /// alive at the latest announcement; anything else goes to the
     /// environment. It logs each message it sends as its action, and
     /// nothing it receives. What it says later is said by its think loop,
@@ -182,6 +187,9 @@ pub(crate) mod tests {
         async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
             if let Message::Announce { seq, view, .. } = message {
                 *self.alive.lock().unwrap() = view.alive.clone();
+                if !awake(&self.context.id, view) {
+                    return Ok(());
+                }
                 for (after, said) in (self.script)(&self.context.id, *seq, view) {
                     if after.is_zero() {
                         say(&self.context, said, &self.alive)?;
@@ -426,10 +434,35 @@ pub(crate) mod tests {
             let counted: Vec<u64> = (1..=sent.len() as u64).collect();
             assert_eq!(sent, counted, "{from}");
         }
-        // By the first night three players are announced the game, and the
-        // werewolves, who always select, hunt.
-        assert!(announced >= 3, "{logged:?}");
+        // By the first night every player is announced the game, awake or
+        // not, and the werewolves, who always select, hunt.
+        assert!(announced >= roles.len(), "{logged:?}");
         assert!(hunts >= 1, "{logged:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_player_announced_a_phase_it_sleeps_through_observes_it_and_selects_nothing() {
+        // Ann, a villager, is announced the first night, which the werewolf
+        // sleeps through too, so that the night waits out its limit with no
+        // selection from anyone.
+        let roles = one_wolf_against(&["ann"]);
+        let puppets = HashMap::from([("wolf", mute())]);
+        let (winner, logged, took) = play(roles, quick(), puppets).await.unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        assert_eq!(took, quick().night_limit);
+        assert!(selections(&logged).is_empty(), "{logged:?}");
+        let announced = logged
+            .iter()
+            .filter(|entry| {
+                matches!(entry, Entry::Action {
+                    to,
+                    message: Message::Announce { seq: 1, .. },
+                    ..
+                } if to.contains("ann"))
+            })
+            .count();
+        assert_eq!(announced, 1, "{logged:?}");
+        assert_eq!(observed_by(&logged, "ann"), [(ENVIRONMENT, 1, 1)]);
     }
 
     #[tokio::test(start_paused = true)]

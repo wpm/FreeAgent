@@ -314,6 +314,19 @@ enum Phase {
     Day,
 }
 
+impl Phase {
+    /// Whether a player of `role`, if known, acts in this phase: by night
+    /// the werewolves, the doctor and the seer do, and by day everyone. The
+    /// one rule of who is awake, so that the environment and the players
+    /// cannot disagree about who sleeps.
+    fn wakes(&self, role: Option<Role>) -> bool {
+        match self {
+            Phase::Night => matches!(role, Some(Role::Werewolf | Role::Doctor | Role::Seer)),
+            Phase::Day => true,
+        }
+    }
+}
+
 /// The state of a game, held by the environment alone.
 struct State {
     /// Rounds count from one. A round is a night and then a day.
@@ -449,16 +462,13 @@ impl State {
         };
     }
 
-    /// The players who act in the current phase: by night the werewolves,
-    /// the doctor, and the seer; by day everyone alive.
+    /// The living players who act in the current phase, as
+    /// [`Phase::wakes`] has it: by night the werewolves, the doctor, and the
+    /// seer; by day everyone alive.
     fn awake(&self) -> HashSet<PlayerId> {
-        let acts = |role: Role| match self.phase {
-            Phase::Night => matches!(role, Role::Werewolf | Role::Doctor | Role::Seer),
-            Phase::Day => true,
-        };
         self.alive
             .iter()
-            .filter(|player_id| acts(self.roles[*player_id]))
+            .filter(|player_id| self.phase.wakes(self.roles.get(*player_id).copied()))
             .cloned()
             .collect()
     }
@@ -551,8 +561,9 @@ impl Default for Rules {
 /// itself is not numbered.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Message {
-    /// The environment opens a phase for one awake player. Phases are
-    /// numbered from 1 for the first night, one up for each phase.
+    /// The environment opens a phase for one living player, awake in it
+    /// or not. Phases are numbered from 1 for the first night, one up for
+    /// each phase.
     Announce {
         /// The number of the phase.
         seq: u64,
@@ -951,6 +962,15 @@ pub fn candidates(me: &PlayerId, view: &View) -> Vec<PlayerId> {
         .collect();
     candidates.sort();
     candidates
+}
+
+/// Whether `me` acts in the phase `view` shows: by day everyone alive does,
+/// and by night the werewolves, the doctor and the seer. The rule is the
+/// one the environment goes by in waking its players, read from the role
+/// `view` shows `me` as its own, so the two cannot disagree about who
+/// sleeps.
+pub fn awake(me: &PlayerId, view: &View) -> bool {
+    view.phase.wakes(view.roles.get(me).copied())
 }
 
 #[cfg(test)]
@@ -1781,5 +1801,37 @@ mod tests {
             candidates(&"seer".to_string(), &view),
             ["wolf1".to_string(), "wolf2".to_string()]
         );
+    }
+
+    #[test]
+    fn a_player_is_awake_in_a_phase_as_its_view_shows_it_when_the_environment_says_it_is() {
+        // The environment and each player read the one rule, so whoever the
+        // environment has awake sees itself awake, and nobody else does.
+        let mut state = full_village();
+        state.alive.remove("wolf2");
+        for _ in 0..2 {
+            let awake_by_the_rules = state.awake();
+            for player in &state.alive {
+                let view = state.view(player.clone()).unwrap();
+                assert_eq!(
+                    awake(player, &view),
+                    awake_by_the_rules.contains(player),
+                    "{player} in {:?}",
+                    state.phase
+                );
+            }
+            state.next();
+        }
+        // By night a villager sleeps, and so does a player shown no role;
+        // by day both are awake.
+        let villager = "villager".to_string();
+        let known = [("villager", Role::Villager)];
+        assert!(!awake(&villager, &seen(&["wolf1", "villager"], &known)));
+        assert!(awake(
+            &villager,
+            &seen_by_day(&["wolf1", "villager"], &known)
+        ));
+        assert!(!awake(&villager, &seen(&["wolf1", "villager"], &[])));
+        assert!(awake(&villager, &seen_by_day(&["wolf1", "villager"], &[])));
     }
 }
