@@ -22,15 +22,29 @@ and evil, and play at most five quests. Each quest has a leader, who
 proposes a team of the size the quest needs. Everyone votes on the team in
 secret, and it goes when more than half of all the players approve. Each
 member of a team that goes supports or sabotages the quest in secret, and
-enough sabotages fail it; only evil players may sabotage. Merlin,
-Percival and the loyal servants of Arthur are good; the Assassin, Morgana,
-Mordred, Oberon and the minions of Mordred are evil. Merlin knows most of
-the evil players, and the evil players but Oberon know each other.
-Good wins with three successful quests, unless the Assassin then names
-Merlin. Evil wins with three failed quests, five failed proposals in a
+enough sabotages fail it; only evil players may sabotage. Good wins with
+three successful quests, unless the Assassin then names Merlin. Evil wins with three failed quests, five failed proposals in a
 row, or Merlin named. Everyone may talk at any time, in every phase, with
 no turns: whenever you are woken, you may speak to every other player, make
 the choice the phase asks of you, or wait.
+
+Each player has a role, and knows only its own. A table may seat any of
+these roles.
+
+The good roles:
+- Merlin sees every evil player but Mordred, without learning their roles,
+  and must keep that knowledge hidden, since the Assassin will try to name
+  Merlin.
+- Percival sees Merlin and Morgana, but cannot tell which is which.
+- A loyal servant of Arthur sees nobody.
+
+The evil roles, of whom all but Oberon see each other:
+- The Assassin names one player as Merlin after the third successful
+  quest, and evil wins if the Assassin is right.
+- Morgana looks like Merlin to Percival.
+- Mordred is hidden from Merlin.
+- Oberon neither sees the other evil players nor is seen by them.
+- A minion of Mordred has no power of its own.
 """
 
 [strategies.everyone]

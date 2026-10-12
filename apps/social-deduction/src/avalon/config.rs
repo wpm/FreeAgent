@@ -708,8 +708,16 @@ policy = "random"
         let in_play: Vec<&str> = settings.models_in_play().into_keys().collect();
         assert_eq!(in_play, ["qwen"]);
         let rules = &settings.config.text["rules"];
-        for said in ["every phase", "speak", "wait", "Assassin"] {
+        for said in ["every phase", "speak", "wait"] {
             assert!(rules.contains(said), "{said}: {rules}");
+        }
+        // They explain every role, since a table may seat any of them.
+        for (role, _) in Table::default().counts() {
+            let named = role
+                .told()
+                .trim_start_matches("a ")
+                .trim_start_matches("the ");
+            assert!(rules.contains(named), "{named}: {rules}");
         }
         let merlin = prompt(&prompts, "player3", Role::Merlin, "everyone");
         assert!(merlin.starts_with(rules.as_str()), "{merlin}");
