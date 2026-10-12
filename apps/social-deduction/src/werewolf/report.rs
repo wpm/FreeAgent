@@ -8,9 +8,9 @@
 //! player and its number for the message. A player's memory holds the
 //! messages themselves, and its account reads them.
 
-use super::llm::Memory;
+use super::llm::{ContextWindow, Memory, Source};
 use super::{ENVIRONMENT, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Team, View, awake};
-use crate::model::ToolChoice;
+use crate::model::{ToolChoice, tokens};
 use free_agent::{ActorId, Event};
 use humantime::format_duration;
 use std::cmp::Ordering;
@@ -52,7 +52,10 @@ enum Voice {
 /// may change and their order matters, so the omniscient narrator tells
 /// each as the environment observes it, and both tell each tentative
 /// decision as it is announced, and a player's narrator tells the other
-/// players' votes as the player hears them. A phase begins at its first
+/// players' votes as the player hears them, and as the day ends its tally:
+/// each player alive that day, in seat order, with its last vote or that
+/// it did not vote, which takes the place of the day's votes and tentative
+/// decisions in the player's account. A phase begins at its first
 /// announcement and ends at the next phase's, or at the end of the game,
 /// and the omniscient narrator tells the time between, to the nearest
 /// second, after who died. The omniscient narrator tells a selection when
@@ -97,6 +100,24 @@ pub struct Narrator {
     /// by the environment, by the player and its number for the message:
     /// the phase it was for, and whom it chose.
     selections: HashMap<(ActorId, u64), (u64, PlayerId)>,
+    /// In a player's account, each player's last vote of the day being
+    /// told, for the day's tally.
+    votes: HashMap<PlayerId, PlayerId>,
+    /// In a player's account, the lines told so far, in order, each with
+    /// what it is.
+    account: Vec<(String, Line)>,
+}
+
+/// What a line of a player's account is, which decides what becomes of it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Line {
+    /// Something a player said, which a story may forget.
+    Talk,
+    /// A vote or a tentative decision of the day being told, which the
+    /// day's tally takes the place of once the day is past.
+    Passing,
+    /// Anything else, which stays.
+    Kept,
 }
 
 /// The phase being told: which it is, and when it began.
@@ -209,13 +230,15 @@ impl Narrator {
                 };
                 vec![]
             }
-            Entry::Configuration(configuration)
-                if configuration.tool_choice == ToolChoice::Auto =>
-            {
-                vec![format!(
-                    "{} does not accept a required tool call, so its players are asked to call one.",
-                    configuration.model
-                )]
+            Entry::Configuration(configuration) => {
+                let mut lines = vec![context_window(configuration.context_window)];
+                if configuration.tool_choice == ToolChoice::Auto {
+                    lines.push(format!(
+                        "{} does not accept a required tool call, so its players are asked to call one.",
+                        configuration.model
+                    ));
+                }
+                lines
             }
             Entry::Failed { player, seq, error } => {
                 let player = self.seat(player);
@@ -267,8 +290,36 @@ impl Narrator {
     /// make, is a deed; an utterance it made, or heard, is told as said;
     /// and a tentative decision it heard is told as announced. A player
     /// remembers nothing from a phase other than the one it was in, so
-    /// nothing it remembers is late.
+    /// nothing it remembers is late. The lines join the player's
+    /// [account](Narrator::account), where the day's tally takes the place
+    /// of its votes and tentative decisions.
     pub fn recall(&mut self, event: &Event<Memory>) -> Vec<String> {
+        let line = match &event.payload {
+            Memory::Acted {
+                message: Message::Say { .. },
+            }
+            | Memory::Observed {
+                message: Message::Say { .. },
+            } => Line::Talk,
+            memory if self.passes(memory) => Line::Passing,
+            _ => Line::Kept,
+        };
+        let lines = self.remember(event);
+        self.account
+            .extend(lines.iter().map(|text| (text.clone(), line)));
+        lines
+    }
+
+    /// A player's account so far: the current phase in full, and each past
+    /// day with its talk and its tally in place of its votes and tentative
+    /// decisions.
+    pub fn account(&self) -> Vec<&str> {
+        self.account.iter().map(|(text, _)| text.as_str()).collect()
+    }
+
+    /// The lines a player's memory `event` adds, as [`Narrator::recall`]
+    /// tells them.
+    fn remember(&mut self, event: &Event<Memory>) -> Vec<String> {
         match &event.payload {
             Memory::Observed {
                 message: Message::Announce { seq, view, .. },
@@ -290,6 +341,21 @@ impl Narrator {
             } => vec![self.said(from, text)],
             _ => vec![],
         }
+    }
+
+    /// Whether what `memory` adds to a player's account gives way to the
+    /// day's tally once the day is past: a vote or a tentative decision
+    /// made or heard by day.
+    fn passes(&self, memory: &Memory) -> bool {
+        self.by_day()
+            && matches!(
+                memory,
+                Memory::Acted {
+                    message: Message::Select { .. }
+                } | Memory::Observed {
+                    message: Message::Select { .. } | Message::Tentative { .. }
+                }
+            )
     }
 
     /// The environment's tentative decision: `target` will be voted out
@@ -397,7 +463,8 @@ impl Narrator {
             .phase
             .as_ref()
             .is_some_and(|told| ordinal(&phase) != ordinal(&told.phase) + 1);
-        let mut lines = self.outcome(&view.alive, slept, time);
+        let mut lines = self.tally();
+        lines.extend(self.outcome(&view.alive, slept, time));
         self.alive = view.alive.clone();
         lines.push(String::new());
         lines.push(format!("{}.", title(&phase)));
@@ -452,18 +519,46 @@ impl Narrator {
     /// `player`'s deed of choosing `chosen`: told at once in a player's
     /// account, and in the omniscient one in a day whose vote is ratified,
     /// since the votes may change and their order matters; otherwise held
-    /// for the end of the phase, to be told in seat order.
+    /// for the end of the phase, to be told in seat order. A player's
+    /// account keeps each player's last vote of the day for its tally.
     fn did(&mut self, player: &PlayerId, chosen: &PlayerId) -> Vec<String> {
         let line = self.deed(player, chosen);
-        let by_ratified_day =
-            self.ratified && matches!(&self.phase, Some(told) if told.phase.1 == Phase::Day);
         match self.voice {
-            Voice::Omniscient if !by_ratified_day => {
+            Voice::Omniscient if !(self.ratified && self.by_day()) => {
                 self.deeds.push((player.clone(), line));
                 vec![]
             }
+            Voice::Player(_) if self.by_day() => {
+                self.votes.insert(player.clone(), chosen.clone());
+                vec![line]
+            }
             _ => vec![line],
         }
+    }
+
+    /// Whether the phase being told is a day.
+    fn by_day(&self) -> bool {
+        matches!(&self.phase, Some(told) if told.phase.1 == Phase::Day)
+    }
+
+    /// In a player's account, the tally of the day being told, as it ends:
+    /// each player alive that day, in seat order, with its last vote or
+    /// that it did not vote. The day's votes and tentative decisions leave
+    /// the account, for the tally to take their place.
+    fn tally(&mut self) -> Vec<String> {
+        let votes = std::mem::take(&mut self.votes);
+        if !(matches!(self.voice, Voice::Player(_)) && self.by_day()) {
+            return vec![];
+        }
+        self.account.retain(|(_, line)| *line != Line::Passing);
+        in_order(&self.alive)
+            .into_iter()
+            .map(|player| match votes.get(player) {
+                Some(chosen) => self.deed(player, chosen),
+                None if self.is_me(player) => "You do not vote.".to_string(),
+                None => format!("{} does not vote.", self.seat(player)),
+            })
+            .collect()
     }
 
     /// What came of the werewolves' `hunt`: whom they chose, and who
@@ -572,6 +667,76 @@ impl Narrator {
     }
 }
 
+/// A player's account of its own game, told a memory at a time: the
+/// current phase in full, and each past day with its talk and its tally in
+/// place of its votes and tentative decisions. Told within a budget, it
+/// forgets talk, oldest first, until it fits.
+pub struct Story {
+    /// The player's narrator, which has read every memory told and keeps
+    /// the account.
+    narrator: Narrator,
+}
+
+/// The line that stands in place of the last line of talk a story forgets.
+pub const FORGOTTEN: &str = "You don't remember what was said before this.";
+
+impl Story {
+    /// The story `me` tells of its own game, with nothing in it yet.
+    pub fn of(me: PlayerId) -> Self {
+        Self {
+            narrator: Narrator::for_player(me),
+        }
+    }
+
+    /// Add what `event` adds to the account.
+    pub fn recall(&mut self, event: &Event<Memory>) {
+        self.narrator.recall(event);
+    }
+
+    /// The lines told, in order.
+    pub fn lines(&self) -> Vec<&str> {
+        self.narrator.account()
+    }
+
+    /// The lines told, fitting within `budget` tokens by estimate once
+    /// joined by newlines, and how many lines of talk were left out to fit.
+    /// Talk is left out oldest first until the rest fits or none is left,
+    /// and [`FORGOTTEN`] stands in place of the last line left out, counted
+    /// with the rest. The story itself keeps every line.
+    pub fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
+        let account = &self.narrator.account;
+        let chars = |line: &str| line.chars().count();
+        let talk: Vec<usize> = (0..account.len())
+            .filter(|&i| account[i].1 == Line::Talk)
+            .collect();
+        // The length of the lines, each with a newline after it, as each
+        // line of talk is left out. Joined, they have one newline fewer.
+        let mut length = account
+            .iter()
+            .map(|(line, _)| chars(line) + 1)
+            .sum::<usize>();
+        let mut forgot = 0;
+        while forgot < talk.len() && tokens(length.saturating_sub(1)) > budget {
+            length -= chars(&account[talk[forgot]].0) + 1;
+            if forgot == 0 {
+                length += chars(FORGOTTEN) + 1;
+            }
+            forgot += 1;
+        }
+        let forgotten = &talk[..forgot];
+        let lines = account
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (line, _))| match forgotten.binary_search(&i) {
+                Ok(at) if at + 1 == forgot => Some(FORGOTTEN),
+                Ok(_) => None,
+                Err(_) => Some(line.as_str()),
+            })
+            .collect();
+        (lines, forgot)
+    }
+}
+
 /// A player as an account names it: `player (role)` when the role is
 /// known, the name alone when it is not.
 #[derive(Debug, Clone, Copy)]
@@ -617,6 +782,17 @@ fn identity(me: &PlayerId, roles: &HashMap<PlayerId, Role>) -> String {
         Some(role) => format!("You are {me}, the {role}."),
         None => format!("You are {me}."),
     }
+}
+
+/// The model's context window and where it came from, in a line.
+fn context_window(ContextWindow { tokens, source }: ContextWindow) -> String {
+    let source = match source {
+        Source::CommandLine => "as the command line says",
+        Source::File => "as the configuration file says",
+        Source::Provider => "as the provider reports",
+        Source::Default => "the default",
+    };
+    format!("The model's context window is {tokens} tokens, {source}.")
 }
 
 /// A phase by its name: `Night 1`, `Day 1`.
@@ -675,6 +851,7 @@ fn listed<'a>(seats: impl IntoIterator<Item = Seat<'a>>) -> String {
 mod tests {
     use super::*;
 
+    use crate::model::estimate;
     use crate::werewolf::llm::Configuration;
     use crate::werewolf::tests::{announcement, logged, received, selection, tentative, utterance};
     use crate::werewolf::{ENVIRONMENT, Rules, to_the_environment};
@@ -765,6 +942,7 @@ mod tests {
             to: HashSet::from([id(to)]),
             message: announcement(seq, view),
             seen: None,
+            forgot: None,
         }
     }
 
@@ -776,6 +954,7 @@ mod tests {
             to: to_the_environment(),
             message: choice(from, seq, target),
             seen: None,
+            forgot: None,
         })
     }
 
@@ -893,6 +1072,7 @@ mod tests {
             to: to.iter().map(|name| id(name)).collect(),
             message: tentative(seq, n, target),
             seen: None,
+            forgot: None,
         })
     }
 
@@ -905,6 +1085,7 @@ mod tests {
             to: to.iter().map(|name| id(name)).collect(),
             message: utterance(seq, from, n, text),
             seen: Some(3),
+            forgot: None,
         })
     }
 
@@ -914,6 +1095,7 @@ mod tests {
             from: id(from),
             message,
             seen: Some(3),
+            forgot: None,
         })
     }
 
@@ -1180,6 +1362,344 @@ mod tests {
             narrator.recall(&received(tentative(2, 6, None))),
             ["Nobody is about to be voted out."]
         );
+    }
+
+    #[test]
+    fn a_players_narrator_alone_tells_each_vote_of_a_past_day_once_in_its_tally() {
+        let mut narrator = Narrator::for_player(id("doctor"));
+        for memory in a_day_of_talk_and_votes() {
+            narrator.recall(&memory);
+        }
+        assert_eq!(
+            narrator.account(),
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                "ann says, \"I suspect wolf.\"",
+                "ann votes against wolf.",
+                "wolf will be voted out in 20s unless the votes change.",
+                "You vote against wolf.",
+                "seer votes against ann.",
+                "wolf says, \"Not me.\"",
+                "ann votes against seer.",
+                "Nobody is about to be voted out.",
+            ]
+        );
+        narrator.recall(&heard(
+            2,
+            Phase::Night,
+            &["seer", "doctor", "ann"],
+            &[("doctor", Role::Doctor)],
+        ));
+        narrator.recall(&chose("doctor", 3, "seer"));
+        assert_eq!(
+            narrator.account(),
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                "ann says, \"I suspect wolf.\"",
+                "wolf says, \"Not me.\"",
+                "ann votes against seer.",
+                "You vote against wolf.",
+                "seer votes against ann.",
+                "wolf does not vote.",
+                "wolf dies.",
+                "",
+                "Night 2.",
+                "You protect seer.",
+            ]
+        );
+    }
+
+    /// Tell `story` each of `memories` in order.
+    fn recall_all(story: &mut Story, memories: impl IntoIterator<Item = Event<Memory>>) {
+        for memory in memories {
+            story.recall(&memory);
+        }
+    }
+
+    /// The doctor's first day: talk, votes, a vote change, and tentative
+    /// decisions, with wolf never voting.
+    fn a_day_of_talk_and_votes() -> Vec<Event<Memory>> {
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        let known = [("doctor", Role::Doctor)];
+        vec![
+            heard(1, Phase::Day, &everyone, &known),
+            received(utterance(2, "ann", 1, "I suspect wolf.")),
+            received(choice("ann", 2, "wolf")),
+            received(tentative(2, 5, Some("wolf"))),
+            chose("doctor", 2, "wolf"),
+            received(selection(2, "seer", 2, "ann")),
+            received(utterance(2, "wolf", 3, "Not me.")),
+            received(selection(2, "ann", 4, "seer")),
+            received(tentative(2, 6, None)),
+        ]
+    }
+
+    #[test]
+    fn the_current_day_is_told_in_full() {
+        let mut story = Story::of(id("doctor"));
+        recall_all(&mut story, a_day_of_talk_and_votes());
+        assert_eq!(
+            story.lines(),
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                "ann says, \"I suspect wolf.\"",
+                "ann votes against wolf.",
+                "wolf will be voted out in 20s unless the votes change.",
+                "You vote against wolf.",
+                "seer votes against ann.",
+                "wolf says, \"Not me.\"",
+                "ann votes against seer.",
+                "Nobody is about to be voted out.",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_past_days_votes_give_way_to_its_tally_in_seat_order_and_its_talk_stays() {
+        let mut story = Story::of(id("doctor"));
+        recall_all(&mut story, a_day_of_talk_and_votes());
+        story.recall(&heard(
+            2,
+            Phase::Night,
+            &["seer", "doctor", "ann"],
+            &[("doctor", Role::Doctor)],
+        ));
+        assert_eq!(
+            story.lines(),
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                "ann says, \"I suspect wolf.\"",
+                "wolf says, \"Not me.\"",
+                "ann votes against seer.",
+                "You vote against wolf.",
+                "seer votes against ann.",
+                "wolf does not vote.",
+                "wolf dies.",
+                "",
+                "Night 2.",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_player_that_does_not_vote_is_told_so_in_its_own_voice() {
+        let mut story = Story::of(id("ann"));
+        let everyone = ["wolf", "ann"];
+        recall_all(
+            &mut story,
+            [
+                heard(1, Phase::Day, &everyone, &[]),
+                heard(2, Phase::Night, &everyone, &[]),
+            ],
+        );
+        assert_eq!(
+            story.lines(),
+            [
+                "You are ann.",
+                "",
+                "Day 1.",
+                "You do not vote.",
+                "wolf does not vote.",
+                "Nobody dies.",
+                "",
+                "Night 2.",
+                "You sleep.",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_dead_player_is_not_in_a_later_days_tally() {
+        let mut story = Story::of(id("doctor"));
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        let living = ["seer", "doctor", "ann"];
+        let known = [("doctor", Role::Doctor)];
+        recall_all(
+            &mut story,
+            [
+                heard(1, Phase::Day, &everyone, &known),
+                heard(2, Phase::Night, &living, &known),
+                chose("doctor", 3, "seer"),
+                heard(2, Phase::Day, &living, &known),
+                received(choice("seer", 4, "ann")),
+                heard(3, Phase::Night, &living, &known),
+            ],
+        );
+        assert_eq!(
+            story.lines(),
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                "ann does not vote.",
+                "You do not vote.",
+                "seer does not vote.",
+                "wolf does not vote.",
+                "wolf dies.",
+                "",
+                "Night 2.",
+                "You protect seer.",
+                "Nobody dies.",
+                "",
+                "Day 2.",
+                "ann does not vote.",
+                "You do not vote.",
+                "seer votes against ann.",
+                "Nobody dies.",
+                "",
+                "Night 3.",
+            ]
+        );
+    }
+
+    /// What ann says on the first day.
+    const ACCUSED: &str =
+        "I suspect wolf, who was very quiet last night and has said nothing since.";
+
+    /// What wolf says on the first day.
+    const DENIED: &str = "Not me. I was asleep all night, as every villager here was, I promise.";
+
+    /// What ann says on the second day.
+    const STILL: &str = "Wolf is gone and somebody still died, so I was wrong about the werewolf.";
+
+    /// The doctor's story of two days of talk with a night between them.
+    fn two_days_of_talk() -> Story {
+        let mut story = Story::of(id("doctor"));
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        let living = ["seer", "doctor", "ann"];
+        let known = [("doctor", Role::Doctor)];
+        recall_all(
+            &mut story,
+            [
+                heard(1, Phase::Day, &everyone, &known),
+                received(utterance(2, "ann", 1, ACCUSED)),
+                received(choice("ann", 2, "wolf")),
+                received(utterance(2, "wolf", 3, DENIED)),
+                heard(2, Phase::Night, &living, &known),
+                heard(2, Phase::Day, &["doctor", "ann"], &known),
+                received(utterance(4, "ann", 5, STILL)),
+            ],
+        );
+        story
+    }
+
+    /// The estimate of `lines`, joined as a request joins them.
+    fn estimated(lines: &[&str]) -> u64 {
+        estimate(&lines.join("\n"))
+    }
+
+    #[test]
+    fn a_story_within_its_budget_is_told_whole() {
+        let story = two_days_of_talk();
+        let whole = story.lines();
+        assert_eq!(
+            whole,
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                &format!("ann says, \"{ACCUSED}\""),
+                &format!("wolf says, \"{DENIED}\""),
+                "ann votes against wolf.",
+                "You do not vote.",
+                "seer does not vote.",
+                "wolf does not vote.",
+                "wolf dies.",
+                "",
+                "Night 2.",
+                "seer dies.",
+                "",
+                "Day 2.",
+                &format!("ann says, \"{STILL}\""),
+            ]
+        );
+        assert_eq!(story.told_within(estimated(&whole)), (whole.clone(), 0));
+        assert_eq!(story.told_within(u64::MAX), (whole, 0));
+    }
+
+    #[test]
+    fn a_story_over_its_budget_forgets_talk_oldest_first_in_its_place() {
+        let story = two_days_of_talk();
+        let whole = story.lines();
+        let forgetting = |forgot: usize| -> Vec<&str> {
+            let talk = [3, 4, 15];
+            whole
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !talk[..forgot].contains(i) || *i == talk[forgot - 1])
+                .map(|(i, line)| {
+                    if talk[..forgot].contains(&i) {
+                        FORGOTTEN
+                    } else {
+                        line
+                    }
+                })
+                .collect()
+        };
+        assert_eq!(
+            forgetting(2),
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                "You don't remember what was said before this.",
+                "ann votes against wolf.",
+                "You do not vote.",
+                "seer does not vote.",
+                "wolf does not vote.",
+                "wolf dies.",
+                "",
+                "Night 2.",
+                "seer dies.",
+                "",
+                "Day 2.",
+                &format!("ann says, \"{STILL}\""),
+            ]
+        );
+        // The past day's talk is forgotten first, and only as much as has
+        // to be.
+        for forgot in 1..=2 {
+            let budget = estimated(&forgetting(forgot));
+            assert!(budget < estimated(&whole));
+            assert_eq!(story.told_within(budget), (forgetting(forgot), forgot));
+        }
+        // A token less, and the current day's talk goes too.
+        let budget = estimated(&forgetting(2)) - 1;
+        assert_eq!(story.told_within(budget), (forgetting(3), 3));
+    }
+
+    #[test]
+    fn a_story_over_its_budget_with_no_talk_left_is_told_with_none() {
+        let story = two_days_of_talk();
+        let none = vec![
+            "You are doctor, the doctor.",
+            "",
+            "Day 1.",
+            "ann votes against wolf.",
+            "You do not vote.",
+            "seer does not vote.",
+            "wolf does not vote.",
+            "wolf dies.",
+            "",
+            "Night 2.",
+            "seer dies.",
+            "",
+            "Day 2.",
+            FORGOTTEN,
+        ];
+        assert_eq!(story.told_within(0), (none, 3));
+        // A story with no talk is told whole however far over it is.
+        let mut quiet = Story::of(id("ann"));
+        quiet.recall(&heard(1, Phase::Day, &["wolf", "ann"], &[]));
+        assert_eq!(quiet.told_within(0), (quiet.lines(), 0));
     }
 
     #[test]
@@ -1606,6 +2126,7 @@ mod tests {
             to: to_the_environment(),
             message: Message::EndPhase { seq: 1 },
             seen: None,
+            forgot: None,
         });
         assert!(narrator.narrate(&reminder).is_empty());
     }
@@ -1797,7 +2318,14 @@ mod tests {
                 &["wolf", "seer", "doctor"],
                 &[("seer", Role::Seer), ("wolf", Role::Werewolf)]
             )),
-            ["Nobody dies.", "", "Night 2."]
+            [
+                "doctor does not vote.",
+                "You vote against wolf (werewolf).",
+                "wolf (werewolf) does not vote.",
+                "Nobody dies.",
+                "",
+                "Night 2."
+            ]
         );
     }
 
@@ -1843,7 +2371,16 @@ mod tests {
         );
         assert_eq!(
             narrator.recall(&heard(2, Phase::Night, &["seer", "doctor", "ann"], &known)),
-            ["wolf dies.", "", "Night 2.", "You sleep."]
+            [
+                "You vote against wolf.",
+                "doctor does not vote.",
+                "seer does not vote.",
+                "wolf does not vote.",
+                "wolf dies.",
+                "",
+                "Night 2.",
+                "You sleep."
+            ]
         );
     }
 
@@ -1855,11 +2392,26 @@ mod tests {
         narrator.recall(&heard(1, Phase::Day, &everyone, &known));
         assert_eq!(
             narrator.recall(&heard(2, Phase::Day, &["seer", "doctor", "ann"], &known)),
-            ["wolf died.", "", "Day 2."]
+            [
+                "You do not vote.",
+                "doctor does not vote.",
+                "seer does not vote.",
+                "wolf does not vote.",
+                "wolf died.",
+                "",
+                "Day 2."
+            ]
         );
         assert_eq!(
             narrator.recall(&heard(3, Phase::Day, &["seer", "doctor", "ann"], &known)),
-            ["Nobody died.", "", "Day 3."]
+            [
+                "You do not vote.",
+                "doctor does not vote.",
+                "seer does not vote.",
+                "Nobody died.",
+                "",
+                "Day 3."
+            ]
         );
     }
 
@@ -2032,7 +2584,8 @@ mod tests {
     }
 
     /// The configuration of a game whose requests are made under
-    /// `tool_choice`, as the log records it.
+    /// `tool_choice`, within the default context window, as the log
+    /// records it.
     fn configured(tool_choice: ToolChoice) -> Event<Entry> {
         logged(Entry::Configuration(Box::new(Configuration {
             role_counts: BTreeMap::from([(Role::Werewolf, 1), (Role::Villager, 2)]),
@@ -2043,6 +2596,10 @@ mod tests {
             base_url: "http://localhost:1234/v1".to_string(),
             model: "qwen2.5-7b-instruct".to_string(),
             tool_choice,
+            context_window: ContextWindow {
+                tokens: 4096,
+                source: Source::Default,
+            },
             api_key_env: None,
             personas: BTreeMap::new(),
             prompts: BTreeMap::from([(id("wolf"), "You are wolf.".to_string())]),
@@ -2053,9 +2610,13 @@ mod tests {
     }
 
     #[test]
-    fn a_configuration_requiring_a_tool_call_adds_nothing_to_either_account() {
+    fn a_configuration_requiring_a_tool_call_tells_only_the_context_window_and_only_in_the_omniscient_account()
+     {
         let configuration = configured(ToolChoice::Required);
-        assert!(Narrator::default().narrate(&configuration).is_empty());
+        assert_eq!(
+            Narrator::default().narrate(&configuration),
+            ["The model's context window is 4096 tokens, the default."]
+        );
         assert!(
             Narrator::for_player(id("wolf"))
                 .narrate(&configuration)
@@ -2064,12 +2625,36 @@ mod tests {
     }
 
     #[test]
+    fn the_context_window_is_told_with_where_it_came_from() {
+        let told = |tokens, source| context_window(ContextWindow { tokens, source });
+        assert_eq!(
+            told(4096, Source::Default),
+            "The model's context window is 4096 tokens, the default."
+        );
+        assert_eq!(
+            told(32768, Source::Provider),
+            "The model's context window is 32768 tokens, as the provider reports."
+        );
+        assert_eq!(
+            told(8192, Source::File),
+            "The model's context window is 8192 tokens, as the configuration file says."
+        );
+        assert_eq!(
+            told(16384, Source::CommandLine),
+            "The model's context window is 16384 tokens, as the command line says."
+        );
+    }
+
+    #[test]
     fn a_configuration_allowing_a_tool_call_is_told_in_the_omniscient_account_alone() {
         let configuration = configured(ToolChoice::Auto);
         assert_eq!(
             Narrator::default().narrate(&configuration),
-            ["qwen2.5-7b-instruct does not accept a required tool call, \
-                 so its players are asked to call one."]
+            [
+                "The model's context window is 4096 tokens, the default.",
+                "qwen2.5-7b-instruct does not accept a required tool call, \
+                 so its players are asked to call one."
+            ]
         );
         assert!(
             Narrator::for_player(id("wolf"))

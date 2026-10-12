@@ -7,6 +7,8 @@
 [model]
 base_url = "http://localhost:1234/v1"
 id = "qwen2.5-7b-instruct"
+# The model's context window in tokens, over what the provider reports.
+# context_window = 32768
 
 [phases]
 ratify_limit = "20s"

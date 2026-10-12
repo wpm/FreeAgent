@@ -57,7 +57,7 @@ file that names the model, how to reach it, and the prompts each role is
 given. The [examples](examples/werewolf/llm) show how one is written.
 
 ```sh
-social-deduction werewolf llm game.toml [role counts] [limits] [--ratify-limit 20s] [--model-base-url URL] [--model-id ID]
+social-deduction werewolf llm game.toml [role counts] [limits] [--ratify-limit 20s] [--model-base-url URL] [--model-id ID] [--context-window TOKENS]
 ```
 
 A setting comes from the command line if it is given there, otherwise from
@@ -115,7 +115,10 @@ limit is `ratify_limit` under `[phases]`, or `--ratify-limit` on the
 command line, twenty seconds unless either says, and may not be longer
 than the day limit. The account tells what everyone says as they say it,
 and a player's story tells it what others said and how they voted. The
-prompt is the configuration's to write: the program tells the model only
+current day is told in full, every vote and tentative decision as it came.
+A past day is told by its talk, in order, then a tally of each player
+alive that day, in seat order, with the vote that counted or that it did
+not vote, then who died. The prompt is the configuration's to write: the program tells the model only
 what the three tools do and that it may speak, vote, or wait, so the rules
 text in the file should say that by day everyone may talk at any time.
 
@@ -127,8 +130,9 @@ is an error.
 - `[model]`: `base_url`, the root of the provider's OpenAI-compatible API,
   ending in `/v1`; `id`, the model's id exactly as the provider lists it;
   `api_key_env`, the environment variable holding the API key, over the one
-  known for the provider; and `request_timeout`, how long one request may
-  take, a minute unless it says.
+  known for the provider; `request_timeout`, how long one request may
+  take, a minute unless it says; and `context_window`, the model's context
+  window in tokens.
 - `[phases]`: `night_limit` and `day_limit`, how long each phase waits for
   the players' selections, a minute each unless they say; and
   `ratify_limit`, how long a day's votes must stand to be ratified, twenty
@@ -172,6 +176,28 @@ A model that does not answer both requests as a player must stops the
 program, and the error names the request that failed and says why in the
 provider's own words, such as a server that rejects the request or an
 answer that makes no tool call. Any model that passes can play.
+
+The model's context window, in tokens, is settled before the game begins:
+from `--context-window` if given, otherwise from `context_window` in
+`[model]`, otherwise from the provider's listing of the model, otherwise
+4096 tokens, a size most models can run in. The listing gives it when the
+model's entry carries one of the fields named in `src/models.toml`, such as
+vLLM's `max_model_len` or OpenRouter's `context_length`, holding a positive
+whole number. A window of 0 stops the program. The account tells the window
+and where it came from, and the configuration in the log records both.
+
+Each request fits the context window. Every request, the check's
+included, asks for a reply of at most 1024 tokens, and the rest is counted
+by estimate, a token for every 3.5 characters, rounded up. When a player's
+whole story would not fit beside its prompt, the tools, where the game
+stands and the reply, the player forgets talk, its own and others', oldest
+first, until it does, and "You don't remember what was said before this."
+stands where the last forgotten line was. Everything else in the story is
+kept, and the player still remembers every line for its next request. A
+request that does not fit even with no talk is sent as it is, and an
+overflow is a failure to play, as any other is. The log's action and
+withheld entries carry `forgot`, how many lines of talk the request left
+out, whenever it left any out.
 
 Every request makes the model call a tool, unless the model refuses that.
 The night's request is made with `tool_choice` set to `"required"`; if the

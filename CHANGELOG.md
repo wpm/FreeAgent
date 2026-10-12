@@ -20,6 +20,16 @@ workflow takes a version's notes from here.
   before the game begins, and its log opens with the configuration the game
   was played under. A model that refuses to be made to call a tool is asked
   to call one instead.
+- The model's context window, settled before a `werewolf llm` game begins
+  from `--context-window`, `context_window` in `[model]`, the provider's
+  listing of the model, or a default of 4096 tokens, and told and logged
+  with where it came from.
+- A model player's request fits the context window: every request asks
+  for a reply of at most 1024 tokens, and when the story would not fit
+  beside the rest, by estimate, the player forgets talk, oldest first, and
+  is told "You don't remember what was said before this." The log's action
+  and withheld entries carry `forgot`, how many lines of talk were left
+  out, when any were.
 - `social-deduction models`, which lists the models a provider serves.
   `--check` asks each model to play as by night and as by day and marks
   those that answer both requests well, and those that do only when not
@@ -113,5 +123,10 @@ workflow takes a version's notes from here.
   the night is announced. A uniform-random player sleeps through such
   a phase too, so its games play as before. A player's story tells a phase
   it sleeps through as the phase line and "You sleep."
+- A model player's story tells a past day more briefly: its talk, in
+  order, then a tally of each player alive that day, in seat order, with
+  the vote that counted or that it did not vote, then the day's outcome.
+  The current phase is told in full, every vote and tentative decision
+  included. The omniscient account reads as before.
 
 [Unreleased]: https://github.com/wpm/FreeAgent/compare/main...HEAD

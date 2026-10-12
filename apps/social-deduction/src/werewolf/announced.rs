@@ -359,7 +359,7 @@ impl Environment {
             limit,
         } = self.game().open()?;
         for (to, message) in announcements {
-            act(&self.context, message, HashSet::from([to]), None)?;
+            act(&self.context, message, HashSet::from([to]), None, None)?;
         }
         self.context.think_after(limit, Message::EndPhase { seq })
     }
@@ -448,7 +448,7 @@ impl Behavior for Environment {
             }) = counted
             {
                 if let Some((message, to)) = tentative {
-                    act(&self.context, message, to, None)?;
+                    act(&self.context, message, to, None, None)?;
                 }
                 if let Some((limit, reminder)) = ratify {
                     self.context.think_after(limit, reminder)?;

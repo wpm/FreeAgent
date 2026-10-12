@@ -16,6 +16,10 @@
 //! variable that holds it, and [`Model::api_key`] reads that variable into
 //! a [`SecretString`], which is redacted wherever it is shown.
 //!
+//! The model's [`ContextWindow`] is settled before any game begins: from
+//! the command line, otherwise from the file, otherwise from the provider's
+//! listing of the model, otherwise from the code.
+//!
 //! The game is the announcing environment's, with a model [`Player`] in
 //! every seat, and the day's vote is ratified: a day ends one ratify limit
 //! after its votes stop changing, or at the day limit with nobody voted
@@ -29,8 +33,10 @@
 //! every message's, and neither remembers the message nor wakes for it.
 //! Each time it is woken, it tells the model the story so far and where the
 //! game stands, with how long the phase lasts, and carries out what the
-//! model answers. The call is made in the player's think loop, so the
-//! player keeps perceiving while the model works.
+//! model answers. The request fits the context window by estimate: when
+//! the story would not, the oldest talk is forgotten for that request. The
+//! call is made in the player's think loop, so the player keeps perceiving
+//! while the model works.
 //!
 //! By night a player is woken once, by its announcement, and has the model
 //! select one of its [candidates] with one `select` call, sent to
@@ -59,25 +65,27 @@
 //! and the game goes on. The player logs an [`Entry::Observation`] for each
 //! message it receives and an [`Entry::Action`] for each utterance and
 //! selection it sends, numbered together from 1, with how many memories the
-//! model was shown when it made the call that produced the message. Before
-//! a game begins, [`check_plays`] asks the model once as a player would by
-//! night and once as by day, so a model that does not answer either request
-//! well fails at launch, in the provider's words. Every request makes the
-//! model call a tool, unless the probe finds the model refuses that, and
-//! then every request asks it to call one, and an answer in prose is a
-//! failure like any other. [`game`] builds the
-//! episode from the deal, the rules, the model, and the [`Configuration`]
-//! the log opens with, which [`Settings::configuration`] records from the
-//! settings, the deal and the rendered prompts.
+//! model was shown when it made the call that produced the message and how
+//! many lines of talk that call forgot. Before a game begins,
+//! [`check_plays`] asks the model once as a player would by night and once
+//! as by day, so a model that does not answer either request well fails at
+//! launch, in the provider's words. Every request makes the model call a
+//! tool, unless the probe finds the model refuses that, and then every
+//! request asks it to call one, and an answer in prose is a failure like
+//! any other. [`game`] builds the episode from the deal, the rules, the
+//! model, and the [`Configuration`] the log opens with, which
+//! [`Settings::configuration`] records from the settings, the deal and the
+//! rendered prompts.
 
 use super::announced;
-use super::report::Narrator;
+use super::report::Story;
 use super::{
     Entry, Message, Phase, PhaseLimits, PlayerId, Role, RoleCounts, Rules, Table, Team, View, act,
     awake, candidates, observe, receivers,
 };
 use crate::model::{
-    self, Provider, REQUEST_TIMEOUT, Request, Response, Tool, ToolChoice, api_key, key_variable,
+    self, CONTEXT_WINDOW, MAX_TOKENS, Provider, REQUEST_TIMEOUT, Request, Response, Tool,
+    ToolChoice, api_key, estimate, key_variable,
 };
 use anyhow::{Context as _, anyhow, bail};
 use async_trait::async_trait;
@@ -137,6 +145,16 @@ pub struct ModelOverrides {
     /// The model's id, exactly as the provider lists it
     #[arg(long = "model-id", value_name = "ID")]
     pub id: Option<String>,
+    /// The model's context window, over what the provider reports
+    #[arg(long, value_name = "TOKENS", help = context_window_help())]
+    pub context_window: Option<u64>,
+}
+
+/// The help for `--context-window`, naming the default the code fills in.
+fn context_window_help() -> String {
+    format!(
+        "The model's context window in tokens, over what the provider reports [default: {CONTEXT_WINDOW}]"
+    )
 }
 
 /// The configuration file, as written. Every table but `[model]` may be
@@ -179,6 +197,9 @@ pub struct Model {
     /// How long a request may take.
     #[serde(default = "request_timeout", with = "humantime_serde")]
     pub request_timeout: Duration,
+    /// The model's context window, in tokens, over what the provider
+    /// reports.
+    pub context_window: Option<u64>,
 }
 
 impl Model {
@@ -288,6 +309,9 @@ pub struct Settings {
     pub day_limit: Duration,
     /// How long a day's votes must stand to be ratified.
     pub ratify_limit: Duration,
+    /// The model's context window, when the command line or the file
+    /// gives one.
+    pub context_window: Option<ContextWindow>,
 }
 
 impl Config {
@@ -315,9 +339,11 @@ impl Config {
     /// line: each role count and limit from the command line if given
     /// there, otherwise from the file, otherwise from the code, and the
     /// model's provider and id from the command line if given there,
-    /// otherwise from the file. A ratify limit longer than the day limit
-    /// is an error naming both, since the day would run out before any
-    /// vote stood.
+    /// otherwise from the file, and the context window from the command
+    /// line if given there, otherwise from the file if given there. A ratify
+    /// limit longer than the day limit is an error naming both, since the
+    /// day would run out before any vote stood, and a context window of 0
+    /// is an error naming the setting that gave it.
     pub fn settle(mut self, overrides: Overrides) -> anyhow::Result<Settings> {
         if let Some(base_url) = overrides.model.base_url {
             self.model.base_url = base_url;
@@ -348,6 +374,22 @@ impl Config {
                 format_duration(day_limit)
             );
         }
+        let given = |tokens, source| ContextWindow { tokens, source };
+        let context_window = overrides
+            .model
+            .context_window
+            .map(|tokens| given(tokens, Source::CommandLine))
+            .or(self
+                .model
+                .context_window
+                .map(|tokens| given(tokens, Source::File)));
+        if let Some(ContextWindow { tokens: 0, source }) = context_window {
+            let setting = match source {
+                Source::CommandLine => "--context-window",
+                _ => "context_window",
+            };
+            bail!("{setting} is 0; a context window holds at least 1 token");
+        }
         Ok(Settings {
             table: overrides.roles.or(file.or(Table::default())),
             night_limit: overrides
@@ -357,6 +399,7 @@ impl Config {
                 .unwrap_or(rules.night_limit),
             day_limit,
             ratify_limit,
+            context_window,
             config: self,
         })
     }
@@ -450,14 +493,16 @@ impl Settings {
     /// which [`Settings::prompts`] rendered for every seat and role at the
     /// table, and the templates and text blocks as written. The key's
     /// variable is named, and the key itself never recorded. Each request
-    /// is made under `tool_choice`, as the probe found. A player with no
-    /// prompt rendered for its role is an error naming the seat and the
-    /// role.
+    /// is made under `tool_choice`, as the probe found, within
+    /// `context_window`, as [`Settings::context_window`] settled it. A
+    /// player with no prompt rendered for its role is an error naming the
+    /// seat and the role.
     pub fn configuration(
         &self,
         roles: &HashMap<PlayerId, Role>,
         prompts: &[SystemPrompt],
         tool_choice: ToolChoice,
+        context_window: ContextWindow,
     ) -> anyhow::Result<Configuration> {
         let rendered: HashMap<(&PlayerId, Role), &str> = prompts
             .iter()
@@ -484,6 +529,7 @@ impl Settings {
             base_url: model.base_url.clone(),
             model: model.id.clone(),
             tool_choice,
+            context_window,
             api_key_env: model.key_variable().map(String::from),
             personas: config.personas.clone(),
             prompts,
@@ -495,6 +541,21 @@ impl Settings {
                 .collect(),
             text: config.text.clone(),
         })
+    }
+
+    /// The model's context window: the one the command line or the file
+    /// gives, otherwise `reported`, the one the provider's listing reports
+    /// for the model, otherwise [`CONTEXT_WINDOW`].
+    pub fn context_window(&self, reported: Option<u64>) -> ContextWindow {
+        self.context_window
+            .or(reported.map(|tokens| ContextWindow {
+                tokens,
+                source: Source::Provider,
+            }))
+            .unwrap_or(ContextWindow {
+                tokens: CONTEXT_WINDOW,
+                source: Source::Default,
+            })
     }
 
     /// The rules a game is played under: the variant's, with the limits
@@ -529,6 +590,31 @@ pub fn rules() -> Rules {
     }
 }
 
+/// A model's context window, in tokens, and where it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextWindow {
+    /// How many tokens the model takes in at once.
+    pub tokens: u64,
+    /// Where the window came from.
+    pub source: Source,
+}
+
+/// Where a setting came from, written as `command line`, `file`,
+/// `provider` or `default`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    /// The command line.
+    #[serde(rename = "command line")]
+    CommandLine,
+    /// The configuration file.
+    File,
+    /// The provider.
+    Provider,
+    /// The code's default.
+    Default,
+}
+
 /// The configuration a game ran under, as it took effect once the command
 /// line, the file and the defaults were combined, so that the log says by
 /// itself what was played and under which prompts. Each duration is
@@ -557,6 +643,8 @@ pub struct Configuration {
     /// Whether each request made the model call a tool, as the probe
     /// found the model would.
     pub tool_choice: ToolChoice,
+    /// The model's context window and where it came from.
+    pub context_window: ContextWindow,
     /// The name of the environment variable the key came from, if any.
     pub api_key_env: Option<String>,
     /// Each seat's persona, for the seats that have one.
@@ -591,6 +679,7 @@ pub fn game(
     let mut prompts = configuration.prompts.clone();
     let model_id = configuration.model.clone();
     let tool_choice = configuration.tool_choice;
+    let context_window = configuration.context_window.tokens;
     let players: Vec<PlayerId> = roles.keys().cloned().collect();
     let environment = announced::init(
         roles,
@@ -608,6 +697,7 @@ pub fn game(
             prompt,
             model_id.clone(),
             tool_choice,
+            context_window,
             Arc::clone(&model),
         )
     };
@@ -705,6 +795,8 @@ struct Mind {
     model_id: String,
     /// Whether each request makes the model call a tool.
     tool_choice: ToolChoice,
+    /// The model's context window, in tokens, which each request fits.
+    context_window: u64,
     /// The model asked each time the player is woken.
     model: Arc<dyn model::Model>,
 }
@@ -716,10 +808,17 @@ struct Remembered {
     /// The history, in order: each message received and each selection or
     /// utterance sent, stamped when the player remembered it.
     history: Vec<Event<Memory>>,
-    /// The player's narrator, which has read every memory in the history.
-    narrator: Narrator,
-    /// The lines the narrator told from the history, in order.
-    story: Vec<String>,
+    /// The story told from the history.
+    story: Story,
+}
+
+/// What the model was shown for a call: how many memories the story was
+/// told from, and how many lines of talk it forgot to fit the context
+/// window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Shown {
+    seen: usize,
+    forgot: usize,
 }
 
 /// A phase as a player was announced it: its number, what the player may
@@ -733,19 +832,20 @@ struct Announced {
 
 impl Mind {
     /// The mind of `me` with nothing in its history yet, told `prompt`,
-    /// asking `model` as the model `model_id` under `tool_choice`.
+    /// asking `model` as the model `model_id` under `tool_choice`, within
+    /// `context_window` tokens.
     fn new(
         me: PlayerId,
         prompt: String,
         model_id: String,
         tool_choice: ToolChoice,
+        context_window: u64,
         model: Arc<dyn model::Model>,
     ) -> Self {
         Self {
             remembered: Mutex::new(Remembered {
                 history: Vec::new(),
-                narrator: Narrator::for_player(me),
-                story: Vec::new(),
+                story: Story::of(me),
             }),
             n: AtomicU64::new(0),
             announced: Mutex::new(None),
@@ -754,6 +854,7 @@ impl Mind {
             prompt,
             model_id,
             tool_choice,
+            context_window,
             model,
         }
     }
@@ -765,16 +866,21 @@ impl Mind {
     /// after the next phase's announcement, and is told in that phase.
     fn remember(&self, event: Event<Memory>) {
         let mut remembered = self.remembered.lock().unwrap();
-        let lines = remembered.narrator.recall(&event);
-        remembered.story.extend(lines);
+        remembered.story.recall(&event);
         remembered.history.push(event);
     }
 
-    /// The story so far, its lines joined, and how many memories it was
-    /// told from.
-    fn story(&self) -> (String, usize) {
+    /// The story so far within `budget` tokens, its lines joined, and
+    /// what it was told from: how many memories, and how many lines of talk
+    /// it forgot to fit.
+    fn story(&self, budget: u64) -> (String, Shown) {
         let remembered = self.remembered.lock().unwrap();
-        (remembered.story.join("\n"), remembered.history.len())
+        let (lines, forgot) = remembered.story.told_within(budget);
+        let shown = Shown {
+            seen: remembered.history.len(),
+            forgot,
+        };
+        (lines.join("\n"), shown)
     }
 
     /// The next number for a message to others: one up from the last.
@@ -863,15 +969,23 @@ impl Player {
     /// Builds a player's two loops once the episode has made their
     /// contexts: the perceive loop as the actor, and the think loop. The
     /// player `me` is told `prompt`, and asks `model` as the model
-    /// `model_id` under `tool_choice`.
+    /// `model_id` under `tool_choice`, within `context_window` tokens.
     pub fn init(
         me: PlayerId,
         prompt: String,
         model_id: String,
         tool_choice: ToolChoice,
+        context_window: u64,
         model: Arc<dyn model::Model>,
     ) -> (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>) {
-        let mind = Arc::new(Mind::new(me, prompt, model_id, tool_choice, model));
+        let mind = Arc::new(Mind::new(
+            me,
+            prompt,
+            model_id,
+            tool_choice,
+            context_window,
+            model,
+        ));
         let shared = Arc::clone(&mind);
         let behavior: Builder<Actor> =
             Box::new(move |context| Actor::Player(Player { context, mind }));
@@ -900,25 +1014,35 @@ impl Player {
 
     /// The request for a decision in the phase `view` shows, which lasts
     /// `limit`: the system prompt, then the story so far, a blank line, and
-    /// where the game stands, with `tools` to answer with. With it, how
-    /// many memories the story was told from.
+    /// where the game stands, with `tools` to answer with. The story fits
+    /// what is left of the context window once the reply, the system
+    /// prompt, the tools and the situation are counted, by estimate,
+    /// forgetting talk if it has to. With the request, what the story was
+    /// told from.
     fn request(
         &self,
         view: &View,
         limit: Duration,
         tools: Vec<Tool>,
-    ) -> anyhow::Result<(Request, usize)> {
+    ) -> anyhow::Result<(Request, Shown)> {
         let me = &self.context.id;
-        let (story, seen) = self.mind.story();
-        let asked = format!("{story}\n\n{}", situation(me, view, limit)?);
+        let situation = format!("\n\n{}", situation(me, view, limit)?);
+        // Everything but the story, as `request` puts it together.
+        let taken = MAX_TOKENS
+            + estimate(&self.mind.prompt)
+            + estimate(&serde_json::to_string(&tools)?)
+            + estimate(&format!("{situation} {ANSWER}"));
+        let (story, shown) = self
+            .mind
+            .story(self.mind.context_window.saturating_sub(taken));
         let request = request(
             &self.mind.model_id,
             self.mind.tool_choice,
             &self.mind.prompt,
-            asked,
+            story + &situation,
             tools,
         );
-        Ok((request, seen))
+        Ok((request, shown))
     }
 
     /// Woken, decide: take the wake-up, and ask the model about the phase
@@ -974,10 +1098,10 @@ impl Player {
         limit: Duration,
         candidates: &[PlayerId],
     ) -> anyhow::Result<()> {
-        let (request, seen) = self.request(view, limit, night_tools(candidates))?;
+        let (request, shown) = self.request(view, limit, night_tools(candidates))?;
         let response = self.mind.model.complete(&request).await?;
         let target = selected(&response, candidates)?;
-        self.carry_out(seq, view, vec![Sending::Select(target)], seen)?;
+        self.carry_out(seq, view, vec![Sending::Select(target)], shown)?;
         Ok(())
     }
 
@@ -997,18 +1121,18 @@ impl Player {
         limit: Duration,
         candidates: &[PlayerId],
     ) -> anyhow::Result<()> {
-        let (request, seen) = self.request(view, limit, day_tools(candidates, limit))?;
+        let (request, shown) = self.request(view, limit, day_tools(candidates, limit))?;
         let response = self.mind.model.complete(&request).await?;
         let Asked { sends, wait } = asked(&response, candidates, limit)?;
-        let still_on = self.carry_out(seq, view, sends, seen)?;
+        let still_on = self.carry_out(seq, view, sends, shown)?;
         if still_on && let Some(after) = wait {
             self.remind(seq, after)?;
         }
         Ok(())
     }
 
-    /// Carry out `sends`, what a response made from `seen` memories asked
-    /// for in the phase numbered `seq`, which `view` shows, if that is
+    /// Carry out `sends`, what a response made from what it was `shown`
+    /// asked for in the phase numbered `seq`, which `view` shows, if that is
     /// still the phase the player was last announced: send each in order,
     /// numbered, to whom the rules of the game send it. A call may begin in
     /// one phase and end in the next, and then nothing is sent, and each
@@ -1019,7 +1143,7 @@ impl Player {
         seq: u64,
         view: &View,
         sends: Vec<Sending>,
-        seen: usize,
+        shown: Shown,
     ) -> anyhow::Result<bool> {
         let me = &self.context.id;
         let still_on = self.mind.in_phase(seq);
@@ -1027,12 +1151,13 @@ impl Player {
             if still_on {
                 let message = sending.message(seq, me, self.mind.number());
                 let to = receivers(&message, me, view);
-                self.send(message, to, seen)?;
+                self.send(message, to, shown)?;
             } else {
                 self.context.log(Entry::Withheld {
                     from: me.clone(),
                     message: sending.message(seq, me, 0),
-                    seen: Some(seen),
+                    seen: Some(shown.seen),
+                    forgot: Some(shown.forgot),
                 });
             }
         }
@@ -1040,13 +1165,19 @@ impl Player {
     }
 
     /// Remember sending `message` and send it to everyone in `to`, logged
-    /// as the player's action with `seen`, how many memories the model was
-    /// shown when it made the call that produced it.
-    fn send(&self, message: Message, to: HashSet<ActorId>, seen: usize) -> anyhow::Result<()> {
+    /// as the player's action with what the model was `shown` when it made
+    /// the call that produced it.
+    fn send(&self, message: Message, to: HashSet<ActorId>, shown: Shown) -> anyhow::Result<()> {
         self.remember(Memory::Acted {
             message: message.clone(),
         });
-        act(&self.context, message, to, Some(seen))
+        act(
+            &self.context,
+            message,
+            to,
+            Some(shown.seen),
+            Some(shown.forgot),
+        )
     }
 
     /// Set a reminder to be woken `after` from now in the phase numbered
@@ -1508,7 +1639,8 @@ fn target(call: &model::Call, candidates: &[PlayerId]) -> anyhow::Result<PlayerI
 mod tests {
     use super::*;
     use crate::model::canned;
-    use crate::model::fake::{FakeModel, SAID, choosing_first, voted_in_this_phase};
+    use crate::model::fake::{FakeModel, SAID, canned_calls, choosing_first, voted_in_this_phase};
+    use crate::werewolf::report::{FORGOTTEN, Narrator};
     use crate::werewolf::tests::{
         Played, announcement, between_the_deal_and_the_end, logged, observed_by,
         observed_by_the_environment, one_wolf_against, received, run, seen, seen_by_day, selection,
@@ -1854,6 +1986,57 @@ count = 8
     }
 
     #[test]
+    fn the_context_window_falls_back_from_the_command_line_to_the_file_to_the_provider_to_the_code()
+    {
+        let window = |tokens, source| ContextWindow { tokens, source };
+        let file = format!("{MODEL}context_window = 8192\n");
+        let command_line = || Variant::parse_from(["llm", "--context-window", "16384"]).overrides;
+        let settings = settle(&file, command_line());
+        assert_eq!(
+            settings.context_window(Some(32768)),
+            window(16384, Source::CommandLine)
+        );
+        let settings = settle(MODEL, command_line());
+        assert_eq!(
+            settings.context_window(None),
+            window(16384, Source::CommandLine)
+        );
+        let settings = settle(&file, Overrides::default());
+        assert_eq!(
+            settings.context_window(Some(32768)),
+            window(8192, Source::File)
+        );
+        let settings = settle(MODEL, Overrides::default());
+        assert_eq!(
+            settings.context_window(Some(32768)),
+            window(32768, Source::Provider)
+        );
+        assert_eq!(
+            settings.context_window(None),
+            window(CONTEXT_WINDOW, Source::Default)
+        );
+        assert_eq!(CONTEXT_WINDOW, 4096);
+    }
+
+    #[test]
+    fn a_context_window_of_0_is_an_error_naming_the_setting() {
+        let error = |file: &str, overrides| {
+            let error = Config::parse(file).unwrap().settle(overrides).unwrap_err();
+            format!("{error:#}")
+        };
+        let file = format!("{MODEL}context_window = 0\n");
+        assert_eq!(
+            error(&file, Overrides::default()),
+            "context_window is 0; a context window holds at least 1 token"
+        );
+        let overrides = Variant::parse_from(["llm", "--context-window", "0"]).overrides;
+        assert_eq!(
+            error(MODEL, overrides),
+            "--context-window is 0; a context window holds at least 1 token"
+        );
+    }
+
+    #[test]
     fn a_duration_the_file_cannot_parse_is_an_error() {
         let file = format!("{MODEL}request_timeout = \"soon\"\n");
         assert!(Config::parse(&file).is_err());
@@ -2104,6 +2287,7 @@ system = \"{{{{ rules }}}} {{{{ wolf }}}}\"
         format!(
             "{MODEL}
 request_timeout = \"10s\"
+context_window = 8192
 [phases]
 night_limit = \"30s\"
 day_limit = \"1m 30s\"
@@ -2142,7 +2326,12 @@ player2 = \"Cautious.\"
         settings: &Settings,
         roles: &HashMap<PlayerId, Role>,
     ) -> anyhow::Result<Configuration> {
-        settings.configuration(roles, &settings.prompts()?, ToolChoice::Required)
+        settings.configuration(
+            roles,
+            &settings.prompts()?,
+            ToolChoice::Required,
+            settings.context_window(None),
+        )
     }
 
     #[test]
@@ -2173,6 +2362,10 @@ player2 = \"Cautious.\"
                 base_url: "http://localhost:1234/v1".to_string(),
                 model: MODEL_ID.to_string(),
                 tool_choice: ToolChoice::Required,
+                context_window: ContextWindow {
+                    tokens: 8192,
+                    source: Source::File,
+                },
                 api_key_env: None,
                 personas: BTreeMap::from([("player2".to_string(), "Cautious.".to_string())]),
                 prompts: BTreeMap::from([
@@ -2218,6 +2411,10 @@ player2 = \"Cautious.\"
         assert_eq!(configuration["day_limit"], json!("1m 30s"));
         assert_eq!(configuration["ratify_limit"], json!("10s"));
         assert_eq!(configuration["request_timeout"], json!("10s"));
+        assert_eq!(
+            configuration["context_window"],
+            json!({"tokens": 8192, "source": "file"})
+        );
         // A role is a key by its name.
         assert_eq!(configuration["role_counts"]["Werewolf"], json!(1));
         let back: Entry = serde_json::from_value(json).unwrap();
@@ -2298,8 +2495,14 @@ player2 = \"Cautious.\"
                 text: told(id),
             })
             .collect();
-        settle(MODEL, Overrides::default())
-            .configuration(roles, &prompts, ToolChoice::Required)
+        let settings = settle(MODEL, Overrides::default());
+        settings
+            .configuration(
+                roles,
+                &prompts,
+                ToolChoice::Required,
+                settings.context_window(None),
+            )
             .unwrap()
     }
 
@@ -2359,6 +2562,7 @@ player2 = \"Cautious.\"
                         told(id),
                         MODEL_ID.to_string(),
                         ToolChoice::Required,
+                        CONTEXT_WINDOW,
                         Arc::clone(&model),
                     )
                 })
@@ -2490,6 +2694,7 @@ player2 = \"Cautious.\"
                     from,
                     message,
                     seen,
+                    ..
                 } if from == player => Some((message, *seen)),
                 _ => None,
             })
@@ -2663,17 +2868,100 @@ player2 = \"Cautious.\"
     }
 
     #[tokio::test(start_paused = true)]
-    async fn each_request_begins_with_the_history_of_the_one_before() {
+    async fn each_request_begins_with_the_history_of_the_one_before_up_to_its_last_day() {
         // The doctor is asked once a night and at least once a day, and
         // each request is told from everything it had heard and done by
-        // then.
+        // then, a past day's votes giving way to its tally.
         let model = answering(choosing_first);
         play(doctored(), rules(), Arc::clone(&model)).await.unwrap();
         let asked = asked_of(&model, "doc");
         assert!(asked.len() >= 4, "{asked:?}");
         for pair in asked.windows(2) {
-            assert!(pair[1].starts_with(story(&pair[0])), "{pair:?}");
+            let before = story(&pair[0]);
+            let kept = before
+                .rfind("\n\nDay ")
+                .map_or(before, |day| &before[..day]);
+            assert!(pair[1].starts_with(kept), "{pair:?}");
         }
+    }
+
+    /// The estimate of all `request` takes of its context window: the
+    /// system prompt, the tools as JSON, the user message, and the reply.
+    fn estimated(request: &Request) -> u64 {
+        let messages: u64 = request
+            .messages
+            .iter()
+            .map(|message| estimate(&message.content))
+            .sum();
+        messages + estimate(&serde_json::to_string(&request.tools).unwrap()) + request.max_tokens
+    }
+
+    /// How many lines of talk each of the players' actions says the model
+    /// forgot, in the log's order.
+    fn forgotten(logged: &[Entry]) -> Vec<Option<usize>> {
+        logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Action { from, forgot, .. } if from != ENVIRONMENT => Some(*forgot),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_game_in_a_small_window_plays_to_the_end_its_later_requests_forgetting_talk() {
+        // Everyone plays as the canned player does, at length.
+        let model = answering(|request| {
+            let calls: Vec<Made> = canned_calls(&serde_json::to_value(request)?)?
+                .into_iter()
+                .map(|(name, arguments)| match name.as_str() {
+                    SPEAK => speaking(&SAID.repeat(10)),
+                    _ => (name, arguments),
+                })
+                .collect();
+            Ok(Response::calling(&calls))
+        });
+        let roles = doctored();
+        let window = 1500;
+        let configuration = Configuration {
+            context_window: ContextWindow {
+                tokens: window,
+                source: Source::CommandLine,
+            },
+            ..configuration(&roles)
+        };
+        let (winner, logged, _) =
+            play_configured(roles, quick(), configuration, Arc::clone(&model))
+                .await
+                .unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        for request in model.requests() {
+            assert_eq!(request.max_tokens, 1024);
+            assert!(estimated(&request) <= window, "{request:?}");
+        }
+        // The doctor tells its whole story at first, and by the end of the
+        // second day forgets the oldest talk, saying so.
+        let asked = asked_of(&model, "doc");
+        assert!(!asked[0].contains(FORGOTTEN), "{asked:?}");
+        assert!(asked.last().unwrap().contains(FORGOTTEN), "{asked:?}");
+        let forgot = forgotten(&logged);
+        assert_eq!(forgot[0], Some(0));
+        assert!(
+            forgot.iter().any(|forgot| forgot.is_some_and(|n| n > 0)),
+            "{forgot:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_within_the_window_forgets_nothing() {
+        let model = answering(choosing_first);
+        let (_, logged, _) = play(doctored(), quick(), Arc::clone(&model)).await.unwrap();
+        for asked in asked_of(&model, "doc") {
+            assert!(!asked.contains(FORGOTTEN), "{asked}");
+        }
+        let forgot = forgotten(&logged);
+        assert!(!forgot.is_empty());
+        assert!(forgot.iter().all(|forgot| *forgot == Some(0)), "{forgot:?}");
     }
 
     /// A player's memory of sending `message`, in no episode in particular.
@@ -2688,6 +2976,7 @@ player2 = \"Cautious.\"
             told("wolf"),
             MODEL_ID.to_string(),
             ToolChoice::Required,
+            CONTEXT_WINDOW,
             Arc::new(FakeModel::failing("down")),
         );
         let pack = [("wolf", Role::Werewolf)];
@@ -2698,14 +2987,15 @@ player2 = \"Cautious.\"
         // A night, a day of talk and changing votes, and the next night,
         // each message remembered as it is heard or sent.
         let script = [
-            received(announcement(1, seen(&["wolf", "ann", "bob"], &pack))),
+            received(announcement(1, seen(&["wolf", "ann", "bob", "cat"], &pack))),
             sent(selection(1, "wolf", 1, "ann")),
-            received(announcement(2, seen_by_day(&["wolf", "bob"], &pack))),
+            received(announcement(2, seen_by_day(&["wolf", "bob", "cat"], &pack))),
             received(utterance(2, "bob", 1, "Who killed ann?")),
             sent(utterance(2, "wolf", 2, "Not me.")),
             received(selection(2, "bob", 2, "wolf")),
             received(tentative(2, 3, Some("wolf"))),
-            sent(selection(2, "wolf", 3, "bob")),
+            sent(selection(2, "wolf", 3, "cat")),
+            sent(selection(2, "wolf", 4, "bob")),
             received(tentative(2, 4, None)),
             received(announcement(3, night_2)),
         ];
@@ -2713,16 +3003,14 @@ player2 = \"Cautious.\"
             mind.remember(event.clone());
             let remembered = mind.remembered.lock().unwrap();
             assert_eq!(remembered.history, script[..=n]);
-            let mut narrator = Narrator::for_player("wolf".to_string());
-            let fresh: Vec<String> = remembered
-                .history
-                .iter()
-                .flat_map(|event| narrator.recall(event))
-                .collect();
-            assert_eq!(remembered.story, fresh, "after {} memories", n + 1);
+            let mut fresh = Story::of("wolf".to_string());
+            for event in &remembered.history {
+                fresh.recall(event);
+            }
+            assert_eq!(remembered.story.lines(), fresh.lines());
         }
         assert_eq!(
-            mind.story(),
+            mind.story(u64::MAX),
             (
                 [
                     "You are wolf, the only werewolf.",
@@ -2735,15 +3023,17 @@ player2 = \"Cautious.\"
                     "bob says, \"Who killed ann?\"",
                     "You say, \"Not me.\"",
                     "bob votes against wolf (werewolf).",
-                    "wolf (werewolf) will be voted out in 20s unless the votes change.",
+                    "cat does not vote.",
                     "You vote against bob.",
-                    "Nobody is about to be voted out.",
-                    "Nobody dies.",
+                    "cat dies.",
                     "",
                     "Night 2.",
                 ]
                 .join("\n"),
-                script.len()
+                Shown {
+                    seen: script.len(),
+                    forgot: 0,
+                }
             )
         );
     }
@@ -2831,7 +3121,7 @@ player2 = \"Cautious.\"
         // The werewolves fail side by side, in no particular order. The
         // night takes no time because every event is stamped at the epoch,
         // while the game took its night limit by the environment's clock.
-        told[8..10].sort();
+        told[9..11].sort();
         assert_eq!(
             told.join("\n"),
             "LLM with 4 players:\n\
@@ -2840,6 +3130,7 @@ player2 = \"Cautious.\"
              wolf1 (werewolf)\n\
              wolf2 (werewolf)\n\
              A night waits 10s and a day 10s, and a vote stands after 5s.\n\
+             The model's context window is 4096 tokens, the default.\n\
              \n\
              Night 1.\n\
              wolf1 (werewolf) fails to select: the model is down\n\
@@ -2897,6 +3188,7 @@ player2 = \"Cautious.\"
                 limit: rules().night_limit,
             },
             seen: None,
+            forgot: None,
         };
         assert_eq!(between[1], announced(1, "ann", Role::Villager));
         assert_eq!(between[2], announced(2, "bob", Role::Villager));
@@ -3051,7 +3343,9 @@ player2 = \"Cautious.\"
              Day 1.\n\
              bob says, \"Vote cat.\"\n\
              bob votes against cat.\n\
-             cat will be voted out in 5s unless the votes change.\n\
+             cat does not vote.\n\
+             dan does not vote.\n\
+             You do not vote.\n\
              cat dies.\n\
              \n\
              Night 2.\n\
@@ -3159,6 +3453,7 @@ player2 = \"Cautious.\"
         for request in &requests {
             assert_eq!(request.model, MODEL_ID);
             assert_eq!(request.tool_choice, ToolChoice::Required);
+            assert_eq!(request.max_tokens, 1024);
             assert!(request.messages[1].content.ends_with(ANSWER));
             assert_eq!(request.messages.len(), 2);
             assert_eq!(request.messages[0].role, model::Role::System);
@@ -3788,6 +4083,10 @@ player2 = \"Cautious.\"
              ann dies.\n\
              \n\
              Day 1.\n\
+             bob does not vote.\n\
+             cat does not vote.\n\
+             dan does not vote.\n\
+             You do not vote.\n\
              Nobody dies.\n\
              \n\
              Night 2.\n\
@@ -3892,10 +4191,13 @@ player2 = \"Cautious.\"
              ann dies.\n\
              \n\
              Day 1.\n\
-             bob votes against cat.\n\
-             cat will be voted out in 1s unless the votes change.\n\
              bob says, \"Going quiet.\"\n\
              bob says, \"Really.\"\n\
+             bob votes against cat.\n\
+             cat does not vote.\n\
+             dan does not vote.\n\
+             You do not vote.\n\
+             wolf does not vote.\n\
              cat dies.\n\
              \n\
              Night 2.\n\
