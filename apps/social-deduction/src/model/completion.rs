@@ -1,53 +1,64 @@
 //! One decision asked of a model: the request `POST /v1/chat/completions`
 //! takes and the response it answers with, covering only the fields used.
 //!
-//! A [`Request`] offers one tool or several and forces the model to call
-//! one, so the model cannot answer with prose instead. A [`Response`] is
+//! A [`Request`] offers one tool or several and, by its [`ToolChoice`],
+//! either forces the model to call one, so the model cannot answer with
+//! prose instead, or allows it to, for a model that refuses to be forced.
+//! A [`Response`] is
 //! read for the tool calls it carries. Unknown fields in a response are
 //! ignored, so a provider's additions do not break parsing.
 
-use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
 /// One request for a completion: the model asked, the messages it is
-/// shown, and the tools it is offered, one of which it must call.
+/// shown, the tools it is offered, and whether it must call one of them.
 ///
-/// It serializes as the protocol has it: the tools in `tools`, and a
-/// `tool_choice` of `"required"`, which forces a call to one of them. With
-/// one tool offered, that forces a call to it. Whether the model may call
-/// several at once is left to the provider's default, which allows it.
-#[derive(Clone, Debug, PartialEq)]
+/// It serializes as the protocol has it: the tools in `tools`, and the
+/// `tool_choice`, `"required"`, which forces a call to one of them, or
+/// `"auto"`, which leaves the model free to answer in prose instead.
+/// Whether the model may call several at once is left to the provider's
+/// default, which allows it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Request {
     /// The model's id, exactly as the provider lists it.
     pub model: String,
     /// What the model is shown, in order.
     pub messages: Vec<Message>,
-    /// The tools the model may call, of which it must call one.
+    /// The tools the model may call.
     pub tools: Vec<Tool>,
+    /// Whether the model must call one of the tools.
+    pub tool_choice: ToolChoice,
 }
 
 impl Request {
-    /// A request of `model` shown `messages` and made to call one of
-    /// `tools`.
-    pub fn offering(model: impl Into<String>, messages: Vec<Message>, tools: Vec<Tool>) -> Self {
+    /// A request of `model` shown `messages` and offered `tools`, under
+    /// `tool_choice`.
+    pub fn offering(
+        model: impl Into<String>,
+        messages: Vec<Message>,
+        tools: Vec<Tool>,
+        tool_choice: ToolChoice,
+    ) -> Self {
         Self {
             model: model.into(),
             messages,
             tools,
+            tool_choice,
         }
     }
 }
 
-impl Serialize for Request {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut request = serializer.serialize_struct("Request", 4)?;
-        request.serialize_field("model", &self.model)?;
-        request.serialize_field("messages", &self.messages)?;
-        request.serialize_field("tools", &self.tools)?;
-        request.serialize_field("tool_choice", "required")?;
-        request.end()
-    }
+/// Whether a request makes the model call a tool, written as the
+/// protocol's `tool_choice` writes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolChoice {
+    /// The model must call one of the tools offered.
+    Required,
+    /// The model may call one of the tools offered, or answer in prose,
+    /// for a model that refuses to be made to call one.
+    Auto,
 }
 
 /// One message the model is shown.
@@ -267,6 +278,7 @@ mod tests {
             "qwen2.5-7b-instruct",
             vec![Message::user("Speak or wait.")],
             vec![speak.clone(), wait.clone()],
+            ToolChoice::Required,
         );
         assert_eq!(request.tools, [speak, wait]);
         let json = serde_json::to_value(&request).unwrap();
@@ -276,6 +288,31 @@ mod tests {
         // One tool is a list of one.
         let one = serde_json::to_value(selecting(&["player2"])).unwrap();
         assert_eq!(one["tools"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_request_that_allows_a_tool_call_serializes_its_tool_choice_as_auto() {
+        let request = Request {
+            tool_choice: ToolChoice::Auto,
+            ..selecting(&["player2"])
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["tool_choice"], "auto");
+        assert_eq!(json["tools"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_tool_choice_is_written_as_the_protocol_writes_it() {
+        for (choice, written) in [
+            (ToolChoice::Required, "required"),
+            (ToolChoice::Auto, "auto"),
+        ] {
+            assert_eq!(serde_json::to_value(choice).unwrap(), written);
+            assert_eq!(
+                serde_json::from_value::<ToolChoice>(json!(written)).unwrap(),
+                choice
+            );
+        }
     }
 
     #[test]

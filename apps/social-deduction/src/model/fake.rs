@@ -3,7 +3,7 @@
 //! does with the answer is tested without a network. Nothing but tests
 //! uses this module.
 
-use super::{Message, Model, Request, Response, Tool};
+use super::{Message, Model, Request, Response, Tool, ToolChoice};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -187,6 +187,7 @@ pub fn selecting(candidates: &[&str]) -> Request {
             Message::user("Select."),
         ],
         vec![select_tool(candidates)],
+        ToolChoice::Required,
     )
 }
 
@@ -236,6 +237,7 @@ pub fn by_day(candidates: &[&str], limit: u64, story: &str) -> Request {
             Message::user(format!("{story}\n\nIt is day 1. Speak, vote, or wait.")),
         ],
         tools,
+        ToolChoice::Required,
     )
 }
 

@@ -33,7 +33,7 @@
 //! player keeps perceiving while the model works.
 //!
 //! By night a player is woken once, by its announcement, and has the model
-//! select one of its [candidates] with one forced `select` call, sent to
+//! select one of its [candidates] with one `select` call, sent to
 //! the environment alone. By day it is woken by every message it receives:
 //! the announcement, another player's utterance or selection, and the
 //! environment's tentative decision. Wake-ups are debounced: the perceive
@@ -41,7 +41,7 @@
 //! wake-up is already waiting, and the think loop takes the history as it
 //! stands when it is woken, so a player has at most one call in progress
 //! and one waiting, however fast the talk comes. A day's request offers
-//! three tools, of which the model must call one and may call several:
+//! three tools, of which the model calls one and may call several:
 //! `speak`, which sends what it says to every other living player and not
 //! to the environment; `select`, which sends its vote to the environment
 //! and every other living player, so the votes are public; and `wait`,
@@ -62,7 +62,10 @@
 //! model was shown when it made the call that produced the message. Before
 //! a game begins, [`check_plays`] asks the model once as a player would by
 //! night and once as by day, so a model that does not answer either request
-//! well fails at launch, in the provider's words. [`game`] builds the
+//! well fails at launch, in the provider's words. Every request makes the
+//! model call a tool, unless the probe finds the model refuses that, and
+//! then every request asks it to call one, and an answer in prose is a
+//! failure like any other. [`game`] builds the
 //! episode from the deal, the rules, the model, and the [`Configuration`]
 //! the log opens with, which [`Settings::configuration`] records from the
 //! settings, the deal and the rendered prompts.
@@ -74,7 +77,7 @@ use super::{
     awake, candidates, observe, receivers,
 };
 use crate::model::{
-    self, Provider, REQUEST_TIMEOUT, Request, Response, Tool, api_key, key_variable,
+    self, Provider, REQUEST_TIMEOUT, Request, Response, Tool, ToolChoice, api_key, key_variable,
 };
 use anyhow::{Context as _, anyhow, bail};
 use async_trait::async_trait;
@@ -446,13 +449,15 @@ impl Settings {
     /// player's system prompt for the role it was dealt from `prompts`,
     /// which [`Settings::prompts`] rendered for every seat and role at the
     /// table, and the templates and text blocks as written. The key's
-    /// variable is named, and the key itself never recorded. A player with
-    /// no prompt rendered for its role is an error naming the seat and the
+    /// variable is named, and the key itself never recorded. Each request
+    /// is made under `tool_choice`, as the probe found. A player with no
+    /// prompt rendered for its role is an error naming the seat and the
     /// role.
     pub fn configuration(
         &self,
         roles: &HashMap<PlayerId, Role>,
         prompts: &[SystemPrompt],
+        tool_choice: ToolChoice,
     ) -> anyhow::Result<Configuration> {
         let rendered: HashMap<(&PlayerId, Role), &str> = prompts
             .iter()
@@ -478,6 +483,7 @@ impl Settings {
             request_timeout: model.request_timeout,
             base_url: model.base_url.clone(),
             model: model.id.clone(),
+            tool_choice,
             api_key_env: model.key_variable().map(String::from),
             personas: config.personas.clone(),
             prompts,
@@ -548,6 +554,9 @@ pub struct Configuration {
     pub base_url: String,
     /// The model's id, as the provider lists it.
     pub model: String,
+    /// Whether each request made the model call a tool, as the probe
+    /// found the model would.
+    pub tool_choice: ToolChoice,
     /// The name of the environment variable the key came from, if any.
     pub api_key_env: Option<String>,
     /// Each seat's persona, for the seats that have one.
@@ -581,6 +590,7 @@ pub fn game(
 ) -> Episode<Actor> {
     let mut prompts = configuration.prompts.clone();
     let model_id = configuration.model.clone();
+    let tool_choice = configuration.tool_choice;
     let players: Vec<PlayerId> = roles.keys().cloned().collect();
     let environment = announced::init(
         roles,
@@ -593,7 +603,13 @@ pub fn game(
         let prompt = prompts
             .remove(id)
             .unwrap_or_else(|| panic!("no system prompt for {id}"));
-        Player::init(id.clone(), prompt, model_id.clone(), Arc::clone(&model))
+        Player::init(
+            id.clone(),
+            prompt,
+            model_id.clone(),
+            tool_choice,
+            Arc::clone(&model),
+        )
     };
     super::thinking_episode(environment, players, player, logger)
 }
@@ -687,6 +703,8 @@ struct Mind {
     prompt: String,
     /// The model's id, as each request names it.
     model_id: String,
+    /// Whether each request makes the model call a tool.
+    tool_choice: ToolChoice,
     /// The model asked each time the player is woken.
     model: Arc<dyn model::Model>,
 }
@@ -715,8 +733,14 @@ struct Announced {
 
 impl Mind {
     /// The mind of `me` with nothing in its history yet, told `prompt`,
-    /// asking `model` as the model `model_id`.
-    fn new(me: PlayerId, prompt: String, model_id: String, model: Arc<dyn model::Model>) -> Self {
+    /// asking `model` as the model `model_id` under `tool_choice`.
+    fn new(
+        me: PlayerId,
+        prompt: String,
+        model_id: String,
+        tool_choice: ToolChoice,
+        model: Arc<dyn model::Model>,
+    ) -> Self {
         Self {
             remembered: Mutex::new(Remembered {
                 history: Vec::new(),
@@ -729,6 +753,7 @@ impl Mind {
             reminders: AtomicU64::new(0),
             prompt,
             model_id,
+            tool_choice,
             model,
         }
     }
@@ -838,14 +863,15 @@ impl Player {
     /// Builds a player's two loops once the episode has made their
     /// contexts: the perceive loop as the actor, and the think loop. The
     /// player `me` is told `prompt`, and asks `model` as the model
-    /// `model_id`.
+    /// `model_id` under `tool_choice`.
     pub fn init(
         me: PlayerId,
         prompt: String,
         model_id: String,
+        tool_choice: ToolChoice,
         model: Arc<dyn model::Model>,
     ) -> (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>) {
-        let mind = Arc::new(Mind::new(me, prompt, model_id, model));
+        let mind = Arc::new(Mind::new(me, prompt, model_id, tool_choice, model));
         let shared = Arc::clone(&mind);
         let behavior: Builder<Actor> =
             Box::new(move |context| Actor::Player(Player { context, mind }));
@@ -885,7 +911,13 @@ impl Player {
         let me = &self.context.id;
         let (story, seen) = self.mind.story();
         let asked = format!("{story}\n\n{}", situation(me, view, limit)?);
-        let request = request(&self.mind.model_id, &self.mind.prompt, asked, tools);
+        let request = request(
+            &self.mind.model_id,
+            self.mind.tool_choice,
+            &self.mind.prompt,
+            asked,
+            tools,
+        );
         Ok((request, seen))
     }
 
@@ -1120,17 +1152,31 @@ fn situation(me: &PlayerId, view: &View, limit: Duration) -> anyhow::Result<Stri
     ))
 }
 
-/// A request of a player's shape to `model_id`: `prompt` as the system
-/// message, `asked` as the user message, and `tools` to answer with, one
-/// of which it must call. This is the one way a player builds a request
-/// and the one way the probe does, so they agree on what is asked.
-fn request(model_id: &str, prompt: &str, asked: impl Into<String>, tools: Vec<Tool>) -> Request {
+/// A request of a player's shape to `model_id` under `tool_choice`:
+/// `prompt` as the system message, `asked` and then [`ANSWER`] as the user
+/// message, and `tools` to answer with. This is the one way a player
+/// builds a request and the one way the probe does, so they agree on what
+/// is asked.
+fn request(
+    model_id: &str,
+    tool_choice: ToolChoice,
+    prompt: &str,
+    mut asked: String,
+    tools: Vec<Tool>,
+) -> Request {
+    asked.push(' ');
+    asked.push_str(ANSWER);
     Request::offering(
         model_id,
         vec![model::Message::system(prompt), model::Message::user(asked)],
         tools,
+        tool_choice,
     )
 }
+
+/// What every request ends with, under either tool choice: that a tool
+/// call is the one answer that counts.
+const ANSWER: &str = "Answer by calling one of the tools.";
 
 /// The tools a player is offered by night: [`select`] over `candidates`.
 fn night_tools(candidates: &[PlayerId]) -> Vec<Tool> {
@@ -1158,8 +1204,8 @@ const PROBE_DAY: Duration = Duration::from_secs(60);
 #[derive(Debug)]
 pub enum Probed {
     /// Asked as by night and as by day, the model answered both requests
-    /// as a player must.
-    Played,
+    /// as a player must, under the tool choice it is to be asked under.
+    Played(ToolChoice),
     /// One of the requests the model did not answer as a player must: the
     /// provider refused it as bad, or the answer was not well formed. The
     /// error names the model and the request, and carries the cause
@@ -1167,56 +1213,79 @@ pub enum Probed {
     DidNotPlay(anyhow::Error),
 }
 
-/// Check that `model`, asked as a player is, plays: two requests of a
-/// player's shape, one after the other, each with a short system prompt
-/// and over two placeholder candidates. The night's asks for a selection
-/// with the `select` tool, and is judged as a player's night answer is by
+/// Check that `model`, asked as a player is, plays, and find out whether
+/// it may be made to call a tool: two requests of a player's shape, one
+/// after the other, each with a short system prompt and over two
+/// placeholder candidates. The night's asks for a selection with the
+/// `select` tool, and is judged as a player's night answer is by
 /// `selected`; the day's says it is day and the player may speak, vote,
 /// or wait, offers the day's three tools over a day of one minute, and is
-/// judged as a player's day answer is by `asked`. The day's request is
+/// judged as a player's day answer is by `asked`.
+///
+/// The night's request requires a tool call. If the provider refuses that
+/// as bad, it is asked again allowing one, and both refusals are given if
+/// that is refused too. The first tool choice it is answered under is the
+/// game's, and the day's request is asked under it. The day's request is
 /// not made when the night's fails. A model that could not be asked at
 /// all, because the provider was not reached or answered with anything
 /// but the model's answer, is an error naming the model, with the cause
 /// beneath it.
 pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Result<Probed> {
     let candidates = placeholders();
-    let prompt = "You are a player in a game, about to be asked to play.";
-    let night = request(
-        model_id,
-        prompt,
-        "Select one of the candidates.",
-        night_tools(&candidates),
-    );
-    let day = request(
-        model_id,
-        prompt,
-        format!(
+    let by_night = async |tool_choice| {
+        let night = request(
+            model_id,
+            tool_choice,
+            PROBE_PROMPT,
+            "Select one of the candidates.".to_string(),
+            night_tools(&candidates),
+        );
+        let response = model.complete(&night).await?;
+        selected(&response, &candidates).map(drop)
+    };
+    let by_day = async |tool_choice| {
+        let situation = format!(
             "It is day, which lasts {}. {DAY_ASKED}",
             format_duration(PROBE_DAY)
-        ),
-        day_tools(&candidates, PROBE_DAY),
-    );
-    let by_night = model
-        .complete(&night)
-        .await
-        .and_then(|response| selected(&response, &candidates).map(drop));
-    let failed = match by_night {
+        );
+        let day = request(
+            model_id,
+            tool_choice,
+            PROBE_PROMPT,
+            situation,
+            day_tools(&candidates, PROBE_DAY),
+        );
+        let response = model.complete(&day).await?;
+        asked(&response, &candidates, PROBE_DAY).map(drop)
+    };
+    let (tool_choice, night) = match by_night(ToolChoice::Required).await {
+        Err(required) if model::refused(&required) => {
+            let night = by_night(ToolChoice::Auto).await.map_err(|auto| {
+                if model::concerns_the_model(&auto) {
+                    anyhow!("made to call a tool: {required:#}\nasked to call one: {auto:#}")
+                } else {
+                    auto
+                }
+            });
+            (ToolChoice::Auto, night)
+        }
+        night => (ToolChoice::Required, night),
+    };
+    let failed = match night {
         Err(error) => Some(("night", error)),
-        Ok(()) => model
-            .complete(&day)
-            .await
-            .and_then(|response| asked(&response, &candidates, PROBE_DAY).map(drop))
-            .err()
-            .map(|error| ("day", error)),
+        Ok(()) => by_day(tool_choice).await.err().map(|error| ("day", error)),
     };
     match failed {
-        None => Ok(Probed::Played),
+        None => Ok(Probed::Played(tool_choice)),
         Some((phase, error)) if model::concerns_the_model(&error) => Ok(Probed::DidNotPlay(
             error.context(format!("{model_id} did not answer a {phase}'s request")),
         )),
         Some((_, error)) => Err(error.context(format!("{model_id} could not be asked to play"))),
     }
 }
+
+/// The system prompt the probe tells the model.
+const PROBE_PROMPT: &str = "You are a player in a game, about to be asked to play.";
 
 /// The name of the tool a player selects with, by night and by day.
 const SELECT: &str = "select";
@@ -2073,7 +2142,7 @@ player2 = \"Cautious.\"
         settings: &Settings,
         roles: &HashMap<PlayerId, Role>,
     ) -> anyhow::Result<Configuration> {
-        settings.configuration(roles, &settings.prompts()?)
+        settings.configuration(roles, &settings.prompts()?, ToolChoice::Required)
     }
 
     #[test]
@@ -2103,6 +2172,7 @@ player2 = \"Cautious.\"
                 request_timeout: Duration::from_secs(10),
                 base_url: "http://localhost:1234/v1".to_string(),
                 model: MODEL_ID.to_string(),
+                tool_choice: ToolChoice::Required,
                 api_key_env: None,
                 personas: BTreeMap::from([("player2".to_string(), "Cautious.".to_string())]),
                 prompts: BTreeMap::from([
@@ -2210,9 +2280,11 @@ player2 = \"Cautious.\"
         asked.rsplit_once("\n\n").unwrap().0
     }
 
-    /// The situation a request's user message ends with.
+    /// The situation a request's user message ends with, before what
+    /// every request ends with.
     fn asked(asked: &str) -> &str {
-        asked.rsplit_once("\n\n").unwrap().1
+        let ending = asked.rsplit_once("\n\n").unwrap().1;
+        ending.strip_suffix(&format!(" {ANSWER}")).unwrap()
     }
 
     /// The configuration of a game of `roles` under [`MODEL`], whose every
@@ -2227,7 +2299,7 @@ player2 = \"Cautious.\"
             })
             .collect();
         settle(MODEL, Overrides::default())
-            .configuration(roles, &prompts)
+            .configuration(roles, &prompts, ToolChoice::Required)
             .unwrap()
     }
 
@@ -2239,6 +2311,17 @@ player2 = \"Cautious.\"
         model: Arc<FakeModel>,
     ) -> anyhow::Result<Played> {
         let configuration = configuration(&roles);
+        play_configured(roles, rules, configuration, model).await
+    }
+
+    /// Run a game of `roles` under `rules` and `configuration`, every
+    /// player a model player asking `model`.
+    async fn play_configured(
+        roles: HashMap<PlayerId, Role>,
+        rules: Rules,
+        configuration: Configuration,
+        model: Arc<FakeModel>,
+    ) -> anyhow::Result<Played> {
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
         let episode = game(roles, rules, configuration, model, winner, logger);
@@ -2275,6 +2358,7 @@ player2 = \"Cautious.\"
                         id.clone(),
                         told(id),
                         MODEL_ID.to_string(),
+                        ToolChoice::Required,
                         Arc::clone(&model),
                     )
                 })
@@ -2498,7 +2582,8 @@ player2 = \"Cautious.\"
                     model::Message::system("You are wolf."),
                     model::Message::user(
                         "You are wolf, the only werewolf.\n\nNight 1.\n\n\
-                         It is night 1, which lasts 1m. Choose whom the werewolves should kill."
+                         It is night 1, which lasts 1m. Choose whom the werewolves should kill. \
+                         Answer by calling one of the tools."
                     ),
                 ],
                 vec![Tool::new(
@@ -2511,7 +2596,42 @@ player2 = \"Cautious.\"
                         "additionalProperties": false,
                     }),
                 )],
+                ToolChoice::Required,
             )]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn allowed_a_tool_call_a_player_that_answers_in_prose_fails_and_the_game_goes_on() {
+        // Every request allows a tool call. The werewolf answers in prose by
+        // night, and everyone selects its first candidate by day.
+        let model = answering(|request| {
+            if request.messages[1].content.contains("It is night") {
+                saying_nothing(request)
+            } else {
+                choosing_first(request)
+            }
+        });
+        let roles = one_wolf_against(&["ann", "bob"]);
+        let configuration = Configuration {
+            tool_choice: ToolChoice::Auto,
+            ..configuration(&roles)
+        };
+        let (winner, logged, _) =
+            play_configured(roles, quick(), configuration, Arc::clone(&model))
+                .await
+                .unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        assert_eq!(
+            failed(&logged),
+            [("wolf", 1, "the model made no tool call")]
+        );
+        let requests = model.requests();
+        assert!(!requests.is_empty());
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.tool_choice == ToolChoice::Auto)
         );
     }
 
@@ -2567,6 +2687,7 @@ player2 = \"Cautious.\"
             "wolf".to_string(),
             told("wolf"),
             MODEL_ID.to_string(),
+            ToolChoice::Required,
             Arc::new(FakeModel::failing("down")),
         );
         let pack = [("wolf", Role::Werewolf)];
@@ -2935,7 +3056,8 @@ player2 = \"Cautious.\"
              \n\
              Night 2.\n\
              \n\
-             It is night 2, which lasts 10s. Choose whom the werewolves should kill."
+             It is night 2, which lasts 10s. Choose whom the werewolves should kill. \
+             Answer by calling one of the tools."
         );
         // What it heard counts among the memories it was shown.
         assert_eq!(seen_by(&logged, "wolf"), [Some(1), Some(7)]);
@@ -3026,11 +3148,18 @@ player2 = \"Cautious.\"
     #[tokio::test]
     async fn the_probe_asks_as_by_night_and_then_as_by_day_and_passes_when_the_model_plays_both() {
         let model = FakeModel::answering(choosing_first);
-        assert!(not_playing(check_plays(&model, MODEL_ID).await).is_none());
+        let probed = check_plays(&model, MODEL_ID).await;
+        assert!(
+            matches!(probed, Ok(Probed::Played(ToolChoice::Required))),
+            "{probed:?}"
+        );
+        assert!(not_playing(probed).is_none());
         let requests = model.requests();
         assert_eq!(requests.len(), 2);
         for request in &requests {
             assert_eq!(request.model, MODEL_ID);
+            assert_eq!(request.tool_choice, ToolChoice::Required);
+            assert!(request.messages[1].content.ends_with(ANSWER));
             assert_eq!(request.messages.len(), 2);
             assert_eq!(request.messages[0].role, model::Role::System);
             assert_eq!(request.messages[1].role, model::Role::User);
@@ -3040,7 +3169,11 @@ player2 = \"Cautious.\"
         // of a minute, and says what a day says.
         assert_eq!(requests[0].tools, night_tools(&placeholders()));
         assert_eq!(requests[1].tools, day_tools(&placeholders(), PROBE_DAY));
-        assert!(requests[1].messages[1].content.ends_with(DAY_ASKED));
+        assert!(
+            requests[1].messages[1]
+                .content
+                .ends_with(&format!("{DAY_ASKED} {ANSWER}"))
+        );
     }
 
     #[tokio::test]
@@ -3070,9 +3203,70 @@ player2 = \"Cautious.\"
     /// so.
     fn not_playing(probed: anyhow::Result<Probed>) -> Option<anyhow::Error> {
         match probed.unwrap() {
-            Probed::Played => None,
+            Probed::Played(_) => None,
             Probed::DidNotPlay(error) => Some(error),
         }
+    }
+
+    #[tokio::test]
+    async fn the_probe_allows_a_tool_call_when_the_model_refuses_to_be_made_to_call_one() {
+        // The night's request is refused under "required" and answered
+        // under "auto", and the day's is asked under "auto", which this
+        // provider would refuse under "required".
+        let base_url = canned::refusing_required(&[MODEL_ID]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        assert!(matches!(
+            check_plays(&provider, MODEL_ID).await.unwrap(),
+            Probed::Played(ToolChoice::Auto)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_probe_tells_a_model_that_could_not_be_asked_after_refusing_to_be_made_to_call_a_tool()
+     {
+        let base_url = canned::refusing_required_then_busy(&[MODEL_ID]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        let error = check_plays(&provider, MODEL_ID).await.unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(
+            shown.starts_with(&format!(
+                "{MODEL_ID} could not be asked to play: POST {base_url}/chat/completions \
+                 was answered 429 Too Many Requests"
+            )),
+            "{shown}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_probe_gives_both_refusals_when_the_night_s_request_is_refused_either_way() {
+        let base_url = canned::refusing(&[MODEL_ID]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        let error = not_playing(check_plays(&provider, MODEL_ID).await).unwrap();
+        let shown = format!("{error:#}");
+        let refused = format!(
+            "POST {base_url}/chat/completions was answered 400 Bad Request. \
+             The provider said: {}",
+            canned::refusal(MODEL_ID)
+        );
+        assert_eq!(
+            shown,
+            format!(
+                "{MODEL_ID} did not answer a night's request: \
+                 made to call a tool: {refused}\nasked to call one: {refused}"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn the_probe_asks_once_when_the_provider_refuses_for_another_reason_than_a_bad_request() {
+        // The provider answers one request, so a second would not be
+        // answered 401.
+        let (base_url, _served) =
+            canned::answering("401 Unauthorized", r#"{"error": {"message": "no key"}}"#);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        let error = check_plays(&provider, MODEL_ID).await.unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("was answered 401 Unauthorized"), "{shown}");
     }
 
     #[tokio::test]
@@ -3227,7 +3421,8 @@ player2 = \"Cautious.\"
                     model::Message::system("You are pat."),
                     model::Message::user(
                         "You are pat, a villager.\n\nNight 1.\nYou sleep.\nann dies.\n\nDay 1.\n\n\
-                         It is day 1, which lasts 10s. You may speak, vote, or wait."
+                         It is day 1, which lasts 10s. You may speak, vote, or wait. \
+                         Answer by calling one of the tools."
                     ),
                 ],
                 vec![
@@ -3262,6 +3457,7 @@ player2 = \"Cautious.\"
                         }),
                     ),
                 ],
+                ToolChoice::Required,
             )
         );
     }
