@@ -157,16 +157,18 @@ or a persona for a seat that is not there stops the program at once.
 
 The model is checked before any player is built, so a model that cannot
 play fails at launch. The provider's listing must have the model's id, and
-the model is then asked for one selection exactly as a player is: a short
-prompt, two candidates, and the `select` tool it must call. A model that
-does not answer with a candidate stops the program, and the error says
-why in the provider's own words, such as a server that rejects the request
-or an answer that makes no tool call. Any model that passes can play.
+the model is then asked twice exactly as a player is, once as by night and
+once as by day: a short prompt, two candidates, and the tools a player has
+in that phase, `select` by night and `speak`, `select` and `wait` by day.
+A model that does not answer both requests as a player must stops the
+program, and the error names the request that failed and says why in the
+provider's own words, such as a server that rejects the request or an
+answer that makes no tool call. Any model that passes can play.
 
 To play against a local [LM Studio](https://lmstudio.ai) server, download
 `qwen2.5-7b-instruct` there and start its server, which listens at
 `http://localhost:1234/v1`. `social-deduction models http://localhost:1234/v1 --check`
-lists what it serves and marks the models that select when asked, and
+lists what it serves and marks the models that play when asked, and
 [`examples/werewolf/llm/minimal.toml`](examples/werewolf/llm/minimal.toml)
 plays it:
 
@@ -179,9 +181,10 @@ social-deduction werewolf llm examples/werewolf/llm/minimal.toml
 The `models` command belongs to no game. It asks a provider, named by the
 root of its OpenAI-compatible API, for the models it serves and lists them,
 one id per line in sorted order. With `--check`, it asks each model listed
-for one selection as a player would, one model at a time, and marks with
-`*` those that select and with `!` those that do not, with a line at the
-end saying so. Why each `!` model failed goes to standard error, so the
+to play as a player would, once as by night and once as by day, one model
+at a time, and marks with `*` those that answer both requests well and
+with `!` those that do not, with a line at the end saying so. Why each `!`
+model failed goes to standard error, so the
 listing stays readable: a line `! id` naming the model as the listing
 marks it, then the error's causes, each on its own indented line, so a
 provider's words may run to several lines and still be read as one

@@ -55,9 +55,10 @@
 //! message it receives and an [`Entry::Action`] for each utterance and
 //! selection it sends, numbered together from 1, with how many memories the
 //! model was shown when it made the call that produced the message. Before
-//! a game begins, [`check_selects`] asks the model for one selection as a
-//! player would by night, so a model that does not select fails at launch,
-//! in the provider's words. [`game`] builds the episode from the deal, the
+//! a game begins, [`check_plays`] asks the model once as a player would by
+//! night and once as by day, so a model that does not answer either request
+//! well fails at launch, in the provider's words. [`game`] builds the
+//! episode from the deal, the
 //! rules, the model, and the [`Configuration`] the log opens with, which
 //! [`Settings::configuration`] records from the settings, the deal and the
 //! rendered prompts.
@@ -872,14 +873,7 @@ impl Player {
             (story, history.len())
         };
         let asked = format!("{}\n\n{}", story.join("\n"), situation(me, view, limit)?);
-        let request = Request::offering(
-            &self.mind.model_id,
-            vec![
-                model::Message::system(&self.mind.prompt),
-                model::Message::user(asked),
-            ],
-            tools,
-        );
+        let request = request(&self.mind.model_id, &self.mind.prompt, &asked, tools);
         Ok((request, seen))
     }
 
@@ -918,7 +912,7 @@ impl Player {
     /// Ask the model to select one of `candidates` in the night numbered
     /// `seq`, which `view` shows and which lasts `limit`, and send the
     /// selection to the environment. The model's failure to select, as
-    /// [`selection`] judges it, is an error, and no selection; so is a
+    /// [`selected`] judges it, is an error, and no selection; so is a
     /// request that cannot be put together or a selection that cannot be
     /// sent, which are the player's own doing, and they read so in the
     /// error.
@@ -929,8 +923,9 @@ impl Player {
         limit: Duration,
         candidates: &[PlayerId],
     ) -> anyhow::Result<()> {
-        let (request, seen) = self.request(view, limit, vec![select(candidates)])?;
-        let target = selection(self.mind.model.as_ref(), &request, candidates).await?;
+        let (request, seen) = self.request(view, limit, night_tools(candidates))?;
+        let response = self.mind.model.complete(&request).await?;
+        let target = selected(&response, candidates)?;
         let selection = Message::Select {
             seq,
             from: self.context.id.clone(),
@@ -958,8 +953,7 @@ impl Player {
         candidates: &[PlayerId],
     ) -> anyhow::Result<()> {
         let me = &self.context.id;
-        let tools = vec![speak(), vote(candidates), wait(limit)];
-        let (request, seen) = self.request(view, limit, tools)?;
+        let (request, seen) = self.request(view, limit, day_tools(candidates, limit))?;
         let response = self.mind.model.complete(&request).await?;
         let Asked { sends, wait } = asked(&response, candidates, limit)?;
         if self.mind.seq() != seq {
@@ -1082,55 +1076,94 @@ fn situation(me: &PlayerId, view: &View, limit: Duration) -> anyhow::Result<Stri
     ))
 }
 
-/// Whom `model` selects from `candidates` when sent `request`: its
-/// response, judged by [`selected`]. A model that cannot be reached, or
-/// answers with something that is not a selection of a candidate, is an
-/// error. This is the one way a player asks by night, and the one way the
-/// probe does, so they agree on what a selection is.
-async fn selection(
-    model: &dyn model::Model,
-    request: &Request,
-    candidates: &[PlayerId],
-) -> anyhow::Result<PlayerId> {
-    let response = model.complete(request).await?;
-    selected(&response, candidates)
+/// A request of a player's shape to `model_id`: `prompt` as the system
+/// message, `asked` as the user message, and `tools` to answer with, one
+/// of which it must call. This is the one way a player builds a request
+/// and the one way the probe does, so they agree on what is asked.
+fn request(model_id: &str, prompt: &str, asked: &str, tools: Vec<Tool>) -> Request {
+    Request::offering(
+        model_id,
+        vec![model::Message::system(prompt), model::Message::user(asked)],
+        tools,
+    )
 }
 
-/// What [`check_selects`] found.
+/// The tools a player is offered by night: [`select`] over `candidates`.
+fn night_tools(candidates: &[PlayerId]) -> Vec<Tool> {
+    vec![select(candidates)]
+}
+
+/// The tools a player is offered by day: [`speak`], [`vote`] over
+/// `candidates`, and [`wait`] up to `limit`, how long the day lasts.
+fn day_tools(candidates: &[PlayerId], limit: Duration) -> Vec<Tool> {
+    vec![speak(), vote(candidates), wait(limit)]
+}
+
+/// How the probe judges a response: as a player's answer is judged in one
+/// phase, well formed or an error saying what is wrong with it.
+type Judge<'a> = &'a dyn Fn(&Response) -> anyhow::Result<()>;
+
+/// What [`check_plays`] found.
 #[derive(Debug)]
 pub enum Probed {
-    /// Asked for a selection, the model selected a candidate.
-    Selected,
-    /// Asked for a selection, the model did not: the provider refused the
-    /// request as bad, or the answer was no selection. The error names the
-    /// model and carries the cause beneath it.
-    DidNotSelect(anyhow::Error),
+    /// Asked as by night and as by day, the model answered both requests
+    /// as a player must.
+    Played,
+    /// One of the requests the model did not answer as a player must: the
+    /// provider refused it as bad, or the answer was not well formed. The
+    /// error names the model and the request, and carries the cause
+    /// beneath it.
+    DidNotPlay(anyhow::Error),
 }
 
-/// Check that `model`, asked as a player is, selects a candidate: one
-/// request of a player's shape, a short system prompt, a line asking for
-/// a selection, and the `select` tool over two placeholder candidates,
-/// judged as a player's answer is. A model that could not be asked at
+/// Check that `model`, asked as a player is, plays: two requests of a
+/// player's shape, one after the other, each with a short system prompt
+/// and over two placeholder candidates. The night's asks for a selection
+/// with the `select` tool, and is judged as a player's night answer is by
+/// `selected`; the day's says it is day and the player may speak, vote,
+/// or wait, offers the day's three tools over a day of one minute, and is
+/// judged as a player's day answer is by `asked`. The day's request is
+/// not made when the night's fails. A model that could not be asked at
 /// all, because the provider was not reached or answered with anything
 /// but the model's answer, is an error naming the model, with the cause
 /// beneath it.
-pub async fn check_selects(model: &dyn model::Model, model_id: &str) -> anyhow::Result<Probed> {
+pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Result<Probed> {
     let candidates = ["player1".to_string(), "player2".to_string()];
-    let request = Request::new(
+    let limit = Duration::from_secs(60);
+    let prompt = "You are a player in a game, about to be asked to play.";
+    let night = request(
         model_id,
-        vec![
-            model::Message::system("You are a player in a game, about to be asked to select."),
-            model::Message::user("Select one of the candidates."),
-        ],
-        select(&candidates),
+        prompt,
+        "Select one of the candidates.",
+        night_tools(&candidates),
     );
-    match selection(model, &request, &candidates).await {
-        Ok(_) => Ok(Probed::Selected),
-        Err(error) if model::concerns_the_model(&error) => Ok(Probed::DidNotSelect(
-            error.context(format!("{model_id} did not select when asked")),
-        )),
-        Err(error) => Err(error.context(format!("{model_id} could not be asked to select"))),
+    let day = request(
+        model_id,
+        prompt,
+        &format!(
+            "It is day, which lasts {}. You may speak, vote, or wait.",
+            format_duration(limit)
+        ),
+        day_tools(&candidates, limit),
+    );
+    let by_night = |response: &Response| selected(response, &candidates).map(drop);
+    let by_day = |response: &Response| asked(response, &candidates, limit).map(drop);
+    let plays: [(&str, Request, Judge); 2] = [("night", night, &by_night), ("day", day, &by_day)];
+    for (phase, request, judge) in plays {
+        let answered = model.complete(&request).await.and_then(|r| judge(&r));
+        match answered {
+            Ok(()) => {}
+            Err(error) if model::concerns_the_model(&error) => {
+                return Ok(Probed::DidNotPlay(error.context(format!(
+                    "{model_id} did not answer a {phase}'s request"
+                ))));
+            }
+            Err(error) => {
+                return Err(error.context(format!("{model_id} could not be asked to play")));
+            }
+        }
     }
+    Ok(Probed::Played)
 }
 
 /// The name of the tool a player selects with, by night and by day.
@@ -2908,53 +2941,83 @@ player2 = \"Cautious.\"
         assert!(situation(&me("ann"), &night(&[]), limit).is_err());
     }
 
-    #[tokio::test]
-    async fn the_probe_asks_for_one_selection_as_a_player_does_and_passes_when_the_model_selects() {
-        let model = FakeModel::answering(choosing_first);
-        assert!(not_selecting(check_selects(&model, MODEL_ID).await).is_none());
-        let requests = model.requests();
-        assert_eq!(requests.len(), 1);
-        let request = &requests[0];
-        assert_eq!(request.model, MODEL_ID);
-        assert_eq!(request.messages.len(), 2);
-        assert_eq!(request.messages[0].role, model::Role::System);
-        assert_eq!(request.messages[1].role, model::Role::User);
-        assert_eq!(
-            request.tools,
-            [select(&["player1".to_string(), "player2".to_string()])]
-        );
+    /// The two placeholder candidates the probe asks about.
+    fn placeholders() -> [PlayerId; 2] {
+        ["player1".to_string(), "player2".to_string()]
     }
 
     #[tokio::test]
-    async fn the_probe_s_error_names_the_model_and_carries_the_failure() {
-        let model = FakeModel::failing("the model is down");
-        let error = not_selecting(check_selects(&model, MODEL_ID).await).unwrap();
+    async fn the_probe_asks_as_by_night_and_then_as_by_day_and_passes_when_the_model_plays_both() {
+        let model = FakeModel::answering(choosing_first);
+        assert!(not_playing(check_plays(&model, MODEL_ID).await).is_none());
+        let requests = model.requests();
+        assert_eq!(requests.len(), 2);
+        for request in &requests {
+            assert_eq!(request.model, MODEL_ID);
+            assert_eq!(request.messages.len(), 2);
+            assert_eq!(request.messages[0].role, model::Role::System);
+            assert_eq!(request.messages[1].role, model::Role::User);
+        }
+        // The night's request is a player's by night, and the day's a
+        // player's by day, over the same candidates and a day of a minute.
+        assert_eq!(requests[0].tools, night_tools(&placeholders()));
+        assert_eq!(
+            requests[1].tools,
+            day_tools(&placeholders(), Duration::from_secs(60))
+        );
+        assert_eq!(requests[1].tools.len(), 3);
+        assert!(requests[1].messages[1].content.contains("day"));
+    }
+
+    #[tokio::test]
+    async fn the_probe_names_the_day_s_request_when_the_model_selects_by_night_but_makes_no_call_by_day()
+     {
+        let model = FakeModel::answering(|request| {
+            if request.tools.len() == 1 {
+                choosing_first(request)
+            } else {
+                saying_nothing(request)
+            }
+        });
+        let error = not_playing(check_plays(&model, MODEL_ID).await).unwrap();
         assert_eq!(
             format!("{error:#}"),
-            format!("{MODEL_ID} did not select when asked: the model is down")
+            format!("{MODEL_ID} did not answer a day's request: the model made no tool call")
         );
+        assert_eq!(model.requests().len(), 2);
     }
 
-    /// The error of a probe that found the model did not select, if it
-    /// found so.
-    fn not_selecting(probed: anyhow::Result<Probed>) -> Option<anyhow::Error> {
+    #[tokio::test]
+    async fn the_probe_names_the_night_s_request_when_that_fails_and_never_sends_the_day_s() {
+        let model = FakeModel::failing("the model is down");
+        let error = not_playing(check_plays(&model, MODEL_ID).await).unwrap();
+        assert_eq!(
+            format!("{error:#}"),
+            format!("{MODEL_ID} did not answer a night's request: the model is down")
+        );
+        assert_eq!(model.requests().len(), 1);
+    }
+
+    /// The error of a probe that found the model did not play, if it found
+    /// so.
+    fn not_playing(probed: anyhow::Result<Probed>) -> Option<anyhow::Error> {
         match probed.unwrap() {
-            Probed::Selected => None,
-            Probed::DidNotSelect(error) => Some(error),
+            Probed::Played => None,
+            Probed::DidNotPlay(error) => Some(error),
         }
     }
 
     #[tokio::test]
-    async fn the_probe_tells_a_model_that_could_not_be_asked_from_one_that_did_not_select() {
+    async fn the_probe_tells_a_model_that_could_not_be_asked_from_one_that_did_not_play() {
         // A provider that answers anything but success or a refusal of the
         // request as bad never put the question to the model.
         let (base_url, _served) = canned::answering("429 Too Many Requests", "{}");
         let provider = Provider::new(base_url.clone(), None, REQUEST_TIMEOUT).unwrap();
-        let error = check_selects(&provider, MODEL_ID).await.unwrap_err();
+        let error = check_plays(&provider, MODEL_ID).await.unwrap_err();
         let shown = format!("{error:#}");
         assert!(
             shown.starts_with(&format!(
-                "{MODEL_ID} could not be asked to select: POST {base_url}/chat/completions \
+                "{MODEL_ID} could not be asked to play: POST {base_url}/chat/completions \
                  was answered 429 Too Many Requests"
             )),
             "{shown}"
@@ -2962,29 +3025,53 @@ player2 = \"Cautious.\"
     }
 
     #[tokio::test]
-    async fn the_probe_judges_the_answer_as_a_player_s_is_judged() {
-        let candidates = ["player1".to_string(), "player2".to_string()];
-        let prose: Response =
-            serde_json::from_value(json!({"choices": [{"message": {"content": "player1"}}]}))
-                .unwrap();
+    async fn the_probe_judges_each_answer_as_a_player_s_is_judged() {
+        let candidates = placeholders();
+        let limit = Duration::from_secs(60);
+        // By night, as a selection.
         let elsewhere = Response::tool_call(SELECT, &json!({"target": "player3"}));
-        for response in [prose, elsewhere] {
-            let judged = selected(&response, &candidates).unwrap_err();
-            let model = FakeModel::responding(response);
-            let error = not_selecting(check_selects(&model, MODEL_ID).await).unwrap();
-            let shown = format!("{error:#}");
-            assert!(shown.starts_with(MODEL_ID), "{shown}");
-            assert!(shown.ends_with(&format!("{judged:#}")), "{shown}");
-        }
+        let judged = selected(&elsewhere, &candidates).unwrap_err();
+        let model = FakeModel::responding(elsewhere);
+        let error = not_playing(check_plays(&model, MODEL_ID).await).unwrap();
+        let shown = format!("{error:#}");
+        assert!(
+            shown.starts_with(&format!("{MODEL_ID} did not answer a night's request")),
+            "{shown}"
+        );
+        assert!(shown.ends_with(&format!("{judged:#}")), "{shown}");
+        // By day, as a whole.
+        let too_long = Response::calling(&[
+            (SPEAK.to_string(), json!({"text": "Hello."})),
+            (WAIT.to_string(), json!({"seconds": 61})),
+        ]);
+        let judged = super::asked(&too_long, &candidates, limit).unwrap_err();
+        let model = FakeModel::answering(move |request| {
+            if request.tools.len() == 1 {
+                choosing_first(request)
+            } else {
+                Ok(too_long.clone())
+            }
+        });
+        let error = not_playing(check_plays(&model, MODEL_ID).await).unwrap();
+        let shown = format!("{error:#}");
+        assert!(
+            shown.starts_with(&format!("{MODEL_ID} did not answer a day's request")),
+            "{shown}"
+        );
+        assert!(shown.ends_with(&format!("{judged:#}")), "{shown}");
     }
 
     #[tokio::test]
-    async fn the_probe_names_the_url_and_what_the_server_said_when_the_request_is_refused() {
+    async fn the_probe_names_the_url_and_what_the_server_said_when_a_request_is_refused() {
+        // The night's refused.
         let base_url = canned::refusing(&[MODEL_ID]);
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
-        let error = not_selecting(check_selects(&provider, MODEL_ID).await).unwrap();
+        let error = not_playing(check_plays(&provider, MODEL_ID).await).unwrap();
         let shown = format!("{error:#}");
-        assert!(shown.starts_with(MODEL_ID), "{shown}");
+        assert!(
+            shown.starts_with(&format!("{MODEL_ID} did not answer a night's request")),
+            "{shown}"
+        );
         assert!(
             shown.contains(&format!(
                 "POST {base_url}/chat/completions was answered 400"
@@ -2992,6 +3079,22 @@ player2 = \"Cautious.\"
             "{shown}"
         );
         assert!(shown.ends_with(&canned::refusal(MODEL_ID)), "{shown}");
+        // The day's refused, after the night's was answered.
+        let base_url = canned::refusing_days(&[MODEL_ID]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        let error = not_playing(check_plays(&provider, MODEL_ID).await).unwrap();
+        let shown = format!("{error:#}");
+        assert!(
+            shown.starts_with(&format!("{MODEL_ID} did not answer a day's request")),
+            "{shown}"
+        );
+        assert!(
+            shown.contains(&format!(
+                "POST {base_url}/chat/completions was answered 400"
+            )),
+            "{shown}"
+        );
+        assert!(shown.ends_with(&canned::day_refusal(MODEL_ID)), "{shown}");
     }
 
     #[test]

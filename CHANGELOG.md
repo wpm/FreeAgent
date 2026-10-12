@@ -16,10 +16,12 @@ workflow takes a version's notes from here.
 - `social-deduction werewolf llm`, in which every player is a language
   model set up by a TOML configuration file: the model, how to reach it, and
   the prompt templates each role is given. It checks the file, and asks the
-  model for a selection as a player would, before the game begins, and its
-  log opens with the configuration the game was played under.
+  model to play as a player would, once as by night and once as by day,
+  before the game begins, and its log opens with the configuration the game
+  was played under.
 - `social-deduction models`, which lists the models a provider serves.
-  `--check` asks each model for a selection and marks those that give one.
+  `--check` asks each model to play as by night and as by day and marks
+  those that answer both requests well.
 - `--night-limit` and `--day-limit` on `social-deduction werewolf
   uniform-random`, how long each phase waits for the players' selections,
   with defaults in the code.
