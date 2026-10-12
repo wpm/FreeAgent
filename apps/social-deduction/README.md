@@ -382,7 +382,7 @@ Only the Assassin names Merlin, and only evil players sabotage. The
 environment counts only the choices the rules allow.
 
 ```sh
-social-deduction avalon [--merlin N] [--percival N] [--servants N] [--assassin N] [--morgana N] [--mordred N] [--oberon N] [--minions N] [--propose-limit D] [--vote-limit D] [--quest-limit D] [--assassinate-limit D] [--log | --no-log]
+social-deduction avalon [CONFIG] [--merlin N] [--percival N] [--servants N] [--assassin N] [--morgana N] [--mordred N] [--oberon N] [--minions N] [--propose-limit D] [--vote-limit D] [--quest-limit D] [--assassinate-limit D] [--log | --no-log]
 ```
 
 The table seats Merlin, the Assassin, two Servants and a Minion unless the
@@ -396,6 +396,39 @@ and an evil one supports or sabotages with even odds, and the Assassin names
 one of the players it does not see as evil. The game is told on standard
 output as it happens and logged to standard error as JSON Lines, as
 Werewolf's is.
+
+The configuration file is shaped like Werewolf's: a top-level `strategy`,
+`[models.<name>]`, `[text]`, `[strategies.<name>]` and each role's table,
+with the same allotments and the same precedence, a setting coming from the
+command line, otherwise the file, otherwise the code. The roles' tables are
+`[roles.merlin]`, `[roles.percival]`, `[roles.servant]`,
+`[roles.assassin]`, `[roles.morgana]`, `[roles.mordred]`,
+`[roles.oberon]` and `[roles.minion]`. `[phases]` takes `propose_limit`,
+`vote_limit`, `quest_limit` and `assassinate_limit`, a minute each unless
+they say. Once the counts settle, the table is checked as above. Every
+strategy at the table is random for now; a prompted strategy may be
+defined and allotted no seat. The log's second entry is the configuration
+as it took effect, as in Werewolf. The [example](examples/avalon) allots
+every role to `random`, and plays the game of no file:
+
+```sh
+social-deduction avalon examples/avalon/random.toml
+```
+
+```toml
+[phases]
+vote_limit = "90s"
+
+[strategies.dice]
+policy = "random"
+
+[roles.servant]
+count = 3
+
+[roles.minion.strategies]   # one dice minion and one random one
+dice = 1
+random = 1
+```
 
 ## Models
 

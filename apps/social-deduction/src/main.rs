@@ -60,14 +60,14 @@ struct Werewolf {
     logging: Logging,
 }
 
-/// A game of Avalon: what the command line says of the table and the
-/// limits, every player random.
+/// A game of Avalon: its configuration file, if any, and what the command
+/// line says over it.
 #[derive(Args, Debug, PartialEq)]
 struct Avalon {
+    /// The TOML configuration file; without one, every player is random
+    config: Option<PathBuf>,
     #[command(flatten)]
-    roles: avalon::RoleCounts,
-    #[command(flatten)]
-    limits: avalon::PhaseLimits,
+    overrides: avalon::config::Overrides,
     #[command(flatten)]
     logging: Logging,
 }
@@ -130,12 +130,18 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         CommandLine::Avalon(Avalon {
-            roles,
-            limits,
+            config,
+            overrides,
             logging,
         }) => {
-            let deal = roles.table()?.deal();
-            let rules = limits.rules();
+            let config = match config {
+                Some(path) => avalon::config::Config::load(&path)?,
+                None => avalon::config::Config::default(),
+            };
+            let settings = config.settle(overrides)?;
+            let deal = settings.deal();
+            let configuration = settings.configuration();
+            let rules = settings.rules;
             let mut narrator = avalon::report::Narrator::default();
             play(
                 logging.enabled(),
@@ -145,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
                     avalon::game(
                         deal,
                         rules,
+                        configuration,
                         winner,
                         |_| avalon::random::Player::init(),
                         logger,
@@ -496,17 +503,18 @@ mod tests {
     }
 
     #[test]
-    fn avalon_takes_the_counts_the_limits_and_the_log_flags_and_no_file() {
+    fn avalon_takes_a_file_the_counts_the_limits_and_the_log_flags() {
         assert_eq!(
             parsed(&["avalon"]),
             CommandLine::Avalon(Avalon {
-                roles: avalon::RoleCounts::default(),
-                limits: avalon::PhaseLimits::default(),
+                config: None,
+                overrides: avalon::config::Overrides::default(),
                 logging: Logging::default(),
             })
         );
         let args = [
             "avalon",
+            "game.toml",
             "--merlin",
             "1",
             "--percival",
@@ -536,21 +544,24 @@ mod tests {
         assert_eq!(
             parsed(&args),
             CommandLine::Avalon(Avalon {
-                roles: avalon::RoleCounts {
-                    merlin: Some(1),
-                    percival: Some(1),
-                    servants: Some(3),
-                    assassin: Some(1),
-                    morgana: Some(1),
-                    mordred: Some(1),
-                    oberon: Some(1),
-                    minions: Some(2),
-                },
-                limits: avalon::PhaseLimits {
-                    propose_limit: Some(Duration::from_secs(30)),
-                    vote_limit: Some(Duration::from_secs(90)),
-                    quest_limit: Some(Duration::from_secs(120)),
-                    assassinate_limit: Some(Duration::from_secs(5)),
+                config: Some(PathBuf::from("game.toml")),
+                overrides: avalon::config::Overrides {
+                    roles: avalon::RoleCounts {
+                        merlin: Some(1),
+                        percival: Some(1),
+                        servants: Some(3),
+                        assassin: Some(1),
+                        morgana: Some(1),
+                        mordred: Some(1),
+                        oberon: Some(1),
+                        minions: Some(2),
+                    },
+                    limits: avalon::PhaseLimits {
+                        propose_limit: Some(Duration::from_secs(30)),
+                        vote_limit: Some(Duration::from_secs(90)),
+                        quest_limit: Some(Duration::from_secs(120)),
+                        assassinate_limit: Some(Duration::from_secs(5)),
+                    },
                 },
                 logging: Logging {
                     log: false,
@@ -561,8 +572,9 @@ mod tests {
         let refused = |args: &[&str]| {
             CommandLine::try_parse_from([&["social-deduction", "avalon"], args].concat()).is_err()
         };
-        assert!(refused(&["game.toml"]));
+        assert!(refused(&["game.toml", "other.toml"]));
         assert!(refused(&["--vote-limit", "30"]));
+        assert!(refused(&["--ratify-limit", "5s"]));
         assert!(refused(&["--werewolves", "1"]));
     }
 
@@ -596,6 +608,7 @@ mod tests {
             let line = help.lines().find(|line| line.contains(&option)).unwrap();
             assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
         }
+        assert!(help.contains("[CONFIG]"), "{help}");
     }
 
     #[test]

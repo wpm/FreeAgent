@@ -23,22 +23,23 @@
 //! choices it sends.
 //!
 //! The environment is [`announced`]'s, and each of an episode's players
-//! follows the [`random`] policy. An episode holds one kind of actor,
-//! [`Actor`], which is the environment or a player, and [`game`] builds
-//! every episode, with each seat's player built for it.
+//! follows the policy of the strategy it is dealt with its role: for now,
+//! the [`random`] policy. The [`config`] says which strategies are dealt.
+//! An episode holds one kind of actor, [`Actor`], which is the environment
+//! or a player, and [`game`] builds every episode, with each seat's player
+//! built for it.
 
 pub mod announced;
+pub mod config;
 pub mod random;
 pub mod report;
 
 use crate::report::in_order;
 use crate::seat::{ENVIRONMENT, PlayerId, to_everyone_but, to_the_environment, to_the_players_but};
-use crate::strategy::RANDOM;
 use anyhow::ensure;
 use async_trait::async_trait;
 use clap::Args;
 use free_agent::{ActorId, ActorInit, Behavior, Builder, Context, Episode, Logger, ThinkBuilder};
-use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -60,19 +61,22 @@ pub struct Dealt {
 }
 
 /// An episode of a game of `deal` under `rules`: the announcing
-/// environment, which may reach and stop every player and sends the
-/// winning team on `winner` when the game ends; and in each seat the
-/// player `player` builds for it. Everyone holds `logger`. A player may
-/// send to the environment and to every other player, and stops nobody.
+/// environment, which may reach and stop every player, logs
+/// `configuration` right after the deal, and sends the winning team on
+/// `winner` when the game ends; and in each seat the player `player`
+/// builds for it. Everyone holds `logger`. A player may send to the
+/// environment and to every other player, and stops nobody.
 pub fn game(
     deal: HashMap<PlayerId, Dealt>,
     rules: Rules,
+    configuration: config::Configuration,
     winner: oneshot::Sender<Team>,
     mut player: impl FnMut(&PlayerId) -> Seat,
     logger: Logger<Entry>,
 ) -> Episode<Actor> {
     let players: Vec<PlayerId> = deal.keys().cloned().collect();
-    let environment = announced::init(deal, rules, winner, Actor::Environment);
+    let configuration = Entry::Configuration(Box::new(configuration));
+    let environment = announced::init(deal, rules, configuration, winner, Actor::Environment);
     let mut init = HashMap::from([(ENVIRONMENT.to_string(), environment)]);
     for id in &players {
         let (behavior, think) = player(id);
@@ -335,7 +339,7 @@ pub enum Seen {
 /// How many of each role sit at the table, for a game to flatten into its
 /// command line arguments. A count left unset has no `clap` default, so
 /// that the game can tell it apart from a count that was given, and fill
-/// it in from [`Table::default`].
+/// it in from the configuration file or [`Table::default`].
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 pub struct RoleCounts {
     /// How many Merlins.
@@ -383,29 +387,6 @@ impl RoleCounts {
     pub fn flag(role: Role) -> String {
         format!("--{}", role.counted())
     }
-
-    /// The table these counts make, each count left unset filled in from
-    /// [`Table::default`].
-    ///
-    /// # Errors
-    ///
-    /// The table is not valid, as [`Table::check`] says.
-    pub fn table(&self) -> anyhow::Result<Table> {
-        let default = Table::default();
-        let count = |role| self.get(role).unwrap_or(default.count(role));
-        let table = Table {
-            merlin: count(Role::Merlin),
-            percival: count(Role::Percival),
-            servants: count(Role::Servant),
-            assassin: count(Role::Assassin),
-            morgana: count(Role::Morgana),
-            mordred: count(Role::Mordred),
-            oberon: count(Role::Oberon),
-            minions: count(Role::Minion),
-        };
-        table.check()?;
-        Ok(table)
-    }
 }
 
 /// The help for a count of `what`, naming the `default` the code fills in
@@ -417,7 +398,7 @@ fn how_many(what: &str, default: usize) -> String {
 /// How long each phase waits for the players, for a game to flatten into
 /// its command line arguments. A limit left unset has no `clap` default, so
 /// that the game can tell it apart from a limit that was given, and fill it
-/// in from [`Rules::default`].
+/// in from the configuration file or [`Rules::default`].
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 pub struct PhaseLimits {
     /// How long a proposal waits for its leader.
@@ -432,20 +413,6 @@ pub struct PhaseLimits {
     /// How long the assassination waits for the Assassin.
     #[arg(long, value_name = "D", value_parser = humantime::parse_duration, help = how_long("the assassination waits", Rules::default().assassinate_limit))]
     pub assassinate_limit: Option<Duration>,
-}
-
-impl PhaseLimits {
-    /// The rules these limits make, each limit left unset filled in from
-    /// [`Rules::default`].
-    pub fn rules(&self) -> Rules {
-        let default = Rules::default();
-        Rules {
-            propose_limit: self.propose_limit.unwrap_or(default.propose_limit),
-            vote_limit: self.vote_limit.unwrap_or(default.vote_limit),
-            quest_limit: self.quest_limit.unwrap_or(default.quest_limit),
-            assassinate_limit: self.assassinate_limit.unwrap_or(default.assassinate_limit),
-        }
-    }
 }
 
 /// The help for a limit, saying what `waits`, and naming the `default`
@@ -515,20 +482,6 @@ impl Table {
         ]
     }
 
-    /// How many of `role` sit at the table.
-    pub fn count(&self, role: Role) -> usize {
-        match role {
-            Role::Merlin => self.merlin,
-            Role::Percival => self.percival,
-            Role::Servant => self.servants,
-            Role::Assassin => self.assassin,
-            Role::Morgana => self.morgana,
-            Role::Mordred => self.mordred,
-            Role::Oberon => self.oberon,
-            Role::Minion => self.minions,
-        }
-    }
-
     /// How many players sit at the table.
     pub fn players(&self) -> usize {
         self.counts().iter().map(|(_, count)| count).sum()
@@ -567,26 +520,6 @@ impl Table {
     /// nothing about the roles, since every player sees every name.
     pub fn seats(&self) -> impl Iterator<Item = PlayerId> {
         (1..=self.players()).map(|seat| format!("player{seat}"))
-    }
-
-    /// The roles, dealt to the seats at random, every player random.
-    pub fn deal(&self) -> HashMap<PlayerId, Dealt> {
-        let mut roles: Vec<Role> = self
-            .counts()
-            .into_iter()
-            .flat_map(|(role, count)| std::iter::repeat_n(role, count))
-            .collect();
-        roles.shuffle(&mut rand::rng());
-        self.seats()
-            .zip(roles)
-            .map(|(seat, role)| {
-                let dealt = Dealt {
-                    role,
-                    strategy: RANDOM.to_string(),
-                };
-                (seat, dealt)
-            })
-            .collect()
     }
 }
 
@@ -1232,13 +1165,14 @@ pub fn observe(context: &Context<Message, Entry>, from: ActorId, n: u64, seq: u6
     });
 }
 
-/// What the log holds: the deal, every message sent as the action of its
-/// sender and the observation of its receiver, each message a model player
-/// withheld because its phase had ended, each failure of a model player to
-/// act, how each phase came out, and the result. Every actor logs its own
-/// actions and observations: the environment logs the deal, how each phase
-/// came out, and the result besides, and a player what it withholds and
-/// its failures. Every phase ends with exactly one of
+/// What the log holds: the deal, the configuration, every message sent as
+/// the action of its sender and the observation of its receiver, each
+/// message a model player withheld because its phase had ended, each
+/// failure of a model player to act, how each phase came out, and the
+/// result. Every actor logs its own actions and observations: the
+/// environment logs the deal, the configuration, how each phase came out,
+/// and the result besides, and a player what it withholds and its
+/// failures. Every phase ends with exactly one of
 /// [`Entry::Proposed`], [`Entry::Tallied`], [`Entry::Quested`] and
 /// [`Entry::Assassinated`]. Every entry made during a phase names the
 /// phase in a field, so nothing about phases depends on the order entries
@@ -1266,6 +1200,8 @@ pub enum Entry {
         #[serde(with = "humantime_serde")]
         assassinate_limit: Duration,
     },
+    /// The configuration the game ran under, logged right after the deal.
+    Configuration(Box<config::Configuration>),
     /// `from` sent `message`, which it numbered `n`, to everyone in `to`.
     /// Logged by the sender.
     Action {
@@ -1443,7 +1379,10 @@ pub fn awaited(me: &PlayerId, view: &View) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::strategy::{RANDOM, Random, Strategy};
+    use config::Configuration;
     use free_agent::Event;
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
     use tokio::time::Instant;
@@ -1607,145 +1546,65 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn counts_left_unset_come_from_the_default_table() {
-        assert_eq!(RoleCounts::default().table().unwrap(), Table::default());
-        let counts = RoleCounts {
-            servants: Some(3),
-            minions: Some(2),
-            percival: Some(1),
-            morgana: Some(1),
-            ..RoleCounts::default()
-        };
-        let table = counts.table().unwrap();
-        assert_eq!(table.players(), 9);
-        assert_eq!(table.count(Role::Morgana), 1);
-        assert_eq!(table.count(Role::Merlin), 1);
-        let error = RoleCounts {
-            servants: Some(0),
-            ..RoleCounts::default()
-        }
-        .table()
-        .unwrap_err();
-        assert!(error.to_string().contains("seats 3"), "{error}");
-    }
-
-    #[test]
     fn a_table_seats_five_to_ten_at_most_one_of_each_role_but_servant_and_minion_and_merlin_with_an_assassin()
      {
-        let table = |counts: RoleCounts| counts.table();
+        let error = |table: Table| table.check().unwrap_err().to_string();
         assert!(Table::default().check().is_ok());
-        let error = |counts: RoleCounts| table(counts).unwrap_err().to_string();
         assert_eq!(
-            error(RoleCounts {
-                servants: Some(1),
-                ..RoleCounts::default()
+            error(Table {
+                servants: 1,
+                ..Table::default()
             }),
             "Avalon is played by 5 to 10 players, and this table seats 4"
         );
         assert_eq!(
-            error(RoleCounts {
-                servants: Some(8),
-                ..RoleCounts::default()
+            error(Table {
+                servants: 8,
+                ..Table::default()
             }),
             "Avalon is played by 5 to 10 players, and this table seats 11"
         );
-        assert!(
-            table(RoleCounts {
-                servants: Some(7),
-                ..RoleCounts::default()
-            })
-            .is_ok()
-        );
+        let ten = Table {
+            servants: 7,
+            ..Table::default()
+        };
+        assert!(ten.check().is_ok());
+        assert_eq!(ten.players(), 10);
         assert_eq!(
-            error(RoleCounts {
-                morgana: Some(2),
-                ..RoleCounts::default()
+            error(Table {
+                morgana: 2,
+                ..Table::default()
             }),
             "a table has at most one Morgana, and this one has 2"
         );
         assert!(
-            table(RoleCounts {
-                servants: Some(4),
-                minions: Some(3),
-                ..RoleCounts::default()
-            })
+            Table {
+                servants: 4,
+                minions: 3,
+                ..Table::default()
+            }
+            .check()
             .is_ok()
         );
         assert_eq!(
-            error(RoleCounts {
-                merlin: Some(0),
-                servants: Some(3),
-                ..RoleCounts::default()
+            error(Table {
+                merlin: 0,
+                servants: 3,
+                ..Table::default()
             }),
             "a table has Merlin exactly when it has an Assassin, and this one has 0 Merlin and 1 Assassin"
         );
         // Neither is fine, and so is any split between the teams.
         assert!(
-            table(RoleCounts {
-                merlin: Some(0),
-                assassin: Some(0),
-                servants: Some(0),
-                minions: Some(5),
-                ..RoleCounts::default()
-            })
+            Table {
+                merlin: 0,
+                assassin: 0,
+                servants: 0,
+                minions: 5,
+                ..Table::default()
+            }
+            .check()
             .is_ok()
-        );
-    }
-
-    #[test]
-    fn the_deal_seats_every_role_at_random_every_player_random() {
-        let table = Table {
-            percival: 1,
-            morgana: 1,
-            ..Table::default()
-        };
-        let mut merlins = HashSet::new();
-        for _ in 0..100 {
-            let deal = table.deal();
-            let mut seats: Vec<&PlayerId> = deal.keys().collect();
-            seats.sort_unstable();
-            assert_eq!(
-                seats,
-                table.seats().collect::<Vec<_>>().iter().collect::<Vec<_>>()
-            );
-            let mut roles: Vec<Role> = deal.values().map(|dealt| dealt.role).collect();
-            roles.sort_unstable();
-            let mut expected: Vec<Role> = table
-                .counts()
-                .into_iter()
-                .flat_map(|(role, count)| std::iter::repeat_n(role, count))
-                .collect();
-            expected.sort_unstable();
-            assert_eq!(roles, expected);
-            assert!(deal.values().all(|dealt| dealt.strategy == RANDOM));
-            merlins.extend(
-                deal.iter()
-                    .filter(|(_, dealt)| dealt.role == Role::Merlin)
-                    .map(|(seat, _)| seat.clone()),
-            );
-        }
-        assert_eq!(merlins.len(), 7);
-    }
-
-    #[test]
-    fn the_limits_left_unset_come_from_the_default_rules() {
-        assert_eq!(PhaseLimits::default().rules(), Rules::default());
-        let limits = PhaseLimits {
-            propose_limit: Some(Duration::from_secs(1)),
-            vote_limit: Some(Duration::from_secs(2)),
-            quest_limit: Some(Duration::from_secs(3)),
-            assassinate_limit: Some(Duration::from_secs(4)),
-        };
-        let rules = limits.rules();
-        let phases = [
-            Phase::Propose,
-            Phase::Vote,
-            Phase::Quest,
-            Phase::Assassinate,
-        ];
-        assert_eq!(
-            phases.map(|phase| rules.limit(phase).as_secs()),
-            [1, 2, 3, 4]
         );
     }
 
@@ -2450,6 +2309,26 @@ pub(crate) mod tests {
             .collect()
     }
 
+    /// The configuration of a game of `roles` under `rules` with every
+    /// player random.
+    pub(crate) fn configured(roles: &HashMap<PlayerId, Role>, rules: &Rules) -> Configuration {
+        let count = |role| roles.values().filter(|r| **r == role).count();
+        Configuration {
+            role_counts: EVERYONE.map(|role| (role, count(role))).into(),
+            propose_limit: rules.propose_limit,
+            vote_limit: rules.vote_limit,
+            quest_limit: rules.quest_limit,
+            assassinate_limit: rules.assassinate_limit,
+            strategies: BTreeMap::from([(RANDOM.to_string(), Strategy::Random(Random {}))]),
+            allotments: EVERYONE
+                .map(|role| (role, BTreeMap::from([(RANDOM.to_string(), count(role))])))
+                .into(),
+            models: BTreeMap::new(),
+            prompts: BTreeMap::new(),
+            text: BTreeMap::new(),
+        }
+    }
+
     /// What a game reports: the winner, everything logged, and how long
     /// the game took.
     pub(crate) type Played = (Team, Vec<Entry>, Duration);
@@ -2554,7 +2433,15 @@ pub(crate) mod tests {
                 .remove(id.as_str())
                 .unwrap_or_else(random::Player::init)
         };
-        let episode = game(dealt(&roles, RANDOM), rules, winner, player, logger);
+        let configuration = configured(&roles, &rules);
+        let episode = game(
+            dealt(&roles, RANDOM),
+            rules,
+            configuration,
+            winner,
+            player,
+            logger,
+        );
         run(episode, won, log).await
     }
 

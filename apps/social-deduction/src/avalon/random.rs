@@ -118,8 +118,8 @@ mod tests {
     use super::*;
     use crate::avalon::report::Narrator;
     use crate::avalon::tests::{
-        Script, dealt, five, logged, mute, observed_by, outcomes, play, quick, run, utterance,
-        view_of,
+        Script, configured, dealt, five, logged, mute, observed_by, outcomes, play, quick, run,
+        utterance, view_of,
     };
     use crate::avalon::{PROPOSALS, Role, Rules, Table, game, sabotages_needed, team_size};
     use crate::seat::{ENVIRONMENT, to_the_environment};
@@ -143,6 +143,7 @@ mod tests {
         let episode = game(
             dealt(&roles, RANDOM),
             Rules::default(),
+            configured(&roles, &Rules::default()),
             winner,
             |_| Player::init(),
             logger,
@@ -156,12 +157,19 @@ mod tests {
             matches!(first, Some(Entry::Start { roles: dealt, .. }) if *dealt == roles),
             "{first:?}"
         );
+        // The configuration comes right after the deal.
+        let second = entries.get(1);
+        assert!(
+            matches!(second, Some(Entry::Configuration(configuration))
+                if **configuration == configured(&roles, &Rules::default())),
+            "{second:?}"
+        );
         let last = entries.last();
         assert!(
             matches!(last, Some(Entry::End { winner: won, .. }) if *won == winner),
             "{last:?}"
         );
-        let between = &entries[1..entries.len() - 1];
+        let between = &entries[2..entries.len() - 1];
         // Whom each message, named by its sender and number, was entries as
         // sent to as an action, and who entries observing it.
         let mut actions: HashMap<(&str, u64), &HashSet<ActorId>> = HashMap::new();

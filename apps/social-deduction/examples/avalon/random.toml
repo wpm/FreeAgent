@@ -1,0 +1,28 @@
+# Every role played by the random strategy, which is always defined: the
+# same game as no file at all, with no models. Run it with
+#
+#     social-deduction avalon random.toml
+
+[roles.merlin]
+strategy = "random"
+
+[roles.percival]
+strategy = "random"
+
+[roles.servant]
+strategy = "random"
+
+[roles.assassin]
+strategy = "random"
+
+[roles.morgana]
+strategy = "random"
+
+[roles.mordred]
+strategy = "random"
+
+[roles.oberon]
+strategy = "random"
+
+[roles.minion]
+strategy = "random"

@@ -123,6 +123,12 @@ workflow takes a version's notes from here.
   allow. The game is told on standard output and logged to standard error,
   each phase ending with `Proposed`, `Tallied`, `Quested` or
   `Assassinated`.
+- `social-deduction avalon [CONFIG]` takes a configuration file shaped
+  like Werewolf's, with Avalon's eight `[roles.<role>]` tables and
+  `[phases]` limits, and deals roles and strategies together at random.
+  Every strategy at the table is random for now. The log records the
+  configuration right after the deal, and `examples/avalon/random.toml`
+  plays the game of no file.
 
 ### Changed
 
