@@ -9,15 +9,20 @@ context_window_fields = ["max_model_len", "context_length"]
 # Providers known, in the order the help lists them. Each has the root of its
 # OpenAI-compatible API, ending in /v1, as a base URL is given on the command
 # line; the environment variable that conventionally holds its API key, if it
-# wants one; and the headers every request to it must carry, if any. A base
-# URL at or under the root is read with the variable, unless another is
-# named, and sent the headers.
+# wants one; the headers every request to it must carry, if any; and the
+# context window, in tokens, of the models it serves, for a listing that
+# reports none. A base URL at or under the root is read with the variable,
+# unless another is named, sent the headers, and given the window.
 
+# OpenAI's chat models take 128000 tokens or more.
 [[providers]]
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
+context_window = 128000
 
+# Anthropic's models take 200000 tokens.
 [[providers]]
 base_url = "https://api.anthropic.com/v1"
 api_key_env = "ANTHROPIC_API_KEY"
 headers = { anthropic-version = "2023-06-01" }
+context_window = 200000

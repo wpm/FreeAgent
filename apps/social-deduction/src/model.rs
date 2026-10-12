@@ -6,9 +6,10 @@
 //! a [`Provider`] serves, and a model-played game checks that its model is
 //! in the listing before it begins. Each decision is one [`Request`] to
 //! the provider, forcing a tool call, and the [`Response`] it is answered
-//! with. Every request asks for a reply of at most [`MAX_TOKENS`], and
-//! [`estimate`] counts what the rest of it takes. A player depends only on the [`Model`] trait, so a test gives it
-//! a [`fake::FakeModel`] and no test reaches a model.
+//! with. [`estimated`] counts what a request takes of the model's context
+//! window, [`MAX_TOKENS`] for the reply included. A player depends only on
+//! the [`Model`] trait, so a test gives it a [`fake::FakeModel`] and no
+//! test reaches a model.
 //!
 //! The API key is a [`SecretString`], exposed only where the
 //! `Authorization` header is built, so it never appears in an error.
@@ -41,11 +42,16 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// a size most models can run in.
 pub const CONTEXT_WINDOW: u64 = 4096;
 
-/// The most tokens a reply may take, which every request asks for. A
-/// reply cut short is not well formed.
+/// The tokens the context window keeps for the reply.
 pub const MAX_TOKENS: u64 = 1024;
 
-/// How many tokens `text` takes, by estimate: one for every 3.5
+/// The tokens a chat template adds around each message, by estimate.
+pub const MESSAGE_TOKENS: u64 = 8;
+
+/// The tokens a chat template adds around each tool, by estimate.
+pub const TOOL_TOKENS: u64 = 32;
+
+/// How many tokens `text` takes, by estimate: one for every 3
 /// characters, rounded up. A provider offers no tokenizer, and an estimate
 /// over the mark is safer than one under it.
 pub fn estimate(text: &str) -> u64 {
@@ -55,7 +61,20 @@ pub fn estimate(text: &str) -> u64 {
 /// How many tokens a text of `chars` characters takes, by the estimate
 /// [`estimate`] makes.
 pub fn tokens(chars: usize) -> u64 {
-    (chars as u64 * 2).div_ceil(7)
+    (chars as u64).div_ceil(3)
+}
+
+/// How many tokens `request` takes of the context window, by estimate:
+/// each message and its [`MESSAGE_TOKENS`], the tools as JSON and
+/// [`TOOL_TOKENS`] for each, and [`MAX_TOKENS`] for the reply.
+pub fn estimated(request: &Request) -> u64 {
+    let messages: u64 = request
+        .messages
+        .iter()
+        .map(|message| estimate(&message.content) + MESSAGE_TOKENS)
+        .sum();
+    let tools = serde_json::to_string(&request.tools).unwrap_or_default();
+    messages + estimate(&tools) + TOOL_TOKENS * request.tools.len() as u64 + MAX_TOKENS
 }
 
 /// How much of what a provider said about a failure an error repeats.
@@ -107,6 +126,9 @@ struct Known {
     /// The headers every request to it must carry.
     #[serde(default)]
     headers: BTreeMap<String, String>,
+    /// The context window, in tokens, of the models it serves, for a
+    /// listing that reports none.
+    context_window: Option<u64>,
 }
 
 /// The provider `src/models.toml` knows at `base_url`: the one whose root
@@ -152,6 +174,13 @@ fn known_headers(base_url: &str) -> Vec<(&'static str, &'static str)> {
 /// it wants one.
 pub fn known_key_variable(base_url: &str) -> Option<&'static str> {
     known(base_url)?.api_key_env.as_deref()
+}
+
+/// The context window, in tokens, of the models the provider at
+/// `base_url` serves, when `src/models.toml` knows the provider and gives
+/// one.
+pub fn known_context_window(base_url: &str) -> Option<u64> {
+    known(base_url)?.context_window
 }
 
 /// The environment variable holding the API key for the provider at
@@ -309,7 +338,7 @@ struct Listing {
 /// One model as a provider lists it: its id, and its context window, in
 /// tokens, when its entry carries one. The window is the first of the
 /// fields `src/models.toml` names that holds a positive whole number.
-#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(from = "Entry")]
 pub struct Listed {
     /// The model's id.
@@ -436,7 +465,7 @@ impl Provider {
 
     /// The models the provider serves, as `GET {base_url}/models` lists
     /// them, failing as [`Provider::models`] does.
-    async fn listing(&self) -> anyhow::Result<Vec<Listed>> {
+    pub async fn listing(&self) -> anyhow::Result<Vec<Listed>> {
         let url = self.url("models");
         let listing: Listing = self
             .answered(self.client.get(&url), &format!("GET {url}"))
@@ -448,28 +477,18 @@ impl Provider {
     /// serves it. A model it does not list is an error naming the provider
     /// and the model.
     pub async fn listed(&self, id: &str) -> anyhow::Result<Listed> {
-        self.listing()
-            .await?
-            .into_iter()
-            .find(|model| model.id == id)
-            .ok_or_else(|| not_served(&self.base_url, id))
+        served(&self.base_url, &self.listing().await?, id).cloned()
     }
 }
 
-/// Check that `listing`, the ids the provider at `base_url` serves, has the
-/// model `id`. The error names the provider and the model.
-pub fn check_listed(base_url: &str, listing: &[String], id: &str) -> anyhow::Result<()> {
-    if listing.iter().any(|served| served == id) {
-        Ok(())
-    } else {
-        Err(not_served(base_url, id))
-    }
-}
-
-/// The error saying the provider at `base_url` does not serve the model
-/// `id`.
-fn not_served(base_url: &str, id: &str) -> anyhow::Error {
-    anyhow!("{base_url} does not serve a model with the id {id}")
+/// The model `id` in `listing`, the models the provider at `base_url`
+/// serves. A model not listed is an error naming the provider and the
+/// model.
+pub fn served<'a>(base_url: &str, listing: &'a [Listed], id: &str) -> anyhow::Result<&'a Listed> {
+    listing
+        .iter()
+        .find(|model| model.id == id)
+        .ok_or_else(|| anyhow!("{base_url} does not serve a model with the id {id}"))
 }
 
 /// The provider as a model: a completion is `POST {base_url}/chat/completions`.
@@ -502,15 +521,48 @@ mod tests {
     const TIMEOUT: Duration = Duration::from_secs(5);
 
     #[test]
-    fn a_text_is_estimated_at_a_token_for_every_three_and_a_half_characters_rounded_up() {
+    fn a_text_is_estimated_at_a_token_for_every_three_characters_rounded_up() {
         assert_eq!(estimate(""), 0);
         assert_eq!(estimate("a"), 1);
         assert_eq!(estimate("abc"), 1);
         assert_eq!(estimate("abcd"), 2);
-        assert_eq!(estimate("abcdefg"), 2);
-        assert_eq!(estimate("abcdefgh"), 3);
+        assert_eq!(estimate("abcdef"), 2);
+        assert_eq!(estimate("abcdefg"), 3);
         // Characters, not bytes.
-        assert_eq!(estimate("ééééééé"), 2);
+        assert_eq!(estimate("éééééé"), 2);
+    }
+
+    #[test]
+    fn a_request_is_estimated_at_its_messages_and_tools_each_with_an_allowance_and_the_reply() {
+        let request = selecting(&["player2", "player3"]);
+        let messages: u64 = request
+            .messages
+            .iter()
+            .map(|message| estimate(&message.content) + MESSAGE_TOKENS)
+            .sum();
+        let tools = estimate(&serde_json::to_string(&request.tools).unwrap()) + TOOL_TOKENS;
+        assert_eq!(estimated(&request), messages + tools + MAX_TOKENS);
+        assert_eq!(MAX_TOKENS, 1024);
+        // Nothing asked is the reply alone, and an empty list of tools.
+        let nothing = Request {
+            messages: Vec::new(),
+            tools: Vec::new(),
+            ..request
+        };
+        assert_eq!(estimated(&nothing), estimate("[]") + MAX_TOKENS);
+    }
+
+    #[test]
+    fn a_known_provider_s_default_context_window_is_read_from_the_file() {
+        assert_eq!(
+            known_context_window("https://api.openai.com/v1"),
+            Some(128000)
+        );
+        assert_eq!(
+            known_context_window("https://api.anthropic.com/v1/"),
+            Some(200000)
+        );
+        assert_eq!(known_context_window("http://localhost:1234/v1"), None);
     }
 
     #[test]
@@ -544,7 +596,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_listing_request_carries_the_provider_s_headers() {
-        let (base_url, served) = answering("200 OK", &listing(&[]));
+        let (base_url, served) = answering("200 OK", &listing(&[], None));
         let headers = [("anthropic-version", "2023-06-01"), ("x-extra", "yes")];
         let provider = Provider::with_headers(base_url, None, TIMEOUT, &headers).unwrap();
         provider.models().await.unwrap();
@@ -628,7 +680,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_listing_is_asked_of_the_models_path_without_a_key_when_none_is_configured() {
-        let (base_url, served) = answering("200 OK", &listing(&["b", "a"]));
+        let (base_url, served) = answering("200 OK", &listing(&["b", "a"], None));
         let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
         let models = provider.models().await.unwrap();
         assert_eq!(models, ["b", "a"]);
@@ -642,7 +694,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_listing_request_carries_the_key_as_a_bearer_token() {
-        let (base_url, served) = answering("200 OK", &listing(&["a"]));
+        let (base_url, served) = answering("200 OK", &listing(&["a"], None));
         let key = SecretString::from("sk-secret");
         let provider = Provider::new(base_url, Some(key), TIMEOUT).unwrap();
         provider.models().await.unwrap();
@@ -782,7 +834,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_model_the_provider_lists_is_served_and_one_it_does_not_is_an_error_naming_both() {
-        let (base_url, _served) = answering("200 OK", &listing(&["a", "qwen2.5-7b-instruct"]));
+        let (base_url, _served) =
+            answering("200 OK", &listing(&["a", "qwen2.5-7b-instruct"], None));
         let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
         assert_eq!(
             provider.listed("qwen2.5-7b-instruct").await.unwrap(),
@@ -791,7 +844,8 @@ mod tests {
                 context_window: None,
             }
         );
-        let (base_url, _served) = answering("200 OK", &listing(&["a", "qwen2.5-7b-instruct"]));
+        let (base_url, _served) =
+            answering("200 OK", &listing(&["a", "qwen2.5-7b-instruct"], None));
         let provider = Provider::new(base_url.clone(), None, TIMEOUT).unwrap();
         let error = provider.listed("qwen").await.unwrap_err();
         let shown = format!("{error:#}");

@@ -759,12 +759,6 @@ pub fn act(
     context.send(message, to)
 }
 
-/// Whether `forgot` says no talk was left out, so that the log leaves it
-/// out, for `serde`.
-fn nothing_forgotten(forgot: &Option<usize>) -> bool {
-    forgot.is_none_or(|forgot| forgot == 0)
-}
-
 /// Log that the actor of `context`, in the phase numbered `seq`, received
 /// the message `from` numbered `n`: its observation.
 pub fn observe(context: &Context<Message, Entry>, from: ActorId, n: u64, seq: u64) {
@@ -832,8 +826,8 @@ pub enum Entry {
         /// model made: the environment's, or a uniform-random player's.
         seen: Option<usize>,
         /// How many lines of talk the call that produced the message left
-        /// out to fit the context window. Left out when there were none.
-        #[serde(default, skip_serializing_if = "nothing_forgotten")]
+        /// out to fit the context window, `None` when it left out none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         forgot: Option<usize>,
     },
     /// `by` received the message `from` numbered `n` while in the phase
@@ -866,8 +860,8 @@ pub enum Entry {
         /// call that produced the message.
         seen: Option<usize>,
         /// How many lines of talk the call that produced the message left
-        /// out to fit the context window. Left out when there were none.
-        #[serde(default, skip_serializing_if = "nothing_forgotten")]
+        /// out to fit the context window, `None` when it left out none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         forgot: Option<usize>,
     },
     /// `player` failed to act in the phase numbered `seq`: the model was
@@ -1283,13 +1277,12 @@ mod tests {
         };
         for entry in [action, withheld] {
             assert_eq!(fields(entry(Some(3)))["forgot"], 3);
-            for forgot in [None, Some(0)] {
-                let fields = fields(entry(forgot));
-                assert!(fields.get("forgot").is_none(), "{fields}");
+            assert!(fields(entry(None)).get("forgot").is_none());
+            // Read back, each entry is the one written.
+            for forgot in [None, Some(3)] {
+                let json = serde_json::to_string(&entry(forgot)).unwrap();
+                assert_eq!(serde_json::from_str::<Entry>(&json).unwrap(), entry(forgot));
             }
-            // Read back, nothing forgotten is no count.
-            let json = serde_json::to_string(&entry(Some(0))).unwrap();
-            assert_eq!(serde_json::from_str::<Entry>(&json).unwrap(), entry(None));
         }
     }
 

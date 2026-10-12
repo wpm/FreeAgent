@@ -18,7 +18,9 @@
 //!
 //! The model's [`ContextWindow`] is settled before any game begins: from
 //! the command line, otherwise from the file, otherwise from the provider's
-//! listing of the model, otherwise from the code.
+//! listing of the model, otherwise from what `src/models.toml` knows of the
+//! provider, otherwise from the code. A window with no room for a story is
+//! refused.
 //!
 //! The game is the announcing environment's, with a model [`Player`] in
 //! every seat, and the day's vote is ratified: a day ends one ratify limit
@@ -84,8 +86,8 @@ use super::{
     awake, candidates, observe, receivers,
 };
 use crate::model::{
-    self, CONTEXT_WINDOW, MAX_TOKENS, Provider, REQUEST_TIMEOUT, Request, Response, Tool,
-    ToolChoice, api_key, estimate, key_variable,
+    self, CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT, Request, Response, Tool, ToolChoice, api_key,
+    key_variable,
 };
 use anyhow::{Context as _, anyhow, bail};
 use async_trait::async_trait;
@@ -100,6 +102,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::num::NonZero;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -545,17 +548,64 @@ impl Settings {
 
     /// The model's context window: the one the command line or the file
     /// gives, otherwise `reported`, the one the provider's listing reports
-    /// for the model, otherwise [`CONTEXT_WINDOW`].
-    pub fn context_window(&self, reported: Option<u64>) -> ContextWindow {
-        self.context_window
-            .or(reported.map(|tokens| ContextWindow {
-                tokens,
-                source: Source::Provider,
-            }))
-            .unwrap_or(ContextWindow {
-                tokens: CONTEXT_WINDOW,
-                source: Source::Default,
-            })
+    /// for the model, otherwise the provider's default in
+    /// `src/models.toml`, otherwise [`CONTEXT_WINDOW`]. A window smaller
+    /// than a request takes before its story, by estimate, for the largest
+    /// of `prompts`, is an error naming where the window came from.
+    pub fn context_window(
+        &self,
+        reported: Option<u64>,
+        prompts: &[SystemPrompt],
+    ) -> anyhow::Result<ContextWindow> {
+        let given = |tokens, source| ContextWindow { tokens, source };
+        let known = model::known_context_window(&self.config.model.base_url);
+        let window = self
+            .context_window
+            .or(reported.map(|tokens| given(tokens, Source::Provider)))
+            .or(known.map(|tokens| given(tokens, Source::ProviderDefault)))
+            .unwrap_or(given(CONTEXT_WINDOW, Source::Default));
+        let needed = self.unstoried(prompts)?;
+        if window.tokens < needed {
+            let (setting, remedy) = match window.source {
+                Source::CommandLine => ("--context-window", ""),
+                Source::File => ("context_window", ""),
+                Source::Provider => ("the context window the provider reports", REMEDY),
+                Source::ProviderDefault => ("the provider's default context window", REMEDY),
+                Source::Default => ("the default context window", REMEDY),
+            };
+            bail!(
+                "{setting} is {} tokens, smaller than the {needed} a request takes before its story, by estimate{remedy}",
+                window.tokens
+            );
+        }
+        Ok(window)
+    }
+
+    /// The most a request takes of the context window before its story, by
+    /// estimate, for any of `prompts`: the system prompt, and the first
+    /// day's situation and tools over every other seat, which outweigh a
+    /// night's, and the reply.
+    fn unstoried(&self, prompts: &[SystemPrompt]) -> anyhow::Result<u64> {
+        let alive: HashSet<PlayerId> = self.table.seats().collect();
+        prompts.iter().try_fold(0, |most, prompt| {
+            let me = &prompt.seat;
+            let view = View {
+                round: NonZero::<u8>::MIN,
+                phase: Phase::Day,
+                roles: HashMap::from([(me.clone(), prompt.role)]),
+                alive: alive.clone(),
+            };
+            let tools = day_tools(&candidates(me, &view), self.day_limit);
+            let asked = format!("\n\n{}", situation(me, &view, self.day_limit)?);
+            let request = request(
+                &self.config.model.id,
+                ToolChoice::Required,
+                &prompt.text,
+                asked,
+                tools,
+            );
+            Ok(most.max(model::estimated(&request)))
+        })
     }
 
     /// The rules a game is played under: the variant's, with the limits
@@ -599,8 +649,11 @@ pub struct ContextWindow {
     pub source: Source,
 }
 
+/// How a context window too small for a request can be given otherwise.
+const REMEDY: &str = "; --context-window or context_window gives the window";
+
 /// Where a setting came from, written as `command line`, `file`,
-/// `provider` or `default`.
+/// `provider`, `provider default` or `default`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
@@ -611,6 +664,9 @@ pub enum Source {
     File,
     /// The provider.
     Provider,
+    /// What `src/models.toml` knows of the provider.
+    #[serde(rename = "provider default")]
+    ProviderDefault,
     /// The code's default.
     Default,
 }
@@ -814,11 +870,11 @@ struct Remembered {
 
 /// What the model was shown for a call: how many memories the story was
 /// told from, and how many lines of talk it forgot to fit the context
-/// window.
+/// window, if any.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Shown {
     seen: usize,
-    forgot: usize,
+    forgot: Option<usize>,
 }
 
 /// A phase as a player was announced it: its number, what the player may
@@ -878,7 +934,7 @@ impl Mind {
         let (lines, forgot) = remembered.story.told_within(budget);
         let shown = Shown {
             seen: remembered.history.len(),
-            forgot,
+            forgot: (forgot > 0).then_some(forgot),
         };
         (lines.join("\n"), shown)
     }
@@ -1027,22 +1083,15 @@ impl Player {
     ) -> anyhow::Result<(Request, Shown)> {
         let me = &self.context.id;
         let situation = format!("\n\n{}", situation(me, view, limit)?);
-        // Everything but the story, as `request` puts it together.
-        let taken = MAX_TOKENS
-            + estimate(&self.mind.prompt)
-            + estimate(&serde_json::to_string(&tools)?)
-            + estimate(&format!("{situation} {ANSWER}"));
+        let asking = |asked: String, tools| {
+            let mind = &self.mind;
+            request(&mind.model_id, mind.tool_choice, &mind.prompt, asked, tools)
+        };
+        let taken = model::estimated(&asking(situation.clone(), tools.clone()));
         let (story, shown) = self
             .mind
             .story(self.mind.context_window.saturating_sub(taken));
-        let request = request(
-            &self.mind.model_id,
-            self.mind.tool_choice,
-            &self.mind.prompt,
-            story + &situation,
-            tools,
-        );
-        Ok((request, shown))
+        Ok((asking(story + &situation, tools), shown))
     }
 
     /// Woken, decide: take the wake-up, and ask the model about the phase
@@ -1157,7 +1206,7 @@ impl Player {
                     from: me.clone(),
                     message: sending.message(seq, me, 0),
                     seen: Some(shown.seen),
-                    forgot: Some(shown.forgot),
+                    forgot: shown.forgot,
                 });
             }
         }
@@ -1171,13 +1220,7 @@ impl Player {
         self.remember(Memory::Acted {
             message: message.clone(),
         });
-        act(
-            &self.context,
-            message,
-            to,
-            Some(shown.seen),
-            Some(shown.forgot),
-        )
+        act(&self.context, message, to, Some(shown.seen), shown.forgot)
     }
 
     /// Set a reminder to be woken `after` from now in the phase numbered
@@ -1652,7 +1695,6 @@ mod tests {
     };
     use clap::Parser;
     use secrecy::ExposeSecret;
-    use std::num::NonZero;
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -1986,36 +2028,143 @@ count = 8
     }
 
     #[test]
-    fn the_context_window_falls_back_from_the_command_line_to_the_file_to_the_provider_to_the_code()
-    {
+    fn the_context_window_falls_back_from_the_command_line_to_the_file_to_the_listing_to_the_provider_to_the_code()
+     {
         let window = |tokens, source| ContextWindow { tokens, source };
+        let settled =
+            |settings: &Settings, reported| settings.context_window(reported, &[]).unwrap();
         let file = format!("{MODEL}context_window = 8192\n");
         let command_line = || Variant::parse_from(["llm", "--context-window", "16384"]).overrides;
         let settings = settle(&file, command_line());
         assert_eq!(
-            settings.context_window(Some(32768)),
+            settled(&settings, Some(32768)),
             window(16384, Source::CommandLine)
         );
         let settings = settle(MODEL, command_line());
-        assert_eq!(
-            settings.context_window(None),
-            window(16384, Source::CommandLine)
-        );
+        assert_eq!(settled(&settings, None), window(16384, Source::CommandLine));
         let settings = settle(&file, Overrides::default());
-        assert_eq!(
-            settings.context_window(Some(32768)),
-            window(8192, Source::File)
-        );
+        assert_eq!(settled(&settings, Some(32768)), window(8192, Source::File));
         let settings = settle(MODEL, Overrides::default());
         assert_eq!(
-            settings.context_window(Some(32768)),
+            settled(&settings, Some(32768)),
             window(32768, Source::Provider)
         );
         assert_eq!(
-            settings.context_window(None),
+            settled(&settings, None),
             window(CONTEXT_WINDOW, Source::Default)
         );
         assert_eq!(CONTEXT_WINDOW, 4096);
+        // A provider `src/models.toml` gives a window for.
+        let openai = Overrides {
+            model: ModelOverrides {
+                base_url: Some("https://api.openai.com/v1".to_string()),
+                ..ModelOverrides::default()
+            },
+            ..Overrides::default()
+        };
+        let settings = settle(MODEL, openai);
+        assert_eq!(
+            settled(&settings, Some(32768)),
+            window(32768, Source::Provider)
+        );
+        assert_eq!(
+            settled(&settings, None),
+            window(128000, Source::ProviderDefault)
+        );
+    }
+
+    /// Every seat of the default table's prompt for every role, each
+    /// `length` characters long but for one seat's werewolf prompt, which
+    /// is `longest` long.
+    fn prompts_of_length(settings: &Settings, length: usize, longest: usize) -> Vec<SystemPrompt> {
+        let mut prompts: Vec<SystemPrompt> = settings
+            .table
+            .seats()
+            .flat_map(|seat| {
+                settings
+                    .table
+                    .counts()
+                    .into_iter()
+                    .map(move |(role, _)| SystemPrompt {
+                        seat: seat.clone(),
+                        role,
+                        text: "x".repeat(length),
+                    })
+            })
+            .collect();
+        let werewolf = prompts
+            .iter_mut()
+            .find(|prompt| prompt.role == Role::Werewolf)
+            .unwrap();
+        werewolf.text = "x".repeat(longest);
+        prompts
+    }
+
+    #[test]
+    fn a_context_window_with_no_room_for_a_story_is_an_error_naming_where_it_came_from() {
+        let settings = settle(MODEL, Overrides::default());
+        let short = prompts_of_length(&settings, 30, 30);
+        let long = prompts_of_length(&settings, 30, 12000);
+        // The longest prompt's day request, with no story, by estimate.
+        let needed = settings.unstoried(&long).unwrap();
+        assert!(needed > settings.unstoried(&short).unwrap() + 3900);
+        assert!(needed > CONTEXT_WINDOW);
+        assert_eq!(
+            settings.context_window(Some(needed), &long).unwrap(),
+            ContextWindow {
+                tokens: needed,
+                source: Source::Provider,
+            }
+        );
+        let refused = |settings: &Settings, reported| {
+            let error = settings.context_window(reported, &long).unwrap_err();
+            format!("{error:#}")
+        };
+        let too_small = format!("smaller than the {needed} a request takes before its story");
+        let shown = refused(&settings, Some(needed - 1));
+        assert!(
+            shown.starts_with(&format!(
+                "the context window the provider reports is {} tokens, {too_small}",
+                needed - 1
+            )),
+            "{shown}"
+        );
+        assert!(shown.contains("--context-window"), "{shown}");
+        let shown = refused(&settings, None);
+        assert!(
+            shown.starts_with(&format!(
+                "the default context window is 4096 tokens, {too_small}"
+            )),
+            "{shown}"
+        );
+        let openai = Overrides {
+            model: ModelOverrides {
+                base_url: Some("https://api.openai.com/v1".to_string()),
+                ..ModelOverrides::default()
+            },
+            ..Overrides::default()
+        };
+        let enormous = prompts_of_length(&settings, 30, 400_000);
+        let error = settle(MODEL, openai)
+            .context_window(None, &enormous)
+            .unwrap_err();
+        assert!(
+            format!("{error:#}")
+                .starts_with("the provider's default context window is 128000 tokens"),
+            "{error:#}"
+        );
+        let file = format!("{MODEL}context_window = 2000\n");
+        let shown = refused(&settle(&file, Overrides::default()), None);
+        assert_eq!(
+            shown,
+            format!("context_window is 2000 tokens, {too_small}, by estimate")
+        );
+        let overrides = Variant::parse_from(["llm", "--context-window", "2000"]).overrides;
+        let shown = refused(&settle(MODEL, overrides), None);
+        assert_eq!(
+            shown,
+            format!("--context-window is 2000 tokens, {too_small}, by estimate")
+        );
     }
 
     #[test]
@@ -2326,12 +2475,9 @@ player2 = \"Cautious.\"
         settings: &Settings,
         roles: &HashMap<PlayerId, Role>,
     ) -> anyhow::Result<Configuration> {
-        settings.configuration(
-            roles,
-            &settings.prompts()?,
-            ToolChoice::Required,
-            settings.context_window(None),
-        )
+        let prompts = settings.prompts()?;
+        let context_window = settings.context_window(None, &prompts)?;
+        settings.configuration(roles, &prompts, ToolChoice::Required, context_window)
     }
 
     #[test]
@@ -2501,7 +2647,7 @@ player2 = \"Cautious.\"
                 roles,
                 &prompts,
                 ToolChoice::Required,
-                settings.context_window(None),
+                settings.context_window(None, &prompts).unwrap(),
             )
             .unwrap()
     }
@@ -2885,17 +3031,6 @@ player2 = \"Cautious.\"
         }
     }
 
-    /// The estimate of all `request` takes of its context window: the
-    /// system prompt, the tools as JSON, the user message, and the reply.
-    fn estimated(request: &Request) -> u64 {
-        let messages: u64 = request
-            .messages
-            .iter()
-            .map(|message| estimate(&message.content))
-            .sum();
-        messages + estimate(&serde_json::to_string(&request.tools).unwrap()) + request.max_tokens
-    }
-
     /// How many lines of talk each of the players' actions says the model
     /// forgot, in the log's order.
     fn forgotten(logged: &[Entry]) -> Vec<Option<usize>> {
@@ -2922,7 +3057,7 @@ player2 = \"Cautious.\"
             Ok(Response::calling(&calls))
         });
         let roles = doctored();
-        let window = 1500;
+        let window = 1800;
         let configuration = Configuration {
             context_window: ContextWindow {
                 tokens: window,
@@ -2935,9 +3070,11 @@ player2 = \"Cautious.\"
                 .await
                 .unwrap();
         assert_eq!(winner, Team::Werewolves);
+        // Each request fits by the estimate the player budgets with. No
+        // tokenizer is at hand to check it against; a real overflow is
+        // checked by hand against a real provider.
         for request in model.requests() {
-            assert_eq!(request.max_tokens, 1024);
-            assert!(estimated(&request) <= window, "{request:?}");
+            assert!(model::estimated(&request) <= window, "{request:?}");
         }
         // The doctor tells its whole story at first, and by the end of the
         // second day forgets the oldest talk, saying so.
@@ -2945,7 +3082,7 @@ player2 = \"Cautious.\"
         assert!(!asked[0].contains(FORGOTTEN), "{asked:?}");
         assert!(asked.last().unwrap().contains(FORGOTTEN), "{asked:?}");
         let forgot = forgotten(&logged);
-        assert_eq!(forgot[0], Some(0));
+        assert_eq!(forgot[0], None);
         assert!(
             forgot.iter().any(|forgot| forgot.is_some_and(|n| n > 0)),
             "{forgot:?}"
@@ -2961,7 +3098,7 @@ player2 = \"Cautious.\"
         }
         let forgot = forgotten(&logged);
         assert!(!forgot.is_empty());
-        assert!(forgot.iter().all(|forgot| *forgot == Some(0)), "{forgot:?}");
+        assert!(forgot.iter().all(Option::is_none), "{forgot:?}");
     }
 
     /// A player's memory of sending `message`, in no episode in particular.
@@ -3032,7 +3169,7 @@ player2 = \"Cautious.\"
                 .join("\n"),
                 Shown {
                     seen: script.len(),
-                    forgot: 0,
+                    forgot: None,
                 }
             )
         );
@@ -3453,7 +3590,6 @@ player2 = \"Cautious.\"
         for request in &requests {
             assert_eq!(request.model, MODEL_ID);
             assert_eq!(request.tool_choice, ToolChoice::Required);
-            assert_eq!(request.max_tokens, 1024);
             assert!(request.messages[1].content.ends_with(ANSWER));
             assert_eq!(request.messages.len(), 2);
             assert_eq!(request.messages[0].role, model::Role::System);

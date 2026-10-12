@@ -95,21 +95,18 @@ fn receive(stream: &mut TcpStream) -> Option<Served> {
 }
 
 /// A listing of `ids` in OpenAI's shape, with the fields a provider adds
-/// that are not read.
-pub fn listing(ids: &[&str]) -> String {
+/// that are not read, each model's entry reporting a context window of
+/// `window` tokens, as OpenRouter's does, when there is one.
+pub fn listing(ids: &[&str], window: Option<u64>) -> String {
     let data: Vec<_> = ids
         .iter()
-        .map(|id| serde_json::json!({"id": id, "object": "model", "owned_by": "test"}))
-        .collect();
-    serde_json::json!({"object": "list", "data": data}).to_string()
-}
-
-/// A listing of `ids` as [`listing`] gives it, each model's entry
-/// reporting a context window of `tokens` as OpenRouter's does.
-pub fn listing_within(ids: &[&str], tokens: u64) -> String {
-    let data: Vec<_> = ids
-        .iter()
-        .map(|id| serde_json::json!({"id": id, "object": "model", "context_length": tokens}))
+        .map(|id| {
+            let mut model = serde_json::json!({"id": id, "object": "model", "owned_by": "test"});
+            if let Some(tokens) = window {
+                model["context_length"] = tokens.into();
+            }
+            model
+        })
         .collect();
     serde_json::json!({"object": "list", "data": data}).to_string()
 }
@@ -117,13 +114,13 @@ pub fn listing_within(ids: &[&str], tokens: u64) -> String {
 /// A provider that plays as [`playing`] does, its listing reporting a
 /// context window of `tokens` for each of `ids`.
 pub fn playing_within(ids: &[&str], tokens: u64) -> String {
-    serving_and(listing_within(ids, tokens), played)
+    serving_and(listing(ids, Some(tokens)), played)
 }
 
 /// A provider that serves `ids`: the root of an API that answers one
 /// request with their listing.
 pub fn serving(ids: &[&str]) -> String {
-    answering("200 OK", &listing(ids)).0
+    answering("200 OK", &listing(ids, None)).0
 }
 
 /// The root of an API nobody serves: a listener that hangs up on every
@@ -159,7 +156,7 @@ pub fn playing(ids: &[&str]) -> String {
 /// Request too, saying so. Anything else asked of it is not found.
 pub fn playing_only(ids: &[&str], selecting: &[&str]) -> String {
     let selecting: Vec<String> = selecting.iter().map(|id| id.to_string()).collect();
-    serving_and(listing(ids), move |request| {
+    serving_and(listing(ids, None), move |request| {
         let Some(model) = request["model"].as_str() else {
             return response("400 Bad Request", &error("the request names no model"));
         };
@@ -177,7 +174,7 @@ pub fn playing_only(ids: &[&str], selecting: &[&str]) -> String {
 /// day's does, 400 Bad Request saying what [`day_refusal`] says, as a
 /// server that takes one tool at a time does.
 pub fn refusing_days(ids: &[&str]) -> String {
-    serving_and(listing(ids), |request| {
+    serving_and(listing(ids, None), |request| {
         let offered = request["tools"].as_array().map_or(0, Vec::len);
         if offered > 1 {
             let model = request["model"].as_str().unwrap_or_default();
@@ -194,7 +191,7 @@ pub fn refusing_days(ids: &[&str]) -> String {
 /// [`required_refusal`] says, as a model that refuses to be made to call a
 /// tool is; any other is answered as [`playing`] answers it.
 pub fn refusing_required(ids: &[&str]) -> String {
-    serving_and(listing(ids), |request| {
+    serving_and(listing(ids, None), |request| {
         if request["tool_choice"] == "required" {
             let model = request["model"].as_str().unwrap_or_default();
             response("400 Bad Request", &error(&required_refusal(model)))
@@ -209,7 +206,7 @@ pub fn refusing_required(ids: &[&str]) -> String {
 /// any other 429 Too Many Requests, as a provider out of patience does,
 /// kept for the rest of the process.
 pub fn refusing_required_then_busy(ids: &[&str]) -> String {
-    serving_and(listing(ids), |request| {
+    serving_and(listing(ids, None), |request| {
         if request["tool_choice"] == "required" {
             let model = request["model"].as_str().unwrap_or_default();
             response("400 Bad Request", &error(&required_refusal(model)))
@@ -246,7 +243,7 @@ fn played(request: &serde_json::Value) -> String {
 /// Unauthorized, as one that wants an API key does, kept for the rest of
 /// the process.
 pub fn wanting_a_key(ids: &[&str]) -> String {
-    serving_and(listing(ids), |_| {
+    serving_and(listing(ids, None), |_| {
         response("401 Unauthorized", &error("an API key is required"))
     })
 }

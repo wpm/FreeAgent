@@ -8,19 +8,17 @@
 //! read for the tool calls it carries. Unknown fields in a response are
 //! ignored, so a provider's additions do not break parsing.
 
-use super::MAX_TOKENS;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
 /// One request for a completion: the model asked, the messages it is
-/// shown, the tools it is offered, whether it must call one of them, and
-/// how long its reply may be.
+/// shown, the tools it is offered, and whether it must call one of them.
 ///
 /// It serializes as the protocol has it: the tools in `tools`, and the
 /// `tool_choice`, `"required"`, which forces a call to one of them, or
 /// `"auto"`, which leaves the model free to answer in prose instead.
 /// Whether the model may call several at once is left to the provider's
-/// default, which allows it.
+/// default, which allows it, and so is how long the reply may be.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Request {
     /// The model's id, exactly as the provider lists it.
@@ -31,13 +29,11 @@ pub struct Request {
     pub tools: Vec<Tool>,
     /// Whether the model must call one of the tools.
     pub tool_choice: ToolChoice,
-    /// The most tokens the reply may take.
-    pub max_tokens: u64,
 }
 
 impl Request {
     /// A request of `model` shown `messages` and offered `tools`, under
-    /// `tool_choice`, its reply taking at most [`MAX_TOKENS`].
+    /// `tool_choice`.
     pub fn offering(
         model: impl Into<String>,
         messages: Vec<Message>,
@@ -49,7 +45,6 @@ impl Request {
             messages,
             tools,
             tool_choice,
-            max_tokens: MAX_TOKENS,
         }
     }
 }
@@ -271,7 +266,6 @@ mod tests {
                     },
                 }],
                 "tool_choice": "required",
-                "max_tokens": 1024,
             })
         );
     }
