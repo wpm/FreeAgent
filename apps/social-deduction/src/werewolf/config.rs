@@ -154,14 +154,37 @@ pub struct Random {}
 
 /// The prompted policy's parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "PromptedTable")]
 pub struct Prompted {
     /// The system prompt template.
     pub system: String,
     /// The name of the model asked. The file may leave it out when it
     /// defines exactly one, which [`Config::parse`] fills in.
-    #[serde(default)]
     pub model: String,
+}
+
+/// The prompted policy's parameters, as written.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PromptedTable {
+    system: String,
+    model: Option<String>,
+}
+
+impl TryFrom<PromptedTable> for Prompted {
+    type Error = &'static str;
+
+    /// The parameters, with a model left out as no name yet. A model
+    /// named by the empty name is an error.
+    fn try_from(PromptedTable { system, model }: PromptedTable) -> Result<Self, Self::Error> {
+        match model {
+            Some(model) if model.is_empty() => Err("model is empty; name a model or leave it out"),
+            model => Ok(Prompted {
+                system,
+                model: model.unwrap_or_default(),
+            }),
+        }
+    }
 }
 
 /// The text of the configuration file at `path`.
@@ -1007,6 +1030,19 @@ system = "{{ name }} the {{ role }}"
         assert_eq!(
             settle(&named, Overrides::default()).model_of("plain"),
             Some("claude")
+        );
+    }
+
+    #[test]
+    fn a_model_named_empty_is_an_error_naming_the_strategy() {
+        let file = PLAIN.replace(
+            "policy = \"prompted\"",
+            "policy = \"prompted\"\nmodel = \"\"",
+        );
+        let shown = unsettled(&file, Overrides::default());
+        assert!(
+            shown.contains("[strategies.plain]") && shown.contains("model is empty"),
+            "{shown}"
         );
     }
 
