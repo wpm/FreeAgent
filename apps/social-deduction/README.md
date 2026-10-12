@@ -115,7 +115,10 @@ limit is `ratify_limit` under `[phases]`, or `--ratify-limit` on the
 command line, twenty seconds unless either says, and may not be longer
 than the day limit. The account tells what everyone says as they say it,
 and a player's story tells it what others said and how they voted. The
-prompt is the configuration's to write: the program tells the model only
+current day is told in full, every vote and tentative decision as it came.
+A past day is told by its talk, in order, then a tally of each player
+alive that day, in seat order, with the vote that counted or that it did
+not vote, then who died. The prompt is the configuration's to write: the program tells the model only
 what the three tools do and that it may speak, vote, or wait, so the rules
 text in the file should say that by day everyone may talk at any time.
 

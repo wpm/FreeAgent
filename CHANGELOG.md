@@ -117,5 +117,10 @@ workflow takes a version's notes from here.
   the night is announced. A uniform-random player sleeps through such
   a phase too, so its games play as before. A player's story tells a phase
   it sleeps through as the phase line and "You sleep."
+- A model player's story tells a past day more briefly: its talk, in
+  order, then a tally of each player alive that day, in seat order, with
+  the vote that counted or that it did not vote, then the day's outcome.
+  The current phase is told in full, every vote and tentative decision
+  included. The omniscient account reads as before.
 
 [Unreleased]: https://github.com/wpm/FreeAgent/compare/main...HEAD
