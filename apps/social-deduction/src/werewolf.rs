@@ -620,6 +620,17 @@ pub enum Message {
         /// Whom they selected.
         target: PlayerId,
     },
+    /// A player's retraction of its vote in the day numbered `seq`: it is
+    /// undecided again, as it was before it first voted. By day it goes to
+    /// the environment and every other living player.
+    Retract {
+        /// The number of the phase.
+        seq: u64,
+        /// Who retracted, since a message does not carry its sender.
+        from: PlayerId,
+        /// The player's number for this message.
+        n: u64,
+    },
     /// The environment's tentative decision for the day numbered `seq`,
     /// sent to every living player whenever it changes: the player the
     /// votes select, or nobody, and how long the votes must stand for it to
@@ -656,14 +667,14 @@ pub enum Message {
         seq: u64,
     },
     /// The environment's own message to itself that the ratify timer set at
-    /// the `count`th counting selection of the day numbered `seq` has run
-    /// out. A timer cannot be canceled, so one whose `count` is not the
-    /// day's latest is ignored.
+    /// the `change`th change of the tentative decision of the day numbered
+    /// `seq` has run out. A timer cannot be canceled, so one whose `change`
+    /// is not the day's latest is ignored.
     Ratify {
         /// The number of the day.
         seq: u64,
-        /// Which counting selection of the day set the timer.
-        count: u64,
+        /// Which change of the day's tentative decision set the timer.
+        change: u64,
     },
     /// A model player's own message to its think loop to call the model.
     Wake,
@@ -686,6 +697,7 @@ impl Message {
         match self {
             Message::Announce { n, .. }
             | Message::Select { n, .. }
+            | Message::Retract { n, .. }
             | Message::Tentative { n, .. }
             | Message::Say { n, .. } => Some(*n),
             Message::EndPhase { .. }
@@ -702,6 +714,7 @@ impl Message {
         match self {
             Message::Announce { seq, .. }
             | Message::Select { seq, .. }
+            | Message::Retract { seq, .. }
             | Message::Tentative { seq, .. }
             | Message::Say { seq, .. }
             | Message::EndPhase { seq }
@@ -712,10 +725,12 @@ impl Message {
     }
 
     /// Who sent this message: the environment, unless it is a player's
-    /// selection or utterance, which carries its sender.
+    /// selection, retraction or utterance, which carries its sender.
     pub fn sender(&self) -> ActorId {
         match self {
-            Message::Select { from, .. } | Message::Say { from, .. } => from.clone(),
+            Message::Select { from, .. }
+            | Message::Retract { from, .. }
+            | Message::Say { from, .. } => from.clone(),
             _ => ENVIRONMENT.to_string(),
         }
     }
@@ -753,13 +768,15 @@ pub fn to_everyone_but<'a>(
 
 /// Whom `me` sends `message` to in the phase `view` shows, by the rules of
 /// the game: an utterance to every other living player, and never to the
-/// environment, which does nothing with speech; a selection to the
-/// environment, and by day to every other living player as well, since
-/// the votes are public; anything else to the environment.
+/// environment, which does nothing with speech; a selection or retraction
+/// to the environment, and by day to every other living player as well,
+/// since the votes are public; anything else to the environment.
 pub fn receivers(message: &Message, me: &PlayerId, view: &View) -> HashSet<ActorId> {
     match (message, &view.phase) {
         (Message::Say { .. }, _) => to_the_players_but(me, &view.alive),
-        (Message::Select { .. }, Phase::Day) => to_everyone_but(me, &view.alive),
+        (Message::Select { .. } | Message::Retract { .. }, Phase::Day) => {
+            to_everyone_but(me, &view.alive)
+        }
         _ => to_the_environment(),
     }
 }
@@ -872,10 +889,11 @@ pub enum Entry {
         /// in.
         seq: u64,
     },
-    /// `from` did not send `message`, which a model made from `seen` history
-    /// entries, having forgotten `forgot` lines of talk, because the phase it
-    /// was made in had ended before the model answered. It was never sent, so it has no number: its `n` is 0, and
-    /// the player does not remember it.
+    /// `from` did not send `message`, which a model made from `seen`
+    /// history entries, having forgotten `forgot` lines of talk, because
+    /// the phase it was made in had ended before the model answered. It was
+    /// never sent, so it has no number: its `n` is 0, and the player does
+    /// not remember it.
     Withheld {
         /// Who would have sent it.
         from: PlayerId,
@@ -938,7 +956,8 @@ pub enum Entry {
 /// How a day ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ending {
-    /// A selected player's votes stood for the ratify limit.
+    /// A player stayed selected, the decision unchanged, for the ratify
+    /// limit.
     Ratified,
     /// The day limit came first.
     DayLimit,
@@ -1193,6 +1212,14 @@ pub(crate) mod tests {
                 seen: Some(7),
                 forgot: None,
             },
+            Entry::Action {
+                from: "seer".to_string(),
+                n: 3,
+                to: HashSet::from([ENVIRONMENT.to_string(), "villager".to_string()]),
+                message: retraction(2, "seer", 3),
+                seen: Some(9),
+                forgot: None,
+            },
             Entry::Withheld {
                 from: "seer".to_string(),
                 message: selection(2, "seer", 0, "wolf1"),
@@ -1275,8 +1302,9 @@ pub(crate) mod tests {
         assert_eq!(selection(1, "wolf", 3, "ann").number(), Some(3));
         assert_eq!(tentative(2, 4, None).number(), Some(4));
         assert_eq!(utterance(2, "wolf", 5, "Hello.").number(), Some(5));
+        assert_eq!(retraction(2, "wolf", 6).number(), Some(6));
         assert_eq!(Message::EndPhase { seq: 1 }.number(), None);
-        assert_eq!(Message::Ratify { seq: 2, count: 3 }.number(), None);
+        assert_eq!(Message::Ratify { seq: 2, change: 3 }.number(), None);
         assert_eq!(Message::Wake.number(), None);
         assert_eq!(Message::Remind { seq: 2, count: 1 }.number(), None);
     }
@@ -1288,8 +1316,9 @@ pub(crate) mod tests {
         assert_eq!(selection(1, "wolf", 3, "ann").seq(), Some(1));
         assert_eq!(tentative(2, 4, None).seq(), Some(2));
         assert_eq!(utterance(3, "wolf", 5, "Hello.").seq(), Some(3));
+        assert_eq!(retraction(4, "wolf", 6).seq(), Some(4));
         assert_eq!(Message::EndPhase { seq: 1 }.seq(), Some(1));
-        assert_eq!(Message::Ratify { seq: 2, count: 3 }.seq(), Some(2));
+        assert_eq!(Message::Ratify { seq: 2, change: 3 }.seq(), Some(2));
         assert_eq!(Message::Remind { seq: 4, count: 1 }.seq(), Some(4));
         assert_eq!(Message::Wake.seq(), None);
     }
@@ -1310,14 +1339,35 @@ pub(crate) mod tests {
             receivers(&chose, &me, &day),
             to_everyone_but(&me, &day.alive)
         );
+        // A retraction goes where a selection goes.
+        let retracted = retraction(2, "wolf", 3);
+        assert_eq!(receivers(&retracted, &me, &night), to_the_environment());
+        assert_eq!(
+            receivers(&retracted, &me, &day),
+            to_everyone_but(&me, &day.alive)
+        );
         let reminder = Message::EndPhase { seq: 1 };
         assert_eq!(receivers(&reminder, &me, &day), to_the_environment());
     }
 
     #[test]
-    fn a_selection_or_an_utterance_is_sent_by_its_player_and_everything_else_by_the_environment() {
+    fn a_retraction_carries_its_phase_sender_and_number() {
+        let message = retraction(2, "ann", 3);
+        let json = serde_json::to_value(&message).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"Retract": {"seq": 2, "from": "ann", "n": 3}})
+        );
+        let back: Message = serde_json::from_value(json).unwrap();
+        assert_eq!(back, message);
+    }
+
+    #[test]
+    fn a_selection_retraction_or_utterance_is_sent_by_its_player_and_everything_else_by_the_environment()
+     {
         let view = seen(&["wolf"], &[("wolf", Role::Werewolf)]);
         assert_eq!(selection(1, "wolf", 3, "ann").sender(), "wolf");
+        assert_eq!(retraction(2, "bob", 2).sender(), "bob");
         assert_eq!(utterance(2, "ann", 1, "Hello.").sender(), "ann");
         assert_eq!(announcement(2, view).sender(), ENVIRONMENT);
         assert_eq!(tentative(2, 4, None).sender(), ENVIRONMENT);
@@ -1485,19 +1535,20 @@ pub(crate) mod tests {
     /// puppet saw of it.
     type Announced = Arc<Mutex<Option<(u64, View)>>>;
 
-    /// A player who says whatever its script says, when the script says
-    /// to, for a game with a player who is late, stale, repeats itself,
-    /// changes its mind, or talks. Its script is consulted for each phase
-    /// it is awake in; announced a phase it sleeps through, it notes the
-    /// phase and says nothing. A message goes where the game's rules send
-    /// it from a player: an utterance, or a tentative decision the puppet
-    /// makes as if it were the environment, to every other player alive at
-    /// the latest announcement; a selection to the environment, and by day
-    /// to the other players too; anything else to the environment. It logs
-    /// each message it sends as its action and each message it receives as
-    /// its observation, in the latest phase announced, and does nothing
-    /// else with what it hears, whatever phase it is tagged with. What it
-    /// says later is said by its think loop, a [`Cue`].
+    /// A player who says whatever its script says, when the script says to,
+    /// for a game with a player who is late, stale, repeats itself, changes
+    /// its mind, or talks. Its script is consulted for each phase it is
+    /// awake in; announced a phase it sleeps through, it notes the phase
+    /// and says nothing. A message goes where the game's rules send it from
+    /// a player: an utterance, or a tentative decision the puppet makes as
+    /// if it were the environment, to every other player alive at the
+    /// latest announcement; a selection or retraction to the environment,
+    /// and by day to the other players too; anything else to the
+    /// environment. It logs each message it sends as its action and each
+    /// message it receives as its observation, in the latest phase
+    /// announced, and does nothing else with what it hears, whatever phase
+    /// it is tagged with. What it says later is said by its think loop, a
+    /// [`Cue`].
     pub struct Puppet {
         context: Context<Message, Entry>,
         script: Script,
@@ -1560,7 +1611,9 @@ pub(crate) mod tests {
             (Message::Say { .. } | Message::Tentative { .. }, _) => {
                 to_the_players_but(me, &view.alive)
             }
-            (Message::Select { .. }, Phase::Day) => to_everyone_but(me, &view.alive),
+            (Message::Select { .. } | Message::Retract { .. }, Phase::Day) => {
+                to_everyone_but(me, &view.alive)
+            }
             _ => to_the_environment(),
         };
         act(context, message, to, None, None)
@@ -1730,6 +1783,16 @@ pub(crate) mod tests {
             from: from.to_string(),
             n,
             target: target.to_string(),
+        }
+    }
+
+    /// `from`'s retraction of its vote in the phase numbered `seq`, the
+    /// `n`th message `from` sent.
+    pub(super) fn retraction(seq: u64, from: &str, n: u64) -> Message {
+        Message::Retract {
+            seq,
+            from: from.to_string(),
+            n,
         }
     }
 

@@ -53,10 +53,10 @@ impl Behavior for Player {
     /// Log a message from another actor, which is any numbered one, as
     /// observed in the latest phase announced. Announced a phase, and awake
     /// in it, select someone at once; asleep, or with nobody to select, say
-    /// nothing. Anything else, another player's utterance or selection or
-    /// the environment's tentative decision, is observed and nothing more,
-    /// whatever phase it is tagged with: the player keeps nothing it could
-    /// put it in.
+    /// nothing. Anything else, another player's utterance, selection or
+    /// retraction or the environment's tentative decision, is observed and
+    /// nothing more, whatever phase it is tagged with: the player keeps
+    /// nothing it could put it in.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
         let Some(n) = message.number() else {
             return Ok(());

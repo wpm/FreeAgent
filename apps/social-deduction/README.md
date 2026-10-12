@@ -211,41 +211,48 @@ of it.
 
 By day the players talk, with no turns. Every living player is woken when
 the day is announced to it and again by every message it hears, another
-player's utterance or vote and the environment's tentative decision, and
-the model is offered three tools, of which it must call one and may call
-several: `speak`, which says something to every other living player, and
-never to the environment, which does nothing with speech; `select`, which
-votes for a player, and may be called again to change the vote; and `wait`,
-which says nothing now and asks to be woken after some seconds unless
-something wakes the player sooner. The calls are carried out in the order
-the model made them. Wake-ups are debounced: a player has at most one model
-call in progress and one waiting, however fast the talk comes, and each
-call is made from everything the player had heard when it began. A model
-may answer from a context that is out of date by the time it answers; if
-the phase has ended by then, by night or by day, the player sends nothing
-and logs what it withheld. A player ignores talk and votes from a phase it
-is not in, and a tentative decision too: it logs the receipt and neither
-remembers the message nor wakes for it, so day talk that arrives by night
-is forgotten.
+player's utterance, vote or retraction and the environment's tentative
+decision, and the model is offered four tools, of which it must call one
+and may call several: `speak`, which says something to every other living
+player, and never to the environment, which does nothing with speech;
+`select`, which votes for a player, and may be called again to change the
+vote; `retract`, which withdraws the vote, so that the player is undecided
+again; and `wait`, which says nothing now and asks to be woken after some
+seconds unless something wakes the player sooner. The calls are carried out
+in the order the model made them. Wake-ups are debounced: a player has at
+most one model call in progress and one waiting, however fast the talk
+comes, and each call is made from everything the player had heard when it
+began. A model may answer from a context that is out of date by the time it
+answers; if the phase has ended by then, by night or by day, the player
+sends nothing and logs what it withheld. A player ignores talk and votes
+from a phase it is not in, and a tentative decision too: it logs the
+receipt and neither remembers the message nor wakes for it, so day talk
+that arrives by night is forgotten.
 
-The votes are public. Each vote goes to every other living player as well
-as to the environment. With a ratify limit above zero the day is ratified:
-a player's latest vote counts, and whenever the votes change who they
+The votes are public. Each vote and each retraction goes to every other
+living player as well as to the environment. With a ratify limit above zero
+the day is ratified: a player's latest vote counts unless it has retracted
+it since and is undecided again, and whenever the votes change who they
 select, or come to select nobody, the environment tells every living player
-so. A day ends once the votes have stood unchanged for the ratify limit,
-and the selected player is voted out; or at the day limit, whatever is
-standing, and nobody is. The ratify limit is `ratify_limit` under
+so. A day ends once the tentative decision has stood unchanged for the
+ratify limit, and the selected player is voted out; or at the day limit,
+whatever is standing, and nobody is. A vote or retraction that leaves the
+decision as it was leaves the deadline as it was, so a player selected is
+voted out one ratify limit after the tentative decision naming them, unless
+another follows first. The ratify limit is `ratify_limit` under
 `[phases]`, or `--ratify-limit` on the command line, and may not be longer
 than the day limit. It is zero unless either says, and a day whose ratify
-limit is zero is not ratified: each player's first vote counts, and the
-day ends when everyone has voted or at its limit. The account tells what everyone says as they say it,
-and a player's story tells it what others said and how they voted. The
-current day is told in full, every vote and tentative decision as it came.
-A past day is told by its talk, in order, then a tally of each player
-alive that day, in seat order, with the vote that counted or that it did
-not vote, then who died. The prompt is the configuration's to write: the program tells the model only
-what the three tools do and that it may speak, vote, or wait, so the rules
-text in the file should say that by day everyone may talk at any time.
+limit is zero is not ratified: each player's first vote counts, a
+retraction does not, and the day ends when everyone has voted or at its
+limit. The account tells what everyone says as they say it, and a player's
+story tells it what others said and how they voted. The current day is
+told in full, every vote, retraction and tentative decision as it came. A
+past day is told by its talk, in order, then a tally of each player alive
+that day, in seat order, with the vote that counted or that it did not
+vote, then who died. The prompt is the configuration's to write: the
+program tells the model only what the four tools do and that it may speak,
+vote, retract its vote, or wait, so the rules text in the file should say
+that by day everyone may talk at any time.
 
 ### Before a game begins
 

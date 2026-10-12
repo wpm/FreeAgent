@@ -855,13 +855,15 @@ system = "{{ name }} the {{ role }}"
                 .unwrap_or_else(|e| panic!("{name}: {e:#}"));
             assert_eq!(settings.table, Table::default(), "{name}");
             // The rules, where there are any, tell the players the ratify
-            // limit, and that by day they may speak, vote, or wait.
+            // limit, and that by day they may speak, vote, or wait, and
+            // withdraw their vote.
             if let Some(rules) = settings.config.text.get("rules") {
                 assert!(!prompts.is_empty(), "{name}");
                 let ratify = format_duration(settings.ratify_limit).to_string();
                 assert!(rules.contains(&ratify), "{name}: {rules}");
                 assert!(rules.contains("speak"), "{name}: {rules}");
                 assert!(rules.contains("vote, or wait"), "{name}: {rules}");
+                assert!(rules.contains("withdraw"), "{name}: {rules}");
             }
         }
     }
@@ -1575,14 +1577,14 @@ strategy = \"smart\"
             ])
         );
         assert_eq!(handles.keys().collect::<Vec<_>>(), ["claude", "qwen"]);
-        // Probed once: asked as by night and as by day, each a request
-        // made to call a tool.
+        // Probed once: asked as by night and as by day, with the tools of
+        // a ratified day, each a request made to call a tool.
         let asked = asked.lock().unwrap();
         let offered: Vec<usize> = asked
             .iter()
             .map(|request| request["tools"].as_array().unwrap().len())
             .collect();
-        assert_eq!(offered, [1, 3]);
+        assert_eq!(offered, [1, 4]);
         assert!(
             asked
                 .iter()

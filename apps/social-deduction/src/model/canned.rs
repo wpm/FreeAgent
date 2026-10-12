@@ -3,6 +3,8 @@
 //! but tests uses this module.
 
 use super::fake::canned_calls;
+use crate::werewolf::report::seat_order;
+use std::cmp::Ordering;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -142,7 +144,7 @@ pub fn unreachable() -> String {
 /// canned player does, with the calls [`canned_calls`] makes: offered one
 /// tool, it calls it with the first value its enumerated parameter allows,
 /// as a player's `select` tool asks for a `target` from an `enum` of
-/// candidates; offered a day's three, it speaks and votes once a day and
+/// candidates; offered a day's tools, it speaks and votes once a day and
 /// waits after that. Anything else asked of it is not found.
 pub fn playing(ids: &[&str]) -> String {
     playing_only(ids, ids)
@@ -242,14 +244,67 @@ pub fn day_refusal(model: &str) -> String {
 }
 
 /// The canned player's answer to the completion `request`, in the
-/// protocol's JSON: the calls [`canned_calls`] makes, or 400 Bad Request
-/// saying why it could not answer, as a server that cannot use the tools
-/// a request offers does.
+/// protocol's JSON: the calls [`canned_calls`] makes, as [`answered`]
+/// answers them.
 fn played(request: &serde_json::Value) -> String {
-    match canned_calls(request) {
+    answered(canned_calls(request))
+}
+
+/// `calls` as a provider answers them: in a completion, or 400 Bad Request
+/// saying why the player could not answer, as a server that cannot use the
+/// tools a request offers does.
+fn answered(calls: anyhow::Result<Vec<(String, serde_json::Value)>>) -> String {
+    match calls {
         Ok(calls) => response("200 OK", &completion_of(&calls)),
         Err(refused) => response("400 Bad Request", &error(&format!("{refused:#}"))),
     }
+}
+
+/// A provider that plays as [`playing`] does, kept for the rest of the
+/// process, except that the first seat alive retracts its vote by day:
+/// whenever the canned player would speak and vote, it calls `retract`
+/// after.
+pub fn retracting(ids: &[&str]) -> String {
+    serving_and(listing(ids, None), |request| {
+        answered(canned_calls(request).map(|mut calls| {
+            if first_seat_voting(request, &calls) {
+                calls.push(("retract".to_string(), serde_json::json!({})));
+            }
+            calls
+        }))
+    })
+}
+
+/// Whether `calls`, the canned player's answer to `request`, are `speak`
+/// then `select`, from a voter who comes before every candidate `select`
+/// offers in seat order. The voter is named by the story the request tells,
+/// which opens with who the player is, and by day the candidates are every
+/// other player alive, so this is the first seat alive, voting by day.
+fn first_seat_voting(request: &serde_json::Value, calls: &[(String, serde_json::Value)]) -> bool {
+    let [(speak, _), (select, _)] = calls else {
+        return false;
+    };
+    let asked = request["messages"]
+        .as_array()
+        .and_then(|messages| messages.last()?["content"].as_str())
+        .unwrap_or_default();
+    let me = asked
+        .strip_prefix("You are ")
+        .and_then(|rest| rest.split([',', '.']).next())
+        .unwrap_or_default()
+        .to_string();
+    let mut candidates = request["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|tool| &tool["function"])
+        .filter(|function| function["name"] == "select")
+        .filter_map(|function| function["parameters"]["properties"]["target"]["enum"].as_array())
+        .flatten()
+        .filter_map(serde_json::Value::as_str);
+    (speak.as_str(), select.as_str()) == ("speak", "select")
+        && !me.is_empty()
+        && candidates.all(|candidate| seat_order(&me, &candidate.to_string()) == Ordering::Less)
 }
 
 /// A provider that serves `ids` but answers every completion request 401
@@ -387,6 +442,80 @@ mod tests {
         let shown = format!("{error:#}");
         assert!(shown.contains("400 Bad Request"), "{shown}");
         assert!(shown.contains("select"), "{shown}");
+    }
+
+    #[tokio::test]
+    async fn the_retracting_provider_has_the_first_seat_alive_retract_its_vote_after_voting() {
+        let base_url = retracting(&["qwen2.5-7b-instruct"]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        let first = provider
+            .complete(&by_day(
+                &["player2", "player3"],
+                60,
+                "You are player1, a villager.\n\nDay 1.",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            first,
+            Response::calling(&[
+                ("speak".to_string(), json!({"text": SAID})),
+                ("select".to_string(), json!({"target": "player2"})),
+                ("retract".to_string(), json!({})),
+            ])
+        );
+        // Any other seat plays as the playing provider does.
+        let other = provider
+            .complete(&by_day(
+                &["player1", "player2"],
+                60,
+                "You are player3, the seer.\n\nDay 1.",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            other,
+            Response::calling(&[
+                ("speak".to_string(), json!({"text": SAID})),
+                ("select".to_string(), json!({"target": "player1"})),
+            ])
+        );
+        // Seats are in the order of their numbers, and the first is the one
+        // that sorts before every candidate, not only the one it votes
+        // against.
+        let seated = |me: &str, candidates: &[&str]| {
+            by_day(
+                candidates,
+                60,
+                &format!("You are {me}, a villager.\n\nDay 1."),
+            )
+        };
+        let tenth = provider
+            .complete(&seated("player2", &["player10", "player3"]))
+            .await
+            .unwrap();
+        assert_eq!(tenth.tool_calls().len(), 3);
+        for (me, candidates) in [
+            ("player10", &["player2", "player11"][..]),
+            ("player3", &["player4", "player1"]),
+        ] {
+            let other = provider.complete(&seated(me, candidates)).await.unwrap();
+            assert_eq!(other.tool_calls().len(), 2, "{me}");
+        }
+        // So does the first seat once it has voted, and by night.
+        let again = provider
+            .complete(&by_day(
+                &["player2", "player3"],
+                60,
+                "You are player1, a villager.\n\nDay 1.\nYou vote against player2.",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(again, Response::tool_call("wait", &json!({"seconds": 60})));
+        assert_eq!(
+            provider.complete(&selecting(&["player2"])).await.unwrap(),
+            Response::tool_call("select", &json!({"target": "player2"}))
+        );
     }
 
     #[tokio::test]

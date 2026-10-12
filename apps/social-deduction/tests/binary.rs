@@ -6,7 +6,7 @@ use free_agent::Event;
 use social_deduction::model::ToolChoice;
 use social_deduction::model::canned::{
     day_refusal, playing, playing_only, playing_within, refusal, refusing, refusing_days,
-    refusing_required, serving, unreachable, wanting_a_key,
+    refusing_required, retracting, serving, unreachable, wanting_a_key,
 };
 use social_deduction::werewolf::config::{Configuration, ContextWindow, Source};
 use social_deduction::werewolf::{Ending, Entry, Message, PlayerId, Role};
@@ -391,7 +391,7 @@ fn the_context_window_the_provider_reports_is_used_unless_the_file_gives_one() {
 
 /// A context window just large enough for the default table: a day's
 /// request leaves room for little of the story.
-const SMALL_WINDOW: &str = "1800";
+const SMALL_WINDOW: &str = "1900";
 
 #[test]
 fn in_a_small_context_window_the_game_plays_to_the_end() {
@@ -570,6 +570,67 @@ strategy = \"plain\"
     // Only the prompted players have prompts.
     let configuration = configuration(&events);
     assert_eq!(configuration.prompts.len(), 5);
+}
+
+#[test]
+fn a_model_player_retracts_its_vote_and_everyone_hears_it() {
+    let base_url = retracting(&[EXAMPLE_MODEL]);
+    let config = configured("retracts", &base_url, EXAMPLE_MODEL, &[]);
+    // Each change of the tentative decision early in a day restarts the
+    // ratify timer, and on a slow machine the model calls behind them take
+    // a while, so the day limit leaves the votes ample time to stand.
+    let args = [
+        config.as_str(),
+        "--night-limit",
+        "1s",
+        "--day-limit",
+        "10s",
+        "--ratify-limit",
+        "1s",
+    ];
+    let (events, printed) = assert_plays_the_default_table(&args, &[DEFAULT_WINDOW]);
+    // The first seat alive retracts its vote each day, which leaves everyone
+    // else's votes against it standing.
+    let endings = endings(&events);
+    assert!(
+        endings.iter().all(|by| *by == Ending::Ratified),
+        "{endings:?}"
+    );
+    let retracted: Vec<(&PlayerId, u64, &HashSet<PlayerId>)> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            Entry::Action {
+                from,
+                n,
+                to,
+                message: Message::Retract { .. },
+                ..
+            } => Some((from, *n, to)),
+            _ => None,
+        })
+        .collect();
+    assert!(!retracted.is_empty(), "{events:?}");
+    // Each retraction goes to the environment and the other players, and
+    // each of them logs observing it.
+    for (from, n, to) in retracted {
+        assert!(to.contains("environment"), "{to:?}");
+        assert!(to.len() > 1, "{to:?}");
+        assert!(!to.contains(from), "{from} retracted to itself");
+        for receiver in to {
+            let observed = events.iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    Entry::Observation { by, from: sender, n: number, .. }
+                        if by == receiver && sender == from && *number == n
+                )
+            });
+            assert!(observed, "{receiver} did not observe {from}'s {n}");
+        }
+    }
+    assert!(
+        printed.contains(" withdraws their vote and is undecided again."),
+        "{printed}"
+    );
 }
 
 #[test]
