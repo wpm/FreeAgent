@@ -1,38 +1,40 @@
 //! One decision asked of a model: the request `POST /v1/chat/completions`
 //! takes and the response it answers with, covering only the fields used.
 //!
-//! A [`Request`] offers one tool and forces the model to call it, so the
-//! model cannot answer with prose instead. A [`Response`] is read for the
-//! tool calls it carries. Unknown fields in a response are ignored, so a
-//! provider's additions do not break parsing.
+//! A [`Request`] offers one tool or several and forces the model to call
+//! one, so the model cannot answer with prose instead. A [`Response`] is
+//! read for the tool calls it carries. Unknown fields in a response are
+//! ignored, so a provider's additions do not break parsing.
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
 /// One request for a completion: the model asked, the messages it is
-/// shown, and the one tool it is offered and must call.
+/// shown, and the tools it is offered, one of which it must call.
 ///
-/// It serializes as the protocol has it: the tool in `tools`, and a
-/// `tool_choice` of `"required"`, which, with the one tool offered, forces
-/// a call to it.
+/// It serializes as the protocol has it: the tools in `tools`, and a
+/// `tool_choice` of `"required"`, which forces a call to one of them. With
+/// one tool offered, that forces a call to it. Whether the model may call
+/// several at once is left to the provider's default, which allows it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Request {
     /// The model's id, exactly as the provider lists it.
     pub model: String,
     /// What the model is shown, in order.
     pub messages: Vec<Message>,
-    /// The tool the model must call.
-    pub tool: Tool,
+    /// The tools the model may call, of which it must call one.
+    pub tools: Vec<Tool>,
 }
 
 impl Request {
-    /// A request of `model` shown `messages` and made to call `tool`.
-    pub fn new(model: impl Into<String>, messages: Vec<Message>, tool: Tool) -> Self {
+    /// A request of `model` shown `messages` and made to call one of
+    /// `tools`.
+    pub fn offering(model: impl Into<String>, messages: Vec<Message>, tools: Vec<Tool>) -> Self {
         Self {
             model: model.into(),
             messages,
-            tool,
+            tools,
         }
     }
 }
@@ -42,7 +44,7 @@ impl Serialize for Request {
         let mut request = serializer.serialize_struct("Request", 4)?;
         request.serialize_field("model", &self.model)?;
         request.serialize_field("messages", &self.messages)?;
-        request.serialize_field("tools", &[&self.tool])?;
+        request.serialize_field("tools", &self.tools)?;
         request.serialize_field("tool_choice", "required")?;
         request.end()
     }
@@ -155,15 +157,25 @@ impl Response {
     /// A response of one choice making one call to the tool `name` with
     /// `arguments`, for tests to answer with.
     pub fn tool_call(name: impl Into<String>, arguments: &Value) -> Self {
+        Self::calling(&[(name.into(), arguments.clone())])
+    }
+
+    /// A response of one choice making each of `calls`, a tool's name and
+    /// its arguments, in order, for tests to answer with.
+    pub fn calling(calls: &[(String, Value)]) -> Self {
+        let tool_calls = calls
+            .iter()
+            .map(|(name, arguments)| ToolCall {
+                function: Call {
+                    name: name.clone(),
+                    arguments: arguments.to_string(),
+                },
+            })
+            .collect();
         Self {
             choices: vec![Choice {
                 message: Answer {
-                    tool_calls: Some(vec![ToolCall {
-                        function: Call {
-                            name: name.into(),
-                            arguments: arguments.to_string(),
-                        },
-                    }]),
+                    tool_calls: Some(tool_calls),
                 },
             }],
         }
@@ -244,6 +256,42 @@ mod tests {
                 }],
                 "tool_choice": "required",
             })
+        );
+    }
+
+    #[test]
+    fn a_request_offering_several_tools_lists_them_in_order_and_still_forces_a_call() {
+        let speak = Tool::new("speak", "Say something.", json!({"type": "object"}));
+        let wait = Tool::new("wait", "Say nothing.", json!({"type": "object"}));
+        let request = Request::offering(
+            "qwen2.5-7b-instruct",
+            vec![Message::user("Speak or wait.")],
+            vec![speak.clone(), wait.clone()],
+        );
+        assert_eq!(request.tools, [speak, wait]);
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["tools"][0]["function"]["name"], "speak");
+        assert_eq!(json["tools"][1]["function"]["name"], "wait");
+        assert_eq!(json["tool_choice"], "required");
+        // One tool is a list of one.
+        let one = serde_json::to_value(selecting(&["player2"])).unwrap();
+        assert_eq!(one["tools"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_response_may_call_several_tools_in_order() {
+        let response = Response::calling(&[
+            ("speak".to_string(), json!({"text": "Hello."})),
+            ("select".to_string(), json!({"target": "player2"})),
+        ]);
+        let calls = response.tool_calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].function.name, "speak");
+        assert_eq!(calls[0].function.arguments, r#"{"text":"Hello."}"#);
+        assert_eq!(calls[1].function.name, "select");
+        assert_eq!(
+            Response::tool_call("select", &json!({"target": "player2"})),
+            Response::calling(&[("select".to_string(), json!({"target": "player2"}))])
         );
     }
 

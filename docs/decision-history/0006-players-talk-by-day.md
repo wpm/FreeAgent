@@ -134,7 +134,7 @@ how much time is left can see when its messages arrived.
 
 | Message | From | To | Carries |
 |---|---|---|---|
-| `Announce` | environment | each awake player | `seq`, `n`, `view`, `limit` |
+| `Announce` | environment | every living player, awake in the phase or not | `seq`, `n`, `view`, `limit` |
 | `Select` | a player | the environment, and by day every other living player | `seq`, `from`, `n`, `target` |
 | `Say` | a player | every other living player, by day | `seq`, `from`, `n`, `text` |
 | `Tentative` | environment | every living player, by day | `seq`, `n`, `target: Option<PlayerId>`, `ratify` |
@@ -163,17 +163,32 @@ environment. A player sends only to the living players its latest
 view shows; one that has died since is skipped by `send`, as
 before.
 
-By night nothing changes: selections go to the environment alone, the
-first one counts, and the phase ends when everyone awake has selected or at
-its limit.
+By night the rules do not change: selections go to the environment alone,
+the first one counts, one from a player asleep is dropped, and the phase
+ends when everyone awake has selected or at its limit. What changes is who
+is told. Every living player is announced every phase, awake in it or not,
+because nothing else marks a phase's end: `EndPhase` and `Ratify` are the
+environment's reminders to itself, and a player cannot know the day has
+ended unless it is told. The announcement is what lets a player know which
+phase is active, which is its responsibility. `werewolf::awake(me, view)`
+says whether a player acts in the phase its view shows, by the one rule
+`State::awake()` goes by, so the environment and the players cannot
+disagree about who sleeps.
 
 ### What wakes a model player
 
-By night, a model player is woken once, by its `Announce`, and makes one
-forced `select` call, as it does today.
+A model player announced a phase it is not awake in records the phase,
+remembers the announcement, and makes no call. By night a villager is
+woken by nothing: a `Say`, `Select` or `Tentative` from the day is observed
+and ignored (below), a reminder it set by day no longer counts, and a
+wake-up left waiting from the day finds it asleep. No request is built and
+no failure is logged for a phase slept through.
 
-By day, it is woken by every message it receives: an `Announce`, a `Say`, a
-`Select` or a `Tentative`. Wake-ups are debounced. The perceive loop adds
+By night, a model player awake in it is woken once, by its `Announce`, and
+makes one forced `select` call, as it does today.
+
+By day, it is woken by every message of the day it receives: an
+`Announce`, a `Say`, a `Select` or a `Tentative`. Wake-ups are debounced. The perceive loop adds
 each message to the history, and hands the think loop a wake-up only if one
 is not already waiting. The think loop, woken, takes the history as it
 stands and calls the model once. A player therefore has at most one call in
@@ -182,7 +197,7 @@ from everything the player had heard when it began.
 
 A model may also ask to be woken later (below). That reminder is a wake-up
 like any other, set with `Context::think_after`. Timers cannot be
-cancelled, so each reminder is numbered, and only the latest one set counts.
+canceled, so each reminder is numbered, and only the latest one set counts.
 A reminder for a phase that has ended is ignored.
 
 The debouncing lives in the model player, not in `free-agent`.
@@ -214,19 +229,28 @@ When to speak and what to say are decided together, by the one prompt.
 Whether separate models should make the two decisions is left until this
 one has been seen to play.
 
-### Utterances from an old phase are withheld
+### Messages from an ended phase are withheld, and ignored
 
-A call may begin in one phase and end in the next. Before sending anything
-a response asks for, the player checks that the phase it was announced most
-recently is still the one the call began in. If not, it sends nothing from
-that response and logs it as withheld. This is the player following the
-rules as well as it can; a message it sends just before the phase ends may
-still arrive after, and the receiver deals with that.
+A call may begin in one phase and end in the next. Before carrying out
+anything a response asks for, by night as well as by day, the player checks
+that the phase it was announced most recently is still the one the call
+began in. If not, it sends nothing from that response and logs each message
+it would have sent as withheld. This is the player following the rules as
+well as it can; a message it sends just before the phase ends may still
+arrive after, and the receiver deals with that.
 
-A receiver remembers every message it is sent, whatever the phase. An
-utterance that arrives late, such as day talk heard by a werewolf at night,
-is told in the phase it is tagged with, not as something said now. A late
-selection is dropped by the environment by its `seq`, as today.
+The receiver deals with it by the same rule. Every living player is
+announced every phase, so every player knows which phase it is in, and a
+message from another actor counts only if it is tagged with that phase. An
+announcement is always of a new phase, and is taken in as above. Any other
+message whose `seq` is not the receiver's latest announced phase is
+ignored: the receiver logs the receipt, so the record of what reached whom
+and when is complete, and neither remembers the message nor wakes for it.
+Day talk heard by a werewolf at night is observed and forgotten, as a late
+selection is dropped by the environment by its `seq`. A player therefore
+never remembers an action from an ended phase, and never remembers an
+observation from one, so its history holds only messages of the phases it
+lived through, in order.
 
 ### The story grows talk
 
@@ -237,16 +261,20 @@ the `Narrator`'s account for a player tells it:
 - "player4 votes for player2."
 - "player2 will be voted out in 20 seconds unless the votes change." /
   "Nobody is about to be voted out."
-- "During day 2, player4 said, “…”" for an utterance heard after its
-  phase.
+- "You sleep." after the phase line of a phase the player sleeps through,
+  so a villager learns of a death when the night opens rather than at the
+  next day.
 
 Where the game stands, at the end of the request, gives the phase and its
 limit, and what the player may do: by day, speak, vote, or wait. The
-omniscient account on standard output tells the same talk.
+omniscient account on standard output tells the same talk, and tells an
+utterance whose phase has ended as too late to say, with the words it uses
+for a withheld one, and a day's failure as a failure to play, since a day's
+response may speak, vote or wait.
 
-The history is still only appended to, apart from the placement of late
-messages that ADR-0003 already allowed, so prompt prefix caching still
-works.
+The history is still only appended to, apart from the placement of a
+selection at the end of its own phase that ADR-0003 already allowed, so
+prompt prefix caching still works.
 
 ### Logging
 
@@ -279,11 +307,13 @@ enum Entry {
   model was shown when it made the call that produced the message, and
   `None` for anything not made by a model.
 - **`Observation`:** logged by an actor for each message it receives from
-  another. `seq` is the phase the receiver was in when the message
-  arrived: for the environment, the phase it is in; for a player, the
-  latest phase it was announced. Set beside the `seq` of the `Action` it
-  names, it shows a message that arrived in a later phase than it was sent
-  in.
+  another, whether or not the message counts. `seq` is the phase the
+  receiver was in when the message arrived: for the environment, the phase
+  it is in; for a player, the latest phase it was announced. Set beside the
+  `seq` of the `Action` it names, it shows a message that arrived in a
+  later phase than it was sent in, which the receiver ignored: the receipt
+  is all the log holds of it on the receiver's side, since the receiver
+  remembered nothing.
 - **`Voted`:** logged by the environment when a day ends: the day's `seq`,
   who was voted out if anyone, and how the day ended, `Ratified` or
   `DayLimit`. It is the day's counterpart to `Hunted`, and is logged even
@@ -416,12 +446,23 @@ decision appears, which a hammer would not.
   divided by the time a call takes.
 - **A player may speak from a context that is out of date** by the time it
   speaks. That is allowed, and the log says when it happened.
+- **A player ignores messages from another phase.** It logs the receipt
+  and nothing more, so its history holds only the phases it lived through,
+  and the story it is told never reaches back into an ended phase. A
+  response from an ended phase is withheld by night as well as by day. The
+  two accounts agree: a vote counts when the environment observes it in
+  its phase, and talk is late when its phase has ended.
 - **The log is written by everyone,** in actions and observations. Each
   actor logs what it sends and what it receives, as well as its failures.
   Reading what was said to whom means joining observations to actions.
+- **Every living player is announced every phase,** so a player knows when
+  the day has ended, which only the environment's timer decides. A player
+  asleep in the phase makes no call and is woken by nothing, and the log
+  holds an announcement to, and an observation by, every living player each
+  phase.
 - **The uniform-random variant plays as before,** but its log changes shape
   with everyone else's: `Sent` and `Received` become actions and
-  observations.
+  observations, and every living player is announced every phase.
 - **Startup makes one more request** to the model, for the day's probe.
 - **ADR-0003 is amended:** talk is no longer deferred, a player's account
   holds what others said and how they voted, a player's history holds

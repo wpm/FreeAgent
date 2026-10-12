@@ -28,7 +28,7 @@ enum CommandLine {
     /// Werewolf: werewolves against villagers, by night and by day.
     #[command(subcommand)]
     Werewolf(Werewolf),
-    /// List the models a provider serves, and which of them select when
+    /// List the models a provider serves, and which of them play when
     /// asked.
     #[command(after_help = known_providers_help())]
     Models {
@@ -38,9 +38,9 @@ enum CommandLine {
         /// for the provider
         #[arg(long)]
         api_key_env: Option<String>,
-        /// Ask every model listed, or only the IDs given, for a selection
-        /// as a player would, and mark those that select. End the IDs with
-        /// -- when the base URL follows them
+        /// Ask every model listed, or only the IDs given, to play as a
+        /// player does by night and by day, and mark those that do. End the
+        /// IDs with -- when the base URL follows them
         #[arg(long, num_args = 0.., value_name = "ID", value_terminator = "--")]
         check: Option<Vec<String>>,
     },
@@ -114,16 +114,17 @@ async fn main() -> anyhow::Result<()> {
             overrides,
             logging,
         }) => {
-            let settings = Config::load(&config)?.settle(overrides);
+            let settings = Config::load(&config)?.settle(overrides)?;
             // The key is read, every prompt rendered, and the model asked
-            // for a selection before any actor is built, so that a
-            // variable that is not set, a template that is broken, or a
-            // model that does not select fails before anything else.
+            // to play as by night and as by day before any actor is built,
+            // so that a variable that is not set, a template that is
+            // broken, or a model that does not play fails before anything
+            // else.
             let model = &settings.config.model;
             let provider = model.provider()?;
             let prompts = settings.prompts()?;
             provider.check_serves(&model.id).await?;
-            if let Probed::DidNotSelect(error) = llm::check_selects(&provider, &model.id).await? {
+            if let Probed::DidNotPlay(error) = llm::check_plays(&provider, &model.id).await? {
                 return Err(error);
             }
             let roles = settings.table.deal();
@@ -186,19 +187,19 @@ fn known_providers_help() -> String {
 }
 
 /// How a model is marked in the `models --check` listing: by whether it
-/// selected when asked.
+/// played when asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mark {
-    /// Asked for a selection, it selected a candidate.
-    Selected,
-    /// Asked for a selection, it did not.
-    DidNotSelect,
+    /// Asked as by night and as by day, it answered both requests well.
+    Played,
+    /// Asked as by night and as by day, it did not answer one of them well.
+    DidNotPlay,
 }
 
 /// Each of `ids`, in order, with its mark: those in `check`, or every one
-/// of them when `check` is empty, are asked by `model` for a selection one
+/// of them when `check` is empty, are asked by `model` to play, one model
 /// at a time, since a local server loads each model it is asked for, and
-/// the rest are unmarked. Why a model that did not select failed goes to
+/// the rest are unmarked. Why a model that did not play failed goes to
 /// `reasons`, as [`reason`] writes it. A model that could not be asked
 /// stops the listing with the error, since nothing it would say about
 /// the rest would be true.
@@ -211,11 +212,11 @@ async fn checked(
     let mut marked = Vec::new();
     for id in ids {
         let mark = if check.is_empty() || check.contains(&id) {
-            match llm::check_selects(model, &id).await? {
-                Probed::Selected => Some(Mark::Selected),
-                Probed::DidNotSelect(error) => {
+            match llm::check_plays(model, &id).await? {
+                Probed::Played => Some(Mark::Played),
+                Probed::DidNotPlay(error) => {
                     reason(reasons, &id, &error)?;
-                    Some(Mark::DidNotSelect)
+                    Some(Mark::DidNotPlay)
                 }
             }
         } else {
@@ -226,7 +227,7 @@ async fn checked(
     Ok(marked)
 }
 
-/// Write why the model `id` did not select: a line `! id` naming it as
+/// Write why the model `id` did not play: a line `! id` naming it as
 /// the listing marks it, then `error`'s causes, each on its own indented
 /// line, so a provider's words may run to several lines and still be read
 /// as one model's.
@@ -249,8 +250,8 @@ fn listing(models: &[(String, Option<Mark>)]) -> String {
     let mut listing = String::new();
     for (id, mark) in models {
         let shown = match mark {
-            Some(Mark::Selected) => "* ",
-            Some(Mark::DidNotSelect) => "! ",
+            Some(Mark::Played) => "* ",
+            Some(Mark::DidNotPlay) => "! ",
             None if any_marked => "  ",
             None => "",
         };
@@ -259,7 +260,7 @@ fn listing(models: &[(String, Option<Mark>)]) -> String {
     if any_marked {
         writeln!(
             listing,
-            "\n* marks a model that selected when asked, and ! one that did not."
+            "\n* marks a model that played when asked, and ! one that did not."
         )
         .unwrap();
     }
@@ -405,6 +406,7 @@ mod tests {
                         night_limit: Some(Duration::from_secs(30)),
                         day_limit: None,
                     },
+                    ratify_limit: None,
                     model: llm::ModelOverrides {
                         base_url: None,
                         id: Some("gpt-5.5".to_string()),
@@ -463,19 +465,25 @@ mod tests {
     #[test]
     fn the_help_names_the_defaults_the_code_fills_in() {
         let table = Table::default();
-        let counts = vec![
+        let counts = [
             ("--werewolves", table.werewolves.to_string()),
             ("--villagers", table.villagers.to_string()),
             ("--doctors", table.doctors.to_string()),
             ("--seers", table.seers.to_string()),
         ];
         let rules = Rules::default();
-        let limits = [
-            ("--night-limit", rules.night_limit),
-            ("--day-limit", rules.day_limit),
-        ]
-        .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()));
-        let defaults = [counts, limits.to_vec()].concat();
+        let limits = |variant| {
+            let mut limits = vec![
+                ("--night-limit", rules.night_limit),
+                ("--day-limit", rules.day_limit),
+            ];
+            if variant == "llm" {
+                limits.push(("--ratify-limit", llm::RATIFY_LIMIT));
+            }
+            limits
+                .into_iter()
+                .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()))
+        };
         for variant in ["uniform-random", "llm"] {
             let help = CommandLine::command()
                 .find_subcommand_mut("werewolf")
@@ -484,7 +492,7 @@ mod tests {
                 .unwrap()
                 .render_help()
                 .to_string();
-            for (option, default) in &defaults {
+            for (option, default) in counts.iter().cloned().chain(limits(variant)) {
                 let line = help.lines().find(|line| line.contains(option)).unwrap();
                 assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
             }
@@ -585,20 +593,20 @@ mod tests {
         assert_eq!(listing(&plain), "gpt-0\nqwen2.5-7b-instruct\n");
         assert_eq!(listing(&[]), "");
         let models = [
-            ("gpt-0".to_string(), Some(Mark::DidNotSelect)),
+            ("gpt-0".to_string(), Some(Mark::DidNotPlay)),
             ("llama".to_string(), None),
-            ("qwen2.5-7b-instruct".to_string(), Some(Mark::Selected)),
+            ("qwen2.5-7b-instruct".to_string(), Some(Mark::Played)),
         ];
         assert_eq!(
             listing(&models),
             "! gpt-0\n  llama\n* qwen2.5-7b-instruct\n\n\
-             * marks a model that selected when asked, and ! one that did not.\n"
+             * marks a model that played when asked, and ! one that did not.\n"
         );
     }
 
-    /// A model that selects as `id` and refuses as anything else, over two
+    /// A model that plays as `id` and refuses as anything else, over two
     /// lines.
-    fn selecting_only_as(id: &'static str) -> FakeModel {
+    fn playing_only_as(id: &'static str) -> FakeModel {
         FakeModel::answering(move |request| {
             if request.model == id {
                 choosing_first(request)
@@ -611,7 +619,7 @@ mod tests {
     #[tokio::test]
     async fn every_model_listed_is_checked_unless_ids_are_given_and_then_only_those() {
         let ids = ["gpt-0", "llama", "qwen2.5-7b-instruct"].map(String::from);
-        let model = selecting_only_as("qwen2.5-7b-instruct");
+        let model = playing_only_as("qwen2.5-7b-instruct");
         let mut reasons = Vec::new();
         let marked = checked(&model, ids.to_vec(), &[], &mut reasons)
             .await
@@ -619,23 +627,32 @@ mod tests {
         assert_eq!(
             marked,
             [
-                ("gpt-0".to_string(), Some(Mark::DidNotSelect)),
-                ("llama".to_string(), Some(Mark::DidNotSelect)),
-                ("qwen2.5-7b-instruct".to_string(), Some(Mark::Selected)),
+                ("gpt-0".to_string(), Some(Mark::DidNotPlay)),
+                ("llama".to_string(), Some(Mark::DidNotPlay)),
+                ("qwen2.5-7b-instruct".to_string(), Some(Mark::Played)),
             ]
         );
+        // A model that plays by night is asked again as by day.
         let asked: Vec<String> = model.requests().into_iter().map(|r| r.model).collect();
-        assert_eq!(asked, ids);
+        assert_eq!(
+            asked,
+            [
+                "gpt-0",
+                "llama",
+                "qwen2.5-7b-instruct",
+                "qwen2.5-7b-instruct"
+            ]
+        );
         // Each reason under a line naming its model as the listing marks
         // it, the error's causes one per indented line, a cause of several
         // lines indented on each.
         assert_eq!(
             String::from_utf8(reasons).unwrap(),
-            "! gpt-0\n  gpt-0 did not select when asked\n  gpt-0 does not support tools\n  in two lines\n\
-             ! llama\n  llama did not select when asked\n  llama does not support tools\n  in two lines\n"
+            "! gpt-0\n  gpt-0 did not answer a night's request\n  gpt-0 does not support tools\n  in two lines\n\
+             ! llama\n  llama did not answer a night's request\n  llama does not support tools\n  in two lines\n"
         );
         // Only the ids given, in the listing's order.
-        let model = selecting_only_as("qwen2.5-7b-instruct");
+        let model = playing_only_as("qwen2.5-7b-instruct");
         let check = ["qwen2.5-7b-instruct", "gpt-0"].map(String::from);
         let mut reasons = Vec::new();
         let marked = checked(&model, ids.to_vec(), &check, &mut reasons)
@@ -644,13 +661,16 @@ mod tests {
         assert_eq!(
             marked,
             [
-                ("gpt-0".to_string(), Some(Mark::DidNotSelect)),
+                ("gpt-0".to_string(), Some(Mark::DidNotPlay)),
                 ("llama".to_string(), None),
-                ("qwen2.5-7b-instruct".to_string(), Some(Mark::Selected)),
+                ("qwen2.5-7b-instruct".to_string(), Some(Mark::Played)),
             ]
         );
         let asked: Vec<String> = model.requests().into_iter().map(|r| r.model).collect();
-        assert_eq!(asked, ["gpt-0", "qwen2.5-7b-instruct"]);
+        assert_eq!(
+            asked,
+            ["gpt-0", "qwen2.5-7b-instruct", "qwen2.5-7b-instruct"]
+        );
         assert!(String::from_utf8(reasons).unwrap().starts_with("! gpt-0\n"));
     }
 
@@ -667,7 +687,7 @@ mod tests {
             .unwrap_err();
         let shown = format!("{error:#}");
         assert!(
-            shown.starts_with("gpt-0 could not be asked to select"),
+            shown.starts_with("gpt-0 could not be asked to play"),
             "{shown}"
         );
         assert!(shown.contains("429 Too Many Requests"), "{shown}");

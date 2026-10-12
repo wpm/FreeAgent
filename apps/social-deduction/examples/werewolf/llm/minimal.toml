@@ -9,15 +9,22 @@
 base_url = "http://localhost:1234/v1"
 id = "qwen2.5-7b-instruct-1m"
 
+[phases]
+ratify_limit = "20s"
+
 [text]
 rules = """
 Werewolf is a game of hidden roles. A few of the players are secretly
 werewolves; the rest are villagers, among them a doctor and a seer. Play
 alternates between night and day. By night the werewolves choose a villager
 to kill, the doctor chooses one player to save from that kill, and the seer
-learns one player's side. By day everyone votes and the player with the most
-votes is eliminated. The villagers win when the last werewolf is dead. The
-werewolves win when they are at least as many as the villagers.
+learns one player's side. By day everyone may talk at any time, with no
+turns: whenever you are woken, you may speak to every other living player,
+vote, or wait, and you may change your vote while the day is open. A vote
+stands once nobody has changed theirs for 20s, and the player with the most
+votes is then eliminated. A tie eliminates nobody. The villagers win when
+the last werewolf is dead. The werewolves win when they are at least as
+many as the villagers.
 """
 
 [prompt]

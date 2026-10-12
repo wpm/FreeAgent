@@ -3,11 +3,12 @@
 
 use free_agent::Event;
 use social_deduction::model::canned::{
-    playing, playing_only, refusal, refusing, serving, unreachable, wanting_a_key,
+    day_refusal, playing, playing_only, refusal, refusing, refusing_days, serving, unreachable,
+    wanting_a_key,
 };
 use social_deduction::werewolf::llm::Configuration;
-use social_deduction::werewolf::{Entry, PlayerId, Role};
-use std::collections::HashMap;
+use social_deduction::werewolf::{Ending, Entry, Message, PlayerId, Role};
+use std::collections::{HashMap, HashSet};
 use std::process::{Command, Output};
 use std::time::Duration;
 
@@ -72,12 +73,13 @@ fn assert_usage_error(args: &[&str]) {
 /// Play a game of `variant` with `args` after it, whose log must name
 /// `variation`, with the default table, and check that it is logged from
 /// the deal to the result under one episode id and told from the table to
-/// the winner. The events, for whatever else the variant logs.
+/// the winner. The events, for whatever else the variant logs, and what was
+/// printed.
 fn assert_plays_the_default_table(
     variant: &str,
     variation: &str,
     args: &[&str],
-) -> Vec<Event<Entry>> {
+) -> (Vec<Event<Entry>>, String) {
     let (events, printed) = played(variant, args);
 
     let episode = events[0].episode;
@@ -130,7 +132,7 @@ fn assert_plays_the_default_table(
             "{printed}"
         );
     }
-    events
+    (events, printed)
 }
 
 #[test]
@@ -188,6 +190,7 @@ fn the_uniform_random_variant_takes_the_limits_and_needs_no_configuration_file()
     let Some(Entry::Start {
         night_limit,
         day_limit,
+        ratify_limit,
         ..
     }) = events.first().map(|event| &event.payload)
     else {
@@ -195,8 +198,25 @@ fn the_uniform_random_variant_takes_the_limits_and_needs_no_configuration_file()
     };
     assert_eq!(*night_limit, Duration::from_secs(5));
     assert_eq!(*day_limit, Duration::from_secs(60));
+    // The uniform-random variant has no ratify limit, and takes none.
+    assert_eq!(*ratify_limit, None);
     assert_usage_error(&["werewolf", "uniform-random", "--night-limit", "soon"]);
+    assert_usage_error(&["werewolf", "uniform-random", "--ratify-limit", "5s"]);
     assert_usage_error(&["werewolf", "uniform-random", "game.toml"]);
+}
+
+#[test]
+fn a_uniform_random_day_ends_once_everyone_has_voted_and_is_logged_as_such() {
+    let (events, printed) = played("uniform-random", &[]);
+    let endings = endings(&events);
+    assert!(
+        endings.iter().all(|by| *by == Ending::AllSelected),
+        "{endings:?}"
+    );
+    // Which the narration says nothing of.
+    assert!(!printed.contains("The votes stand."), "{printed}");
+    assert!(!printed.contains("The day runs out."), "{printed}");
+    assert!(!printed.contains("a vote stands after"), "{printed}");
 }
 
 #[test]
@@ -238,6 +258,7 @@ fn help_lists_the_games_the_variants_and_the_role_counts() {
         for option in options {
             assert!(help.contains(option), "{help}");
         }
+        assert_eq!(help.contains("--ratify-limit"), variant == "llm", "{help}");
     }
 }
 
@@ -286,6 +307,19 @@ fn configured(test: &str, name: &str, base_url: &str, id: &str) -> String {
     path
 }
 
+/// How each day in `events` ended, in order.
+fn endings(events: &[Event<Entry>]) -> Vec<Ending> {
+    let endings: Vec<Ending> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            Entry::Voted { by, .. } => Some(*by),
+            _ => None,
+        })
+        .collect();
+    assert!(!endings.is_empty(), "{events:?}");
+    endings
+}
+
 /// The configuration the log of `events` has right after the deal.
 fn configuration(events: &[Event<Entry>]) -> &Configuration {
     let Some(Entry::Configuration(configuration)) = events.get(1).map(|event| &event.payload)
@@ -299,14 +333,76 @@ fn configuration(events: &[Event<Entry>]) -> &Configuration {
 fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_to_the_result() {
     let base_url = playing(&[EXAMPLE_MODEL]);
     let config = configured("plays", "personas.toml", &base_url, EXAMPLE_MODEL);
-    // Short limits, so that a phase nobody selects in ends soon.
-    let args = [&config, "--night-limit", "1s", "--day-limit", "1s"];
-    let events = assert_plays_the_default_table("llm", "LLM", &args);
+    // Short limits, so that a phase nobody selects in ends soon, and a
+    // day's votes stand sooner than the day runs out.
+    let args = [
+        &config,
+        "--night-limit",
+        "1s",
+        "--day-limit",
+        "2s",
+        "--ratify-limit",
+        "1s",
+    ];
+    let (events, printed) = assert_plays_the_default_table("llm", "LLM", &args);
     let (_, roles) = start(&events);
+    let Entry::Start { ratify_limit, .. } = &events[0].payload else {
+        panic!("{events:?}");
+    };
+    assert_eq!(*ratify_limit, Some(Duration::from_secs(1)));
     let configuration = configuration(&events);
     assert_eq!(configuration.base_url, base_url);
     assert_eq!(configuration.model, EXAMPLE_MODEL);
     assert_eq!(configuration.night_limit, Duration::from_secs(1));
+    assert_eq!(configuration.ratify_limit, Duration::from_secs(1));
+    // Everyone votes at once, so each day's votes stand after the ratify
+    // limit and the selected player is voted out.
+    let endings = endings(&events);
+    assert!(
+        endings.iter().all(|by| *by == Ending::Ratified),
+        "{endings:?}"
+    );
+    // By day every living player speaks once, to every other living player
+    // and not to the environment, and the account tells what they say. The
+    // day's phases are the even-numbered ones, and each living player is
+    // announced each of them.
+    let said: Vec<(&PlayerId, &HashSet<PlayerId>)> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            Entry::Action {
+                from,
+                to,
+                message: Message::Say { .. },
+                ..
+            } => Some((from, to)),
+            _ => None,
+        })
+        .collect();
+    let announced_by_day = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.payload,
+                Entry::Action {
+                    message: Message::Announce { seq, .. },
+                    ..
+                } if seq % 2 == 0
+            )
+        })
+        .count();
+    assert!(!said.is_empty(), "{events:?}");
+    assert_eq!(said.len(), announced_by_day, "{events:?}");
+    for (from, to) in said {
+        assert!(!to.contains(from), "{from} spoke to itself");
+        assert!(
+            !to.contains("environment"),
+            "{from} spoke to the environment"
+        );
+    }
+    assert!(
+        printed.contains(" says, \"I have nothing to add.\""),
+        "{printed}"
+    );
     // Each player was told the prompt for the role it was dealt.
     assert_eq!(configuration.prompts.len(), 7);
     for (player, role) in roles {
@@ -357,6 +453,8 @@ fn the_llm_variant_hears_the_command_line_over_the_file() {
             "1s",
             "--day-limit",
             "2s",
+            "--ratify-limit",
+            "1s",
             "--model-id",
             "gpt-5.5",
         ],
@@ -367,8 +465,20 @@ fn the_llm_variant_hears_the_command_line_over_the_file() {
     assert_eq!(configuration.role_counts[&Role::Werewolf], 1);
     assert_eq!(configuration.role_counts[&Role::Villager], 3);
     assert_eq!(configuration.day_limit, Duration::from_secs(2));
+    assert_eq!(configuration.ratify_limit, Duration::from_secs(1));
     assert_eq!(configuration.model, "gpt-5.5");
     assert_eq!(configuration.base_url, base_url);
+}
+
+#[test]
+fn a_ratify_limit_longer_than_the_day_limit_is_refused_before_anything_is_printed() {
+    let base_url = playing(&[EXAMPLE_MODEL]);
+    let config = configured("ratify", "minimal.toml", &base_url, EXAMPLE_MODEL);
+    let stderr = refused(&["werewolf", "llm", &config, "--day-limit", "10s"]);
+    assert!(
+        stderr.contains("the ratify limit (20s) is longer than the day limit (10s)"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -385,18 +495,40 @@ fn a_configuration_file_that_cannot_be_read_is_an_error_naming_it() {
 }
 
 #[test]
-fn the_llm_variant_refuses_a_model_that_does_not_select_when_asked_in_the_provider_s_words() {
-    let base_url = refusing(&[EXAMPLE_MODEL]);
-    let config = configured("unselecting", "minimal.toml", &base_url, EXAMPLE_MODEL);
-    let stderr = refused(&["werewolf", "llm", &config]);
-    assert!(stderr.contains(EXAMPLE_MODEL), "{stderr}");
-    assert!(
-        stderr.contains(&format!(
-            "POST {base_url}/chat/completions was answered 400"
-        )),
-        "{stderr}"
-    );
-    assert!(stderr.contains(&refusal(EXAMPLE_MODEL)), "{stderr}");
+fn the_llm_variant_refuses_a_model_that_does_not_play_when_asked_in_the_provider_s_words() {
+    // A provider refusing the night's request, and one that plays by night
+    // alone and refuses the day's.
+    let refusals = [
+        (
+            "unselecting",
+            refusing(&[EXAMPLE_MODEL]),
+            "night",
+            refusal(EXAMPLE_MODEL),
+        ),
+        (
+            "nights-only",
+            refusing_days(&[EXAMPLE_MODEL]),
+            "day",
+            day_refusal(EXAMPLE_MODEL),
+        ),
+    ];
+    for (name, base_url, phase, said) in refusals {
+        let config = configured(name, "minimal.toml", &base_url, EXAMPLE_MODEL);
+        let stderr = refused(&["werewolf", "llm", &config]);
+        assert!(
+            stderr.starts_with(&format!(
+                "Error: {EXAMPLE_MODEL} did not answer a {phase}'s request"
+            )),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!(
+                "POST {base_url}/chat/completions was answered 400"
+            )),
+            "{stderr}"
+        );
+        assert!(stderr.contains(&said), "{stderr}");
+    }
 }
 
 #[test]
@@ -420,10 +552,10 @@ fn the_models_command_lists_the_provider_s_models_sorted_and_plain() {
 }
 
 /// The legend the `--check` listing ends with.
-const LEGEND: &str = "* marks a model that selected when asked, and ! one that did not.";
+const LEGEND: &str = "* marks a model that played when asked, and ! one that did not.";
 
 #[test]
-fn the_models_command_with_check_asks_each_model_for_a_selection_and_marks_its_answer() {
+fn the_models_command_with_check_asks_each_model_to_play_and_marks_its_answer() {
     let base_url = playing_only(&["zephyr-7b", EXAMPLE_MODEL], &[EXAMPLE_MODEL]);
     let output = succeeded(&["models", &base_url, "--check"]);
     let printed = String::from_utf8(output.stdout).unwrap();
@@ -439,7 +571,7 @@ fn the_models_command_with_check_asks_each_model_for_a_selection_and_marks_its_a
     let reasons: Vec<&str> = stderr.lines().collect();
     assert_eq!(reasons.len(), 3, "{stderr}");
     assert_eq!(reasons[0], "! zephyr-7b");
-    assert_eq!(reasons[1], "  zephyr-7b did not select when asked");
+    assert_eq!(reasons[1], "  zephyr-7b did not answer a night's request");
     assert_eq!(
         reasons[2],
         format!(
@@ -451,12 +583,36 @@ fn the_models_command_with_check_asks_each_model_for_a_selection_and_marks_its_a
 }
 
 #[test]
+fn the_models_command_with_check_marks_a_model_that_plays_by_night_alone_as_not_playing() {
+    let base_url = refusing_days(&[EXAMPLE_MODEL]);
+    let output = succeeded(&["models", &base_url, "--check"]);
+    let printed = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines, ["! qwen2.5-7b-instruct", "", LEGEND], "{printed}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let reasons: Vec<&str> = stderr.lines().collect();
+    assert_eq!(
+        reasons,
+        [
+            "! qwen2.5-7b-instruct",
+            "  qwen2.5-7b-instruct did not answer a day's request",
+            &format!(
+                "  POST {base_url}/chat/completions was answered 400 Bad Request. \
+                 The provider said: {}",
+                day_refusal(EXAMPLE_MODEL)
+            ),
+        ],
+        "{stderr}"
+    );
+}
+
+#[test]
 fn the_models_command_with_check_stops_at_a_model_that_could_not_be_asked() {
     // A provider that wants a key answers nothing about any model.
     let base_url = wanting_a_key(&["zephyr-7b", EXAMPLE_MODEL]);
     let stderr = refused(&["models", &base_url, "--check"]);
     assert!(
-        stderr.starts_with("Error: qwen2.5-7b-instruct could not be asked to select"),
+        stderr.starts_with("Error: qwen2.5-7b-instruct could not be asked to play"),
         "{stderr}"
     );
     assert!(stderr.contains("401 Unauthorized"), "{stderr}");

@@ -33,12 +33,13 @@ who is still alive. The villagers win when the last werewolf is dead. The
 werewolves win when they are at least as many as the villagers.
 
 The command line names the game, then its variant. In `uniform-random`
-the environment announces each phase and waits for the players'
-selections, as it does for language models, and every player selects at
-once, at random among those it may choose: by night the living whose roles
-it does not know, by day everyone else living. It plays the model-played
-game with no model, provider, API key or configuration file, so a game
-finishes in moments.
+the environment announces each phase to every living player and waits for
+the awake players' selections, as it does for language models, and every
+player awake in the phase selects at once, at random among those it may
+choose: by night the living whose roles it does not know, by day everyone
+else living. A player with nothing to do in the phase sleeps. It plays the
+model-played game with no model, provider, API key or configuration file,
+so a game finishes in moments.
 
 ```sh
 social-deduction werewolf uniform-random [--werewolves N] [--villagers N] [--doctors N] [--seers N] [--night-limit 30s] [--day-limit 2m]
@@ -56,7 +57,7 @@ file that names the model, how to reach it, and the prompts each role is
 given. The [examples](examples/werewolf/llm) show how one is written.
 
 ```sh
-social-deduction werewolf llm game.toml [role counts] [limits] [--model-base-url URL] [--model-id ID]
+social-deduction werewolf llm game.toml [role counts] [limits] [--ratify-limit 20s] [--model-base-url URL] [--model-id ID]
 ```
 
 A setting comes from the command line if it is given there, otherwise from
@@ -68,12 +69,55 @@ each player's rendered prompt, and the templates and text blocks as
 written, so a log says by itself what was played and under which prompts.
 The API key is never logged.
 
-Each phase, a player is told its prompt and the story of the game so far
-from its own point of view, and selects one of the living with a tool call.
-A player whose model fails to select, because the model was not reached or
-answered with something that is not a selection, has not selected, and its
-phase ends at its limit. The failure is logged with the phase and the error
-and told as it happens, and the game goes on; the player is not told of it.
+Every living player is told each phase as it begins, awake in it or not,
+since only the environment knows when a phase ends. A player with nothing
+to do in the phase sleeps: it remembers the announcement, makes no model
+call, and is woken by nothing until the day, and its story says "You
+sleep." Each time a player is woken, it is told its prompt and the story of
+the game so far from its own point of view, what others said and how they
+voted included, and where the game stands, and the model answers with tool
+calls. By night a werewolf, the doctor or the seer is woken once, when the
+night is announced to it, and selects one of the living with one forced
+`select` call, which goes to the environment alone; the first selection
+counts, and the night ends when everyone awake has selected or at its
+limit. A player whose model fails,
+because it was not reached or answered with something that is not well
+formed, has done nothing, and the failure is logged with the phase and the
+error and told as it happens; the game goes on, and the player is not told
+of it.
+
+By day the players talk, with no turns. Every living player is woken when
+the day is announced to it and again by every message it hears, another
+player's utterance or vote and the environment's tentative decision, and
+the model is offered three tools, of which it must call one and may call
+several: `speak`, which says something to every other living player, and
+never to the environment, which does nothing with speech; `select`, which
+votes for a player, and may be called again to change the vote; and `wait`,
+which says nothing now and asks to be woken after some seconds unless
+something wakes the player sooner. The calls are carried out in the order
+the model made them. Wake-ups are debounced: a player has at most one model
+call in progress and one waiting, however fast the talk comes, and each
+call is made from everything the player had heard when it began. A model
+may answer from a context that is out of date by the time it answers; if
+the phase has ended by then, by night or by day, the player sends nothing
+and logs what it withheld. A player ignores talk and votes from a phase it
+is not in, and a tentative decision too: it logs the receipt and neither
+remembers the message nor wakes for it, so day talk that arrives by night
+is forgotten.
+
+The votes are public and ratified. Each vote goes to every other living
+player as well as to the environment, a player's latest vote counts, and
+whenever the votes change who they select, or come to select nobody, the
+environment tells every living player so. A day ends once the votes have
+stood unchanged for the ratify limit, and the selected player is voted
+out; or at the day limit, whatever is standing, and nobody is. The ratify
+limit is `ratify_limit` under `[phases]`, or `--ratify-limit` on the
+command line, twenty seconds unless either says, and may not be longer
+than the day limit. The account tells what everyone says as they say it,
+and a player's story tells it what others said and how they voted. The
+prompt is the configuration's to write: the program tells the model only
+what the three tools do and that it may speak, vote, or wait, so the rules
+text in the file should say that by day everyone may talk at any time.
 
 ### The configuration file
 
@@ -86,8 +130,9 @@ is an error.
   known for the provider; and `request_timeout`, how long one request may
   take, a minute unless it says.
 - `[phases]`: `night_limit` and `day_limit`, how long each phase waits for
-  the players' selections, a minute each unless they say. Durations are
-  written as `30s` or `1m 30s`.
+  the players' selections, a minute each unless they say; and
+  `ratify_limit`, how long a day's votes must stand to be ratified, twenty
+  seconds unless it says. Durations are written as `30s` or `1m 30s`.
 - `[roles.werewolf]`, `[roles.villager]`, `[roles.doctor]` and
   `[roles.seer]`: `count`, how many of the role sit at the table, and
   `system`, the role's own system prompt template over the default.
@@ -120,16 +165,18 @@ or a persona for a seat that is not there stops the program at once.
 
 The model is checked before any player is built, so a model that cannot
 play fails at launch. The provider's listing must have the model's id, and
-the model is then asked for one selection exactly as a player is: a short
-prompt, two candidates, and the `select` tool it must call. A model that
-does not answer with a candidate stops the program, and the error says
-why in the provider's own words, such as a server that rejects the request
-or an answer that makes no tool call. Any model that passes can play.
+the model is then asked twice exactly as a player is, once as by night and
+once as by day: a short prompt, two candidates, and the tools a player has
+in that phase, `select` by night and `speak`, `select` and `wait` by day.
+A model that does not answer both requests as a player must stops the
+program, and the error names the request that failed and says why in the
+provider's own words, such as a server that rejects the request or an
+answer that makes no tool call. Any model that passes can play.
 
 To play against a local [LM Studio](https://lmstudio.ai) server, download
 `qwen2.5-7b-instruct` there and start its server, which listens at
 `http://localhost:1234/v1`. `social-deduction models http://localhost:1234/v1 --check`
-lists what it serves and marks the models that select when asked, and
+lists what it serves and marks the models that play when asked, and
 [`examples/werewolf/llm/minimal.toml`](examples/werewolf/llm/minimal.toml)
 plays it:
 
@@ -142,21 +189,21 @@ social-deduction werewolf llm examples/werewolf/llm/minimal.toml
 The `models` command belongs to no game. It asks a provider, named by the
 root of its OpenAI-compatible API, for the models it serves and lists them,
 one id per line in sorted order. With `--check`, it asks each model listed
-for one selection as a player would, one model at a time, and marks with
-`*` those that select and with `!` those that do not, with a line at the
-end saying so. Why each `!` model failed goes to standard error, so the
-listing stays readable: a line `! id` naming the model as the listing
-marks it, then the error's causes, each on its own indented line, so a
-provider's words may run to several lines and still be read as one
-model's. A model that could not be asked at all, because the provider was
-not reached or answered with anything but the model's answer, such as a
-missing key or a rate limit, stops the listing with the error, since
-nothing it would say about the rest would be true. `--check` followed by
-ids asks only those, each of which must be listed, and leaves the rest
-unmarked; the ids end with `--` when the base URL follows them. A provider
-whose API key variable is known is read with it; any other provider that
-wants a key is told the environment variable holding it. `models --help`
-tables the providers known:
+to play as a player would, once as by night and once as by day, one model
+at a time, and marks with `*` those that answer both requests well and
+with `!` those that do not, with a line at the end saying so. Why each `!`
+model failed goes to standard error, so the listing stays readable: a line
+`! id` naming the model as the listing marks it, then the error's causes,
+each on its own indented line, so a provider's words may run to several
+lines and still be read as one model's. A model that could not be asked at
+all, because the provider was not reached or answered with anything but the
+model's answer, such as a missing key or a rate limit, stops the listing
+with the error, since nothing it would say about the rest would be true.
+`--check` followed by ids asks only those, each of which must be listed,
+and leaves the rest unmarked; the ids end with `--` when the base URL
+follows them. A provider whose API key variable is known is read with it;
+any other provider that wants a key is told the environment variable
+holding it. `models --help` tables the providers known:
 
 ```sh
 social-deduction models http://localhost:1234/v1
