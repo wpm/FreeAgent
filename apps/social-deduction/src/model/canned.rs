@@ -148,14 +148,45 @@ pub fn playing_only(ids: &[&str], selecting: &[&str]) -> String {
             return response("400 Bad Request", &error("the request names no model"));
         };
         if selecting.iter().any(|id| id == model) {
-            match canned_calls(request) {
-                Ok(calls) => response("200 OK", &completion_of(&calls)),
-                Err(refused) => response("400 Bad Request", &error(&format!("{refused:#}"))),
-            }
+            played(request)
         } else {
             response("400 Bad Request", &error(&refusal(model)))
         }
     })
+}
+
+/// A provider that serves `ids` and plays each by night alone, kept for
+/// the rest of the process: a completion request offering one tool is
+/// answered as [`playing`] answers it, and one offering several, as a
+/// day's does, 400 Bad Request saying what [`day_refusal`] says, as a
+/// server that takes one tool at a time does.
+pub fn refusing_days(ids: &[&str]) -> String {
+    serving_and(ids, |request| {
+        let offered = request["tools"].as_array().map_or(0, Vec::len);
+        if offered > 1 {
+            let model = request["model"].as_str().unwrap_or_default();
+            response("400 Bad Request", &error(&day_refusal(model)))
+        } else {
+            played(request)
+        }
+    })
+}
+
+/// What a canned provider says when asked for a completion from `model`
+/// with several tools, which it does not take.
+pub fn day_refusal(model: &str) -> String {
+    format!("{model} takes one tool at a time")
+}
+
+/// The canned player's answer to the completion `request`, in the
+/// protocol's JSON: the calls [`canned_calls`] makes, or 400 Bad Request
+/// saying why it could not answer, as a server that cannot use the tools
+/// a request offers does.
+fn played(request: &serde_json::Value) -> String {
+    match canned_calls(request) {
+        Ok(calls) => response("200 OK", &completion_of(&calls)),
+        Err(refused) => response("400 Bad Request", &error(&format!("{refused:#}"))),
+    }
 }
 
 /// A provider that serves `ids` but answers every completion request 401
@@ -324,6 +355,28 @@ mod tests {
         assert!(
             format!("{error:#}").contains(&refusal("qwen2.5-7b-instruct")),
             "{error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_provider_refusing_days_selects_by_night_and_refuses_a_request_offering_several_tools()
+     {
+        let base_url = refusing_days(&["qwen2.5-7b-instruct"]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        assert_eq!(provider.models().await.unwrap(), ["qwen2.5-7b-instruct"]);
+        assert_eq!(
+            provider.complete(&selecting(&["player2"])).await.unwrap(),
+            Response::tool_call("select", &json!({"target": "player2"}))
+        );
+        let error = provider
+            .complete(&by_day(&["player2", "player3"], 60, "Day 1."))
+            .await
+            .unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("400 Bad Request"), "{shown}");
+        assert!(
+            shown.contains(&day_refusal("qwen2.5-7b-instruct")),
+            "{shown}"
         );
     }
 

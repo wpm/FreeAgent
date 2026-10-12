@@ -3,7 +3,8 @@
 
 use free_agent::Event;
 use social_deduction::model::canned::{
-    playing, playing_only, refusal, refusing, serving, unreachable, wanting_a_key,
+    day_refusal, playing, playing_only, refusal, refusing, refusing_days, serving, unreachable,
+    wanting_a_key,
 };
 use social_deduction::werewolf::llm::Configuration;
 use social_deduction::werewolf::{Ending, Entry, Message, PlayerId, Role};
@@ -494,18 +495,40 @@ fn a_configuration_file_that_cannot_be_read_is_an_error_naming_it() {
 }
 
 #[test]
-fn the_llm_variant_refuses_a_model_that_does_not_select_when_asked_in_the_provider_s_words() {
-    let base_url = refusing(&[EXAMPLE_MODEL]);
-    let config = configured("unselecting", "minimal.toml", &base_url, EXAMPLE_MODEL);
-    let stderr = refused(&["werewolf", "llm", &config]);
-    assert!(stderr.contains(EXAMPLE_MODEL), "{stderr}");
-    assert!(
-        stderr.contains(&format!(
-            "POST {base_url}/chat/completions was answered 400"
-        )),
-        "{stderr}"
-    );
-    assert!(stderr.contains(&refusal(EXAMPLE_MODEL)), "{stderr}");
+fn the_llm_variant_refuses_a_model_that_does_not_play_when_asked_in_the_provider_s_words() {
+    // A provider refusing the night's request, and one that plays by night
+    // alone and refuses the day's.
+    let refusals = [
+        (
+            "unselecting",
+            refusing(&[EXAMPLE_MODEL]),
+            "night",
+            refusal(EXAMPLE_MODEL),
+        ),
+        (
+            "nights-only",
+            refusing_days(&[EXAMPLE_MODEL]),
+            "day",
+            day_refusal(EXAMPLE_MODEL),
+        ),
+    ];
+    for (name, base_url, phase, said) in refusals {
+        let config = configured(name, "minimal.toml", &base_url, EXAMPLE_MODEL);
+        let stderr = refused(&["werewolf", "llm", &config]);
+        assert!(
+            stderr.starts_with(&format!(
+                "Error: {EXAMPLE_MODEL} did not answer a {phase}'s request"
+            )),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!(
+                "POST {base_url}/chat/completions was answered 400"
+            )),
+            "{stderr}"
+        );
+        assert!(stderr.contains(&said), "{stderr}");
+    }
 }
 
 #[test]
@@ -529,10 +552,10 @@ fn the_models_command_lists_the_provider_s_models_sorted_and_plain() {
 }
 
 /// The legend the `--check` listing ends with.
-const LEGEND: &str = "* marks a model that selected when asked, and ! one that did not.";
+const LEGEND: &str = "* marks a model that played when asked, and ! one that did not.";
 
 #[test]
-fn the_models_command_with_check_asks_each_model_for_a_selection_and_marks_its_answer() {
+fn the_models_command_with_check_asks_each_model_to_play_and_marks_its_answer() {
     let base_url = playing_only(&["zephyr-7b", EXAMPLE_MODEL], &[EXAMPLE_MODEL]);
     let output = succeeded(&["models", &base_url, "--check"]);
     let printed = String::from_utf8(output.stdout).unwrap();
@@ -548,7 +571,7 @@ fn the_models_command_with_check_asks_each_model_for_a_selection_and_marks_its_a
     let reasons: Vec<&str> = stderr.lines().collect();
     assert_eq!(reasons.len(), 3, "{stderr}");
     assert_eq!(reasons[0], "! zephyr-7b");
-    assert_eq!(reasons[1], "  zephyr-7b did not select when asked");
+    assert_eq!(reasons[1], "  zephyr-7b did not answer a night's request");
     assert_eq!(
         reasons[2],
         format!(
@@ -560,12 +583,36 @@ fn the_models_command_with_check_asks_each_model_for_a_selection_and_marks_its_a
 }
 
 #[test]
+fn the_models_command_with_check_marks_a_model_that_plays_by_night_alone_as_not_playing() {
+    let base_url = refusing_days(&[EXAMPLE_MODEL]);
+    let output = succeeded(&["models", &base_url, "--check"]);
+    let printed = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines, ["! qwen2.5-7b-instruct", "", LEGEND], "{printed}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let reasons: Vec<&str> = stderr.lines().collect();
+    assert_eq!(
+        reasons,
+        [
+            "! qwen2.5-7b-instruct",
+            "  qwen2.5-7b-instruct did not answer a day's request",
+            &format!(
+                "  POST {base_url}/chat/completions was answered 400 Bad Request. \
+                 The provider said: {}",
+                day_refusal(EXAMPLE_MODEL)
+            ),
+        ],
+        "{stderr}"
+    );
+}
+
+#[test]
 fn the_models_command_with_check_stops_at_a_model_that_could_not_be_asked() {
     // A provider that wants a key answers nothing about any model.
     let base_url = wanting_a_key(&["zephyr-7b", EXAMPLE_MODEL]);
     let stderr = refused(&["models", &base_url, "--check"]);
     assert!(
-        stderr.starts_with("Error: qwen2.5-7b-instruct could not be asked to select"),
+        stderr.starts_with("Error: qwen2.5-7b-instruct could not be asked to play"),
         "{stderr}"
     );
     assert!(stderr.contains("401 Unauthorized"), "{stderr}");

@@ -28,11 +28,6 @@ pub struct Request {
 }
 
 impl Request {
-    /// A request of `model` shown `messages` and made to call `tool`.
-    pub fn new(model: impl Into<String>, messages: Vec<Message>, tool: Tool) -> Self {
-        Self::offering(model, messages, vec![tool])
-    }
-
     /// A request of `model` shown `messages` and made to call one of
     /// `tools`.
     pub fn offering(model: impl Into<String>, messages: Vec<Message>, tools: Vec<Tool>) -> Self {
