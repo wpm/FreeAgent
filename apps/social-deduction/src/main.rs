@@ -6,7 +6,8 @@
 use clap::{Args, Parser, Subcommand};
 use free_agent::{Behavior, Episode, Logger};
 use social_deduction::model::{
-    Model, Provider, REQUEST_TIMEOUT, api_key, check_listed, key_variable, known_providers,
+    Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, check_listed, key_variable,
+    known_providers,
 };
 use social_deduction::werewolf::llm::{self, Config, Probed};
 use social_deduction::werewolf::report::Narrator;
@@ -124,11 +125,12 @@ async fn main() -> anyhow::Result<()> {
             let provider = model.provider()?;
             let prompts = settings.prompts()?;
             provider.check_serves(&model.id).await?;
-            if let Probed::DidNotPlay(error) = llm::check_plays(&provider, &model.id).await? {
-                return Err(error);
-            }
+            let tool_choice = match llm::check_plays(&provider, &model.id).await? {
+                Probed::Played(tool_choice) => tool_choice,
+                Probed::DidNotPlay(error) => return Err(error),
+            };
             let roles = settings.table.deal();
-            let configuration = settings.configuration(&roles, &prompts)?;
+            let configuration = settings.configuration(&roles, &prompts, tool_choice)?;
             let rules = settings.rules();
             play(logging.enabled(), |winner, logger| {
                 llm::game(
@@ -190,8 +192,9 @@ fn known_providers_help() -> String {
 /// played when asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mark {
-    /// Asked as by night and as by day, it answered both requests well.
-    Played,
+    /// Asked as by night and as by day, it answered both requests well,
+    /// under the tool choice the probe settled.
+    Played(ToolChoice),
     /// Asked as by night and as by day, it did not answer one of them well.
     DidNotPlay,
 }
@@ -213,7 +216,7 @@ async fn checked(
     for id in ids {
         let mark = if check.is_empty() || check.contains(&id) {
             match llm::check_plays(model, &id).await? {
-                Probed::Played => Some(Mark::Played),
+                Probed::Played(tool_choice) => Some(Mark::Played(tool_choice)),
                 Probed::DidNotPlay(error) => {
                     reason(reasons, &id, &error)?;
                     Some(Mark::DidNotPlay)
@@ -242,7 +245,7 @@ fn reason(out: &mut impl Write, id: &str, error: &anyhow::Error) -> io::Result<(
 }
 
 /// The listing `models` prints: one id per line, in order. When any model
-/// is marked, each id comes after its mark, `* ` or `! `, or two spaces
+/// is marked, each id comes after its mark, `* `, `~ ` or `! `, or two spaces
 /// when it has none, so the ids line up, and the listing ends, set off by
 /// an empty line, with a line saying what the marks mean.
 fn listing(models: &[(String, Option<Mark>)]) -> String {
@@ -250,7 +253,8 @@ fn listing(models: &[(String, Option<Mark>)]) -> String {
     let mut listing = String::new();
     for (id, mark) in models {
         let shown = match mark {
-            Some(Mark::Played) => "* ",
+            Some(Mark::Played(ToolChoice::Required)) => "* ",
+            Some(Mark::Played(ToolChoice::Auto)) => "~ ",
             Some(Mark::DidNotPlay) => "! ",
             None if any_marked => "  ",
             None => "",
@@ -260,7 +264,8 @@ fn listing(models: &[(String, Option<Mark>)]) -> String {
     if any_marked {
         writeln!(
             listing,
-            "\n* marks a model that played when asked, and ! one that did not."
+            "\n* marks a model that played when asked, ~ one that played when asked to call a \
+             tool but not made to, and ! one that did not."
         )
         .unwrap();
     }
@@ -595,12 +600,17 @@ mod tests {
         let models = [
             ("gpt-0".to_string(), Some(Mark::DidNotPlay)),
             ("llama".to_string(), None),
-            ("qwen2.5-7b-instruct".to_string(), Some(Mark::Played)),
+            (
+                "qwen2.5-7b-instruct".to_string(),
+                Some(Mark::Played(ToolChoice::Required)),
+            ),
+            ("sonnet".to_string(), Some(Mark::Played(ToolChoice::Auto))),
         ];
         assert_eq!(
             listing(&models),
-            "! gpt-0\n  llama\n* qwen2.5-7b-instruct\n\n\
-             * marks a model that played when asked, and ! one that did not.\n"
+            "! gpt-0\n  llama\n* qwen2.5-7b-instruct\n~ sonnet\n\n\
+             * marks a model that played when asked, ~ one that played when asked to call a tool \
+             but not made to, and ! one that did not.\n"
         );
     }
 
@@ -629,7 +639,10 @@ mod tests {
             [
                 ("gpt-0".to_string(), Some(Mark::DidNotPlay)),
                 ("llama".to_string(), Some(Mark::DidNotPlay)),
-                ("qwen2.5-7b-instruct".to_string(), Some(Mark::Played)),
+                (
+                    "qwen2.5-7b-instruct".to_string(),
+                    Some(Mark::Played(ToolChoice::Required))
+                ),
             ]
         );
         // A model that plays by night is asked again as by day.
@@ -663,7 +676,10 @@ mod tests {
             [
                 ("gpt-0".to_string(), Some(Mark::DidNotPlay)),
                 ("llama".to_string(), None),
-                ("qwen2.5-7b-instruct".to_string(), Some(Mark::Played)),
+                (
+                    "qwen2.5-7b-instruct".to_string(),
+                    Some(Mark::Played(ToolChoice::Required))
+                ),
             ]
         );
         let asked: Vec<String> = model.requests().into_iter().map(|r| r.model).collect();
@@ -672,6 +688,21 @@ mod tests {
             ["gpt-0", "qwen2.5-7b-instruct", "qwen2.5-7b-instruct"]
         );
         assert!(String::from_utf8(reasons).unwrap().starts_with("! gpt-0\n"));
+    }
+
+    #[tokio::test]
+    async fn a_model_that_plays_only_when_not_made_to_call_a_tool_is_marked_so() {
+        let base_url = canned::refusing_required(&["sonnet"]);
+        let provider = Provider::new(base_url, None, REQUEST_TIMEOUT).unwrap();
+        let mut reasons = Vec::new();
+        let marked = checked(&provider, vec!["sonnet".to_string()], &[], &mut reasons)
+            .await
+            .unwrap();
+        assert_eq!(
+            marked,
+            [("sonnet".to_string(), Some(Mark::Played(ToolChoice::Auto)))]
+        );
+        assert!(reasons.is_empty());
     }
 
     #[tokio::test]

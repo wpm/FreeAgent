@@ -2,9 +2,10 @@
 //! standard output, and logs it to standard error as JSON lines.
 
 use free_agent::Event;
+use social_deduction::model::ToolChoice;
 use social_deduction::model::canned::{
-    day_refusal, playing, playing_only, refusal, refusing, refusing_days, serving, unreachable,
-    wanting_a_key,
+    day_refusal, playing, playing_only, refusal, refusing, refusing_days, refusing_required,
+    serving, unreachable, wanting_a_key,
 };
 use social_deduction::werewolf::llm::Configuration;
 use social_deduction::werewolf::{Ending, Entry, Message, PlayerId, Role};
@@ -92,7 +93,8 @@ fn assert_plays_the_default_table(
         panic!("{events:?}");
     };
     // The account opens with the table, a player to a line, then the
-    // limits, goes through the first night, set off by a blank line, tells
+    // limits, and the tool choice when it is not the usual one, goes
+    // through the first night, set off by a blank line, tells
     // how long the last phase took, and closes with the winner, how long
     // the game took, and the survivors, a player to a line.
     let lines: Vec<&str> = printed.lines().collect();
@@ -111,8 +113,14 @@ fn assert_plays_the_default_table(
         lines[8].starts_with("A night waits ") && lines[8].contains(" and a day "),
         "{printed}"
     );
-    assert_eq!(lines[9], "", "{printed}");
-    assert_eq!(lines[10], "Night 1.", "{printed}");
+    let blank = lines.iter().position(|line| line.is_empty()).unwrap();
+    for told in &lines[9..blank] {
+        assert!(
+            told.ends_with(" so its players are asked to call one."),
+            "{printed}"
+        );
+    }
+    assert_eq!(lines[blank + 1], "Night 1.", "{printed}");
     let won = lines
         .iter()
         .position(|line| line.starts_with(&format!("The {winner} win after ")))
@@ -355,6 +363,8 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
     assert_eq!(configuration.model, EXAMPLE_MODEL);
     assert_eq!(configuration.night_limit, Duration::from_secs(1));
     assert_eq!(configuration.ratify_limit, Duration::from_secs(1));
+    assert_eq!(configuration.tool_choice, ToolChoice::Required);
+    assert!(!printed.contains("tool call"), "{printed}");
     // Everyone votes at once, so each day's votes stand after the ratify
     // limit and the selected player is voted out.
     let endings = endings(&events);
@@ -423,6 +433,37 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
         .filter(|event| matches!(event.payload, Entry::Configuration(_)))
         .count();
     assert_eq!(configurations, 1);
+}
+
+#[test]
+fn a_model_that_refuses_to_be_made_to_call_a_tool_plays_when_asked_to_call_one() {
+    let base_url = refusing_required(&[EXAMPLE_MODEL]);
+    let config = configured("auto", "minimal.toml", &base_url, EXAMPLE_MODEL);
+    let args = [
+        &config,
+        "--night-limit",
+        "1s",
+        "--day-limit",
+        "2s",
+        "--ratify-limit",
+        "1s",
+    ];
+    let (events, printed) = assert_plays_the_default_table("llm", "LLM", &args);
+    assert_eq!(configuration(&events).tool_choice, ToolChoice::Auto);
+    assert!(
+        printed.contains(&format!(
+            "{EXAMPLE_MODEL} does not accept a required tool call, \
+             so its players are asked to call one."
+        )),
+        "{printed}"
+    );
+    // Every player played: none of them failed.
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.payload, Entry::Failed { .. })),
+        "{events:?}"
+    );
 }
 
 #[test]
@@ -552,7 +593,8 @@ fn the_models_command_lists_the_provider_s_models_sorted_and_plain() {
 }
 
 /// The legend the `--check` listing ends with.
-const LEGEND: &str = "* marks a model that played when asked, and ! one that did not.";
+const LEGEND: &str = "* marks a model that played when asked, ~ one that played when asked to call \
+                      a tool but not made to, and ! one that did not.";
 
 #[test]
 fn the_models_command_with_check_asks_each_model_to_play_and_marks_its_answer() {
@@ -569,16 +611,22 @@ fn the_models_command_with_check_asks_each_model_to_play_and_marks_its_answer() 
     // listing marks it, then the probe's words, a cause per indented line.
     let stderr = String::from_utf8(output.stderr).unwrap();
     let reasons: Vec<&str> = stderr.lines().collect();
-    assert_eq!(reasons.len(), 3, "{stderr}");
-    assert_eq!(reasons[0], "! zephyr-7b");
-    assert_eq!(reasons[1], "  zephyr-7b did not answer a night's request");
+    // Refused as bad when made to call a tool, it was asked again to call
+    // one, and refused again.
+    let refused = format!(
+        "POST {base_url}/chat/completions was answered 400 Bad Request. \
+         The provider said: {}",
+        refusal("zephyr-7b")
+    );
     assert_eq!(
-        reasons[2],
-        format!(
-            "  POST {base_url}/chat/completions was answered 400 Bad Request. \
-             The provider said: {}",
-            refusal("zephyr-7b")
-        )
+        reasons,
+        [
+            "! zephyr-7b".to_string(),
+            "  zephyr-7b did not answer a night's request".to_string(),
+            format!("  made to call a tool: {refused}"),
+            format!("  asked to call one: {refused}"),
+        ],
+        "{stderr}"
     );
 }
 

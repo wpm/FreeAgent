@@ -10,6 +10,7 @@
 
 use super::llm::Memory;
 use super::{ENVIRONMENT, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Team, View, awake};
+use crate::model::ToolChoice;
 use free_agent::{ActorId, Event};
 use humantime::format_duration;
 use std::cmp::Ordering;
@@ -207,6 +208,14 @@ impl Narrator {
                     Ending::AllSelected => None,
                 };
                 vec![]
+            }
+            Entry::Configuration(configuration)
+                if configuration.tool_choice == ToolChoice::Auto =>
+            {
+                vec![format!(
+                    "{} does not accept a required tool call, so its players are asked to call one.",
+                    configuration.model
+                )]
             }
             Entry::Failed { player, seq, error } => {
                 let player = self.seat(player);
@@ -665,6 +674,7 @@ fn listed<'a>(seats: impl IntoIterator<Item = Seat<'a>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::werewolf::llm::Configuration;
     use crate::werewolf::tests::{announcement, logged, received, selection, tentative, utterance};
     use crate::werewolf::{ENVIRONMENT, Rules, to_the_environment};
@@ -2021,9 +2031,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_configuration_adds_nothing_to_either_account() {
-        let configuration = logged(Entry::Configuration(Box::new(Configuration {
+    /// The configuration of a game whose requests are made under
+    /// `tool_choice`, as the log records it.
+    fn configured(tool_choice: ToolChoice) -> Event<Entry> {
+        logged(Entry::Configuration(Box::new(Configuration {
             role_counts: BTreeMap::from([(Role::Werewolf, 1), (Role::Villager, 2)]),
             night_limit: Duration::from_secs(30),
             day_limit: Duration::from_secs(60),
@@ -2031,14 +2042,35 @@ mod tests {
             request_timeout: Duration::from_secs(10),
             base_url: "http://localhost:1234/v1".to_string(),
             model: "qwen2.5-7b-instruct".to_string(),
+            tool_choice,
             api_key_env: None,
             personas: BTreeMap::new(),
             prompts: BTreeMap::from([(id("wolf"), "You are wolf.".to_string())]),
             default_template: Some("You are {{ name }}.".to_string()),
             role_templates: BTreeMap::new(),
             text: BTreeMap::new(),
-        })));
+        })))
+    }
+
+    #[test]
+    fn a_configuration_requiring_a_tool_call_adds_nothing_to_either_account() {
+        let configuration = configured(ToolChoice::Required);
         assert!(Narrator::default().narrate(&configuration).is_empty());
+        assert!(
+            Narrator::for_player(id("wolf"))
+                .narrate(&configuration)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_configuration_allowing_a_tool_call_is_told_in_the_omniscient_account_alone() {
+        let configuration = configured(ToolChoice::Auto);
+        assert_eq!(
+            Narrator::default().narrate(&configuration),
+            ["qwen2.5-7b-instruct does not accept a required tool call, \
+                 so its players are asked to call one."]
+        );
         assert!(
             Narrator::for_player(id("wolf"))
                 .narrate(&configuration)

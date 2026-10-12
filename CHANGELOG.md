@@ -18,10 +18,12 @@ workflow takes a version's notes from here.
   the prompt templates each role is given. It checks the file, and asks the
   model to play as a player would, once as by night and once as by day,
   before the game begins, and its log opens with the configuration the game
-  was played under.
+  was played under. A model that refuses to be made to call a tool is asked
+  to call one instead.
 - `social-deduction models`, which lists the models a provider serves.
   `--check` asks each model to play as by night and as by day and marks
-  those that answer both requests well.
+  those that answer both requests well, and those that do only when not
+  made to call a tool.
 - `--night-limit` and `--day-limit` on `social-deduction werewolf
   uniform-random`, how long each phase waits for the players' selections,
   with defaults in the code.

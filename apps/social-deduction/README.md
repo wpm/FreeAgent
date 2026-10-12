@@ -173,6 +173,16 @@ program, and the error names the request that failed and says why in the
 provider's own words, such as a server that rejects the request or an
 answer that makes no tool call. Any model that passes can play.
 
+Every request makes the model call a tool, unless the model refuses that.
+The night's request is made with `tool_choice` set to `"required"`; if the
+provider refuses it as a bad request, it is made again with `"auto"`, which
+asks the model to call a tool without making it, and both refusals are
+given if that is refused too. The game's requests are made the way the
+night's was answered, and the account says so when that is `"auto"`. Under
+`"auto"`, an answer that makes no tool call is a failure to play, as any
+other answer a player cannot carry out is. Every request ends "Answer by
+calling one of the tools."
+
 To play against a local [LM Studio](https://lmstudio.ai) server, download
 `qwen2.5-7b-instruct` there and start its server, which listens at
 `http://localhost:1234/v1`. `social-deduction models http://localhost:1234/v1 --check`
@@ -190,8 +200,9 @@ The `models` command belongs to no game. It asks a provider, named by the
 root of its OpenAI-compatible API, for the models it serves and lists them,
 one id per line in sorted order. With `--check`, it asks each model listed
 to play as a player would, once as by night and once as by day, one model
-at a time, and marks with `*` those that answer both requests well and
-with `!` those that do not, with a line at the end saying so. Why each `!`
+at a time, and marks with `*` those that answer both requests well, with
+`~` those that answer them well only when asked to call a tool and not made
+to, and with `!` those that do not, with a line at the end saying so. Why each `!`
 model failed goes to standard error, so the listing stays readable: a line
 `! id` naming the model as the listing marks it, then the error's causes,
 each on its own indented line, so a provider's words may run to several

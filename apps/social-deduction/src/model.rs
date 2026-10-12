@@ -184,6 +184,17 @@ pub(crate) fn concerns_the_model(error: &anyhow::Error) -> bool {
     })
 }
 
+/// Whether `error`, from a completion, is the provider refusing the
+/// request as bad, 400: refusing its shape, such as a tool choice the
+/// model does not accept, whatever the provider's words for it.
+pub(crate) fn refused(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<Rejection>()
+            .is_some_and(|rejection| rejection.status == StatusCode::BAD_REQUEST)
+    })
+}
+
 /// A status that is not success, in words: the status, what it is likely
 /// to mean coming from a provider that was sent a key or not, and
 /// whatever the provider `said` about it. A provider's message comes as
