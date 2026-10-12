@@ -131,14 +131,15 @@ Every table may be left out, and a key the file does not know is an error.
   `[roles.seer]`: `count`, how many of the role sit at the table;
   `strategy`, the strategy every seat of the role plays; and
   `[roles.<role>.strategies]`, how many seats of the role play each
-  strategy, whose seats add up to the role's count.
+  strategy, whose seats add up to the role's count. A role takes
+  `strategy` or `strategies`, not both.
 - `strategy`, at the top of the file: the strategy every role plays that
   is not allotted otherwise.
 - `[text]`: named blocks of text for the templates to use, so that the rules
   are written once.
 
-A role is allotted by its `strategies` table if it has one, otherwise by
-its `strategy`, otherwise by the file's `strategy`, otherwise to `random`.
+A role is allotted by its `strategies` table or its `strategy`, otherwise
+by the file's `strategy`, otherwise to `random`.
 A count given on the command line or in the file that disagrees with a
 `strategies` table is an error naming the role and both numbers, and so is
 a strategy allotted that is not defined. A strategy defined and never
