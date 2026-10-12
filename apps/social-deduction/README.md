@@ -148,6 +148,35 @@ The key itself is never in the file. `api_key_env` may be left out for a
 provider whose variable is known, such as OpenAI's `OPENAI_API_KEY` and
 Anthropic's `ANTHROPIC_API_KEY`, and for a local server, which wants none.
 
+A game may play several models, each through the strategies that name it,
+so a stronger model can play a weaker one. Here the werewolves play a
+Claude model and everyone else a local Qwen model:
+
+```toml
+strategy = "local"
+
+[models.qwen]
+base_url = "http://localhost:1234/v1"
+id = "qwen2.5-7b-instruct"
+
+[models.claude]
+base_url = "https://api.anthropic.com/v1"
+id = "claude-sonnet-4-5"
+
+[strategies.local]
+policy = "prompted"
+model = "qwen"
+system = "You are {{ name }}, a {{ role }}."
+
+[strategies.smart]
+policy = "prompted"
+model = "claude"
+system = "You are {{ name }}, a {{ role }}."
+
+[roles.werewolf]
+strategy = "smart"
+```
+
 ### Prompts
 
 A prompted player's system prompt is rendered from its strategy's `system`,
@@ -221,8 +250,8 @@ text in the file should say that by day everyone may talk at any time.
 ### Before a game begins
 
 A model is in play when a prompted strategy that names it is dealt to a
-seat. Only the models in play are set up, and this version plays one model
-per game: more than one in play is an error naming them. A model the file
+seat. Only the models in play are set up, one at a time in name order,
+since a local server loads each model it is asked for. A model the file
 defines and no strategy at the table uses is not contacted, and its key
 need not be set. Each model in play is checked before any player is built,
 so a model that cannot play fails at launch, and the error names it. Its
@@ -233,7 +262,9 @@ in that phase, `select` by night and `speak`, `select` and `wait` by day.
 A model that does not answer both requests as a player must stops the
 program, and the error names the request that failed and says why in the
 provider's own words, such as a server that rejects the request or an
-answer that makes no tool call. Any model that passes can play.
+answer that makes no tool call. Any model that passes can play. Each model
+in play keeps its own client, tool choice and context window, and each
+prompted player asks its strategy's model with them.
 
 A model's context window, in tokens, is settled before the game begins:
 from `context_window` in its `[models.<name>]` table if given, otherwise

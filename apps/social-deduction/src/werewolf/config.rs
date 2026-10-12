@@ -462,22 +462,12 @@ impl Settings {
     }
 
     /// The models in play, by name: those a prompted strategy at the table
-    /// asks. More than one is an error naming them all, since this version
-    /// plays one model per game.
-    pub fn models_in_play(&self) -> anyhow::Result<BTreeMap<&str, &Model>> {
-        let in_play: BTreeMap<&str, &Model> = self
-            .at_the_table()
+    /// asks.
+    pub fn models_in_play(&self) -> BTreeMap<&str, &Model> {
+        self.at_the_table()
             .filter_map(|(_, strategy, _, _)| self.model_of(strategy))
             .map(|name| (name, &self.config.models[name]))
-            .collect();
-        if in_play.len() > 1 {
-            let names: Vec<&str> = in_play.keys().copied().collect();
-            bail!(
-                "this version plays one model per game; models in play: {}",
-                names.join(", ")
-            );
-        }
-        Ok(in_play)
+            .collect()
     }
 
     /// Render the system prompt of every seat for every (role, strategy)
@@ -597,7 +587,7 @@ impl Settings {
     pub async fn set_up(&self, prompts: &[SystemPrompt]) -> anyhow::Result<(Models, Handles)> {
         let mut models = Models::new();
         let mut handles = Handles::new();
-        for (name, model) in self.models_in_play()? {
+        for (name, model) in self.models_in_play() {
             let set_up = async {
                 let provider = model.provider()?;
                 let listed = provider.listed(&model.id).await?;
@@ -889,7 +879,7 @@ system = "{{ name }} the {{ role }}"
             settings.configuration(&deal, &[], Models::new()).unwrap()
         };
         assert_eq!(configured(&example), configured(&none));
-        assert!(example.models_in_play().unwrap().is_empty());
+        assert!(example.models_in_play().is_empty());
     }
 
     #[test]
@@ -1496,24 +1486,163 @@ system = \"Smart.\"
     }
 
     #[test]
-    fn a_model_is_in_play_when_a_strategy_at_the_table_asks_it_and_two_are_an_error_naming_both() {
+    fn a_model_is_in_play_when_a_strategy_at_the_table_asks_it() {
         let settings = settle(&two_models(""), Overrides::default());
-        let in_play: Vec<&str> = settings.models_in_play().unwrap().into_keys().collect();
+        let in_play: Vec<&str> = settings.models_in_play().into_keys().collect();
         assert_eq!(in_play, ["qwen"]);
         let both = settle(
             &two_models("[roles.seer]\nstrategy = \"smart\"\n"),
             Overrides::default(),
         );
-        assert_eq!(
-            format!("{:#}", both.models_in_play().unwrap_err()),
-            "this version plays one model per game; models in play: claude, qwen"
-        );
+        let in_play: Vec<&str> = both.models_in_play().into_keys().collect();
+        assert_eq!(in_play, ["claude", "qwen"]);
         // Allotted no seats, a strategy puts no model in play.
         let unseated = settle(
             &two_models("[roles.seer]\ncount = 0\nstrategy = \"smart\"\n"),
             Overrides::default(),
         );
-        assert_eq!(unseated.models_in_play().unwrap().len(), 1);
+        assert_eq!(unseated.models_in_play().len(), 1);
+    }
+
+    /// A file of three models: `claude` at `claude_url`, `qwen` at
+    /// `qwen_url` with a context window of 8192, and `idle`, whose key is
+    /// not set; the seer playing `smart`, asking `claude`, and everyone
+    /// else `plain`, asking `qwen`, so that `idle` is not in play.
+    fn three_models(claude_url: &str, qwen_url: &str) -> String {
+        two_models(
+            "[models.idle]
+base_url = \"https://api.openai.com/v1\"
+id = \"gpt-0\"
+api_key_env = \"SOCIAL_DEDUCTION_NO_SUCH_KEY\"
+[strategies.unused]
+policy = \"prompted\"
+model = \"idle\"
+system = \"Unused.\"
+[roles.seer]
+strategy = \"smart\"
+",
+        )
+        .replace("https://api.anthropic.com/v1", claude_url)
+        .replace(
+            "api_key_env = \"SOCIAL_DEDUCTION_NO_SUCH_KEY\"\n[strategies.smart]",
+            "[strategies.smart]",
+        )
+        .replace("http://localhost:1234/v1", qwen_url)
+        .replace(
+            "id = \"qwen2.5-7b-instruct\"",
+            "id = \"qwen2.5-7b-instruct\"\ncontext_window = 8192",
+        )
+    }
+
+    #[tokio::test]
+    async fn every_model_in_play_is_set_up_once_with_its_own_tool_choice_and_window() {
+        let claude_url = canned::refusing_required(&["claude-sonnet-4-5"]);
+        let (qwen_url, asked) = canned::recording(&["qwen2.5-7b-instruct"]);
+        let settings = settle(&three_models(&claude_url, &qwen_url), Overrides::default());
+        let prompts = settings.prompts().unwrap();
+        let (models, handles) = settings.set_up(&prompts).await.unwrap();
+        assert_eq!(
+            models,
+            Models::from([
+                (
+                    "claude".to_string(),
+                    ModelInPlay {
+                        base_url: claude_url,
+                        id: "claude-sonnet-4-5".to_string(),
+                        request_timeout: REQUEST_TIMEOUT,
+                        api_key_env: None,
+                        tool_choice: ToolChoice::Auto,
+                        context_window: ContextWindow {
+                            tokens: CONTEXT_WINDOW,
+                            source: Source::Default,
+                        },
+                    }
+                ),
+                (
+                    "qwen".to_string(),
+                    ModelInPlay {
+                        base_url: qwen_url,
+                        id: "qwen2.5-7b-instruct".to_string(),
+                        request_timeout: REQUEST_TIMEOUT,
+                        api_key_env: None,
+                        tool_choice: ToolChoice::Required,
+                        context_window: ContextWindow {
+                            tokens: 8192,
+                            source: Source::File,
+                        },
+                    }
+                ),
+            ])
+        );
+        assert_eq!(handles.keys().collect::<Vec<_>>(), ["claude", "qwen"]);
+        // Probed once: asked as by night and as by day, each a request
+        // made to call a tool.
+        let asked = asked.lock().unwrap();
+        let offered: Vec<usize> = asked
+            .iter()
+            .map(|request| request["tools"].as_array().unwrap().len())
+            .collect();
+        assert_eq!(offered, [1, 3]);
+        assert!(
+            asked
+                .iter()
+                .all(|request| request["tool_choice"] == "required")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_second_model_that_cannot_be_set_up_is_an_error_naming_it() {
+        let claude_url = playing(&["claude-sonnet-4-5"]);
+        let qwen_url = canned::refusing(&["qwen2.5-7b-instruct"]);
+        let settings = settle(&three_models(&claude_url, &qwen_url), Overrides::default());
+        let error = settings
+            .set_up(&settings.prompts().unwrap())
+            .await
+            .err()
+            .unwrap();
+        let shown = format!("{error:#}");
+        assert!(
+            shown.starts_with(
+                "setting up the model qwen: qwen2.5-7b-instruct did not answer a night's request"
+            ),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn each_model_s_window_is_checked_against_the_strategies_asking_it_alone() {
+        let settings = settle(
+            &two_models("[roles.seer]\nstrategy = \"smart\"\n"),
+            Overrides::default(),
+        );
+        // A long prompt for every seat as the seer, playing `smart`.
+        let mut prompts = settings.prompts().unwrap();
+        for prompt in &mut prompts {
+            if prompt.strategy == "smart" {
+                prompt.text = "x".repeat(12000);
+            }
+        }
+        let plain = settings.unstoried("qwen", &prompts).unwrap();
+        let smart = settings.unstoried("claude", &prompts).unwrap();
+        assert!(smart > plain + 2900, "{smart} {plain}");
+        assert_eq!(
+            settings
+                .context_window("qwen", Some(plain), &prompts)
+                .unwrap(),
+            ContextWindow {
+                tokens: plain,
+                source: Source::Provider,
+            }
+        );
+        let error = settings
+            .context_window("claude", Some(plain), &prompts)
+            .unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            format!(
+                "the context window the provider reports for claude is {plain} tokens, smaller than the {smart} a request takes before its story, by estimate; context_window in [models.claude] gives the window"
+            )
+        );
     }
 
     #[tokio::test]
@@ -1942,6 +2071,53 @@ count = 1
         assert_eq!(back, entry);
     }
 
+    /// The second model in play the configuration tests record, asked to
+    /// call a tool, with the default window.
+    fn claude() -> ModelInPlay {
+        ModelInPlay {
+            base_url: "https://api.anthropic.com/v1".to_string(),
+            id: "claude-sonnet-4-5".to_string(),
+            api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
+            tool_choice: ToolChoice::Auto,
+            context_window: ContextWindow {
+                tokens: CONTEXT_WINDOW,
+                source: Source::Default,
+            },
+            ..qwen()
+        }
+    }
+
+    #[test]
+    fn a_configuration_of_two_models_survives_a_trip_through_json_and_is_told_model_by_model() {
+        let settings = settle(&configured(), Overrides::default());
+        let models = Models::from([
+            ("claude".to_string(), claude()),
+            ("qwen".to_string(), qwen()),
+        ]);
+        let configuration = settings
+            .configuration(&dealt(), &settings.prompts().unwrap(), models)
+            .unwrap();
+        let entry = Entry::Configuration(Box::new(configuration));
+        let json = serde_json::to_value(&entry).unwrap();
+        let names: Vec<&String> = json["Configuration"]["models"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect();
+        assert_eq!(names, ["claude", "qwen"]);
+        let back: Entry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, entry);
+        assert_eq!(
+            Narrator::default().narrate(&logged(entry)),
+            [
+                "claude's context window is 4096 tokens, the default.",
+                "claude does not accept a required tool call, \
+                 so its players are asked to call one.",
+                "qwen's context window is 8192 tokens, as the configuration file says.",
+            ]
+        );
+    }
+
     #[test]
     fn the_configuration_names_the_key_s_variable_and_never_holds_the_key() {
         // A variable Cargo sets for every test, since setting one is unsafe.
@@ -1965,6 +2141,82 @@ count = 1
         );
         assert!(shown.contains(name), "{shown}");
         assert!(!shown.contains(&value), "{shown}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn each_prompted_player_asks_its_strategy_s_model_with_that_model_s_id_tool_choice_and_window()
+     {
+        // The werewolves play `plain`, asking `qwen`, and the villagers
+        // `smart`, asking `claude`.
+        let file = two_models(
+            "[roles.werewolf]
+strategy = \"plain\"
+[roles.villager]
+strategy = \"smart\"
+count = 5
+[roles.doctor]
+count = 0
+[roles.seer]
+count = 0
+",
+        )
+        .replace("Smart.", "Smart {{ name }}.");
+        let settings = settle(&file, Overrides::default());
+        let deal = settings.deal();
+        let prompts = settings.prompts().unwrap();
+        let models = Models::from([
+            ("claude".to_string(), claude()),
+            ("qwen".to_string(), qwen()),
+        ]);
+        let configuration = settings.configuration(&deal, &prompts, models).unwrap();
+        let fakes = [
+            ("claude", Arc::new(FakeModel::answering(choosing_first))),
+            ("qwen", Arc::new(FakeModel::answering(choosing_first))),
+        ];
+        let handles: Handles = fakes
+            .iter()
+            .map(|(name, fake)| (name.to_string(), Arc::clone(fake) as Arc<dyn model::Model>))
+            .collect();
+        let players = players(&configuration, &deal, &handles);
+        let (winner, won) = oneshot::channel();
+        let (logger, log) = unbounded_channel();
+        let rules = settings.rules();
+        let roles: HashMap<PlayerId, Role> = deal
+            .iter()
+            .map(|(seat, dealt)| (seat.clone(), dealt.role))
+            .collect();
+        let episode = game(
+            deal.clone(),
+            settings.rules(),
+            configuration.clone(),
+            winner,
+            players,
+            logger,
+        );
+        let (winner, entries, _) = run(episode, won, log).await.unwrap();
+        between_the_deal_and_the_end(&entries, &rules, &roles, winner);
+        // Each model was asked by its strategy's players alone, with its own
+        // id and tool choice, and within its own window.
+        for (name, fake) in &fakes {
+            let model = &configuration.models[*name];
+            let requests = fake.requests();
+            assert!(!requests.is_empty(), "{name}");
+            for request in requests {
+                assert_eq!(request.model, model.id, "{name}");
+                assert_eq!(request.tool_choice, model.tool_choice, "{name}");
+                assert!(
+                    model::estimated(&request) <= model.context_window.tokens,
+                    "{name}"
+                );
+                let system = &request.messages[0].content;
+                let (seat, _) = configuration
+                    .prompts
+                    .iter()
+                    .find(|(_, prompt)| *prompt == system)
+                    .unwrap();
+                assert_eq!(settings.model_of(&deal[seat].strategy), Some(*name));
+            }
+        }
     }
 
     #[tokio::test(start_paused = true)]
