@@ -8,15 +8,14 @@
 //! player and its number for the message. A player's memory holds the
 //! messages themselves, and its account reads them.
 
-use super::config::{ContextWindow, Source};
 use super::prompted::Memory;
-use super::{
-    ENVIRONMENT, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Team, View, awake, ratified,
-};
+use super::{Ending, Entry, Hunt, Message, Phase, Role, Team, View, awake, ratified};
+use crate::model::window::{ContextWindow, Source};
 use crate::model::{ToolChoice, tokens};
+use crate::report::{in_order, seat_order, whole_seconds};
+use crate::seat::{ENVIRONMENT, PlayerId};
 use free_agent::{ActorId, Event};
 use humantime::format_duration;
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::{self, Write as _};
 use std::num::NonZero;
@@ -892,13 +891,6 @@ fn title((round, phase): &(NonZero<u8>, Phase)) -> String {
     }
 }
 
-/// `elapsed` to the nearest whole second, as `humantime` writes it: `40s`,
-/// `1m 5s`.
-fn whole_seconds(elapsed: Duration) -> String {
-    let seconds = elapsed.as_secs_f64().round() as u64;
-    format_duration(Duration::from_secs(seconds)).to_string()
-}
-
 /// Where a phase falls in the game, so that consecutive phases are one
 /// apart.
 fn ordinal((round, phase): &(NonZero<u8>, Phase)) -> u16 {
@@ -907,27 +899,6 @@ fn ordinal((round, phase): &(NonZero<u8>, Phase)) -> u16 {
         Phase::Day => 1,
     };
     u16::from(round.get()) * 2 + half
-}
-
-/// `players` in seat order.
-fn in_order<'a>(players: impl IntoIterator<Item = &'a PlayerId>) -> Vec<&'a PlayerId> {
-    let mut players: Vec<&PlayerId> = players.into_iter().collect();
-    players.sort_unstable_by(|a, b| seat_order(a, b));
-    players
-}
-
-/// Seat order: by the number a name ends in, so that `player2` comes
-/// before `player10`, and by the name where that does not tell.
-pub fn seat_order(a: &PlayerId, b: &PlayerId) -> Ordering {
-    (numbered(a), a).cmp(&(numbered(b), b))
-}
-
-/// `name` as what comes before its number and the number, when it ends in
-/// one.
-fn numbered(name: &str) -> (&str, Option<u64>) {
-    let prefix = name.trim_end_matches(|c: char| c.is_ascii_digit());
-    let number = name[prefix.len()..].parse().ok();
-    (prefix, number)
 }
 
 /// Seats as a list in prose, in the order given.
@@ -941,11 +912,14 @@ mod tests {
     use super::*;
 
     use crate::model::estimate;
-    use crate::werewolf::config::{Configuration, ModelInPlay, RANDOM, Random, Strategy};
+    use crate::model::spec::ModelInPlay;
+    use crate::seat::to_the_environment;
+    use crate::strategy::{RANDOM, Random, Strategy};
+    use crate::werewolf::config::Configuration;
     use crate::werewolf::tests::{
         announcement, logged, received, retraction, selection, tentative, utterance,
     };
-    use crate::werewolf::{Dealt, ENVIRONMENT, Rules, to_the_environment};
+    use crate::werewolf::{Dealt, Rules};
     use std::collections::BTreeMap;
     use std::time::{Duration, UNIX_EPOCH};
 

@@ -1,6 +1,6 @@
 # ADR-0010: Avalon is a second game, built by copying Werewolf
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-12
 **Deciders:** Bill McNeill
 **Depends on:** [ADR-0001](0001-games-and-variants-are-modules-and-subcommands.md),
