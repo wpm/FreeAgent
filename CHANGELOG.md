@@ -22,14 +22,16 @@ workflow takes a version's notes from here.
   to call one instead.
 - The model's context window, settled before a `werewolf llm` game begins
   from `--context-window`, `context_window` in `[model]`, the provider's
-  listing of the model, or a default of 4096 tokens, and told and logged
-  with where it came from.
-- A model player's request fits the context window: every request asks
-  for a reply of at most 1024 tokens, and when the story would not fit
-  beside the rest, by estimate, the player forgets talk, oldest first, and
-  is told "You don't remember what was said before this." The log's action
-  and withheld entries carry `forgot`, how many lines of talk were left
-  out, when any were.
+  listing of the model, the provider's default in `src/models.toml`
+  (128000 tokens for OpenAI, 200000 for Anthropic), or a default of 4096
+  tokens, and told and logged with where it came from. A window with no
+  room for a story is refused.
+- A model player's request fits the context window: the window keeps 1024
+  tokens for the reply, and when the story would not fit beside the rest,
+  by estimate, the player forgets talk, oldest first, and is told "You
+  don't remember what was said before this." The log's action and withheld
+  entries carry `forgot`, how many lines of talk were left out, when any
+  were.
 - `social-deduction models`, which lists the models a provider serves.
   `--check` asks each model to play as by night and as by day and marks
   those that answer both requests well, and those that do only when not

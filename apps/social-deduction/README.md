@@ -180,15 +180,22 @@ answer that makes no tool call. Any model that passes can play.
 The model's context window, in tokens, is settled before the game begins:
 from `--context-window` if given, otherwise from `context_window` in
 `[model]`, otherwise from the provider's listing of the model, otherwise
-4096 tokens, a size most models can run in. The listing gives it when the
-model's entry carries one of the fields named in `src/models.toml`, such as
-vLLM's `max_model_len` or OpenRouter's `context_length`, holding a positive
-whole number. A window of 0 stops the program. The account tells the window
-and where it came from, and the configuration in the log records both.
+from the provider's default in `src/models.toml`, otherwise 4096 tokens, a
+size most models can run in. The listing gives it when the model's entry
+carries one of the fields named in `src/models.toml`, such as vLLM's
+`max_model_len` or OpenRouter's `context_length`, holding a positive whole
+number. The provider's default covers a listing that carries none, as
+OpenAI's and Anthropic's do: 128000 tokens for OpenAI and 200000 for
+Anthropic. A window of 0 stops the program, and so does one with no room
+for a story: smaller than the reply, the longest system prompt, the day's
+tools and a situation, by estimate. The account tells the window and where
+it came from, and the configuration in the log records both.
 
-Each request fits the context window. Every request, the check's
-included, asks for a reply of at most 1024 tokens, and the rest is counted
-by estimate, a token for every 3.5 characters, rounded up. When a player's
+Each request fits the context window. The window keeps 1024 tokens for the
+reply, which the request leaves to the provider's default length, and the
+rest is counted by estimate: a token for every 3 characters, rounded up,
+and an allowance for the chat template around each message and each tool.
+When a player's
 whole story would not fit beside its prompt, the tools, where the game
 stands and the reply, the player forgets talk, its own and others', oldest
 first, until it does, and "You don't remember what was said before this."

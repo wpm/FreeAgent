@@ -6,8 +6,7 @@
 use clap::{Args, Parser, Subcommand};
 use free_agent::{Behavior, Episode, Logger};
 use social_deduction::model::{
-    Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, check_listed, key_variable,
-    known_providers,
+    Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
 };
 use social_deduction::werewolf::llm::{self, Config, Probed};
 use social_deduction::werewolf::report::Narrator;
@@ -125,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
             let provider = model.provider()?;
             let prompts = settings.prompts()?;
             let listed = provider.listed(&model.id).await?;
-            let context_window = settings.context_window(listed.context_window);
+            let context_window = settings.context_window(listed.context_window, &prompts)?;
             let tool_choice = match llm::check_plays(&provider, &model.id).await? {
                 Probed::Played(tool_choice) => tool_choice,
                 Probed::DidNotPlay(error) => return Err(error),
@@ -154,13 +153,14 @@ async fn main() -> anyhow::Result<()> {
             let variable = key_variable(&base_url, api_key_env.as_deref());
             let api_key = variable.map(api_key).transpose()?;
             let provider = Provider::new(&base_url, api_key, REQUEST_TIMEOUT)?;
-            let mut ids = provider.models().await?;
+            let listed = provider.listing().await?;
+            let mut ids: Vec<String> = listed.iter().map(|model| model.id.clone()).collect();
             ids.sort();
             let models = match check {
                 None => ids.into_iter().map(|id| (id, None)).collect(),
                 Some(check) => {
                     for id in &check {
-                        check_listed(&base_url, &ids, id)?;
+                        served(&base_url, &listed, id)?;
                     }
                     checked(&provider, ids, &check, &mut io::stderr()).await?
                 }

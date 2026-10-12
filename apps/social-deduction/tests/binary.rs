@@ -373,7 +373,7 @@ fn the_context_window_the_provider_reports_is_used_unless_the_command_line_gives
 }
 
 /// A context window the default table's later requests do not fit whole.
-const SMALL_WINDOW: &str = "1500";
+const SMALL_WINDOW: &str = "1800";
 
 #[test]
 fn in_a_small_context_window_the_players_forget_old_talk_and_play_to_the_end() {
@@ -404,6 +404,17 @@ fn in_a_small_context_window_the_players_forget_old_talk_and_play_to_the_end() {
         .collect();
     assert_eq!(forgot[0], None);
     assert!(forgot.iter().any(Option::is_some), "{forgot:?}");
+}
+
+#[test]
+fn a_context_window_with_no_room_for_a_story_is_refused_before_anything_is_printed() {
+    let base_url = playing(&[EXAMPLE_MODEL]);
+    let config = configured("window-small", "minimal.toml", &base_url, EXAMPLE_MODEL);
+    let stderr = refused(&["werewolf", "llm", &config, "--context-window", "1500"]);
+    assert!(
+        stderr.contains("--context-window is 1500 tokens, smaller than the"),
+        "{stderr}"
+    );
 }
 
 #[test]

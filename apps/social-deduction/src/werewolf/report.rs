@@ -790,6 +790,7 @@ fn context_window(ContextWindow { tokens, source }: ContextWindow) -> String {
         Source::CommandLine => "as the command line says",
         Source::File => "as the configuration file says",
         Source::Provider => "as the provider reports",
+        Source::ProviderDefault => "the provider's default",
         Source::Default => "the default",
     };
     format!("The model's context window is {tokens} tokens, {source}.")
@@ -2634,6 +2635,10 @@ mod tests {
         assert_eq!(
             told(32768, Source::Provider),
             "The model's context window is 32768 tokens, as the provider reports."
+        );
+        assert_eq!(
+            told(128000, Source::ProviderDefault),
+            "The model's context window is 128000 tokens, the provider's default."
         );
         assert_eq!(
             told(8192, Source::File),
