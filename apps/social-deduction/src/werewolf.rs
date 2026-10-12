@@ -1,5 +1,5 @@
-//! What every variant of Werewolf shares: the rules and the types they are
-//! written in.
+//! Werewolf: the rules, the types they are written in, the one kind of
+//! actor every game holds, and the function that builds every game.
 //!
 //! A game is an episode of [free agents](free_agent): the rules in one
 //! actor, the environment, and a player in each of the others. The
@@ -22,15 +22,18 @@
 //! receives, each night's hunt, and the result; every player logs what it
 //! receives and the selections and utterances it sends.
 //!
-//! Each variant's module holds what is particular to it: its environment,
-//! its players, the actor enum its episode holds, and the function that
-//! builds its episode.
+//! The environment is [`announced`]'s, and each of an episode's players
+//! follows a policy: a [`random`] player selects at random, and a
+//! [`prompted`] player asks a language model. An episode holds one kind of
+//! actor, [`Actor`], which is the environment or a player of either policy,
+//! and [`game`] builds every episode, with each seat's player built for it.
 
 pub mod announced;
-pub mod llm;
+pub mod prompted;
+pub mod random;
 pub mod report;
-pub mod uniform_random;
 
+use async_trait::async_trait;
 use clap::Args;
 use free_agent::{ActorId, ActorInit, Behavior, Builder, Context, Episode, Logger, ThinkBuilder};
 use rand::seq::{IndexedRandom, SliceRandom};
@@ -39,6 +42,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::num::NonZero;
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 /// A player is an actor, named as the episode names it.
 pub type PlayerId = ActorId;
@@ -46,35 +50,28 @@ pub type PlayerId = ActorId;
 /// The environment's name in the episode.
 pub const ENVIRONMENT: &str = "environment";
 
-/// An episode of a game: `environment`, which runs it, and a player for
-/// each of `players` built by `player`. Everyone holds `logger`. A player
-/// may send to the environment alone, stops nobody, and does not think.
-pub fn episode<A>(
-    environment: ActorInit<A>,
-    players: impl IntoIterator<Item = PlayerId>,
-    mut player: impl FnMut(&PlayerId) -> Builder<A>,
-    logger: Logger<Entry>,
-) -> Episode<A>
-where
-    A: Behavior<Message = Message, Log = Entry>,
-{
-    thinking_episode(environment, players, |id| (player(id), None), logger)
-}
+/// How a seat is built: its player's behavior, and its think loop if it
+/// has one.
+pub type Seat = (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>);
 
-/// The episode of [`episode`], whose players may think: `player` builds
-/// each player's behavior and its think loop, if it has one. Everyone
-/// holds `logger`. A player may send to the environment and to every other
-/// player, and stops nobody.
-pub fn thinking_episode<A>(
-    environment: ActorInit<A>,
-    players: impl IntoIterator<Item = PlayerId>,
-    mut player: impl FnMut(&PlayerId) -> (Builder<A>, Option<ThinkBuilder<Message, Entry>>),
+/// An episode of a game of `roles` under `rules`: the announcing
+/// environment, which may reach and stop every player, logs
+/// `configuration`, if there is one, right after the deal, and sends the
+/// winning team on `winner` when the game ends; and in each seat the
+/// player `player` builds for it. Everyone holds `logger`. A player may
+/// send to the environment and to every other player, and stops nobody.
+pub fn game(
+    roles: HashMap<PlayerId, Role>,
+    rules: Rules,
+    configuration: Option<prompted::Configuration>,
+    winner: oneshot::Sender<Team>,
+    mut player: impl FnMut(&PlayerId) -> Seat,
     logger: Logger<Entry>,
-) -> Episode<A>
-where
-    A: Behavior<Message = Message, Log = Entry>,
-{
-    let players: Vec<PlayerId> = players.into_iter().collect();
+) -> Episode<Actor> {
+    let players: Vec<PlayerId> = roles.keys().cloned().collect();
+    let configuration =
+        configuration.map(|configuration| Entry::Configuration(Box::new(configuration)));
+    let environment = announced::init(roles, rules, configuration, winner, Actor::Environment);
     let mut init = HashMap::from([(ENVIRONMENT.to_string(), environment)]);
     for id in &players {
         let (behavior, think) = player(id);
@@ -90,6 +87,57 @@ where
         );
     }
     Episode::new(init, logger)
+}
+
+/// What an actor in a game of Werewolf does: run it, or play in it by
+/// one of the policies. An episode holds one kind of actor, so every side
+/// meets here and each method goes to whichever side this is.
+pub enum Actor {
+    /// The side that holds the game.
+    Environment(announced::Environment),
+    /// A player who selects at random.
+    Random(random::Player),
+    /// A player whose decisions a language model makes.
+    Prompted(prompted::Player),
+    /// A player who says whatever its script says.
+    #[cfg(test)]
+    Puppet(tests::Puppet),
+}
+
+#[async_trait]
+impl Behavior for Actor {
+    type Message = Message;
+    type Log = Entry;
+
+    fn context(&self) -> &Context<Message, Entry> {
+        match self {
+            Actor::Environment(environment) => environment.context(),
+            Actor::Random(player) => player.context(),
+            Actor::Prompted(player) => player.context(),
+            #[cfg(test)]
+            Actor::Puppet(puppet) => puppet.context(),
+        }
+    }
+
+    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.receive(message).await,
+            Actor::Random(player) => player.receive(message).await,
+            Actor::Prompted(player) => player.receive(message).await,
+            #[cfg(test)]
+            Actor::Puppet(puppet) => puppet.receive(message).await,
+        }
+    }
+
+    async fn start(&mut self) -> anyhow::Result<()> {
+        match self {
+            Actor::Environment(environment) => environment.start().await,
+            Actor::Random(player) => player.start().await,
+            Actor::Prompted(player) => player.start().await,
+            #[cfg(test)]
+            Actor::Puppet(puppet) => puppet.start().await,
+        }
+    }
 }
 
 /// What the awake players chose in a phase: each player's choice of another.
@@ -805,7 +853,7 @@ pub enum Entry {
     },
     /// The configuration a model-played game ran under, logged right after
     /// the deal.
-    Configuration(Box<llm::Configuration>),
+    Configuration(Box<prompted::Configuration>),
     /// `from` sent `message`, which it numbered `n`, to everyone in `to`.
     /// Logged by the sender.
     Action {
@@ -819,7 +867,7 @@ pub enum Entry {
         message: Message,
         /// How many history entries the model was shown when it made the
         /// call that produced the message, and `None` for a message no
-        /// model made: the environment's, or a uniform-random player's.
+        /// model made: the environment's, or a random player's.
         seen: Option<usize>,
         /// How many lines of talk the call that produced the message left
         /// out to fit the context window, `None` when it left out none.
@@ -1010,12 +1058,14 @@ pub fn awake(me: &PlayerId, view: &View) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::llm::Memory;
+pub(crate) mod tests {
+    use super::prompted::Memory;
     use super::*;
-    use free_agent::Event;
-    use tokio::sync::mpsc::UnboundedReceiver;
-    use tokio::sync::oneshot;
+    use crate::model::fake::{FakeModel, choosing_first};
+    use crate::model::{CONTEXT_WINDOW, Model, ToolChoice};
+    use free_agent::{Event, Think};
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
     use tokio::time::Instant;
 
     #[test]
@@ -1454,6 +1504,176 @@ mod tests {
             logged.push(event.payload);
         }
         Ok((won.await?, logged, took))
+    }
+
+    /// What a puppet says to the environment on being announced a phase,
+    /// given its own name, the phase's number, and what it may see: each
+    /// message, and how long after the announcement it says it. A
+    /// selection carries the number the script gives it.
+    pub(super) type Script = Box<dyn Fn(&PlayerId, u64, &View) -> Vec<(Duration, Message)> + Send>;
+
+    /// `messages`, each said as soon as the phase is announced.
+    pub(super) fn at_once(messages: Vec<Message>) -> Vec<(Duration, Message)> {
+        messages
+            .into_iter()
+            .map(|message| (Duration::ZERO, message))
+            .collect()
+    }
+
+    /// The latest phase a puppet was announced: its number and what the
+    /// puppet saw of it.
+    type Announced = Arc<Mutex<Option<(u64, View)>>>;
+
+    /// A player who says whatever its script says, when the script says
+    /// to, for a game with a player who is late, stale, repeats itself,
+    /// changes its mind, or talks. Its script is consulted for each phase
+    /// it is awake in; announced a phase it sleeps through, it notes the
+    /// phase and says nothing. A message goes where the game's rules send
+    /// it from a player: an utterance, or a tentative decision the puppet
+    /// makes as if it were the environment, to every other player alive at
+    /// the latest announcement; a selection to the environment, and by day
+    /// to the other players too; anything else to the environment. It logs
+    /// each message it sends as its action and each message it receives as
+    /// its observation, in the latest phase announced, and does nothing
+    /// else with what it hears, whatever phase it is tagged with. What it
+    /// says later is said by its think loop, a [`Cue`].
+    pub struct Puppet {
+        context: Context<Message, Entry>,
+        script: Script,
+        /// The latest phase announced, shared with the cue.
+        announced: Announced,
+    }
+
+    #[async_trait]
+    impl Behavior for Puppet {
+        type Message = Message;
+        type Log = Entry;
+
+        fn context(&self) -> &Context<Message, Entry> {
+            &self.context
+        }
+
+        async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
+            let Some(n) = message.number() else {
+                return Ok(());
+            };
+            let Message::Announce { seq, view, .. } = message else {
+                let seq = self
+                    .announced
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map_or(0, |(seq, _)| *seq);
+                observe(&self.context, message.sender(), n, seq);
+                return Ok(());
+            };
+            *self.announced.lock().unwrap() = Some((*seq, view.clone()));
+            observe(&self.context, ENVIRONMENT.to_string(), n, *seq);
+            if !awake(&self.context.id, view) {
+                return Ok(());
+            }
+            for (after, said) in (self.script)(&self.context.id, *seq, view) {
+                if after.is_zero() {
+                    say(&self.context, said, &self.announced)?;
+                } else {
+                    self.context.think_after(after, said)?;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// Send `message` from the puppet of `context`, which was announced
+    /// `announced` last, to whom the game's rules send it from a player.
+    fn say(
+        context: &Context<Message, Entry>,
+        message: Message,
+        announced: &Announced,
+    ) -> anyhow::Result<()> {
+        let announced = announced.lock().unwrap();
+        let (_, view) = announced
+            .as_ref()
+            .expect("a puppet speaks only once announced");
+        let me = &context.id;
+        let to = match (&message, &view.phase) {
+            (Message::Say { .. } | Message::Tentative { .. }, _) => {
+                to_the_players_but(me, &view.alive)
+            }
+            (Message::Select { .. }, Phase::Day) => to_everyone_but(me, &view.alive),
+            _ => to_the_environment(),
+        };
+        act(context, message, to, None, None)
+    }
+
+    /// A puppet's think loop: says each message it is reminded of when the
+    /// time comes.
+    struct Cue {
+        context: Context<Message, Entry>,
+        announced: Announced,
+    }
+
+    #[async_trait]
+    impl Think for Cue {
+        type Message = Message;
+
+        async fn think(&mut self, message: &Message) -> anyhow::Result<()> {
+            say(&self.context, message.clone(), &self.announced)
+        }
+    }
+
+    impl Actor {
+        /// A puppet following `script`.
+        pub(super) fn puppet(script: Script) -> Seat {
+            let announced = Announced::default();
+            let shared = Arc::clone(&announced);
+            let behavior: Builder<Actor> = Box::new(move |context| {
+                Actor::Puppet(Puppet {
+                    context,
+                    script,
+                    announced,
+                })
+            });
+            let think: ThinkBuilder<Message, Entry> = Box::new(move |context| {
+                Box::new(Cue {
+                    context,
+                    announced: shared,
+                })
+            });
+            (behavior, Some(think))
+        }
+    }
+
+    /// A player who never selects.
+    pub(super) fn mute() -> Seat {
+        Actor::puppet(Box::new(|_, _, _| vec![]))
+    }
+
+    /// Run a game of `roles` under `rules`, each player choosing at random
+    /// except those in `puppets`, who follow their own scripts.
+    pub(super) async fn play(
+        roles: HashMap<PlayerId, Role>,
+        rules: Rules,
+        mut puppets: HashMap<&str, Seat>,
+    ) -> anyhow::Result<Played> {
+        let (winner, won) = oneshot::channel();
+        let (logger, log) = unbounded_channel();
+        let player = |id: &PlayerId| {
+            puppets
+                .remove(id.as_str())
+                .unwrap_or_else(random::Player::init)
+        };
+        let episode = game(roles, rules, None, winner, player, logger);
+        run(episode, won, log).await
+    }
+
+    /// Short limits, so a phase that waits them out is told apart from
+    /// one that does not.
+    pub(super) fn quick() -> Rules {
+        Rules {
+            night_limit: Duration::from_secs(10),
+            day_limit: Duration::from_secs(10),
+            ..Rules::default()
+        }
     }
 
     /// `payload`, an entry or a memory, as an event logged or remembered
@@ -1941,5 +2161,69 @@ mod tests {
         ));
         assert!(!awake(&villager, &seen(&["wolf1", "villager"], &[])));
         assert!(awake(&villager, &seen_by_day(&["wolf1", "villager"], &[])));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_table_may_seat_random_and_prompted_players_together() {
+        // A werewolf and two villagers of each policy, the prompted players
+        // asking one model, which answers as the canned player does.
+        let roles = HashMap::from([
+            ("wolf1".to_string(), Role::Werewolf),
+            ("wolf2".to_string(), Role::Werewolf),
+            ("ann".to_string(), Role::Villager),
+            ("bob".to_string(), Role::Villager),
+            ("cat".to_string(), Role::Villager),
+            ("dan".to_string(), Role::Villager),
+        ]);
+        let prompted = HashSet::from(["wolf2", "cat", "dan"]);
+        let model: Arc<dyn Model> = Arc::new(FakeModel::answering(choosing_first));
+        let player = |id: &PlayerId| {
+            if prompted.contains(id.as_str()) {
+                prompted::Player::init(
+                    id.clone(),
+                    format!("You are {id}."),
+                    "qwen2.5-7b-instruct".to_string(),
+                    ToolChoice::Required,
+                    CONTEXT_WINDOW,
+                    Arc::clone(&model),
+                )
+            } else {
+                random::Player::init()
+            }
+        };
+        let (winner, won) = oneshot::channel();
+        let (logger, log) = unbounded_channel();
+        let episode = game(roles.clone(), quick(), None, winner, player, logger);
+        let (winner, logged, _) = run(episode, won, log).await.unwrap();
+        between_the_deal_and_the_end(&logged, &quick(), &roles, winner);
+        // Each selection is made as its player's policy makes it: a random
+        // player's with no model to have been shown anything, a prompted
+        // player's by a model shown its memories. Both werewolves hunt the
+        // first night, and everyone left alive votes the first day.
+        let mut selected: HashSet<&PlayerId> = HashSet::new();
+        let mut first_victim = None;
+        for entry in &logged {
+            if let Entry::Action {
+                from,
+                message: Message::Select { .. },
+                seen,
+                ..
+            } = entry
+            {
+                assert_eq!(seen.is_some(), prompted.contains(from.as_str()), "{from}");
+                selected.insert(from);
+            }
+            if let Entry::Hunted { seq: 1, hunt } = entry {
+                first_victim = hunt.dead();
+            }
+        }
+        let survived_the_first_night: HashSet<&PlayerId> = roles
+            .keys()
+            .filter(|player| Some(*player) != first_victim)
+            .collect();
+        assert!(
+            selected.is_superset(&survived_the_first_night),
+            "{logged:?}"
+        );
     }
 }

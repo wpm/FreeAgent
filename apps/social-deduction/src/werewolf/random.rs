@@ -1,94 +1,16 @@
-//! The uniform-random variant: the announcing environment, played by
-//! players who answer each announcement of a phase they are awake in at
-//! once with a selection made at random, and sleep through the rest. A
-//! player logs an [`Entry::Observation`] for each message it receives, in
+//! The random policy: a player who answers each announcement of a phase it
+//! is awake in at once with a selection made at random, and sleeps through
+//! the rest. A player logs an [`Entry::Observation`] for each message it receives, in
 //! the latest phase it was announced, and an [`Entry::Action`] for each
 //! selection it sends, numbering its selections from 1; no model made them,
 //! so `seen` is `None`.
 
-use super::announced::{self, Environment};
 use super::{
-    Entry, Message, PlayerId, Role, Rules, Team, View, act, awake, candidates, observe, receivers,
+    Actor, Entry, Message, PlayerId, Seat, View, act, awake, candidates, observe, receivers,
 };
 use async_trait::async_trait;
-use free_agent::{Behavior, Builder, Context, Episode, Logger};
+use free_agent::{Behavior, Builder, Context};
 use rand::seq::IteratorRandom;
-use std::collections::HashMap;
-use tokio::sync::oneshot;
-
-/// An episode of a game of `roles` under `rules`: the announcing
-/// environment, which may reach and stop every player and holds `logger`,
-/// and a random player for each role. The winning team is sent on `winner`
-/// when the game ends.
-pub fn game(
-    roles: HashMap<PlayerId, Role>,
-    rules: Rules,
-    winner: oneshot::Sender<Team>,
-    logger: Logger<Entry>,
-) -> Episode<Actor> {
-    let players: Vec<PlayerId> = roles.keys().cloned().collect();
-    let environment = announced::init(roles, rules, None, winner, Actor::Environment);
-    super::episode(environment, players, |_| Actor::player(), logger)
-}
-
-/// What an actor in the game does: run it, or play in it. An episode holds
-/// one kind of actor, so the two sides meet here and each method goes to
-/// whichever side this is.
-pub enum Actor {
-    /// The side that holds the game.
-    Environment(Environment),
-    /// A side that sees only what it is shown.
-    Player(Player),
-    /// A player who says whatever its script says.
-    #[cfg(test)]
-    Puppet(tests::Puppet),
-}
-
-impl Actor {
-    /// Builds a player once the episode has made its context.
-    pub fn player() -> Builder<Self> {
-        Box::new(|context| {
-            Actor::Player(Player {
-                context,
-                n: 0,
-                seq: 0,
-            })
-        })
-    }
-}
-
-#[async_trait]
-impl Behavior for Actor {
-    type Message = Message;
-    type Log = Entry;
-
-    fn context(&self) -> &Context<Message, Entry> {
-        match self {
-            Actor::Environment(environment) => environment.context(),
-            Actor::Player(player) => player.context(),
-            #[cfg(test)]
-            Actor::Puppet(puppet) => puppet.context(),
-        }
-    }
-
-    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        match self {
-            Actor::Environment(environment) => environment.receive(message).await,
-            Actor::Player(player) => player.receive(message).await,
-            #[cfg(test)]
-            Actor::Puppet(puppet) => puppet.receive(message).await,
-        }
-    }
-
-    async fn start(&mut self) -> anyhow::Result<()> {
-        match self {
-            Actor::Environment(environment) => environment.start().await,
-            Actor::Player(player) => player.start().await,
-            #[cfg(test)]
-            Actor::Puppet(puppet) => puppet.start().await,
-        }
-    }
-}
 
 /// A player who answers each announcement of a phase it is [`awake`] in at
 /// once, selecting one of its [`candidates`] uniformly at random, and does
@@ -102,6 +24,21 @@ pub struct Player {
     n: u64,
     /// The number of the latest phase it was announced, and 0 before any.
     seq: u64,
+}
+
+impl Player {
+    /// Builds a player once the episode has made its context. It has no
+    /// think loop.
+    pub fn init() -> Seat {
+        let behavior: Builder<Actor> = Box::new(|context| {
+            Actor::Random(Player {
+                context,
+                n: 0,
+                seq: 0,
+            })
+        });
+        (behavior, None)
+    }
 }
 
 #[async_trait]
@@ -154,215 +91,22 @@ fn choose(me: &PlayerId, view: &View) -> Option<PlayerId> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{
-        Played, between_the_deal_and_the_end, logged, observed_by, observed_by_the_environment,
-        one_wolf_against, run, seen, selection, selections, tentative, utterance, village,
+        Script, at_once, between_the_deal_and_the_end, logged, mute, observed_by,
+        observed_by_the_environment, one_wolf_against, play, quick, run, seen, selection,
+        selections, tentative, utterance, village,
     };
     use crate::werewolf::{
-        ENVIRONMENT, Phase, View, thinking_episode, to_everyone_but, to_the_environment,
-        to_the_players_but,
+        ENVIRONMENT, Phase, Role, Rules, Team, game, to_everyone_but, to_the_environment,
     };
-    use free_agent::{ActorId, Think, ThinkBuilder};
-    use std::collections::HashSet;
-    use std::sync::{Arc, Mutex};
+    use free_agent::ActorId;
+    use std::collections::{HashMap, HashSet};
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
-
-    /// What a puppet says to the environment on being announced a phase,
-    /// given its own name, the phase's number, and what it may see: each
-    /// message, and how long after the announcement it says it. A
-    /// selection carries the number the script gives it.
-    pub(crate) type Script = Box<dyn Fn(&PlayerId, u64, &View) -> Vec<(Duration, Message)> + Send>;
-
-    /// `messages`, each said as soon as the phase is announced.
-    pub(crate) fn at_once(messages: Vec<Message>) -> Vec<(Duration, Message)> {
-        messages
-            .into_iter()
-            .map(|message| (Duration::ZERO, message))
-            .collect()
-    }
-
-    /// The latest phase a puppet was announced: its number and what the
-    /// puppet saw of it.
-    type Announced = Arc<Mutex<Option<(u64, View)>>>;
-
-    /// A player who says whatever its script says, when the script says
-    /// to, for a game with a player who is late, stale, repeats itself,
-    /// changes its mind, or talks. Its script is consulted for each phase
-    /// it is awake in; announced a phase it sleeps through, it notes the
-    /// phase and says nothing. A message goes where the game's rules send
-    /// it from a player: an utterance, or a tentative decision the puppet
-    /// makes as if it were the environment, to every other player alive at
-    /// the latest announcement; a selection to the environment, and by day
-    /// to the other players too; anything else to the environment. It logs
-    /// each message it sends as its action and each message it receives as
-    /// its observation, in the latest phase announced, and does nothing
-    /// else with what it hears, whatever phase it is tagged with. What it
-    /// says later is said by its think loop, a [`Cue`].
-    pub struct Puppet {
-        context: Context<Message, Entry>,
-        script: Script,
-        /// The latest phase announced, shared with the cue.
-        announced: Announced,
-    }
-
-    #[async_trait]
-    impl Behavior for Puppet {
-        type Message = Message;
-        type Log = Entry;
-
-        fn context(&self) -> &Context<Message, Entry> {
-            &self.context
-        }
-
-        async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-            let Some(n) = message.number() else {
-                return Ok(());
-            };
-            let Message::Announce { seq, view, .. } = message else {
-                let seq = self
-                    .announced
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .map_or(0, |(seq, _)| *seq);
-                observe(&self.context, message.sender(), n, seq);
-                return Ok(());
-            };
-            *self.announced.lock().unwrap() = Some((*seq, view.clone()));
-            observe(&self.context, ENVIRONMENT.to_string(), n, *seq);
-            if !awake(&self.context.id, view) {
-                return Ok(());
-            }
-            for (after, said) in (self.script)(&self.context.id, *seq, view) {
-                if after.is_zero() {
-                    say(&self.context, said, &self.announced)?;
-                } else {
-                    self.context.think_after(after, said)?;
-                }
-            }
-            Ok(())
-        }
-    }
-
-    /// Send `message` from the puppet of `context`, which was announced
-    /// `announced` last, to whom the game's rules send it from a player.
-    fn say(
-        context: &Context<Message, Entry>,
-        message: Message,
-        announced: &Announced,
-    ) -> anyhow::Result<()> {
-        let announced = announced.lock().unwrap();
-        let (_, view) = announced
-            .as_ref()
-            .expect("a puppet speaks only once announced");
-        let me = &context.id;
-        let to = match (&message, &view.phase) {
-            (Message::Say { .. } | Message::Tentative { .. }, _) => {
-                to_the_players_but(me, &view.alive)
-            }
-            (Message::Select { .. }, Phase::Day) => to_everyone_but(me, &view.alive),
-            _ => to_the_environment(),
-        };
-        act(context, message, to, None, None)
-    }
-
-    /// A puppet's think loop: says each message it is reminded of when the
-    /// time comes.
-    struct Cue {
-        context: Context<Message, Entry>,
-        announced: Announced,
-    }
-
-    #[async_trait]
-    impl Think for Cue {
-        type Message = Message;
-
-        async fn think(&mut self, message: &Message) -> anyhow::Result<()> {
-            say(&self.context, message.clone(), &self.announced)
-        }
-    }
-
-    /// How a seat is built: the player's behavior, and its think loop if
-    /// it has one.
-    pub(crate) type Seat<A = Actor> = (Builder<A>, Option<ThinkBuilder<Message, Entry>>);
-
-    impl Puppet {
-        /// A puppet following `script`, as the actor `wrap` makes of it.
-        pub(crate) fn init<A>(
-            script: Script,
-            wrap: impl FnOnce(Puppet) -> A + Send + 'static,
-        ) -> Seat<A>
-        where
-            A: Behavior<Message = Message, Log = Entry>,
-        {
-            let announced = Announced::default();
-            let shared = Arc::clone(&announced);
-            let behavior: Builder<A> = Box::new(move |context| {
-                wrap(Puppet {
-                    context,
-                    script,
-                    announced,
-                })
-            });
-            let think: ThinkBuilder<Message, Entry> = Box::new(move |context| {
-                Box::new(Cue {
-                    context,
-                    announced: shared,
-                })
-            });
-            (behavior, Some(think))
-        }
-    }
-
-    impl Actor {
-        /// A puppet following `script`.
-        pub(crate) fn puppet(script: Script) -> Seat {
-            Puppet::init(script, Actor::Puppet)
-        }
-    }
-
-    /// A player who never selects.
-    pub(crate) fn mute() -> Seat {
-        Actor::puppet(Box::new(|_, _, _| vec![]))
-    }
-
-    /// Run a game of `roles` under `rules`, each player choosing at random
-    /// except those in `puppets`, who follow their own scripts.
-    pub(crate) async fn play(
-        roles: HashMap<PlayerId, Role>,
-        rules: Rules,
-        mut puppets: HashMap<&str, Seat>,
-    ) -> anyhow::Result<Played> {
-        let (winner, won) = oneshot::channel();
-        let (logger, log) = unbounded_channel();
-        let players: Vec<PlayerId> = roles.keys().cloned().collect();
-        let environment = announced::init(roles, rules, None, winner, Actor::Environment);
-        let episode = thinking_episode(
-            environment,
-            players,
-            |player| {
-                puppets
-                    .remove(player.as_str())
-                    .unwrap_or_else(|| (Actor::player(), None))
-            },
-            logger,
-        );
-        run(episode, won, log).await
-    }
-
-    /// Short limits, so a phase that waits them out is told apart from
-    /// one that does not.
-    pub(crate) fn quick() -> Rules {
-        Rules {
-            night_limit: Duration::from_secs(10),
-            day_limit: Duration::from_secs(10),
-            ..Rules::default()
-        }
-    }
+    use tokio::sync::oneshot;
 
     /// How long the log says the game took.
     fn game_took(logged: &[Entry]) -> Duration {
@@ -391,7 +135,14 @@ pub(crate) mod tests {
         let roles = village().roles;
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
-        let episode = game(roles.clone(), Rules::default(), winner, logger);
+        let episode = game(
+            roles.clone(),
+            Rules::default(),
+            None,
+            winner,
+            |_| Player::init(),
+            logger,
+        );
         let (winner, logged, _) = run(episode, won, log).await.unwrap();
 
         // Everything between is an announcement or a selection, logged as

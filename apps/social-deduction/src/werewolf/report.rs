@@ -8,7 +8,7 @@
 //! player and its number for the message. A player's memory holds the
 //! messages themselves, and its account reads them.
 
-use super::llm::{ContextWindow, Memory, Source};
+use super::prompted::{ContextWindow, Memory, Source};
 use super::{ENVIRONMENT, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Team, View, awake};
 use crate::model::{ToolChoice, tokens};
 use free_agent::{ActorId, Event};
@@ -854,7 +854,7 @@ mod tests {
     use super::*;
 
     use crate::model::estimate;
-    use crate::werewolf::llm::Configuration;
+    use crate::werewolf::prompted::Configuration;
     use crate::werewolf::tests::{announcement, logged, received, selection, tentative, utterance};
     use crate::werewolf::{ENVIRONMENT, Rules, to_the_environment};
     use std::collections::BTreeMap;

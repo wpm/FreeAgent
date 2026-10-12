@@ -7,7 +7,7 @@ use social_deduction::model::canned::{
     day_refusal, playing, playing_only, playing_within, refusal, refusing, refusing_days,
     refusing_required, serving, unreachable, wanting_a_key,
 };
-use social_deduction::werewolf::llm::{Configuration, ContextWindow, Source};
+use social_deduction::werewolf::prompted::{Configuration, ContextWindow, Source};
 use social_deduction::werewolf::{Ending, Entry, Message, PlayerId, Role};
 use std::collections::{HashMap, HashSet};
 use std::process::{Command, Output};
