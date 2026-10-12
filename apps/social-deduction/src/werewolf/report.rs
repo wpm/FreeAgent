@@ -54,8 +54,8 @@ enum Voice {
 /// decision as it is announced, and a player's narrator tells the other
 /// players' votes as the player hears them, and as the day ends its tally:
 /// each player alive that day, in seat order, with its last vote or that
-/// it did not vote, which a [`Story`] tells in place of the day's votes and
-/// tentative decisions. A phase begins at its first
+/// it did not vote, which takes the place of the day's votes and tentative
+/// decisions in the player's account. A phase begins at its first
 /// announcement and ends at the next phase's, or at the end of the game,
 /// and the omniscient narrator tells the time between, to the nearest
 /// second, after who died. The omniscient narrator tells a selection when
@@ -103,6 +103,21 @@ pub struct Narrator {
     /// In a player's account, each player's last vote of the day being
     /// told, for the day's tally.
     votes: HashMap<PlayerId, PlayerId>,
+    /// In a player's account, the lines told so far, in order, each with
+    /// what it is.
+    account: Vec<(String, Line)>,
+}
+
+/// What a line of a player's account is, which decides what becomes of it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Line {
+    /// Something a player said, which a story may forget.
+    Talk,
+    /// A vote or a tentative decision of the day being told, which the
+    /// day's tally takes the place of once the day is past.
+    Passing,
+    /// Anything else, which stays.
+    Kept,
 }
 
 /// The phase being told: which it is, and when it began.
@@ -275,8 +290,36 @@ impl Narrator {
     /// make, is a deed; an utterance it made, or heard, is told as said;
     /// and a tentative decision it heard is told as announced. A player
     /// remembers nothing from a phase other than the one it was in, so
-    /// nothing it remembers is late.
+    /// nothing it remembers is late. The lines join the player's
+    /// [account](Narrator::account), where the day's tally takes the place
+    /// of its votes and tentative decisions.
     pub fn recall(&mut self, event: &Event<Memory>) -> Vec<String> {
+        let line = match &event.payload {
+            Memory::Acted {
+                message: Message::Say { .. },
+            }
+            | Memory::Observed {
+                message: Message::Say { .. },
+            } => Line::Talk,
+            memory if self.passes(memory) => Line::Passing,
+            _ => Line::Kept,
+        };
+        let lines = self.remember(event);
+        self.account
+            .extend(lines.iter().map(|text| (text.clone(), line)));
+        lines
+    }
+
+    /// A player's account so far: the current phase in full, and each past
+    /// day with its talk and its tally in place of its votes and tentative
+    /// decisions.
+    pub fn account(&self) -> Vec<&str> {
+        self.account.iter().map(|(text, _)| text.as_str()).collect()
+    }
+
+    /// The lines a player's memory `event` adds, as [`Narrator::recall`]
+    /// tells them.
+    fn remember(&mut self, event: &Event<Memory>) -> Vec<String> {
         match &event.payload {
             Memory::Observed {
                 message: Message::Announce { seq, view, .. },
@@ -493,11 +536,6 @@ impl Narrator {
         }
     }
 
-    /// Where the phase being told falls in the game, once one has begun.
-    fn ordinal(&self) -> Option<u16> {
-        self.phase.as_ref().map(|told| ordinal(&told.phase))
-    }
-
     /// Whether the phase being told is a day.
     fn by_day(&self) -> bool {
         matches!(&self.phase, Some(told) if told.phase.1 == Phase::Day)
@@ -505,12 +543,14 @@ impl Narrator {
 
     /// In a player's account, the tally of the day being told, as it ends:
     /// each player alive that day, in seat order, with its last vote or
-    /// that it did not vote.
+    /// that it did not vote. The day's votes and tentative decisions leave
+    /// the account, for the tally to take their place.
     fn tally(&mut self) -> Vec<String> {
         let votes = std::mem::take(&mut self.votes);
         if !(matches!(self.voice, Voice::Player(_)) && self.by_day()) {
             return vec![];
         }
+        self.account.retain(|(_, line)| *line != Line::Passing);
         in_order(&self.alive)
             .into_iter()
             .map(|player| match votes.get(player) {
@@ -632,15 +672,9 @@ impl Narrator {
 /// place of its votes and tentative decisions. Told within a budget, it
 /// forgets talk, oldest first, until it fits.
 pub struct Story {
-    /// The player's narrator, which has read every memory told.
+    /// The player's narrator, which has read every memory told and keeps
+    /// the account.
     narrator: Narrator,
-    /// The lines told, in order.
-    lines: Vec<String>,
-    /// Whether each line is talk: something a player said.
-    talk: Vec<bool>,
-    /// Where in the lines the current day's votes and tentative decisions
-    /// are, in order.
-    passing: Vec<usize>,
 }
 
 /// The line that stands in place of the last line of talk a story forgets.
@@ -651,44 +685,17 @@ impl Story {
     pub fn of(me: PlayerId) -> Self {
         Self {
             narrator: Narrator::for_player(me),
-            lines: Vec::new(),
-            talk: Vec::new(),
-            passing: Vec::new(),
         }
     }
 
-    /// Add what `event` adds to the account. The announcement of the next
-    /// phase tells the day's tally, and the day's votes and tentative
-    /// decisions give way to it.
+    /// Add what `event` adds to the account.
     pub fn recall(&mut self, event: &Event<Memory>) {
-        let passes = self.narrator.passes(&event.payload);
-        let talk = matches!(
-            event.payload,
-            Memory::Acted {
-                message: Message::Say { .. }
-            } | Memory::Observed {
-                message: Message::Say { .. }
-            }
-        );
-        let before = self.narrator.ordinal();
-        let lines = self.narrator.recall(event);
-        if self.narrator.ordinal() != before {
-            for line in self.passing.drain(..).rev() {
-                self.lines.remove(line);
-                self.talk.remove(line);
-            }
-        }
-        if passes {
-            self.passing
-                .extend(self.lines.len()..self.lines.len() + lines.len());
-        }
-        self.talk.extend(std::iter::repeat_n(talk, lines.len()));
-        self.lines.extend(lines);
+        self.narrator.recall(event);
     }
 
     /// The lines told, in order.
-    pub fn lines(&self) -> &[String] {
-        &self.lines
+    pub fn lines(&self) -> Vec<&str> {
+        self.narrator.account()
     }
 
     /// The lines told, fitting within `budget` tokens by estimate once
@@ -697,25 +704,30 @@ impl Story {
     /// and [`FORGOTTEN`] stands in place of the last line left out, counted
     /// with the rest. The story itself keeps every line.
     pub fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
+        let account = &self.narrator.account;
         let chars = |line: &str| line.chars().count();
-        let talk: Vec<usize> = (0..self.lines.len()).filter(|&i| self.talk[i]).collect();
+        let talk: Vec<usize> = (0..account.len())
+            .filter(|&i| account[i].1 == Line::Talk)
+            .collect();
         // The length of the lines, each with a newline after it, as each
         // line of talk is left out. Joined, they have one newline fewer.
-        let mut length = self.lines.iter().map(|line| chars(line) + 1).sum::<usize>();
+        let mut length = account
+            .iter()
+            .map(|(line, _)| chars(line) + 1)
+            .sum::<usize>();
         let mut forgot = 0;
         while forgot < talk.len() && tokens(length.saturating_sub(1)) > budget {
-            length -= chars(&self.lines[talk[forgot]]) + 1;
+            length -= chars(&account[talk[forgot]].0) + 1;
             if forgot == 0 {
                 length += chars(FORGOTTEN) + 1;
             }
             forgot += 1;
         }
         let forgotten = &talk[..forgot];
-        let lines = self
-            .lines
+        let lines = account
             .iter()
             .enumerate()
-            .filter_map(|(i, line)| match forgotten.binary_search(&i) {
+            .filter_map(|(i, (line, _))| match forgotten.binary_search(&i) {
                 Ok(at) if at + 1 == forgot => Some(FORGOTTEN),
                 Ok(_) => None,
                 Err(_) => Some(line.as_str()),
@@ -1352,6 +1364,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_players_narrator_alone_tells_each_vote_of_a_past_day_once_in_its_tally() {
+        let mut narrator = Narrator::for_player(id("doctor"));
+        for memory in a_day_of_talk_and_votes() {
+            narrator.recall(&memory);
+        }
+        assert_eq!(
+            narrator.account(),
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                "ann says, \"I suspect wolf.\"",
+                "ann votes against wolf.",
+                "wolf will be voted out in 20s unless the votes change.",
+                "You vote against wolf.",
+                "seer votes against ann.",
+                "wolf says, \"Not me.\"",
+                "ann votes against seer.",
+                "Nobody is about to be voted out.",
+            ]
+        );
+        narrator.recall(&heard(
+            2,
+            Phase::Night,
+            &["seer", "doctor", "ann"],
+            &[("doctor", Role::Doctor)],
+        ));
+        narrator.recall(&chose("doctor", 3, "seer"));
+        assert_eq!(
+            narrator.account(),
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                "ann says, \"I suspect wolf.\"",
+                "wolf says, \"Not me.\"",
+                "ann votes against seer.",
+                "You vote against wolf.",
+                "seer votes against ann.",
+                "wolf does not vote.",
+                "wolf dies.",
+                "",
+                "Night 2.",
+                "You protect seer.",
+            ]
+        );
+    }
+
     /// Tell `story` each of `memories` in order.
     fn recall_all(story: &mut Story, memories: impl IntoIterator<Item = Event<Memory>>) {
         for memory in memories {
@@ -1530,11 +1591,6 @@ mod tests {
         story
     }
 
-    /// The story's lines, as told in full.
-    fn in_full(story: &Story) -> Vec<&str> {
-        story.lines().iter().map(String::as_str).collect()
-    }
-
     /// The estimate of `lines`, joined as a request joins them.
     fn estimated(lines: &[&str]) -> u64 {
         estimate(&lines.join("\n"))
@@ -1543,7 +1599,7 @@ mod tests {
     #[test]
     fn a_story_within_its_budget_is_told_whole() {
         let story = two_days_of_talk();
-        let whole = in_full(&story);
+        let whole = story.lines();
         assert_eq!(
             whole,
             [
@@ -1572,7 +1628,7 @@ mod tests {
     #[test]
     fn a_story_over_its_budget_forgets_talk_oldest_first_in_its_place() {
         let story = two_days_of_talk();
-        let whole = in_full(&story);
+        let whole = story.lines();
         let forgetting = |forgot: usize| -> Vec<&str> {
             let talk = [3, 4, 15];
             whole
@@ -1643,7 +1699,7 @@ mod tests {
         // A story with no talk is told whole however far over it is.
         let mut quiet = Story::of(id("ann"));
         quiet.recall(&heard(1, Phase::Day, &["wolf", "ann"], &[]));
-        assert_eq!(quiet.told_within(0), (in_full(&quiet), 0));
+        assert_eq!(quiet.told_within(0), (quiet.lines(), 0));
     }
 
     #[test]
