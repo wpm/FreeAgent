@@ -172,10 +172,7 @@ strategy named `random` in the file is an error.
 specific to the least:
 
 1. `[roles.<role>.strategies]` maps strategy names to seat counts. The
-   counts add up to the role's count. *Amended during review of PR #265:*
-   when the role also has its own `strategy`, that strategy fills the
-   seats the table leaves, up to the role's count, and a count below the
-   table's sum is an error naming the role and both numbers.
+   counts add up to the role's count.
 2. `[roles.<role>] strategy = "<name>"` gives every seat of the role one
    strategy.
 3. A top-level `strategy = "<name>"` gives every seat of every role not
