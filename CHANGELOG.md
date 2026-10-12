@@ -126,9 +126,16 @@ workflow takes a version's notes from here.
 - `social-deduction avalon [CONFIG]` takes a configuration file shaped
   like Werewolf's, with Avalon's eight `[roles.<role>]` tables and
   `[phases]` limits, and deals roles and strategies together at random.
-  Every strategy at the table is random for now. The log records the
-  configuration right after the deal, and `examples/avalon/random.toml`
-  plays the game of no file.
+  The log records the configuration right after the deal, and
+  `examples/avalon/random.toml` plays the game of no file.
+- Prompted players play Avalon, beside random ones, with any number of
+  models. They talk in every phase with `speak` and `wait`, and the player
+  a phase waits on chooses with `propose`, `vote`, `perform` or `select`.
+  Each model in play is asked four times before the game, as the leader, a
+  voter, an evil member of a team and the Assassin, and a model that does
+  not answer each well stops the program, naming it.
+  `examples/avalon/prompted.toml` plays a game of model players against a
+  local model.
 
 ### Changed
 

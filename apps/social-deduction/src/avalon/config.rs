@@ -9,22 +9,38 @@
 //! [`Strategy`]s, each a policy with its parameters, and allots each role's
 //! seats among the strategies. The strategy [`RANDOM`] is always defined.
 //! [`Settings::deal`] deals the (role, strategy) pairs the allotments make
-//! to the seats at random. Every strategy at the table is random for now:
-//! a prompted strategy may be defined, and allotted no seat.
+//! to the seats at random.
+//!
+//! A prompted player's system prompt is a `minijinja` template from its
+//! strategy, rendered for its seat and role. [`Settings::prompts`] renders
+//! every [`SystemPrompt`] a game could call for, so that a broken template
+//! stops the program before any game begins.
+//!
+//! A model is in play when a prompted strategy that names it is allotted a
+//! seat. [`Settings::set_up`] sets up each model in play before any actor
+//! is built: it reads the key, settles the [`ContextWindow`] and asks the
+//! model to play. The API key never appears in the file. The file names
+//! the environment variable that holds it, and [`Spec::api_key`] reads
+//! that variable into a [`SecretString`](secrecy::SecretString), which is redacted wherever it is
+//! shown.
 //!
 //! The log records the [`Configuration`] a game ran under right after the
-//! deal.
+//! deal, and [`players`] builds each seat's player from it.
 
-use super::{Dealt, PhaseLimits, Role, RoleCounts, Rules, Table};
-use crate::model::spec::{Models, Spec};
+use super::{Dealt, PhaseLimits, Role, RoleCounts, Rules, Seat, Table, prompted, random};
+use crate::model::Provider;
+use crate::model::spec::{self, Handles, Models, Spec};
+use crate::model::window::{self, ContextWindow};
 use crate::seat::PlayerId;
 use crate::strategy::{RANDOM, Random, RoleConfig, Strategy};
-use anyhow::{Context as _, bail};
+use anyhow::{Context as _, anyhow, bail};
 use clap::Args;
+use minijinja::{Environment, UndefinedBehavior, Value, context};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, btree_map};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The variables every template has besides the text blocks.
@@ -319,23 +335,28 @@ impl Config {
             minions: seats(Role::Minion),
         };
         table.check()?;
-        let settings = Settings {
+        Ok(Settings {
             table,
             rules,
             strategies,
             allotments,
             config: self,
-        };
-        if let Some((role, name, _, _)) = settings
-            .at_the_table()
-            .find(|(_, _, strategy, _)| matches!(strategy, Strategy::Prompted(_)))
-        {
-            bail!(
-                "prompted players do not play Avalon yet; strategy {name} is allotted to the {role}"
-            );
-        }
-        Ok(settings)
+        })
     }
+}
+
+/// One player's system prompt, rendered for a seat dealt a role and a
+/// prompted strategy.
+#[derive(Debug)]
+pub struct SystemPrompt {
+    /// The seat, `player1` onward.
+    pub seat: PlayerId,
+    /// The role the seat was dealt.
+    pub role: Role,
+    /// The name of the strategy the seat was dealt.
+    pub strategy: String,
+    /// The rendered prompt.
+    pub text: String,
 }
 
 impl Settings {
@@ -368,12 +389,142 @@ impl Settings {
         self.table.seats().zip(pairs).collect()
     }
 
-    /// The configuration a game runs under, as the log records it right
-    /// after the deal: every setting as it took effect, every strategy and
-    /// the allotments, and the text blocks as written. Every player is
-    /// random, so no model is in play and no prompt is rendered.
-    pub fn configuration(&self) -> Configuration {
-        Configuration {
+    /// The name of the model the strategy `name` asks, if it is prompted.
+    fn model_of(&self, name: &str) -> Option<&str> {
+        match &self.strategies[name] {
+            Strategy::Prompted(prompted) => Some(&prompted.model),
+            Strategy::Random(_) => None,
+        }
+    }
+
+    /// The models in play, by name: those a prompted strategy at the table
+    /// asks.
+    pub fn models_in_play(&self) -> BTreeMap<&str, &Spec> {
+        self.at_the_table()
+            .filter_map(|(_, strategy, _, _)| self.model_of(strategy))
+            .map(|name| (name, &self.config.models[name]))
+            .collect()
+    }
+
+    /// Render the system prompt of every seat for every (role, strategy)
+    /// pair at the table whose strategy is prompted, since any seat may be
+    /// dealt any of them, in seat order and then the order of the pairs.
+    /// A prompt is rendered from its strategy's `system` template, with the
+    /// variables `name`, `role`, as [`Role::told`] tells it, and every
+    /// `[text]` block. An undefined variable is an error. A template that
+    /// does not compile is an error naming the strategy; one that does not
+    /// render, the strategy, the seat and the role.
+    pub fn prompts(&self) -> anyhow::Result<Vec<SystemPrompt>> {
+        let mut env = Environment::new();
+        env.set_undefined_behavior(UndefinedBehavior::Strict);
+        // Each strategy's template is compiled once, and rendered once a
+        // seat for each role it is allotted.
+        let mut templates = BTreeMap::new();
+        let mut pairs = Vec::new();
+        for (role, name, strategy, _) in self.at_the_table() {
+            if let Strategy::Prompted(prompted) = strategy {
+                if let btree_map::Entry::Vacant(vacant) = templates.entry(name) {
+                    let template = env.template_from_str(&prompted.system).with_context(|| {
+                        format!("compiling the prompt template of strategy {name}")
+                    })?;
+                    vacant.insert(template);
+                }
+                pairs.push((role, name));
+            }
+        }
+        let blocks = Value::from(&self.config.text);
+        let mut prompts = Vec::new();
+        for seat in self.table.seats() {
+            for &(role, name) in &pairs {
+                let text = templates[name]
+                    .render(context! { name => &seat, role => role.told(), ..blocks.clone() })
+                    .with_context(|| {
+                        format!("rendering the prompt of strategy {name} for {seat} as the {role}")
+                    })?;
+                prompts.push(SystemPrompt {
+                    seat: seat.clone(),
+                    role,
+                    strategy: name.to_string(),
+                    text,
+                });
+            }
+        }
+        Ok(prompts)
+    }
+
+    /// The context window of the model `name`, settled as
+    /// [`window::settle`] settles it, against what a request takes before
+    /// its story, by estimate, for the largest of `prompts` whose strategy
+    /// asks the model.
+    pub fn context_window(
+        &self,
+        name: &str,
+        reported: Option<u64>,
+        prompts: &[SystemPrompt],
+    ) -> anyhow::Result<ContextWindow> {
+        let needed = self.unstoried(name, prompts);
+        window::settle(name, &self.config.models[name], reported, needed)
+    }
+
+    /// The most a request to the model `name` takes of the context window
+    /// before its story, by estimate, for any of `prompts` whose strategy
+    /// asks it.
+    fn unstoried(&self, name: &str, prompts: &[SystemPrompt]) -> u64 {
+        let seats: Vec<PlayerId> = self.table.seats().collect();
+        let id = &self.config.models[name].id;
+        let limit = |phase| self.rules.limit(phase);
+        prompts
+            .iter()
+            .filter(|prompt| self.model_of(&prompt.strategy) == Some(name))
+            .map(|prompt| {
+                let (text, seat, role) = (&prompt.text, &prompt.seat, prompt.role);
+                prompted::unstoried(id, text, seat, role, &seats, limit)
+            })
+            .max()
+            .unwrap_or_default()
+    }
+
+    /// Set up each model in play as [`spec::set_up`] sets it up, settling
+    /// its context window for `prompts` and asking it to play as the player
+    /// each phase waits on, which settles the tool choice. A model the file
+    /// defines and no strategy at the table asks is not contacted.
+    pub async fn set_up(&self, prompts: &[SystemPrompt]) -> anyhow::Result<(Models, Handles)> {
+        let needed = |name: &str| Ok(self.unstoried(name, prompts));
+        let probe = async |provider: &Provider, id: &str| prompted::check_plays(provider, id).await;
+        spec::set_up(self.models_in_play(), needed, probe).await
+    }
+
+    /// The configuration a game of `deal` runs under, as the log records
+    /// it right after the deal: every setting as it took effect, every
+    /// strategy and the allotments, `models`, the models in play as
+    /// [`Settings::set_up`] set them up, each prompted player's system
+    /// prompt from `prompts`, which [`Settings::prompts`] rendered, and the
+    /// text blocks as written. A prompted player with no prompt rendered
+    /// for its role and strategy is an error naming the seat, the role and
+    /// the strategy.
+    pub fn configuration(
+        &self,
+        deal: &HashMap<PlayerId, Dealt>,
+        prompts: &[SystemPrompt],
+        models: Models,
+    ) -> anyhow::Result<Configuration> {
+        let rendered: HashMap<(&PlayerId, Role, &str), &str> = prompts
+            .iter()
+            .map(|prompt| {
+                let pair = (&prompt.seat, prompt.role, prompt.strategy.as_str());
+                (pair, prompt.text.as_str())
+            })
+            .collect();
+        let mut told = BTreeMap::new();
+        for (seat, Dealt { role, strategy }) in deal {
+            if self.model_of(strategy).is_some() {
+                let text = rendered.get(&(seat, *role, strategy)).ok_or_else(|| {
+                    anyhow!("no system prompt rendered for {seat} as the {role} playing {strategy}")
+                })?;
+                told.insert(seat.clone(), text.to_string());
+            }
+        }
+        Ok(Configuration {
             role_counts: self.table.counts().into_iter().collect(),
             propose_limit: self.rules.propose_limit,
             vote_limit: self.rules.vote_limit,
@@ -381,10 +532,10 @@ impl Settings {
             assassinate_limit: self.rules.assassinate_limit,
             strategies: self.strategies.clone(),
             allotments: self.allotments.clone(),
-            models: Models::new(),
-            prompts: BTreeMap::new(),
+            models,
+            prompts: told,
             text: self.config.text.clone(),
-        }
+        })
     }
 }
 
@@ -422,11 +573,54 @@ pub struct Configuration {
     pub text: BTreeMap<String, String>,
 }
 
+/// Each seat's player, as `deal` dealt it a strategy and `configuration`
+/// sets the strategy up: a random player, or a prompted player told its
+/// system prompt and asking its strategy's model through its handle in
+/// `handles`.
+pub fn players(
+    configuration: &Configuration,
+    deal: &HashMap<PlayerId, Dealt>,
+    handles: &Handles,
+) -> impl FnMut(&PlayerId) -> Seat + use<> {
+    let mut prompted = HashMap::new();
+    for (seat, Dealt { strategy, .. }) in deal {
+        if let Strategy::Prompted(strategy) = &configuration.strategies[strategy] {
+            let name = &strategy.model;
+            let model = &configuration.models[name];
+            let player = (
+                configuration.prompts[seat].clone(),
+                model.id.clone(),
+                model.tool_choice,
+                model.context_window.tokens,
+                Arc::clone(&handles[name]),
+            );
+            prompted.insert(seat.clone(), player);
+        }
+    }
+    move |id: &PlayerId| match prompted.remove(id) {
+        Some((prompt, model_id, tool_choice, context_window, model)) => prompted::Player::init(
+            id.clone(),
+            prompt,
+            model_id,
+            tool_choice,
+            context_window,
+            model,
+        ),
+        None => random::Player::init(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::avalon::tests::run;
-    use crate::avalon::{Entry, game, random};
+    use crate::avalon::report::Narrator;
+    use crate::avalon::tests::{logged, run};
+    use crate::avalon::{Entry, Message, Team, game};
+    use crate::model::canned::{self, playing};
+    use crate::model::fake::{FakeModel, choosing_first};
+    use crate::model::spec::ModelInPlay;
+    use crate::model::window::Source;
+    use crate::model::{self, CONTEXT_WINDOW, REQUEST_TIMEOUT, ToolChoice};
     use crate::strategy::Prompted;
     use serde_json::json;
     use std::collections::HashSet;
@@ -484,18 +678,43 @@ policy = "random"
     }
 
     #[test]
-    fn the_example_parses_and_is_the_one_documented() {
+    fn the_examples_parse_and_render_and_are_the_two_documented() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/avalon");
-        let names: Vec<String> = std::fs::read_dir(dir)
+        let mut names: Vec<String> = std::fs::read_dir(dir)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
-        assert_eq!(names, ["random.toml"]);
-        let settings = Config::load(Path::new(&example("random.toml")))
+        names.sort();
+        assert_eq!(names, ["prompted.toml", "random.toml"]);
+        for name in &names {
+            let settings = Config::load(Path::new(&example(name)))
+                .unwrap()
+                .settle(Overrides::default())
+                .unwrap();
+            assert_eq!(settings.table, Table::default(), "{name}");
+            settings.prompts().unwrap();
+        }
+        // The prompted example tells every player the rules, that it may
+        // talk in every phase, and who it is.
+        let settings = Config::load(Path::new(&example("prompted.toml")))
             .unwrap()
             .settle(Overrides::default())
             .unwrap();
-        assert_eq!(settings.table, Table::default());
+        let prompts = settings.prompts().unwrap();
+        let in_play: Vec<&str> = settings.models_in_play().into_keys().collect();
+        assert_eq!(in_play, ["qwen"]);
+        let rules = &settings.config.text["rules"];
+        for said in ["every phase", "speak", "wait", "Assassin"] {
+            assert!(rules.contains(said), "{said}: {rules}");
+        }
+        let merlin = prompt(&prompts, "player3", Role::Merlin, "everyone");
+        assert!(merlin.starts_with(rules.as_str()), "{merlin}");
+        assert!(merlin.ends_with("\n\nYou are player3, Merlin."), "{merlin}");
+        let servant = prompt(&prompts, "player1", Role::Servant, "everyone");
+        assert!(
+            servant.ends_with("\n\nYou are player1, a loyal servant of Arthur."),
+            "{servant}"
+        );
     }
 
     #[test]
@@ -505,7 +724,13 @@ policy = "random"
             .settle(Overrides::default())
             .unwrap();
         let none = Config::default().settle(Overrides::default()).unwrap();
-        assert_eq!(example.configuration(), none.configuration());
+        let configured = |settings: &Settings| {
+            let deal = settings.deal();
+            settings.configuration(&deal, &[], Models::new()).unwrap()
+        };
+        assert_eq!(configured(&example), configured(&none));
+        assert!(example.models_in_play().is_empty());
+        assert!(example.prompts().unwrap().is_empty());
     }
 
     #[test]
@@ -862,33 +1087,31 @@ dice = 1
     }
 
     #[test]
-    fn a_prompted_strategy_allotted_a_seat_is_an_error_naming_it_and_the_role() {
-        let refused = [
-            ("strategy = \"plain\"\n", "Merlin"),
+    fn a_prompted_strategy_may_be_allotted_to_any_role_beside_random_ones() {
+        let allotted = [
+            ("strategy = \"plain\"\n", Role::Merlin),
             (
                 "[roles.oberon]\ncount = 1\nstrategy = \"plain\"\n",
-                "Oberon",
+                Role::Oberon,
             ),
-            ("[roles.minion.strategies]\nplain = 1\n", "Minion"),
+            ("[roles.minion.strategies]\nplain = 1\n", Role::Minion),
         ];
-        for (roles, role) in refused {
+        for (roles, role) in allotted {
             let file = match roles.starts_with('[') {
                 true => format!("{STRATEGIES}{roles}"),
                 false => format!("{roles}{STRATEGIES}"),
             };
-            assert_eq!(
-                unsettled(&file, Overrides::default()),
-                format!(
-                    "prompted players do not play Avalon yet; strategy plain is allotted to the {role}"
-                )
-            );
+            let settings = settle(&file, Overrides::default());
+            assert_eq!(settings.allotments[&role]["plain"], 1, "{role}");
+            let in_play: Vec<&str> = settings.models_in_play().into_keys().collect();
+            assert_eq!(in_play, ["qwen"], "{role}");
         }
-        // Defined, or allotted no seat, a prompted strategy is fine.
-        settle(STRATEGIES, Overrides::default());
-        settle(
+        // Allotted no seat, a prompted strategy puts no model in play.
+        let settings = settle(
             &format!("{STRATEGIES}[roles.percival]\nstrategy = \"plain\"\n"),
             Overrides::default(),
         );
+        assert!(settings.models_in_play().is_empty());
     }
 
     /// A file giving every role a count, for a table of ten: one of each
@@ -1141,7 +1364,10 @@ count = 1
             },
             ..Overrides::default()
         };
-        let configuration = settle(&configured(), overrides).configuration();
+        let settings = settle(&configured(), overrides);
+        let configuration = settings
+            .configuration(&settings.deal(), &[], Models::new())
+            .unwrap();
         let random = || Strategy::Random(Random {});
         assert_eq!(
             configuration,
@@ -1183,7 +1409,10 @@ count = 1
     #[test]
     fn the_configuration_entry_writes_durations_as_humantime_does_and_survives_a_trip_through_json()
     {
-        let configuration = settle(&configured(), Overrides::default()).configuration();
+        let settings = settle(&configured(), Overrides::default());
+        let configuration = settings
+            .configuration(&settings.deal(), &[], Models::new())
+            .unwrap();
         let entry = Entry::Configuration(Box::new(configuration));
         let json = serde_json::to_value(&entry).unwrap();
         let configuration = &json["Configuration"];
@@ -1210,7 +1439,7 @@ count = 1
         for config in [none, example] {
             let settings = config.settle(Overrides::default()).unwrap();
             let deal = settings.deal();
-            let configuration = settings.configuration();
+            let configuration = settings.configuration(&deal, &[], Models::new()).unwrap();
             let (winner, won) = oneshot::channel();
             let (logger, log) = unbounded_channel();
             let episode = game(
@@ -1232,6 +1461,486 @@ count = 1
             assert!(
                 matches!(entries.last(), Some(Entry::End { .. })),
                 "{entries:?}"
+            );
+        }
+    }
+
+    /// A file defining one model, `qwen`, and one prompted strategy for
+    /// everyone, `plain`, asking it.
+    const PLAIN: &str = r#"
+strategy = "plain"
+[models.qwen]
+base_url = "http://localhost:1234/v1"
+id = "qwen2.5-7b-instruct"
+[strategies.plain]
+policy = "prompted"
+system = "{{ name }}, {{ role }}"
+"#;
+
+    /// The prompt `prompts` holds for `seat` dealt `role` and `strategy`.
+    fn prompt<'a>(prompts: &'a [SystemPrompt], seat: &str, role: Role, strategy: &str) -> &'a str {
+        &prompts
+            .iter()
+            .find(|prompt| {
+                prompt.seat == seat && prompt.role == role && prompt.strategy == strategy
+            })
+            .unwrap_or_else(|| panic!("no prompt for {seat} as the {role} playing {strategy}"))
+            .text
+    }
+
+    #[test]
+    fn every_seat_is_rendered_for_every_prompted_pair_at_the_table_in_order() {
+        // Merlin and the Minion play `plain`, the Assassin `bold`, and the
+        // Servants `random`.
+        let file = format!(
+            "{PLAIN}[strategies.bold]\npolicy = \"prompted\"\nsystem = \"Bold {{{{ name }}}}.\"\n\
+             [roles.assassin]\nstrategy = \"bold\"\n[roles.servant]\nstrategy = \"random\"\n"
+        );
+        let prompts = settle(&file, Overrides::default()).prompts().unwrap();
+        let rendered: Vec<(&str, Role, &str)> = prompts
+            .iter()
+            .map(|prompt| (prompt.seat.as_str(), prompt.role, prompt.strategy.as_str()))
+            .collect();
+        let seats = ["player1", "player2", "player3", "player4", "player5"];
+        let expected: Vec<(&str, Role, &str)> = seats
+            .into_iter()
+            .flat_map(|seat| {
+                [
+                    (seat, Role::Merlin, "plain"),
+                    (seat, Role::Assassin, "bold"),
+                    (seat, Role::Minion, "plain"),
+                ]
+            })
+            .collect();
+        assert_eq!(rendered, expected);
+        assert_eq!(
+            prompt(&prompts, "player2", Role::Assassin, "bold"),
+            "Bold player2."
+        );
+        assert_eq!(
+            prompt(&prompts, "player5", Role::Minion, "plain"),
+            "player5, a minion of Mordred"
+        );
+    }
+
+    #[test]
+    fn every_role_is_rendered_as_a_sentence_names_it() {
+        let mut file = format!("{PLAIN}[roles.percival]\ncount = 1\n[roles.servant]\ncount = 1\n");
+        for role in ["morgana", "mordred", "oberon"] {
+            file.push_str(&format!("[roles.{role}]\ncount = 1\n"));
+        }
+        let settings = settle(&file, Overrides::default());
+        let prompts = settings.prompts().unwrap();
+        for (role, told) in [
+            (Role::Merlin, "Merlin"),
+            (Role::Percival, "Percival"),
+            (Role::Servant, "a loyal servant of Arthur"),
+            (Role::Assassin, "the Assassin"),
+            (Role::Morgana, "Morgana"),
+            (Role::Mordred, "Mordred"),
+            (Role::Oberon, "Oberon"),
+            (Role::Minion, "a minion of Mordred"),
+        ] {
+            assert_eq!(
+                prompt(&prompts, "player1", role, "plain"),
+                format!("player1, {told}")
+            );
+        }
+    }
+
+    #[test]
+    fn every_text_block_is_a_variable_and_a_persona_is_not() {
+        let file = PLAIN.replace("{{ name }}, {{ role }}", "{{ rules }} {{ merlin }}");
+        let file = format!("{file}[text]\nrules = \"The rules.\"\nmerlin = \"Hide.\"\n");
+        let prompts = settle(&file, Overrides::default()).prompts().unwrap();
+        assert_eq!(
+            prompt(&prompts, "player1", Role::Servant, "plain"),
+            "The rules. Hide."
+        );
+        let file = PLAIN.replace("{{ role }}", "{{ role }}[{{ persona }}]");
+        let error = settle(&file, Overrides::default()).prompts().unwrap_err();
+        assert!(format!("{error:#}").contains("persona"), "{error:#}");
+    }
+
+    #[test]
+    fn a_template_that_does_not_render_is_an_error_naming_the_strategy_the_seat_and_the_role() {
+        let file = PLAIN.replace("{{ name }}, {{ role }}", "{{ rulez }}");
+        let error = settle(&file, Overrides::default()).prompts().unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(
+            shown.starts_with("rendering the prompt of strategy plain for player1 as the Merlin"),
+            "{shown}"
+        );
+        assert!(shown.contains("rulez"), "{shown}");
+    }
+
+    #[test]
+    fn a_template_that_does_not_compile_is_an_error_naming_the_strategy() {
+        let file = PLAIN.replace("{{ name }}, {{ role }}", "{% if %}");
+        let error = settle(&file, Overrides::default()).prompts().unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(
+            shown.starts_with("compiling the prompt template of strategy plain"),
+            "{shown}"
+        );
+        assert!(shown.contains("syntax"), "{shown}");
+        // A strategy at no seat of the table is not compiled.
+        let file = file.replace("strategy = \"plain\"\n[models", "[models");
+        assert!(
+            settle(&file, Overrides::default())
+                .prompts()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A file of two models, `qwen` and `claude`, and a strategy asking
+    /// each, `plain` and `smart`, with `rest` after the strategies.
+    fn two_models(rest: &str) -> String {
+        format!(
+            "{PLAIN}
+[models.claude]
+base_url = \"https://api.anthropic.com/v1\"
+id = \"claude-sonnet-4-5\"
+api_key_env = \"SOCIAL_DEDUCTION_NO_SUCH_KEY\"
+[strategies.smart]
+policy = \"prompted\"
+model = \"claude\"
+system = \"Smart {{{{ name }}}}.\"
+{rest}"
+        )
+        .replace(
+            "system = \"{{ name }},",
+            "model = \"qwen\"\nsystem = \"{{ name }},",
+        )
+    }
+
+    #[test]
+    fn a_model_is_in_play_when_a_strategy_at_the_table_asks_it() {
+        let settings = settle(&two_models(""), Overrides::default());
+        let in_play: Vec<&str> = settings.models_in_play().into_keys().collect();
+        assert_eq!(in_play, ["qwen"]);
+        let both = settle(
+            &two_models("[roles.minion]\nstrategy = \"smart\"\n"),
+            Overrides::default(),
+        );
+        let in_play: Vec<&str> = both.models_in_play().into_keys().collect();
+        assert_eq!(in_play, ["claude", "qwen"]);
+    }
+
+    /// The file [`two_models`] makes, with `claude` at `claude_url` asked
+    /// by the Minion, its key not needed, and `qwen` at `qwen_url` with a
+    /// context window of 8192.
+    fn two_served(claude_url: &str, qwen_url: &str) -> String {
+        two_models("[roles.minion]\nstrategy = \"smart\"\n")
+            .replace("https://api.anthropic.com/v1", claude_url)
+            .replace("api_key_env = \"SOCIAL_DEDUCTION_NO_SUCH_KEY\"\n", "")
+            .replace("http://localhost:1234/v1", qwen_url)
+            .replace(
+                "id = \"qwen2.5-7b-instruct\"",
+                "id = \"qwen2.5-7b-instruct\"\ncontext_window = 8192",
+            )
+    }
+
+    #[tokio::test]
+    async fn every_model_in_play_is_set_up_once_with_its_own_tool_choice_and_window() {
+        let claude_url = canned::refusing_required(&["claude-sonnet-4-5"]);
+        let (qwen_url, asked) = canned::recording(&["qwen2.5-7b-instruct"]);
+        let settings = settle(&two_served(&claude_url, &qwen_url), Overrides::default());
+        let prompts = settings.prompts().unwrap();
+        let (models, handles) = settings.set_up(&prompts).await.unwrap();
+        assert_eq!(
+            models,
+            Models::from([
+                (
+                    "claude".to_string(),
+                    ModelInPlay {
+                        base_url: claude_url,
+                        id: "claude-sonnet-4-5".to_string(),
+                        request_timeout: REQUEST_TIMEOUT,
+                        api_key_env: None,
+                        tool_choice: ToolChoice::Auto,
+                        context_window: ContextWindow {
+                            tokens: CONTEXT_WINDOW,
+                            source: Source::Default,
+                        },
+                    }
+                ),
+                (
+                    "qwen".to_string(),
+                    ModelInPlay {
+                        base_url: qwen_url,
+                        id: "qwen2.5-7b-instruct".to_string(),
+                        request_timeout: REQUEST_TIMEOUT,
+                        api_key_env: None,
+                        tool_choice: ToolChoice::Required,
+                        context_window: ContextWindow {
+                            tokens: 8192,
+                            source: Source::File,
+                        },
+                    }
+                ),
+            ])
+        );
+        assert_eq!(handles.keys().collect::<Vec<_>>(), ["claude", "qwen"]);
+        // Probed once: asked as the leader, a voter, a member of a team and
+        // the Assassin, each offered speak, its phase's tool and wait, and
+        // made to call a tool.
+        let asked = asked.lock().unwrap();
+        let offered: Vec<String> = asked
+            .iter()
+            .map(|request| request["tools"][1]["function"]["name"].to_string())
+            .collect();
+        assert_eq!(
+            offered,
+            ["\"propose\"", "\"vote\"", "\"perform\"", "\"select\""]
+        );
+        assert!(
+            asked
+                .iter()
+                .all(|request| request["tool_choice"] == "required")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_model_that_cannot_be_set_up_is_an_error_naming_it() {
+        let claude_url = playing(&["claude-sonnet-4-5"]);
+        let qwen_url = canned::refusing(&["qwen2.5-7b-instruct"]);
+        let settings = settle(&two_served(&claude_url, &qwen_url), Overrides::default());
+        let error = settings
+            .set_up(&settings.prompts().unwrap())
+            .await
+            .err()
+            .unwrap();
+        let shown = format!("{error:#}");
+        assert!(
+            shown.starts_with(
+                "setting up the model qwen: qwen2.5-7b-instruct did not answer as the leader"
+            ),
+            "{shown}"
+        );
+        // A table of random players sets up nothing.
+        let file = two_models("").replace("strategy = \"plain\"", "strategy = \"random\"");
+        let settings = settle(&file, Overrides::default());
+        let (models, handles) = settings.set_up(&[]).await.unwrap();
+        assert!(models.is_empty() && handles.is_empty());
+    }
+
+    #[test]
+    fn each_model_s_window_is_checked_against_the_strategies_asking_it_alone() {
+        let settings = settle(
+            &two_models("[roles.minion]\nstrategy = \"smart\"\n"),
+            Overrides::default(),
+        );
+        // A long prompt for every seat as the Minion, playing `smart`.
+        let mut prompts = settings.prompts().unwrap();
+        for prompt in &mut prompts {
+            if prompt.strategy == "smart" {
+                prompt.text = "x".repeat(12000);
+            }
+        }
+        let plain = settings.unstoried("qwen", &prompts);
+        let smart = settings.unstoried("claude", &prompts);
+        assert!(smart > plain + 3900, "{smart} {plain}");
+        assert!(smart < plain + 4500, "{smart} {plain}");
+        assert_eq!(
+            settings
+                .context_window("qwen", Some(plain), &prompts)
+                .unwrap(),
+            ContextWindow {
+                tokens: plain,
+                source: Source::Provider,
+            }
+        );
+        let error = settings
+            .context_window("claude", Some(plain), &prompts)
+            .unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            format!(
+                "the context window the provider reports for claude is {plain} tokens, smaller than the {smart} a request takes before its story, by estimate; context_window in [models.claude] gives the window"
+            )
+        );
+    }
+
+    #[test]
+    fn the_request_before_its_story_is_sized_for_the_largest_table_and_the_longest_limit() {
+        let file = |rest: &str| format!("{PLAIN}{rest}");
+        let five = settle(&file(""), Overrides::default());
+        let ten = settle(&file("[roles.servant]\ncount = 7\n"), Overrides::default());
+        let mut phases = "[phases]\n".to_string();
+        for phase in ["propose", "vote", "quest", "assassinate"] {
+            phases.push_str(&format!("{phase}_limit = \"1h 59m 59s\"\n"));
+        }
+        let slow = settle(&file(&phases), Overrides::default());
+        let needed = |settings: &Settings| settings.unstoried("qwen", &settings.prompts().unwrap());
+        assert!(needed(&ten) > needed(&five));
+        assert!(needed(&slow) > needed(&five));
+    }
+
+    /// The model in play the configuration tests record, made to call a
+    /// tool, with the window its file gives.
+    fn qwen() -> ModelInPlay {
+        ModelInPlay {
+            base_url: "http://localhost:1234/v1".to_string(),
+            id: "qwen2.5-7b-instruct".to_string(),
+            request_timeout: Duration::from_secs(10),
+            api_key_env: None,
+            tool_choice: ToolChoice::Required,
+            context_window: ContextWindow {
+                tokens: 8192,
+                source: Source::File,
+            },
+        }
+    }
+
+    /// A deal of the default table, Merlin and the Servants playing
+    /// `plain` and the evil players `random`.
+    fn mixed_deal() -> HashMap<PlayerId, Dealt> {
+        let dealt = |role, strategy: &str| Dealt {
+            role,
+            strategy: strategy.to_string(),
+        };
+        HashMap::from([
+            ("player1".to_string(), dealt(Role::Servant, "plain")),
+            ("player2".to_string(), dealt(Role::Assassin, RANDOM)),
+            ("player3".to_string(), dealt(Role::Merlin, "plain")),
+            ("player4".to_string(), dealt(Role::Minion, RANDOM)),
+            ("player5".to_string(), dealt(Role::Servant, "plain")),
+        ])
+    }
+
+    /// The settings of the table [`mixed_deal`] deals.
+    fn mixed_settings() -> Settings {
+        let file = format!(
+            "{PLAIN}[roles.assassin]\nstrategy = \"random\"\n[roles.minion]\nstrategy = \"random\"\n"
+        );
+        settle(&file, Overrides::default())
+    }
+
+    #[test]
+    fn the_configuration_carries_each_prompted_player_s_prompt_and_the_models_in_play() {
+        let settings = mixed_settings();
+        let prompts = settings.prompts().unwrap();
+        let models = Models::from([("qwen".to_string(), qwen())]);
+        let configuration = settings
+            .configuration(&mixed_deal(), &prompts, models.clone())
+            .unwrap();
+        assert_eq!(configuration.models, models);
+        assert_eq!(
+            configuration.prompts,
+            BTreeMap::from([
+                (
+                    "player1".to_string(),
+                    "player1, a loyal servant of Arthur".to_string()
+                ),
+                ("player3".to_string(), "player3, Merlin".to_string()),
+                (
+                    "player5".to_string(),
+                    "player5, a loyal servant of Arthur".to_string()
+                ),
+            ])
+        );
+        let entry = Entry::Configuration(Box::new(configuration));
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(
+            json["Configuration"]["models"]["qwen"]["context_window"],
+            json!({"tokens": 8192, "source": "file"})
+        );
+        let back: Entry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, entry);
+        assert_eq!(
+            Narrator::default().narrate(&logged(entry)),
+            ["qwen's context window is 8192 tokens, as the configuration file says."]
+        );
+    }
+
+    #[test]
+    fn a_prompted_player_with_no_prompt_rendered_is_an_error_naming_the_seat_the_role_and_the_strategy()
+     {
+        let settings = mixed_settings();
+        let mut deal = mixed_deal();
+        deal.insert(
+            "player4".to_string(),
+            Dealt {
+                role: Role::Minion,
+                strategy: "plain".to_string(),
+            },
+        );
+        let error = settings
+            .configuration(&deal, &settings.prompts().unwrap(), Models::new())
+            .unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            "no system prompt rendered for player4 as the Minion playing plain"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_table_of_random_evil_and_prompted_good_plays_to_the_end_each_player_by_its_policy() {
+        let settings = mixed_settings();
+        let deal = mixed_deal();
+        let prompts = settings.prompts().unwrap();
+        let models = Models::from([("qwen".to_string(), qwen())]);
+        let configuration = settings.configuration(&deal, &prompts, models).unwrap();
+        let fake = Arc::new(FakeModel::answering(choosing_first));
+        let handles = Handles::from([(
+            "qwen".to_string(),
+            Arc::clone(&fake) as Arc<dyn model::Model>,
+        )]);
+        let players = players(&configuration, &deal, &handles);
+        let (winner, won) = oneshot::channel();
+        let (logger, log) = unbounded_channel();
+        let episode = game(
+            deal.clone(),
+            settings.rules.clone(),
+            configuration.clone(),
+            winner,
+            players,
+            logger,
+        );
+        let (winner, entries, _) = run(episode, won, log).await.unwrap();
+        assert!(matches!(winner, Team::Good | Team::Evil));
+        assert!(
+            matches!(entries.last(), Some(Entry::End { .. })),
+            "{entries:?}"
+        );
+        // Each choice is made as its player's policy makes it: a random
+        // player's with no model to have been shown anything, a prompted
+        // player's by a model shown its memories. Only prompted players
+        // talk.
+        let prompted: HashSet<&str> = ["player1", "player3", "player5"].into();
+        let mut chose = HashSet::new();
+        for entry in &entries {
+            if let Entry::Action {
+                from,
+                message,
+                seen,
+                ..
+            } = entry
+                && from.as_str() != crate::seat::ENVIRONMENT
+            {
+                assert_eq!(seen.is_some(), prompted.contains(from.as_str()), "{from}");
+                if let Message::Say { .. } = message {
+                    assert!(prompted.contains(from.as_str()), "{from}");
+                }
+                chose.insert(from.as_str());
+            }
+        }
+        assert!(chose.is_superset(&prompted), "{chose:?}");
+        // The model was asked by the prompted players alone, as their
+        // configuration says.
+        for request in fake.requests() {
+            assert_eq!(request.model, "qwen2.5-7b-instruct");
+            assert_eq!(request.tool_choice, ToolChoice::Required);
+            assert!(model::estimated(&request) <= 8192);
+            let system = &request.messages[0].content;
+            assert!(
+                configuration
+                    .prompts
+                    .values()
+                    .any(|prompt| prompt == system),
+                "{system}"
             );
         }
     }

@@ -1,0 +1,40 @@
+# The least a model-played game needs: one model and one prompted strategy
+# for everyone. The rules live in a text block the prompt pulls in. Run it
+# with
+#
+#     social-deduction avalon prompted.toml
+
+# Every role not allotted otherwise plays this strategy.
+strategy = "everyone"
+
+# A Qwen model on a local LM Studio server. The id and base URL will likely
+# need changing to whatever model and server you have running.
+[models.qwen]
+base_url = "http://localhost:1234/v1"
+id = "qwen2.5-7b-instruct-1m"
+# The model's context window in tokens, over what the provider reports.
+# context_window = 32768
+
+[text]
+rules = """
+Avalon is a game of hidden loyalties. The players are on two teams, good
+and evil, and play at most five quests. Each quest has a leader, who
+proposes a team of the size the quest needs. Everyone votes on the team in
+secret, and it goes when more than half of all the players approve. Each
+member of a team that goes supports or sabotages the quest in secret, and
+enough sabotages fail it; only evil players may sabotage. Merlin is good
+and knows most of the evil players, and the evil players know each other.
+Good wins with three successful quests, unless the Assassin then names
+Merlin. Evil wins with three failed quests, five failed proposals in a
+row, or Merlin named. Everyone may talk at any time, in every phase, with
+no turns: whenever you are woken, you may speak to every other player, make
+the choice the phase asks of you, or wait.
+"""
+
+[strategies.everyone]
+policy = "prompted"
+system = """
+{{ rules }}
+
+You are {{ name }}, {{ role }}.
+"""

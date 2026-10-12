@@ -125,6 +125,7 @@ mod tests {
     use crate::avalon::{
         PROPOSALS, Role, RoleCounts, Rules, Table, game, sabotages_needed, team_size,
     };
+    use crate::model::spec::Models;
     use crate::seat::{ENVIRONMENT, to_the_environment};
     use crate::strategy::RANDOM;
     use free_agent::ActorId;
@@ -451,7 +452,9 @@ mod tests {
             ..Overrides::default()
         };
         let settings = Config::default().settle(overrides).unwrap();
-        let configuration = settings.configuration();
+        let configuration = settings
+            .configuration(&settings.deal(), &[], Models::new())
+            .unwrap();
         let mut won = 0;
         for _ in 0..games {
             let (winner, result) = oneshot::channel();

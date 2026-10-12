@@ -1188,20 +1188,93 @@ fn avalon_hears_the_command_line_over_the_file() {
 }
 
 #[test]
-fn avalon_refuses_a_prompted_strategy_at_the_table_and_a_file_it_cannot_read() {
-    let config = written(
-        "avalon-prompted",
-        "[models.qwen]\nbase_url = \"http://localhost:1234/v1\"\nid = \"qwen\"\n\
-         [strategies.schemer]\npolicy = \"prompted\"\nsystem = \"Hi.\"\n\
-         [roles.minion]\nstrategy = \"schemer\"\n",
-    );
-    let stderr = refused(&["avalon", &config]);
-    assert!(
-        stderr.contains(
-            "prompted players do not play Avalon yet; strategy schemer is allotted to the Minion"
-        ),
-        "{stderr}"
-    );
+fn avalon_refuses_a_file_it_cannot_read() {
     let stderr = refused(&["avalon", "no-such-file.toml"]);
     assert!(stderr.contains("no-such-file.toml"), "{stderr}");
+}
+
+/// A configuration file written for this test: Avalon's prompted example,
+/// its model served at `base_url` as [`EXAMPLE_MODEL`], with `rest` after
+/// it.
+fn avalon_prompted(test: &str, base_url: &str, rest: &str) -> String {
+    let example = std::fs::read_to_string(avalon_example("prompted.toml")).unwrap();
+    let file = example
+        .replace("http://localhost:1234/v1", base_url)
+        .replace(
+            "id = \"qwen2.5-7b-instruct-1m\"",
+            &format!("id = \"{EXAMPLE_MODEL}\""),
+        );
+    assert!(
+        file.contains(base_url) && file.contains(EXAMPLE_MODEL),
+        "{file}"
+    );
+    written(test, &format!("{file}{rest}"))
+}
+
+#[test]
+fn avalon_plays_a_table_of_random_evil_and_prompted_good_to_the_end() {
+    let base_url = playing(&[EXAMPLE_MODEL]);
+    let config = avalon_prompted(
+        "avalon-mixed",
+        &base_url,
+        "[roles.assassin]\nstrategy = \"random\"\n[roles.minion]\nstrategy = \"random\"\n",
+    );
+    let (events, printed) = played_avalon(&[&config]);
+    let Some(avalon::Entry::Start {
+        roles, strategies, ..
+    }) = events.first().map(|event| &event.payload)
+    else {
+        panic!("{events:?}");
+    };
+    for (seat, role) in roles {
+        let expected = match role.team() {
+            avalon::Team::Good => "everyone",
+            avalon::Team::Evil => "random",
+        };
+        assert_eq!(strategies[seat], expected, "{seat}");
+    }
+    // Only the good players are told prompts, each its own.
+    let configuration = avalon_configuration(&events);
+    assert_eq!(configuration.models["qwen"].id, EXAMPLE_MODEL);
+    let prompted: HashSet<&PlayerId> = configuration.prompts.keys().collect();
+    let good: HashSet<&PlayerId> = roles
+        .iter()
+        .filter(|(_, role)| role.team() == avalon::Team::Good)
+        .map(|(seat, _)| seat)
+        .collect();
+    assert_eq!(prompted, good);
+    for (seat, prompt) in &configuration.prompts {
+        let told = format!("You are {seat}, {}.", roles[seat].told());
+        assert!(prompt.ends_with(&told), "{prompt}");
+    }
+    assert!(
+        matches!(
+            events.last().map(|event| &event.payload),
+            Some(avalon::Entry::End { .. })
+        ),
+        "{events:?}"
+    );
+    // The prompted players talk, and the account tells it.
+    assert!(
+        printed.contains("qwen's context window is 4096 tokens, the default."),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("says, \"I have nothing to add.\""),
+        "{printed}"
+    );
+}
+
+#[test]
+fn avalon_refuses_a_model_that_does_not_play_naming_it_before_anything_is_printed() {
+    let base_url = refusing(&[EXAMPLE_MODEL]);
+    let config = avalon_prompted("avalon-refused", &base_url, "");
+    let stderr = refused(&["avalon", &config]);
+    for said in [
+        "setting up the model qwen".to_string(),
+        format!("{EXAMPLE_MODEL} did not answer as the leader"),
+    ] {
+        assert!(stderr.contains(&said), "{stderr}");
+    }
+    assert!(stderr.contains(&refusal(EXAMPLE_MODEL)), "{stderr}");
 }

@@ -23,14 +23,16 @@
 //! choices it sends.
 //!
 //! The environment is [`announced`]'s, and each of an episode's players
-//! follows the policy of the strategy it is dealt with its role: for now,
-//! the [`random`] policy. The [`config`] says which strategies are dealt.
+//! follows the policy of the strategy it is dealt with its role: the
+//! [`random`] policy, or the [`prompted`] one, whose choices a language
+//! model makes. The [`config`] says which strategies are dealt.
 //! An episode holds one kind of actor, [`Actor`], which is the environment
 //! or a player, and [`game`] builds every episode, with each seat's player
 //! built for it.
 
 pub mod announced;
 pub mod config;
+pub mod prompted;
 pub mod random;
 pub mod report;
 
@@ -102,6 +104,8 @@ pub enum Actor {
     Environment(announced::Environment),
     /// A player who chooses at random.
     Random(random::Player),
+    /// A player whose choices a language model makes.
+    Prompted(prompted::Player),
     /// A player who says whatever its script says.
     #[cfg(test)]
     Puppet(tests::Puppet),
@@ -116,6 +120,7 @@ impl Behavior for Actor {
         match self {
             Actor::Environment(environment) => environment.context(),
             Actor::Random(player) => player.context(),
+            Actor::Prompted(player) => player.context(),
             #[cfg(test)]
             Actor::Puppet(puppet) => puppet.context(),
         }
@@ -125,6 +130,7 @@ impl Behavior for Actor {
         match self {
             Actor::Environment(environment) => environment.receive(message).await,
             Actor::Random(player) => player.receive(message).await,
+            Actor::Prompted(player) => player.receive(message).await,
             #[cfg(test)]
             Actor::Puppet(puppet) => puppet.receive(message).await,
         }
@@ -134,6 +140,7 @@ impl Behavior for Actor {
         match self {
             Actor::Environment(environment) => environment.start().await,
             Actor::Random(player) => player.start().await,
+            Actor::Prompted(player) => player.start().await,
             #[cfg(test)]
             Actor::Puppet(puppet) => puppet.start().await,
         }
@@ -288,6 +295,21 @@ impl Role {
             Role::Mordred => "mordred",
             Role::Oberon => "oberon",
             Role::Minion => "minions",
+        }
+    }
+
+    /// The role as a sentence names it after a player's name: "Merlin",
+    /// "a loyal servant of Arthur", "the Assassin", "a minion of Mordred".
+    pub fn told(self) -> &'static str {
+        match self {
+            Role::Merlin => "Merlin",
+            Role::Percival => "Percival",
+            Role::Servant => "a loyal servant of Arthur",
+            Role::Assassin => "the Assassin",
+            Role::Morgana => "Morgana",
+            Role::Mordred => "Mordred",
+            Role::Oberon => "Oberon",
+            Role::Minion => "a minion of Mordred",
         }
     }
 
@@ -1506,6 +1528,20 @@ pub(crate) mod tests {
                 "Minion"
             ]
         );
+        let told = EVERYONE.map(Role::told);
+        assert_eq!(
+            told,
+            [
+                "Merlin",
+                "Percival",
+                "a loyal servant of Arthur",
+                "the Assassin",
+                "Morgana",
+                "Mordred",
+                "Oberon",
+                "a minion of Mordred"
+            ]
+        );
         let teams = EVERYONE.map(Role::team);
         assert_eq!(teams[..3], [Team::Good; 3]);
         assert_eq!(teams[3..], [Team::Evil; 5]);
@@ -2358,9 +2394,10 @@ pub(crate) mod tests {
     /// The latest phase a puppet was announced: its number.
     type Announced = Arc<Mutex<u64>>;
 
-    /// A player who says whatever its script says, at once, for a game
-    /// with a player who is late, illegal, repeats itself, or talks. Its
-    /// script is consulted for every phase it is announced. A message goes
+    /// A player who says whatever its script says, at once or after a
+    /// delay, for a game with a player who is late, illegal, repeats
+    /// itself, or talks. Its script is consulted for every phase it is
+    /// announced. A message goes
     /// where the game's rules send it from a player. It logs each message
     /// it sends as its action and each message it receives as its
     /// observation, in the latest phase announced, and does nothing else
@@ -2369,6 +2406,8 @@ pub(crate) mod tests {
         context: Context<Message, Entry>,
         script: Script,
         announced: Announced,
+        /// How long after each announcement it says what its script says.
+        delay: Duration,
     }
 
     #[async_trait]
@@ -2391,6 +2430,9 @@ pub(crate) mod tests {
             };
             *self.announced.lock().unwrap() = *seq;
             observe(&self.context, ENVIRONMENT.to_string(), n, *seq);
+            if !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
             let me = &self.context.id;
             for said in (self.script)(me, *seq, view) {
                 let to = receivers(&said, me, view);
@@ -2403,11 +2445,17 @@ pub(crate) mod tests {
     impl Actor {
         /// A puppet following `script`.
         pub(crate) fn puppet(script: Script) -> Seat {
+            Actor::puppet_after(Duration::ZERO, script)
+        }
+
+        /// A puppet following `script` `delay` after each announcement.
+        pub(crate) fn puppet_after(delay: Duration, script: Script) -> Seat {
             let behavior: Builder<Actor> = Box::new(move |context| {
                 Actor::Puppet(Puppet {
                     context,
                     script,
                     announced: Announced::default(),
+                    delay,
                 })
             });
             (behavior, None)

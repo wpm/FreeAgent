@@ -139,8 +139,13 @@ async fn main() -> anyhow::Result<()> {
                 None => avalon::config::Config::default(),
             };
             let settings = config.settle(overrides)?;
+            // As in Werewolf, every prompt is rendered and every model in
+            // play set up before any actor is built.
+            let prompts = settings.prompts()?;
+            let (models, handles) = settings.set_up(&prompts).await?;
             let deal = settings.deal();
-            let configuration = settings.configuration();
+            let configuration = settings.configuration(&deal, &prompts, models)?;
+            let players = avalon::config::players(&configuration, &deal, &handles);
             let rules = settings.rules;
             let mut narrator = avalon::report::Narrator::default();
             play(
@@ -148,14 +153,7 @@ async fn main() -> anyhow::Result<()> {
                 move |event| narrator.narrate(event),
                 |logger| {
                     let (winner, _) = oneshot::channel();
-                    avalon::game(
-                        deal,
-                        rules,
-                        configuration,
-                        winner,
-                        |_| avalon::random::Player::init(),
-                        logger,
-                    )
+                    avalon::game(deal, rules, configuration, winner, players, logger)
                 },
             )
             .await
