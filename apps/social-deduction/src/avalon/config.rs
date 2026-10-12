@@ -472,13 +472,12 @@ impl Settings {
     fn unstoried(&self, name: &str, prompts: &[SystemPrompt]) -> u64 {
         let seats: Vec<PlayerId> = self.table.seats().collect();
         let id = &self.config.models[name].id;
-        let limit = |phase| self.rules.limit(phase);
         prompts
             .iter()
             .filter(|prompt| self.model_of(&prompt.strategy) == Some(name))
             .map(|prompt| {
                 let (text, seat, role) = (&prompt.text, &prompt.seat, prompt.role);
-                prompted::unstoried(id, text, seat, role, &seats, limit)
+                prompted::unstoried(id, text, seat, role, &seats, &self.rules)
             })
             .max()
             .unwrap_or_default()

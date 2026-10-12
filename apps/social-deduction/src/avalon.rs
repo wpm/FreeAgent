@@ -560,6 +560,17 @@ pub enum Phase {
 }
 
 impl Phase {
+    /// The phase as a sentence names it after "the": "proposal", "vote",
+    /// "quest", "assassination".
+    pub fn told(self) -> &'static str {
+        match self {
+            Phase::Propose => "proposal",
+            Phase::Vote => "vote",
+            Phase::Quest => "quest",
+            Phase::Assassinate => "assassination",
+        }
+    }
+
     /// Whether this phase waits on `player`, of `role`, when `leader`
     /// leads and `team` is on the table: a proposal waits on the leader, a
     /// vote on everyone, a quest on its team, and the assassination on the

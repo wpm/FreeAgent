@@ -224,13 +224,7 @@ impl Narrator {
             .take()
             .map(|told| {
                 let took = time.duration_since(told.began).unwrap_or_default();
-                let phase = match told.phase {
-                    Phase::Propose => "proposal",
-                    Phase::Vote => "vote",
-                    Phase::Quest => "quest",
-                    Phase::Assassinate => "assassination",
-                };
-                format!("The {phase} took {}.", whole_seconds(took))
+                format!("The {} took {}.", told.phase.told(), whole_seconds(took))
             })
             .into_iter()
             .collect()
@@ -357,11 +351,20 @@ fn tallied(
 /// The team `listed` going on the quest `view` shows, and how many
 /// sabotages fail it.
 fn questing(listed: &str, view: &View) -> String {
-    let fail = match view.sabotages_needed {
+    format!(
+        "{listed} go on quest {}, which {}.",
+        view.quest,
+        sabotages_fail(view.sabotages_needed)
+    )
+}
+
+/// That `needed` sabotages fail a quest: "1 sabotage fails", "2 sabotages
+/// fail".
+pub(super) fn sabotages_fail(needed: usize) -> String {
+    match needed {
         1 => "1 sabotage fails".to_string(),
         needed => format!("{needed} sabotages fail"),
-    };
-    format!("{listed} go on quest {}, which {fail}.", view.quest)
+    }
 }
 
 /// How a quest came out: whether it succeeded, and how many sabotaged it.

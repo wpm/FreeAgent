@@ -53,10 +53,10 @@
 //! request asks it to call one, and an answer in prose is a failure like
 //! any other.
 
-use super::report::{Story, in_prose};
+use super::report::{Story, in_prose, sabotages_fail};
 use super::{
-    Actor, Ballot, Choice, Deed, Entry, Message, PROPOSALS, Phase, Role, Seat, Team, View, act,
-    awaited, candidates, observe, receivers, team_size,
+    Actor, Ballot, Choice, Deed, Entry, Message, PROPOSALS, Phase, Role, Rules, Seat, Team, View,
+    act, awaited, candidates, observe, receivers, team_size,
 };
 use crate::model::spec::Probed;
 use crate::model::{self, Request, Response, Tool, ToolChoice};
@@ -556,6 +556,16 @@ impl Duty {
         })
     }
 
+    /// The phase that waits on a player for this.
+    fn phase(&self) -> Phase {
+        match self {
+            Duty::Propose { .. } => Phase::Propose,
+            Duty::Vote => Phase::Vote,
+            Duty::Perform { .. } => Phase::Quest,
+            Duty::Select { .. } => Phase::Assassinate,
+        }
+    }
+
     /// What the player is asked to do.
     fn asked(&self) -> String {
         match self {
@@ -597,29 +607,19 @@ fn deed_name(deed: Deed) -> &'static str {
     }
 }
 
-/// The phase as a sentence names it: "the proposal", "the vote".
-fn phase_name(phase: Phase) -> &'static str {
-    match phase {
-        Phase::Propose => "proposal",
-        Phase::Vote => "vote",
-        Phase::Quest => "quest",
-        Phase::Assassinate => "assassination",
-    }
-}
-
 /// Where the game stands as `view` shows it, how long the phase lasts, and
 /// what is asked of the player: its `duty`, if it has one, and otherwise
 /// that it may speak or wait. The quest and the proposal, the leader, the
 /// size of the team and how many sabotages fail it, and the team proposed
 /// when there is one.
 fn situation(view: &View, limit: Duration, duty: Option<&Duty>) -> String {
-    let fail = match view.sabotages_needed {
-        1 => "1 sabotage fails it".to_string(),
-        needed => format!("{needed} sabotages fail it"),
-    };
     let mut said = format!(
-        "It is quest {}, proposal {} of {PROPOSALS}, led by {}. The quest needs a team of {}, and {fail}.",
-        view.quest, view.proposal, view.leader, view.size
+        "It is quest {}, proposal {} of {PROPOSALS}, led by {}. The quest needs a team of {}, and {} it.",
+        view.quest,
+        view.proposal,
+        view.leader,
+        view.size,
+        sabotages_fail(view.sabotages_needed)
     );
     if let Some(team) = &view.team {
         said.push_str(&format!(
@@ -630,7 +630,7 @@ fn situation(view: &View, limit: Duration, duty: Option<&Duty>) -> String {
     let asked = duty.map_or("You may speak or wait.".to_string(), Duty::asked);
     said.push_str(&format!(
         " The {} lasts {}. {asked}",
-        phase_name(view.phase),
+        view.phase.told(),
         format_duration(limit)
     ));
     said
@@ -660,17 +660,16 @@ fn request(
 
 /// The most a request to the model `model_id` from `me`, dealt `role` and
 /// told `prompt`, takes of the context window before its story, by
-/// estimate, at a table of `seats` whose phases last as `limit` says: the
-/// system prompt, and the largest of the four phases' situations and tools
-/// on the fifth proposal of the fifth quest, whose team is the largest,
-/// and the reply.
+/// estimate, at a table of `seats` under `rules`: the system prompt, and
+/// the largest of the four phases' situations and tools on the fifth
+/// proposal of the fifth quest, whose team is the largest, and the reply.
 pub(crate) fn unstoried(
     model_id: &str,
     prompt: &str,
     me: &PlayerId,
     role: Role,
     seats: &[PlayerId],
-    limit: impl Fn(Phase) -> Duration,
+    rules: &Rules,
 ) -> u64 {
     let quest = NonZero::new(5).unwrap();
     let size = team_size(seats.len(), quest);
@@ -685,14 +684,9 @@ pub(crate) fn unstoried(
         Duty::Perform { deeds: deeds(role) },
         Duty::Select { targets: others },
     ];
-    let phases = [
-        Phase::Propose,
-        Phase::Vote,
-        Phase::Quest,
-        Phase::Assassinate,
-    ];
     let mut most = 0;
-    for (phase, duty) in phases.into_iter().zip(&duties) {
+    for duty in &duties {
+        let (phase, limit) = (duty.phase(), rules.limit(duty.phase()));
         let view = View {
             quest,
             proposal: NonZero::new(PROPOSALS).unwrap(),
@@ -707,8 +701,8 @@ pub(crate) fn unstoried(
             sees: HashMap::new(),
             players: seats.to_vec(),
         };
-        let asked = format!("\n\n{}", situation(&view, limit(phase), Some(duty)));
-        let tools = tools(Some(duty), limit(phase));
+        let asked = format!("\n\n{}", situation(&view, limit, Some(duty)));
+        let tools = tools(Some(duty), limit);
         let request = request(model_id, ToolChoice::Required, prompt, asked, tools);
         most = most.max(model::estimated(&request));
     }
@@ -769,15 +763,9 @@ fn probes() -> [(&'static str, Duty); 4] {
 /// What a probe's request says: how long its phase lasts, and what the
 /// player is asked to do.
 fn probe_asked(duty: &Duty) -> String {
-    let phase = match duty {
-        Duty::Propose { .. } => Phase::Propose,
-        Duty::Vote => Phase::Vote,
-        Duty::Perform { .. } => Phase::Quest,
-        Duty::Select { .. } => Phase::Assassinate,
-    };
     format!(
         "The {} lasts {}. {}",
-        phase_name(phase),
+        duty.phase().told(),
         format_duration(PROBE_LIMIT),
         duty.asked()
     )
@@ -2426,9 +2414,10 @@ mod tests {
     #[test]
     fn the_request_before_its_story_is_the_largest_of_the_four_phases() {
         let seats: Vec<PlayerId> = (1..=10).map(|seat| format!("player{seat}")).collect();
-        let limit = |_| Duration::from_secs(60);
+        let rules = Rules::default();
+        let limit = Duration::from_secs(60);
         let me = id("player1");
-        let needed = unstoried(MODEL_ID, "Hi.", &me, Role::Assassin, &seats, limit);
+        let needed = unstoried(MODEL_ID, "Hi.", &me, Role::Assassin, &seats, &rules);
         let view = View {
             team: None,
             ..view_of("player1", Phase::Propose, &[])
@@ -2437,8 +2426,8 @@ mod tests {
             MODEL_ID,
             ToolChoice::Required,
             "Hi.",
-            situation(&view, limit(Phase::Propose), None),
-            tools(None, limit(Phase::Propose)),
+            situation(&view, limit, None),
+            tools(None, limit),
         );
         assert!(needed > model::estimated(&proposing));
         // A longer prompt takes as much more.
@@ -2448,7 +2437,7 @@ mod tests {
             &me,
             Role::Assassin,
             &seats,
-            limit,
+            &rules,
         );
         assert_eq!(longer, needed + 99);
     }

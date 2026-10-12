@@ -1247,11 +1247,12 @@ fn avalon_plays_a_table_of_random_evil_and_prompted_good_to_the_end() {
         let told = format!("You are {seat}, {}.", roles[seat].told());
         assert!(prompt.ends_with(&told), "{prompt}");
     }
+    // A player stopped in the middle of a step may log after the end, so
+    // the end is somewhere in the log rather than last.
     assert!(
-        matches!(
-            events.last().map(|event| &event.payload),
-            Some(avalon::Entry::End { .. })
-        ),
+        events
+            .iter()
+            .any(|event| matches!(event.payload, avalon::Entry::End { .. })),
         "{events:?}"
     );
     // The prompted players talk, and the account tells it.
