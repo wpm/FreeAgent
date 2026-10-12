@@ -65,14 +65,16 @@ workflow takes a version's notes from here.
   may change its vote while the day is open and its latest vote counts,
   every vote goes to every other living player as well as to the
   environment, and the environment sends every living player a
-  `Tentative` whenever the votes change whom they select. A day ends once
-  the votes have stood for the ratify limit, voting out the selected
-  player, or at the day limit with nobody voted out. The ratify limit is
-  `ratify_limit` under `[phases]` or `--ratify-limit`, twenty seconds by
-  default, and may not be longer than the day limit. The log records how
-  every day ended as `Voted`, the start entry and the configuration carry
-  the ratify limit, and the narration tells the votes as they come, each
-  tentative decision, and whether the votes stood or the day ran out.
+  `Tentative` whenever the votes change whom they select. A day ends one
+  ratify limit after a `Tentative` naming a player, unless another follows
+  first, voting that player out, or at the day limit with nobody voted out.
+  A vote that leaves the decision as it was leaves the deadline as it was.
+  The ratify limit is `ratify_limit` under `[phases]` or `--ratify-limit`,
+  twenty seconds by default, and may not be longer than the day limit. The
+  log records how every day ended as `Voted`, the start entry and the
+  configuration carry the ratify limit, and the narration tells the votes
+  as they come, each tentative decision, and whether the votes stood or the
+  day ran out.
 - In `social-deduction werewolf llm` the players talk by day, with no
   turns. A player is woken by every message it hears by day, debounced so
   that it has at most one model call in progress and one waiting, and the
@@ -87,6 +89,15 @@ workflow takes a version's notes from here.
   as too late to say if its phase has ended, and a player's story tells it
   what others said. A day's failure is narrated as a failure to play. The
   night plays as before.
+- In `social-deduction werewolf llm` a player may retract its vote by day
+  with the `retract` tool, and is undecided again. A `Retract` goes where a
+  vote goes, to the environment and every other living player, and is
+  handled like a change of vote: one that changes the tentative decision is
+  announced with a `Tentative` and starts or stops the ratify timer. A
+  retraction counts in a day with a ratify limit, from a player with a vote
+  standing. The narration tells "player4 withdraws their vote and is
+  undecided again.", and a retraction with no vote standing as "player4
+  withdraws their vote, but the withdrawal does not count."
 
 ### Changed
 

@@ -43,38 +43,40 @@ enum Voice {
 /// role, except in reporting its death, and lists players in seat order.
 /// A blank line sets each phase off from what came before it, and another
 /// the winner from the last.
-/// Both learn who died from who is shown as alive next, so a phase's
-/// result is told as the next one begins, and the omniscient narrator
-/// holds the phase's deeds until then too, to tell them in seat order,
-/// then whom the werewolves chose and who protected them, which no player
-/// is shown, or how a day's vote ended; a player's narrator tells the
-/// player's own deed as it is done. In a day whose vote is ratified, votes
-/// may change and their order matters, so the omniscient narrator tells
-/// each as the environment observes it, and both tell each tentative
-/// decision as it is announced, and a player's narrator tells the other
-/// players' votes as the player hears them, and as the day ends its tally:
-/// each player alive that day, in seat order, with its last vote or that
-/// it did not vote, which takes the place of the day's votes and tentative
-/// decisions in the player's account. A phase begins at its first
-/// announcement and ends at the next phase's, or at the end of the game,
-/// and the omniscient narrator tells the time between, to the nearest
-/// second, after who died. The omniscient narrator tells a selection when
-/// the environment logs observing it, joined to the selection's own action
-/// by the player and its number for the message: it is a deed of the phase
-/// it was for, unless the environment observed it in a later phase, and
-/// then it is told as too late to count, for the phase it was for. The
-/// other players' observations of a public vote add nothing. A player's
-/// failure to act is told by the omniscient narrator as it happens, with
-/// what went wrong, as a failure to select by night and to play by day,
-/// and for the phase it was for if that phase has ended; a player's
-/// narrator leaves it out, since the player is not told of it. Talk is
-/// told as it comes: the omniscient narrator tells each utterance from its
-/// speaker's action, in order with the day's votes, or as too late to say
-/// if its phase has ended, and a player's narrator tells each it made or
-/// heard. A message a player withheld because its phase had ended is told
-/// by the omniscient narrator as too late to say, or too late to count. A
-/// player's memory holds only the phases it lived through, in order, so
-/// nothing in it is late.
+/// Both learn who died from who is shown as alive next, so a phase's result
+/// is told as the next one begins, and the omniscient narrator holds the
+/// phase's deeds until then too, to tell them in seat order, then whom the
+/// werewolves chose and who protected them, which no player is shown, or
+/// how a day's vote ended; a player's narrator tells the player's own deed
+/// as it is done. In a day whose vote is ratified, votes may change or be
+/// retracted and their order matters, so the omniscient narrator tells each
+/// vote and retraction as the environment observes it, and both tell each
+/// tentative decision as it is announced, and a player's narrator tells the
+/// other players' votes and retractions as the player hears them, and as
+/// the day ends its tally: each player alive that day, in seat order, with
+/// its vote standing or that it did not vote, which takes the place of the
+/// day's votes, retractions and tentative decisions in the player's
+/// account. Both tell a retraction with no vote standing for it to take
+/// back as not counting. A phase begins at its first announcement and ends
+/// at the next phase's, or at the end of the game, and the omniscient
+/// narrator tells the time between, to the nearest second, after who died.
+/// The omniscient narrator tells a selection or retraction when the
+/// environment logs observing it, joined to its own action by the player
+/// and its number for the message: it is a deed of the phase it was for,
+/// unless the environment observed it in a later phase, and then it is told
+/// as too late to count, for the phase it was for. The other players'
+/// observations of a public vote add nothing. A player's failure to act is
+/// told by the omniscient narrator as it happens, with what went wrong, as
+/// a failure to select by night and to play by day, and for the phase it
+/// was for if that phase has ended; a player's narrator leaves it out,
+/// since the player is not told of it. Talk is told as it comes: the
+/// omniscient narrator tells each utterance from its speaker's action, in
+/// order with the day's votes, or as too late to say if its phase has
+/// ended, and a player's narrator tells each it made or heard. A message a
+/// player withheld because its phase had ended is told by the omniscient
+/// narrator as too late to say, or too late to count. A player's memory
+/// holds only the phases it lived through, in order, so nothing in it is
+/// late.
 #[derive(Debug, Default)]
 pub struct Narrator {
     /// Whose account this is.
@@ -96,16 +98,25 @@ pub struct Narrator {
     resolution: Option<String>,
     /// Every phase announced so far, by its number.
     announced: BTreeMap<u64, (NonZero<u8>, Phase)>,
-    /// Every selection logged as its player's action and not yet observed
-    /// by the environment, by the player and its number for the message:
-    /// the phase it was for, and whom it chose.
-    selections: HashMap<(ActorId, u64), (u64, PlayerId)>,
-    /// In a player's account, each player's last vote of the day being
-    /// told, for the day's tally.
+    /// Every ballot logged as its player's action and not yet observed by
+    /// the environment, by the player and its number for the message: the
+    /// phase it was for, and the ballot.
+    ballots: HashMap<(ActorId, u64), (u64, Ballot)>,
+    /// Each player's last vote of the day being told, for a player's
+    /// account's tally, and to tell whether a retraction takes one back.
     votes: HashMap<PlayerId, PlayerId>,
     /// In a player's account, the lines told so far, in order, each with
     /// what it is.
     account: Vec<(String, Line)>,
+}
+
+/// A player's selection or retraction, as cast.
+#[derive(Debug)]
+enum Ballot {
+    /// A selection of this player.
+    Vote(PlayerId),
+    /// A retraction of the player's vote.
+    Retract,
 }
 
 /// What a line of a player's account is, which decides what becomes of it.
@@ -182,8 +193,18 @@ impl Narrator {
                 message: Message::Select { seq, target, .. },
                 ..
             } => {
-                self.selections
-                    .insert((from.clone(), *n), (*seq, target.clone()));
+                self.ballots
+                    .insert((from.clone(), *n), (*seq, Ballot::Vote(target.clone())));
+                vec![]
+            }
+            Entry::Action {
+                from,
+                n,
+                message: Message::Retract { seq, .. },
+                ..
+            } => {
+                self.ballots
+                    .insert((from.clone(), *n), (*seq, Ballot::Retract));
                 vec![]
             }
             Entry::Action {
@@ -208,13 +229,19 @@ impl Narrator {
                 from,
                 message: Message::Select { seq, target, .. },
                 ..
-            } => vec![self.lateness(from, target, *seq)],
+            } => vec![self.lateness(from, &Ballot::Vote(target.clone()), *seq)],
+            Entry::Withheld {
+                from,
+                message: Message::Retract { seq, .. },
+                ..
+            } => vec![self.lateness(from, &Ballot::Retract, *seq)],
             Entry::Observation { by, from, n, seq } if by == ENVIRONMENT => {
-                match self.selections.remove(&(from.clone(), *n)) {
-                    Some((sent_in, chosen)) if sent_in != *seq => {
-                        vec![self.lateness(from, &chosen, sent_in)]
+                match self.ballots.remove(&(from.clone(), *n)) {
+                    Some((sent_in, ballot)) if sent_in != *seq => {
+                        vec![self.lateness(from, &ballot, sent_in)]
                     }
-                    Some((_, chosen)) => self.did(from, &chosen),
+                    Some((_, Ballot::Vote(chosen))) => self.did(from, &chosen),
+                    Some((_, Ballot::Retract)) => self.withdrew(from),
                     None => vec![],
                 }
             }
@@ -286,8 +313,8 @@ impl Narrator {
 
     /// The lines a player's memory `event` adds to its account, often
     /// none: an announcement it heard begins a phase, and one of a phase it
-    /// sleeps through says so; a selection it made, or heard another player
-    /// make, is a deed; an utterance it made, or heard, is told as said;
+    /// sleeps through says so; a selection or retraction it made, or heard
+    /// another player make, is a deed; an utterance it made, or heard, is told as said;
     /// and a tentative decision it heard is told as announced. A player
     /// remembers nothing from a phase other than the one it was in, so
     /// nothing it remembers is late. The lines join the player's
@@ -334,6 +361,12 @@ impl Narrator {
                 message: Message::Select { from, target, .. },
             } => self.did(from, target),
             Memory::Acted {
+                message: Message::Retract { from, .. },
+            }
+            | Memory::Observed {
+                message: Message::Retract { from, .. },
+            } => self.withdrew(from),
+            Memory::Acted {
                 message: Message::Say { from, text, .. },
             }
             | Memory::Observed {
@@ -344,26 +377,29 @@ impl Narrator {
     }
 
     /// Whether what `memory` adds to a player's account gives way to the
-    /// day's tally once the day is past: a vote or a tentative decision
-    /// made or heard by day.
+    /// day's tally once the day is past: a vote, a retraction or a
+    /// tentative decision made or heard by day.
     fn passes(&self, memory: &Memory) -> bool {
         self.by_day()
             && matches!(
                 memory,
                 Memory::Acted {
-                    message: Message::Select { .. }
+                    message: Message::Select { .. } | Message::Retract { .. }
                 } | Memory::Observed {
-                    message: Message::Select { .. } | Message::Tentative { .. }
+                    message: Message::Select { .. }
+                        | Message::Retract { .. }
+                        | Message::Tentative { .. }
                 }
             )
     }
 
     /// The environment's tentative decision: `target` will be voted out
-    /// once the votes have stood for `ratify`, or nobody is about to be.
+    /// once the votes have selected them for `ratify`, or nobody is about
+    /// to be.
     fn tentative(&self, target: Option<&PlayerId>, ratify: Duration) -> String {
         match target {
             Some(target) => format!(
-                "{} will be voted out in {} unless the votes change.",
+                "{} will be voted out in {} unless the votes stop selecting them.",
                 self.seat(target),
                 format_duration(ratify)
             ),
@@ -516,21 +552,57 @@ impl Narrator {
         lines
     }
 
-    /// `player`'s deed of choosing `chosen`: told at once in a player's
-    /// account, and in the omniscient one in a day whose vote is ratified,
-    /// since the votes may change and their order matters; otherwise held
-    /// for the end of the phase, to be told in seat order. A player's
-    /// account keeps each player's last vote of the day for its tally.
+    /// `player`'s deed of choosing `chosen`, as [`Narrator::tell`] tells
+    /// it.
     fn did(&mut self, player: &PlayerId, chosen: &PlayerId) -> Vec<String> {
         let line = self.deed(player, chosen);
+        self.tell(player, Some(chosen), line)
+    }
+
+    /// `player`'s deed of retracting its vote, as [`Narrator::tell`] tells
+    /// it: undecided again if the retraction counts, and otherwise a
+    /// withdrawal that does not count.
+    fn withdrew(&mut self, player: &PlayerId) -> Vec<String> {
+        let (subject, s) = self.subject(player);
+        let (whose, is) = if self.is_me(player) {
+            ("your", "are")
+        } else {
+            ("their", "is")
+        };
+        let line = match self.withdrawable(player) {
+            true => format!("{subject} withdraw{s} {whose} vote and {is} undecided again."),
+            false => {
+                format!("{subject} withdraw{s} {whose} vote, but the withdrawal does not count.")
+            }
+        };
+        self.tell(player, None, line)
+    }
+
+    /// Whether `player` has a vote standing that a retraction takes back:
+    /// by day, in a day whose vote is ratified. A player is not told
+    /// whether the day's vote is ratified, so a player's account takes
+    /// back any vote standing by day.
+    fn withdrawable(&self, player: &PlayerId) -> bool {
+        let ratified = self.ratified || matches!(self.voice, Voice::Player(_));
+        ratified && self.by_day() && self.votes.contains_key(player)
+    }
+
+    /// `line`, `player`'s deed, after which its vote is `vote`, or none:
+    /// told at once in a player's account, and in the omniscient one in a
+    /// day whose vote is ratified, since the votes may change and their
+    /// order matters; otherwise held for the end of the phase, to be told
+    /// in seat order. Each player's last vote of the day is kept.
+    fn tell(&mut self, player: &PlayerId, vote: Option<&PlayerId>, line: String) -> Vec<String> {
+        if self.by_day() {
+            match vote {
+                Some(chosen) => self.votes.insert(player.clone(), chosen.clone()),
+                None => self.votes.remove(player),
+            };
+        }
         match self.voice {
             Voice::Omniscient if !(self.ratified && self.by_day()) => {
                 self.deeds.push((player.clone(), line));
                 vec![]
-            }
-            Voice::Player(_) if self.by_day() => {
-                self.votes.insert(player.clone(), chosen.clone());
-                vec![line]
             }
             _ => vec![line],
         }
@@ -652,18 +724,22 @@ impl Narrator {
         self.announced.range(seq + 1..).next().is_some()
     }
 
-    /// What `player`'s choice of `chosen` for the phase numbered `seq`
-    /// came to once a later phase had begun, whether the player withheld it
-    /// or the environment observed it late: nothing. The phase is named
-    /// when it is known, as it is unless the choice was for a phase never
-    /// announced.
-    fn lateness(&self, player: &PlayerId, chosen: &PlayerId, seq: u64) -> String {
+    /// What `player`'s `ballot` for the phase numbered `seq` came to once a
+    /// later phase had begun, whether the player withheld it or the
+    /// environment observed it late: nothing. The phase is named when it is
+    /// known, as it is unless the ballot was for a phase never announced.
+    fn lateness(&self, player: &PlayerId, ballot: &Ballot, seq: u64) -> String {
         let when = self
             .phase_name(seq)
             .map_or(String::new(), |phase| format!(" for {phase}"));
         let (subject, s) = self.subject(player);
-        let chosen = self.seat(chosen);
-        format!("{subject} choose{s} {chosen}{when} too late to count.")
+        match ballot {
+            Ballot::Vote(chosen) => {
+                let chosen = self.seat(chosen);
+                format!("{subject} choose{s} {chosen}{when} too late to count.")
+            }
+            Ballot::Retract => format!("{subject} withdraw{s} their vote{when} too late to count."),
+        }
     }
 }
 
@@ -830,7 +906,7 @@ fn in_order<'a>(players: impl IntoIterator<Item = &'a PlayerId>) -> Vec<&'a Play
 
 /// Seat order: by the number a name ends in, so that `player2` comes
 /// before `player10`, and by the name where that does not tell.
-fn seat_order(a: &PlayerId, b: &PlayerId) -> Ordering {
+pub fn seat_order(a: &PlayerId, b: &PlayerId) -> Ordering {
     (numbered(a), a).cmp(&(numbered(b), b))
 }
 
@@ -854,7 +930,9 @@ mod tests {
 
     use crate::model::estimate;
     use crate::werewolf::llm::Configuration;
-    use crate::werewolf::tests::{announcement, logged, received, selection, tentative, utterance};
+    use crate::werewolf::tests::{
+        announcement, logged, received, retraction, selection, tentative, utterance,
+    };
     use crate::werewolf::{ENVIRONMENT, Rules, to_the_environment};
     use std::collections::BTreeMap;
     use std::time::{Duration, UNIX_EPOCH};
@@ -994,6 +1072,29 @@ mod tests {
     /// `seq`, which the environment observed in that phase: what it adds.
     fn selected(narrator: &mut Narrator, from: &str, seq: u64, target: &str) -> Vec<String> {
         selected_in(narrator, from, seq, target, seq)
+    }
+
+    /// Tell `narrator` that `from` retracted its vote in the phase numbered
+    /// `seq`, its `n`th message, and that the environment observed it in the
+    /// phase numbered `observed_in`: what the observation adds, the action
+    /// adding nothing.
+    fn retracted_in(
+        narrator: &mut Narrator,
+        from: &str,
+        seq: u64,
+        n: u64,
+        observed_in: u64,
+    ) -> Vec<String> {
+        let action = logged(Entry::Action {
+            from: id(from),
+            n,
+            to: to_the_environment(),
+            message: retraction(seq, from, n),
+            seen: None,
+            forgot: None,
+        });
+        assert!(narrator.narrate(&action).is_empty());
+        narrator.narrate(&observed_by_the_environment(from, n, observed_in))
     }
 
     /// A player's memory of hearing round `round`'s `phase` announced, with
@@ -1148,7 +1249,7 @@ mod tests {
         );
         assert_eq!(
             narrator.narrate(&decided(2, 5, Some("ann"), &everyone)),
-            ["ann (villager) will be voted out in 20s unless the votes change."]
+            ["ann (villager) will be voted out in 20s unless the votes stop selecting them."]
         );
         assert_eq!(
             selected(&mut narrator, "ann", 2, "wolf"),
@@ -1165,7 +1266,80 @@ mod tests {
         );
         assert_eq!(
             narrator.narrate(&decided(2, 7, Some("ann"), &everyone)),
-            ["ann (villager) will be voted out in 20s unless the votes change."]
+            ["ann (villager) will be voted out in 20s unless the votes stop selecting them."]
+        );
+    }
+
+    #[test]
+    fn in_a_ratified_day_a_retraction_is_told_as_it_comes_in_order_with_the_votes() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&ratified());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
+        selected(&mut narrator, "wolf", 2, "ann");
+        narrator.narrate(&decided(2, 5, Some("ann"), &everyone));
+        assert_eq!(
+            retracted_in(&mut narrator, "wolf", 2, 3, 2),
+            ["wolf (werewolf) withdraws their vote and is undecided again."]
+        );
+        assert_eq!(
+            narrator.narrate(&decided(2, 6, None, &everyone)),
+            ["Nobody is about to be voted out."]
+        );
+        // A retraction the environment observed in a later phase is too
+        // late to count.
+        narrator.narrate(&shown("wolf", 2, Phase::Night, &everyone));
+        assert_eq!(
+            retracted_in(&mut narrator, "seer", 2, 4, 3),
+            ["seer (seer) withdraws their vote for day 1 too late to count."]
+        );
+    }
+
+    #[test]
+    fn a_retraction_without_a_vote_standing_is_told_as_not_counting() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&ratified());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
+        assert_eq!(
+            retracted_in(&mut narrator, "seer", 2, 1, 2),
+            ["seer (seer) withdraws their vote, but the withdrawal does not count."]
+        );
+        // Once withdrawn, a vote is not there to withdraw again.
+        selected(&mut narrator, "wolf", 2, "ann");
+        retracted_in(&mut narrator, "wolf", 2, 3, 2);
+        assert_eq!(
+            retracted_in(&mut narrator, "wolf", 2, 4, 2),
+            ["wolf (werewolf) withdraws their vote, but the withdrawal does not count."]
+        );
+    }
+
+    #[test]
+    fn a_retraction_by_night_or_in_a_day_not_ratified_is_told_as_not_counting() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&ratified());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone));
+        selected(&mut narrator, "wolf", 1, "ann");
+        assert!(retracted_in(&mut narrator, "wolf", 1, 2, 1).is_empty());
+        assert_eq!(
+            narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone))[..2],
+            [
+                "wolf (werewolf) votes to kill ann (villager).",
+                "wolf (werewolf) withdraws their vote, but the withdrawal does not count.",
+            ]
+        );
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
+        selected(&mut narrator, "wolf", 2, "ann");
+        assert!(retracted_in(&mut narrator, "wolf", 2, 3, 2).is_empty());
+        assert_eq!(
+            narrator.narrate(&shown("wolf", 2, Phase::Night, &everyone))[..2],
+            [
+                "wolf (werewolf) votes against ann (villager).",
+                "wolf (werewolf) withdraws their vote, but the withdrawal does not count.",
+            ]
         );
     }
 
@@ -1204,6 +1378,10 @@ mod tests {
         assert_eq!(
             narrator.narrate(&withheld("wolf", selection(2, "wolf", 0, "ann"))),
             ["wolf (werewolf) chooses ann (villager) for day 1 too late to count."]
+        );
+        assert_eq!(
+            narrator.narrate(&withheld("wolf", retraction(2, "wolf", 0))),
+            ["wolf (werewolf) withdraws their vote for day 1 too late to count."]
         );
         // For a phase never announced, the phase goes unnamed.
         assert_eq!(
@@ -1349,7 +1527,7 @@ mod tests {
         );
         assert_eq!(
             narrator.recall(&received(tentative(2, 5, Some("wolf")))),
-            ["wolf will be voted out in 20s unless the votes change."]
+            ["wolf will be voted out in 20s unless the votes stop selecting them."]
         );
         assert_eq!(
             narrator.recall(&chose("doctor", 2, "wolf")),
@@ -1362,6 +1540,99 @@ mod tests {
         assert_eq!(
             narrator.recall(&received(tentative(2, 6, None))),
             ["Nobody is about to be voted out."]
+        );
+    }
+
+    #[test]
+    fn a_player_is_told_the_others_retractions_and_its_own() {
+        let mut narrator = Narrator::for_player(id("doctor"));
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        let known = [("doctor", Role::Doctor)];
+        narrator.recall(&heard(1, Phase::Day, &everyone, &known));
+        narrator.recall(&received(choice("ann", 2, "wolf")));
+        assert_eq!(
+            narrator.recall(&received(retraction(2, "ann", 3))),
+            ["ann withdraws their vote and is undecided again."]
+        );
+        narrator.recall(&chose("doctor", 2, "wolf"));
+        let withdrew = logged(Memory::Acted {
+            message: retraction(2, "doctor", 3),
+        });
+        assert_eq!(
+            narrator.recall(&withdrew),
+            ["You withdraw your vote and are undecided again."]
+        );
+    }
+
+    #[test]
+    fn a_player_is_told_a_retraction_without_a_vote_standing_as_not_counting() {
+        let mut narrator = Narrator::for_player(id("doctor"));
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        let known = [("doctor", Role::Doctor)];
+        narrator.recall(&heard(1, Phase::Night, &everyone, &known));
+        narrator.recall(&chose("doctor", 1, "seer"));
+        let withdrew = |n| {
+            logged(Memory::Acted {
+                message: retraction(1, "doctor", n),
+            })
+        };
+        assert_eq!(
+            narrator.recall(&withdrew(2)),
+            ["You withdraw your vote, but the withdrawal does not count."]
+        );
+        narrator.recall(&heard(1, Phase::Day, &everyone, &known));
+        assert_eq!(
+            narrator.recall(&received(retraction(2, "ann", 3))),
+            ["ann withdraws their vote, but the withdrawal does not count."]
+        );
+    }
+
+    #[test]
+    fn a_retracted_vote_gives_way_to_not_voting_in_the_tally() {
+        let mut story = Story::of(id("doctor"));
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        let known = [("doctor", Role::Doctor)];
+        recall_all(
+            &mut story,
+            [
+                heard(1, Phase::Day, &everyone, &known),
+                received(choice("ann", 2, "wolf")),
+                chose("doctor", 2, "wolf"),
+                received(retraction(2, "ann", 3)),
+                logged(Memory::Acted {
+                    message: retraction(2, "doctor", 3),
+                }),
+                received(selection(2, "seer", 2, "ann")),
+            ],
+        );
+        assert_eq!(
+            story.lines(),
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                "ann votes against wolf.",
+                "You vote against wolf.",
+                "ann withdraws their vote and is undecided again.",
+                "You withdraw your vote and are undecided again.",
+                "seer votes against ann.",
+            ]
+        );
+        story.recall(&heard(2, Phase::Night, &everyone, &known));
+        assert_eq!(
+            story.lines(),
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                "ann does not vote.",
+                "You do not vote.",
+                "seer votes against ann.",
+                "wolf does not vote.",
+                "Nobody dies.",
+                "",
+                "Night 2.",
+            ]
         );
     }
 
@@ -1379,7 +1650,7 @@ mod tests {
                 "Day 1.",
                 "ann says, \"I suspect wolf.\"",
                 "ann votes against wolf.",
-                "wolf will be voted out in 20s unless the votes change.",
+                "wolf will be voted out in 20s unless the votes stop selecting them.",
                 "You vote against wolf.",
                 "seer votes against ann.",
                 "wolf says, \"Not me.\"",
@@ -1451,7 +1722,7 @@ mod tests {
                 "Day 1.",
                 "ann says, \"I suspect wolf.\"",
                 "ann votes against wolf.",
-                "wolf will be voted out in 20s unless the votes change.",
+                "wolf will be voted out in 20s unless the votes stop selecting them.",
                 "You vote against wolf.",
                 "seer votes against ann.",
                 "wolf says, \"Not me.\"",
