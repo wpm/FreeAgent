@@ -212,13 +212,13 @@ of it.
 By day the players talk, with no turns. Every living player is woken when
 the day is announced to it and again by every message it hears, another
 player's utterance, vote or retraction and the environment's tentative
-decision, and the model is offered four tools, of which it must call one
+decision, and the model is offered these tools, of which it must call one
 and may call several: `speak`, which says something to every other living
 player, and never to the environment, which does nothing with speech;
 `select`, which votes for a player, and in a ratified day may be called
 again to change the vote, while in a day that is not the first vote is
-final, as the tool tells the model; `retract`, which withdraws the vote, so
-that the player is undecided again; and `wait`, which says nothing now and asks to be woken after some
+final, as the tool tells the model; in a ratified day, `retract`, which
+withdraws the vote, so that the player is undecided again; and `wait`, which says nothing now and asks to be woken after some
 seconds unless something wakes the player sooner. The calls are carried out
 in the order the model made them. Wake-ups are debounced: a player has at
 most one model call in progress and one waiting, however fast the talk
@@ -251,9 +251,9 @@ told in full, every vote, retraction and tentative decision as it came. A
 past day is told by its talk, in order, then a tally of each player alive
 that day, in seat order, with the vote that counted or that it did not
 vote, then who died. The prompt is the configuration's to write: the
-program tells the model only what the four tools do and that it may speak,
-vote, retract its vote, or wait, so the rules text in the file should say
-that by day everyone may talk at any time.
+program tells the model only what the tools do and that it may speak,
+vote, retract its vote in a ratified day, or wait, so the rules text in the
+file should say that by day everyone may talk at any time.
 
 ### Before a game begins
 
@@ -266,7 +266,8 @@ so a model that cannot play fails at launch, and the error names it. Its
 key is read, the provider's listing must have its id, and it is then asked
 twice exactly as a player is, once as by night and
 once as by day: a short prompt, two candidates, and the tools a player has
-in that phase, `select` by night and `speak`, `select` and `wait` by day.
+in that phase, `select` by night and `speak`, `select`, `retract` and
+`wait` by day, the tools of a ratified day whatever the ratify limit.
 A model that does not answer both requests as a player must stops the
 program, and the error names the request that failed and says why in the
 provider's own words, such as a server that rejects the request or an
