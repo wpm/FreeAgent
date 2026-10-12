@@ -184,19 +184,18 @@ one id per line in sorted order. With `--check`, it asks each model listed
 to play as a player would, once as by night and once as by day, one model
 at a time, and marks with `*` those that answer both requests well and
 with `!` those that do not, with a line at the end saying so. Why each `!`
-model failed goes to standard error, so the
-listing stays readable: a line `! id` naming the model as the listing
-marks it, then the error's causes, each on its own indented line, so a
-provider's words may run to several lines and still be read as one
-model's. A model that could not be asked at all, because the provider was
-not reached or answered with anything but the model's answer, such as a
-missing key or a rate limit, stops the listing with the error, since
-nothing it would say about the rest would be true. `--check` followed by
-ids asks only those, each of which must be listed, and leaves the rest
-unmarked; the ids end with `--` when the base URL follows them. A provider
-whose API key variable is known is read with it; any other provider that
-wants a key is told the environment variable holding it. `models --help`
-tables the providers known:
+model failed goes to standard error, so the listing stays readable: a line
+`! id` naming the model as the listing marks it, then the error's causes,
+each on its own indented line, so a provider's words may run to several
+lines and still be read as one model's. A model that could not be asked at
+all, because the provider was not reached or answered with anything but the
+model's answer, such as a missing key or a rate limit, stops the listing
+with the error, since nothing it would say about the rest would be true.
+`--check` followed by ids asks only those, each of which must be listed,
+and leaves the rest unmarked; the ids end with `--` when the base URL
+follows them. A provider whose API key variable is known is read with it;
+any other provider that wants a key is told the environment variable
+holding it. `models --help` tables the providers known:
 
 ```sh
 social-deduction models http://localhost:1234/v1

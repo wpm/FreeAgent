@@ -496,39 +496,39 @@ fn a_configuration_file_that_cannot_be_read_is_an_error_naming_it() {
 
 #[test]
 fn the_llm_variant_refuses_a_model_that_does_not_play_when_asked_in_the_provider_s_words() {
-    let base_url = refusing(&[EXAMPLE_MODEL]);
-    let config = configured("unselecting", "minimal.toml", &base_url, EXAMPLE_MODEL);
-    let stderr = refused(&["werewolf", "llm", &config]);
-    assert!(
-        stderr.starts_with(&format!(
-            "Error: {EXAMPLE_MODEL} did not answer a night's request"
-        )),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(&format!(
-            "POST {base_url}/chat/completions was answered 400"
-        )),
-        "{stderr}"
-    );
-    assert!(stderr.contains(&refusal(EXAMPLE_MODEL)), "{stderr}");
-    // A model that plays by night alone is refused for the day's request.
-    let base_url = refusing_days(&[EXAMPLE_MODEL]);
-    let config = configured("nights-only", "minimal.toml", &base_url, EXAMPLE_MODEL);
-    let stderr = refused(&["werewolf", "llm", &config]);
-    assert!(
-        stderr.starts_with(&format!(
-            "Error: {EXAMPLE_MODEL} did not answer a day's request"
-        )),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(&format!(
-            "POST {base_url}/chat/completions was answered 400"
-        )),
-        "{stderr}"
-    );
-    assert!(stderr.contains(&day_refusal(EXAMPLE_MODEL)), "{stderr}");
+    // A provider refusing the night's request, and one that plays by night
+    // alone and refuses the day's.
+    let refusals = [
+        (
+            "unselecting",
+            refusing(&[EXAMPLE_MODEL]),
+            "night",
+            refusal(EXAMPLE_MODEL),
+        ),
+        (
+            "nights-only",
+            refusing_days(&[EXAMPLE_MODEL]),
+            "day",
+            day_refusal(EXAMPLE_MODEL),
+        ),
+    ];
+    for (name, base_url, phase, said) in refusals {
+        let config = configured(name, "minimal.toml", &base_url, EXAMPLE_MODEL);
+        let stderr = refused(&["werewolf", "llm", &config]);
+        assert!(
+            stderr.starts_with(&format!(
+                "Error: {EXAMPLE_MODEL} did not answer a {phase}'s request"
+            )),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!(
+                "POST {base_url}/chat/completions was answered 400"
+            )),
+            "{stderr}"
+        );
+        assert!(stderr.contains(&said), "{stderr}");
+    }
 }
 
 #[test]

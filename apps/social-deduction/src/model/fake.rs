@@ -180,13 +180,13 @@ fn first_bounded(parameters: &Value) -> Option<(&str, &Value)> {
 /// A request to select one of `candidates`, as a Werewolf player's is:
 /// its one tool, `select`, takes a `target` from an `enum` of them.
 pub fn selecting(candidates: &[&str]) -> Request {
-    Request::new(
+    Request::offering(
         "qwen2.5-7b-instruct",
         vec![
             Message::system("You are player1."),
             Message::user("Select."),
         ],
-        select_tool(candidates),
+        vec![select_tool(candidates)],
     )
 }
 

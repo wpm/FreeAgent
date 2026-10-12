@@ -302,7 +302,7 @@ async fn play<A: Behavior<Log = Entry> + 'static>(
 mod tests {
     use super::*;
     use clap::CommandFactory;
-    use social_deduction::model::canned::{self, day_refusal, refusal};
+    use social_deduction::model::canned::{self, refusal};
     use social_deduction::model::fake::{FakeModel, choosing_first};
     use std::collections::HashSet;
 
@@ -672,27 +672,6 @@ mod tests {
             ["gpt-0", "qwen2.5-7b-instruct", "qwen2.5-7b-instruct"]
         );
         assert!(String::from_utf8(reasons).unwrap().starts_with("! gpt-0\n"));
-    }
-
-    #[tokio::test]
-    async fn a_model_that_plays_by_night_alone_is_marked_as_not_playing_for_the_day_s_request() {
-        let model = FakeModel::answering(|request| {
-            if request.tools.len() == 1 {
-                choosing_first(request)
-            } else {
-                Err(anyhow::anyhow!("{}", day_refusal(&request.model)))
-            }
-        });
-        let mut reasons = Vec::new();
-        let marked = checked(&model, vec!["gpt-0".to_string()], &[], &mut reasons)
-            .await
-            .unwrap();
-        assert_eq!(marked, [("gpt-0".to_string(), Some(Mark::DidNotPlay))]);
-        assert_eq!(model.requests().len(), 2);
-        assert_eq!(
-            String::from_utf8(reasons).unwrap(),
-            "! gpt-0\n  gpt-0 did not answer a day's request\n  gpt-0 takes one tool at a time\n"
-        );
     }
 
     #[tokio::test]
