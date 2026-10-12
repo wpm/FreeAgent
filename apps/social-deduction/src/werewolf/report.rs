@@ -169,7 +169,7 @@ impl Narrator {
             } => {
                 self.roles = roles.clone();
                 self.alive = roles.keys().cloned().collect();
-                self.ratified = ratify_limit.is_some();
+                self.ratified = !ratify_limit.is_zero();
                 self.table(variation, *night_limit, *day_limit, *ratify_limit)
             }
             Entry::Action {
@@ -380,13 +380,14 @@ impl Narrator {
 
     /// The deal: how many players, then each with its role on a line of
     /// its own, then how long a night and a day wait for them, and how long
-    /// a vote must stand if the day's vote is ratified.
+    /// a vote must stand if the day's vote is ratified, which it is when
+    /// the ratify limit is above zero.
     fn table(
         &self,
         variation: &str,
         night_limit: Duration,
         day_limit: Duration,
-        ratify_limit: Option<Duration>,
+        ratify_limit: Duration,
     ) -> Vec<String> {
         let heading = format!("{variation} with {} players:", self.roles.len());
         let seats = in_order(self.roles.keys())
@@ -397,7 +398,7 @@ impl Narrator {
             format_duration(night_limit),
             format_duration(day_limit)
         );
-        if let Some(ratify_limit) = ratify_limit {
+        if !ratify_limit.is_zero() {
             write!(
                 limits,
                 ", and a vote stands after {}",
@@ -1038,8 +1039,8 @@ mod tests {
     }
 
     /// The deal of `roles`, with a night waiting a minute and a day two,
-    /// and the day's vote ratified after `ratify_limit` if there is one.
-    fn dealt_under(roles: HashMap<PlayerId, Role>, ratify_limit: Option<Duration>) -> Event<Entry> {
+    /// and the day's vote ratified after `ratify_limit` if it is above zero.
+    fn dealt_under(roles: HashMap<PlayerId, Role>, ratify_limit: Duration) -> Event<Entry> {
         let rules = Rules {
             day_limit: Duration::from_secs(120),
             ratify_limit,
@@ -1050,7 +1051,7 @@ mod tests {
 
     /// The deal of `roles`, with a night waiting a minute and a day two.
     fn dealt(roles: HashMap<PlayerId, Role>) -> Event<Entry> {
-        dealt_under(roles, None)
+        dealt_under(roles, Duration::ZERO)
     }
 
     fn start() -> Event<Entry> {
@@ -1060,7 +1061,7 @@ mod tests {
     /// The deal of [`roles`] under rules that ratify the day's vote after
     /// twenty seconds.
     fn ratified() -> Event<Entry> {
-        dealt_under(roles(), Some(Duration::from_secs(20)))
+        dealt_under(roles(), Duration::from_secs(20))
     }
 
     /// The environment's action of sending the tentative decision numbered
@@ -1126,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn the_limits_line_adds_the_ratify_limit_when_there_is_one() {
+    fn the_limits_line_adds_the_ratify_limit_when_it_is_above_zero() {
         let mut narrator = Narrator::default();
         assert_eq!(
             narrator.narrate(&ratified())[5],

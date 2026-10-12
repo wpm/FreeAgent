@@ -203,8 +203,9 @@ fn the_uniform_random_variant_takes_the_limits_and_needs_no_configuration_file()
     };
     assert_eq!(*night_limit, Duration::from_secs(5));
     assert_eq!(*day_limit, Duration::from_secs(60));
-    // The uniform-random variant has no ratify limit, and takes none.
-    assert_eq!(*ratify_limit, None);
+    // The uniform-random variant's day is not ratified, and it takes no
+    // ratify limit.
+    assert_eq!(*ratify_limit, Duration::ZERO);
     assert_usage_error(&["werewolf", "uniform-random", "--night-limit", "soon"]);
     assert_usage_error(&["werewolf", "uniform-random", "--ratify-limit", "5s"]);
     assert_usage_error(&["werewolf", "uniform-random", "game.toml"]);
@@ -451,7 +452,7 @@ fn the_llm_variant_plays_a_game_of_model_players_logged_from_the_configuration_t
     let Entry::Start { ratify_limit, .. } = &events[0].payload else {
         panic!("{events:?}");
     };
-    assert_eq!(*ratify_limit, Some(Duration::from_secs(1)));
+    assert_eq!(*ratify_limit, Duration::from_secs(1));
     let configuration = configuration(&events);
     assert_eq!(configuration.base_url, base_url);
     assert_eq!(configuration.model, EXAMPLE_MODEL);
@@ -599,6 +600,34 @@ fn the_llm_variant_hears_the_command_line_over_the_file() {
     assert_eq!(configuration.ratify_limit, Duration::from_secs(1));
     assert_eq!(configuration.model, "gpt-5.5");
     assert_eq!(configuration.base_url, base_url);
+}
+
+#[test]
+fn the_llm_variant_without_a_ratify_limit_plays_days_that_are_not_ratified() {
+    let base_url = playing(&[EXAMPLE_MODEL]);
+    let config = configured("unratified", "minimal.toml", &base_url, EXAMPLE_MODEL);
+    let file = std::fs::read_to_string(&config).unwrap();
+    let unratified: String = file
+        .lines()
+        .filter(|line| !line.starts_with("ratify_limit"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_ne!(unratified, file);
+    std::fs::write(&config, unratified).unwrap();
+    let args = [&config, "--night-limit", "1s", "--day-limit", "2s"];
+    let (events, printed) = assert_plays_the_default_table("llm", "LLM", &args, &[DEFAULT_WINDOW]);
+    let Entry::Start { ratify_limit, .. } = &events[0].payload else {
+        panic!("{events:?}");
+    };
+    assert_eq!(*ratify_limit, Duration::ZERO);
+    assert_eq!(configuration(&events).ratify_limit, Duration::ZERO);
+    let endings = endings(&events);
+    assert!(
+        endings.iter().all(|by| *by == Ending::AllSelected),
+        "{endings:?}"
+    );
+    assert!(!printed.contains("a vote stands after"), "{printed}");
+    assert!(!printed.contains("The votes stand."), "{printed}");
 }
 
 #[test]

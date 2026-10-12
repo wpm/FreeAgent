@@ -23,9 +23,11 @@
 //! refused.
 //!
 //! The game is the announcing environment's, with a model [`Player`] in
-//! every seat, and the day's vote is ratified: a day ends one ratify limit
-//! after its votes stop changing, or at the day limit with nobody voted
-//! out. A player remembers what it is shown, what it hears and what it
+//! every seat. With a ratify limit above zero the day's vote is ratified:
+//! a day ends one ratify limit after its votes stop changing, or at the day
+//! limit with nobody voted out. With the default of zero, each player's
+//! first vote counts, and the day ends when everyone has voted or at its
+//! limit. A player remembers what it is shown, what it hears and what it
 //! does, as a [`Memory`] of each message stamped when it was received or
 //! sent, and keeps with the history the story that tells it from its own
 //! point of view: each memory adds its lines to the story as it is
@@ -120,20 +122,13 @@ pub struct Overrides {
     /// How long each phase waits for the players.
     #[command(flatten)]
     pub limits: PhaseLimits,
-    /// How long a day's votes must stand to be ratified.
-    #[arg(long, value_parser = humantime::parse_duration, help = ratify_help())]
+    /// How long a day's votes must stand to be ratified; zero, the
+    /// default, means a day is not ratified.
+    #[arg(long, value_parser = humantime::parse_duration)]
     pub ratify_limit: Option<Duration>,
     /// The model and where it is.
     #[command(flatten)]
     pub model: ModelOverrides,
-}
-
-/// The help for `--ratify-limit`, naming the default the code fills in.
-fn ratify_help() -> String {
-    format!(
-        "How long a day's votes must stand to be ratified [default: {}]",
-        format_duration(RATIFY_LIMIT)
-    )
 }
 
 /// What the command line may say over the file's `[model]` table, for
@@ -369,7 +364,7 @@ impl Config {
         let ratify_limit = overrides
             .ratify_limit
             .or(self.phases.ratify_limit)
-            .unwrap_or(RATIFY_LIMIT);
+            .unwrap_or(rules.ratify_limit);
         if ratify_limit > day_limit {
             bail!(
                 "the ratify limit ({}) is longer than the day limit ({})",
@@ -614,7 +609,7 @@ impl Settings {
         Rules {
             night_limit: self.night_limit,
             day_limit: self.day_limit,
-            ratify_limit: Some(self.ratify_limit),
+            ratify_limit: self.ratify_limit,
             ..rules()
         }
     }
@@ -625,17 +620,11 @@ fn request_timeout() -> Duration {
     REQUEST_TIMEOUT
 }
 
-/// How long a day's votes must stand to be ratified, unless the file or
-/// the command line says otherwise.
-pub const RATIFY_LIMIT: Duration = Duration::from_secs(20);
-
 /// The rules of the model-played variant: the uniform-random variant's,
-/// played as "LLM", with the day's vote ratified once it has stood for
-/// [`RATIFY_LIMIT`].
+/// played as "LLM".
 pub fn rules() -> Rules {
     Rules {
         variation: "LLM".to_string(),
-        ratify_limit: Some(RATIFY_LIMIT),
         ..Rules::default()
     }
 }
@@ -1906,12 +1895,11 @@ count = 8
     #[test]
     fn the_ratify_limit_falls_back_from_the_command_line_to_the_file_to_the_code() {
         let file = format!("{MODEL}\n[phases]\nratify_limit = \"15s\"\n");
-        // The code alone.
+        // The code alone, which does not ratify the day.
         assert_eq!(
             settle(MODEL, Overrides::default()).ratify_limit,
-            RATIFY_LIMIT
+            Duration::ZERO
         );
-        assert_eq!(RATIFY_LIMIT, Duration::from_secs(20));
         // The file over the code.
         assert_eq!(
             settle(&file, Overrides::default()).ratify_limit,
@@ -1945,6 +1933,7 @@ count = 8
                 night_limit: None,
                 day_limit: Some(Duration::from_secs(10)),
             },
+            ratify_limit: Some(Duration::from_secs(20)),
             ..Overrides::default()
         };
         let error = Config::parse(MODEL).unwrap().settle(overrides).unwrap_err();
@@ -1958,6 +1947,7 @@ count = 8
                 night_limit: None,
                 day_limit: Some(Duration::from_secs(20)),
             },
+            ratify_limit: Some(Duration::from_secs(20)),
             ..Overrides::default()
         };
         assert_eq!(
@@ -1976,9 +1966,9 @@ count = 8
         assert_eq!(settled.variation, "LLM");
         assert_eq!(settled.night_limit, settings.night_limit);
         assert_eq!(settled.day_limit, settings.day_limit);
-        assert_eq!(settled.ratify_limit, Some(Duration::from_secs(3)));
-        // The variant's own rules ratify the vote after the code's default.
-        assert_eq!(rules().ratify_limit, Some(RATIFY_LIMIT));
+        assert_eq!(settled.ratify_limit, Duration::from_secs(3));
+        // The variant's own rules do not ratify the day.
+        assert_eq!(rules().ratify_limit, Duration::ZERO);
     }
 
     #[test]
@@ -2853,7 +2843,7 @@ player2 = \"Cautious.\"
         Rules {
             night_limit: Duration::from_secs(10),
             day_limit: Duration::from_secs(10),
-            ratify_limit: Some(Duration::from_secs(5)),
+            ratify_limit: Duration::from_secs(5),
             ..rules()
         }
     }
@@ -4138,7 +4128,7 @@ player2 = \"Cautious.\"
         let mut roles = one_wolf_against(&["ann", "bob", "cat"]);
         roles.insert("sam".to_string(), Role::Seer);
         let rules = Rules {
-            ratify_limit: Some(Duration::from_secs(1)),
+            ratify_limit: Duration::from_secs(1),
             ..quick()
         };
         let (winner, entries, took) = play_with(roles, rules, Arc::clone(&model), puppets)
@@ -4280,7 +4270,7 @@ player2 = \"Cautious.\"
         ]);
         let roles = one_wolf_against(&["ann", "bob", "cat", "dan", "pat"]);
         let rules = Rules {
-            ratify_limit: Some(Duration::from_secs(1)),
+            ratify_limit: Duration::from_secs(1),
             ..quick()
         };
         let (winner, logged, took) = play_with(roles, rules, Arc::clone(&model), puppets)
@@ -4448,7 +4438,7 @@ player2 = \"Cautious.\"
         roles.insert("sam".to_string(), Role::Seer);
         let rules = Rules {
             night_limit: Duration::from_secs(2),
-            ratify_limit: Some(Duration::from_secs(2)),
+            ratify_limit: Duration::from_secs(2),
             ..quick()
         };
         let (winner, entries, took) = play_with(roles, rules, Arc::clone(&model), puppets)

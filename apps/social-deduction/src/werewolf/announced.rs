@@ -171,11 +171,14 @@ impl Game {
         })
     }
 
-    /// The ratify limit, if the current phase is a day with one.
+    /// The ratify limit, if the current phase is a day with one above
+    /// zero. A day whose limit is zero is not ratified, so no timer of
+    /// zero ever starts.
     fn ratifying(&self) -> Option<Duration> {
+        let limit = self.rules.ratify_limit;
         match self.state.phase {
-            Phase::Day => self.rules.ratify_limit,
-            Phase::Night => None,
+            Phase::Day if !limit.is_zero() => Some(limit),
+            _ => None,
         }
     }
 
@@ -690,14 +693,19 @@ mod tests {
     }
 
     #[test]
-    fn a_day_without_a_ratify_limit_ends_by_everyone_selecting_or_at_its_limit() {
+    fn a_day_with_a_ratify_limit_of_zero_ends_by_everyone_selecting_or_at_its_limit() {
         let roles = one_wolf_against(&["ann", "bob", "cat"]);
         let (mut game, Opened { seq, .. }) = opened_under(roles, Rules::default());
+        assert_eq!(game.rules.ratify_limit, Duration::ZERO);
         game.end(seq);
         let day = game.open().unwrap().seq;
-        for voter in ["wolf", "ann", "bob", "cat"] {
-            game.select(day, &id(voter), &id("ann"));
+        // Each first vote counts, and tells nobody of a tentative decision
+        // and sets no timer; a second does not count.
+        for voter in ["wolf", "ann", "bob"] {
+            assert_eq!(game.select(day, &id(voter), &id("ann")), counted());
         }
+        assert_eq!(game.select(day, &id("wolf"), &id("bob")), None);
+        assert_eq!(game.select(day, &id("cat"), &id("ann")), last());
         let ended = game.end(day).unwrap();
         assert_eq!(
             ended.outcome,
@@ -742,7 +750,7 @@ mod tests {
     /// shared [`tests::tentative`] has them.
     fn ratified() -> Rules {
         Rules {
-            ratify_limit: Some(RATIFY),
+            ratify_limit: RATIFY,
             ..Rules::default()
         }
     }
@@ -919,7 +927,7 @@ mod tests {
     /// of short phases.
     fn ratifying_quickly() -> Rules {
         Rules {
-            ratify_limit: Some(Duration::from_secs(5)),
+            ratify_limit: Duration::from_secs(5),
             ..quick()
         }
     }

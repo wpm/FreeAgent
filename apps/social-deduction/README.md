@@ -37,9 +37,12 @@ the environment announces each phase to every living player and waits for
 the awake players' selections, as it does for language models, and every
 player awake in the phase selects at once, at random among those it may
 choose: by night the living whose roles it does not know, by day everyone
-else living. A player with nothing to do in the phase sleeps. It plays the
-model-played game with no model, provider, API key or configuration file,
-so a game finishes in moments.
+else living. A player with nothing to do in the phase sleeps. By day each
+vote is public: it goes to every other living player as well as to the
+environment. Each player's first vote counts, and the day ends when
+everyone has voted or at its limit. It plays the model-played game with no
+model, provider, API key or configuration file, so a game finishes in
+moments.
 
 ```sh
 social-deduction werewolf uniform-random [--werewolves N] [--villagers N] [--doctors N] [--seers N] [--night-limit 30s] [--day-limit 2m]
@@ -105,15 +108,17 @@ is not in, and a tentative decision too: it logs the receipt and neither
 remembers the message nor wakes for it, so day talk that arrives by night
 is forgotten.
 
-The votes are public and ratified. Each vote goes to every other living
-player as well as to the environment, a player's latest vote counts, and
-whenever the votes change who they select, or come to select nobody, the
-environment tells every living player so. A day ends once the votes have
-stood unchanged for the ratify limit, and the selected player is voted
-out; or at the day limit, whatever is standing, and nobody is. The ratify
-limit is `ratify_limit` under `[phases]`, or `--ratify-limit` on the
-command line, twenty seconds unless either says, and may not be longer
-than the day limit. The account tells what everyone says as they say it,
+The votes are public. Each vote goes to every other living player as well
+as to the environment. With a ratify limit above zero the day is ratified:
+a player's latest vote counts, and whenever the votes change who they
+select, or come to select nobody, the environment tells every living player
+so. A day ends once the votes have stood unchanged for the ratify limit,
+and the selected player is voted out; or at the day limit, whatever is
+standing, and nobody is. The ratify limit is `ratify_limit` under
+`[phases]`, or `--ratify-limit` on the command line, and may not be longer
+than the day limit. It is zero unless either says, and a day whose ratify
+limit is zero is played as in `uniform-random`: each player's first vote
+counts, and the day ends when everyone has voted or at its limit. The account tells what everyone says as they say it,
 and a player's story tells it what others said and how they voted. The
 current day is told in full, every vote and tentative decision as it came.
 A past day is told by its talk, in order, then a tally of each player
@@ -135,8 +140,8 @@ is an error.
   window in tokens.
 - `[phases]`: `night_limit` and `day_limit`, how long each phase waits for
   the players' selections, a minute each unless they say; and
-  `ratify_limit`, how long a day's votes must stand to be ratified, twenty
-  seconds unless it says. Durations are written as `30s` or `1m 30s`.
+  `ratify_limit`, how long a day's votes must stand to be ratified, zero
+  unless it says, which means a day is not ratified. Durations are written as `30s` or `1m 30s`.
 - `[roles.werewolf]`, `[roles.villager]`, `[roles.doctor]` and
   `[roles.seer]`: `count`, how many of the role sit at the table, and
   `system`, the role's own system prompt template over the default.
