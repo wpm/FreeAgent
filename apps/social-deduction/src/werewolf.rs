@@ -737,12 +737,14 @@ pub fn receivers(message: &Message, me: &PlayerId, view: &View) -> HashSet<Actor
 /// Send `message` from the actor of `context` to everyone in `to`, logging
 /// it first as the actor's action if it is numbered. `seen` is how many
 /// history entries a model was shown when it made the call that produced
-/// the message, and `None` for a message no model made.
+/// the message, and `forgot` how many lines of talk the call left out, each
+/// `None` for a message no model made.
 pub fn act(
     context: &Context<Message, Entry>,
     message: Message,
     to: HashSet<ActorId>,
     seen: Option<usize>,
+    forgot: Option<usize>,
 ) -> anyhow::Result<()> {
     if let Some(n) = message.number() {
         context.log(Entry::Action {
@@ -751,9 +753,16 @@ pub fn act(
             to: to.clone(),
             message: message.clone(),
             seen,
+            forgot,
         });
     }
     context.send(message, to)
+}
+
+/// Whether `forgot` says no talk was left out, so that the log leaves it
+/// out, for `serde`.
+fn nothing_forgotten(forgot: &Option<usize>) -> bool {
+    forgot.is_none_or(|forgot| forgot == 0)
 }
 
 /// Log that the actor of `context`, in the phase numbered `seq`, received
@@ -822,6 +831,10 @@ pub enum Entry {
         /// call that produced the message, and `None` for a message no
         /// model made: the environment's, or a uniform-random player's.
         seen: Option<usize>,
+        /// How many lines of talk the call that produced the message left
+        /// out to fit the context window. Left out when there were none.
+        #[serde(default, skip_serializing_if = "nothing_forgotten")]
+        forgot: Option<usize>,
     },
     /// `by` received the message `from` numbered `n` while in the phase
     /// numbered `seq`. Logged by the receiver, and naming the message
@@ -841,8 +854,8 @@ pub enum Entry {
         seq: u64,
     },
     /// `from` did not send `message`, which a model made from `seen` history
-    /// entries, because the phase it was made in had ended before the model
-    /// answered. It was never sent, so it has no number: its `n` is 0, and
+    /// entries, having forgotten `forgot` lines of talk, because the phase it
+    /// was made in had ended before the model answered. It was never sent, so it has no number: its `n` is 0, and
     /// the player does not remember it.
     Withheld {
         /// Who would have sent it.
@@ -852,6 +865,10 @@ pub enum Entry {
         /// How many history entries the model was shown when it made the
         /// call that produced the message.
         seen: Option<usize>,
+        /// How many lines of talk the call that produced the message left
+        /// out to fit the context window. Left out when there were none.
+        #[serde(default, skip_serializing_if = "nothing_forgotten")]
+        forgot: Option<usize>,
     },
     /// `player` failed to act in the phase numbered `seq`: the model was
     /// not reached, or answered with something that is not a selection or
@@ -1163,6 +1180,7 @@ mod tests {
                     limit: Duration::from_secs(90),
                 },
                 seen: None,
+                forgot: None,
             },
             Entry::Action {
                 from: "seer".to_string(),
@@ -1170,6 +1188,7 @@ mod tests {
                 to: to_the_environment(),
                 message: selection(1, "seer", 1, "wolf1"),
                 seen: Some(3),
+                forgot: None,
             },
             Entry::Observation {
                 by: ENVIRONMENT.to_string(),
@@ -1205,6 +1224,7 @@ mod tests {
                 to: HashSet::from(["seer".to_string(), "villager".to_string()]),
                 message: tentative(2, 5, Some("wolf1")),
                 seen: None,
+                forgot: None,
             },
             Entry::Failed {
                 player: "seer".to_string(),
@@ -1218,22 +1238,58 @@ mod tests {
                 to: HashSet::from(["villager".to_string()]),
                 message: utterance(2, "seer", 2, "I trust villager."),
                 seen: Some(5),
+                forgot: None,
             },
             Entry::Withheld {
                 from: "seer".to_string(),
                 message: utterance(2, "seer", 0, "Too late."),
                 seen: Some(7),
+                forgot: None,
             },
             Entry::Withheld {
                 from: "seer".to_string(),
                 message: selection(2, "seer", 0, "wolf1"),
                 seen: None,
+                forgot: None,
             },
         ];
         for entry in entries {
             let json = serde_json::to_string(&entry).unwrap();
             let back: Entry = serde_json::from_str(&json).unwrap();
             assert_eq!(back, entry);
+        }
+    }
+
+    #[test]
+    fn how_much_talk_a_request_forgot_is_logged_unless_it_forgot_none() {
+        let action: fn(Option<usize>) -> Entry = |forgot| Entry::Action {
+            from: "seer".to_string(),
+            n: 2,
+            to: HashSet::from(["villager".to_string()]),
+            message: utterance(2, "seer", 2, "I trust villager."),
+            seen: Some(5),
+            forgot,
+        };
+        let withheld: fn(Option<usize>) -> Entry = |forgot| Entry::Withheld {
+            from: "seer".to_string(),
+            message: utterance(2, "seer", 0, "Too late."),
+            seen: Some(7),
+            forgot,
+        };
+        // The fields of the entry `logged` makes, in JSON.
+        let fields = |logged: Entry| {
+            let json = serde_json::to_value(logged).unwrap();
+            json.as_object().unwrap().values().next().unwrap().clone()
+        };
+        for entry in [action, withheld] {
+            assert_eq!(fields(entry(Some(3)))["forgot"], 3);
+            for forgot in [None, Some(0)] {
+                let fields = fields(entry(forgot));
+                assert!(fields.get("forgot").is_none(), "{fields}");
+            }
+            // Read back, nothing forgotten is no count.
+            let json = serde_json::to_string(&entry(Some(0))).unwrap();
+            assert_eq!(serde_json::from_str::<Entry>(&json).unwrap(), entry(None));
         }
     }
 

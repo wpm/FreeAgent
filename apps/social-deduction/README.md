@@ -186,6 +186,19 @@ vLLM's `max_model_len` or OpenRouter's `context_length`, holding a positive
 whole number. A window of 0 stops the program. The account tells the window
 and where it came from, and the configuration in the log records both.
 
+Each request fits the context window. Every request, the check's
+included, asks for a reply of at most 1024 tokens, and the rest is counted
+by estimate, a token for every 3.5 characters, rounded up. When a player's
+whole story would not fit beside its prompt, the tools, where the game
+stands and the reply, the player forgets talk, its own and others', oldest
+first, until it does, and "You don't remember what was said before this."
+stands where the last forgotten line was. Everything else in the story is
+kept, and the player still remembers every line for its next request. A
+request that does not fit even with no talk is sent as it is, and an
+overflow is a failure to play, as any other is. The log's action and
+withheld entries carry `forgot`, how many lines of talk the request left
+out, whenever it left any out.
+
 Every request makes the model call a tool, unless the model refuses that.
 The night's request is made with `tool_choice` set to `"required"`; if the
 provider refuses it as a bad request, it is made again with `"auto"`, which

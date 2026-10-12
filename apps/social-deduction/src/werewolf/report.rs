@@ -10,7 +10,7 @@
 
 use super::llm::{ContextWindow, Memory, Source};
 use super::{ENVIRONMENT, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Team, View, awake};
-use crate::model::ToolChoice;
+use crate::model::{ToolChoice, tokens};
 use free_agent::{ActorId, Event};
 use humantime::format_duration;
 use std::cmp::Ordering;
@@ -629,16 +629,22 @@ impl Narrator {
 
 /// A player's account of its own game, told a memory at a time: the
 /// current phase in full, and each past day with its talk and its tally in
-/// place of its votes and tentative decisions.
+/// place of its votes and tentative decisions. Told within a budget, it
+/// forgets talk, oldest first, until it fits.
 pub struct Story {
     /// The player's narrator, which has read every memory told.
     narrator: Narrator,
     /// The lines told, in order.
     lines: Vec<String>,
+    /// Whether each line is talk: something a player said.
+    talk: Vec<bool>,
     /// Where in the lines the current day's votes and tentative decisions
     /// are, in order.
     passing: Vec<usize>,
 }
+
+/// The line that stands in place of the last line of talk a story forgets.
+pub const FORGOTTEN: &str = "You don't remember what was said before this.";
 
 impl Story {
     /// The story `me` tells of its own game, with nothing in it yet.
@@ -646,6 +652,7 @@ impl Story {
         Self {
             narrator: Narrator::for_player(me),
             lines: Vec::new(),
+            talk: Vec::new(),
             passing: Vec::new(),
         }
     }
@@ -655,23 +662,66 @@ impl Story {
     /// decisions give way to it.
     pub fn recall(&mut self, event: &Event<Memory>) {
         let passes = self.narrator.passes(&event.payload);
+        let talk = matches!(
+            event.payload,
+            Memory::Acted {
+                message: Message::Say { .. }
+            } | Memory::Observed {
+                message: Message::Say { .. }
+            }
+        );
         let before = self.narrator.ordinal();
         let lines = self.narrator.recall(event);
         if self.narrator.ordinal() != before {
             for line in self.passing.drain(..).rev() {
                 self.lines.remove(line);
+                self.talk.remove(line);
             }
         }
         if passes {
             self.passing
                 .extend(self.lines.len()..self.lines.len() + lines.len());
         }
+        self.talk.extend(std::iter::repeat_n(talk, lines.len()));
         self.lines.extend(lines);
     }
 
     /// The lines told, in order.
     pub fn lines(&self) -> &[String] {
         &self.lines
+    }
+
+    /// The lines told, fitting within `budget` tokens by estimate once
+    /// joined by newlines, and how many lines of talk were left out to fit.
+    /// Talk is left out oldest first until the rest fits or none is left,
+    /// and [`FORGOTTEN`] stands in place of the last line left out, counted
+    /// with the rest. The story itself keeps every line.
+    pub fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
+        let chars = |line: &str| line.chars().count();
+        let talk: Vec<usize> = (0..self.lines.len()).filter(|&i| self.talk[i]).collect();
+        // The length of the lines, each with a newline after it, as each
+        // line of talk is left out. Joined, they have one newline fewer.
+        let mut length = self.lines.iter().map(|line| chars(line) + 1).sum::<usize>();
+        let mut forgot = 0;
+        while forgot < talk.len() && tokens(length.saturating_sub(1)) > budget {
+            length -= chars(&self.lines[talk[forgot]]) + 1;
+            if forgot == 0 {
+                length += chars(FORGOTTEN) + 1;
+            }
+            forgot += 1;
+        }
+        let forgotten = &talk[..forgot];
+        let lines = self
+            .lines
+            .iter()
+            .enumerate()
+            .filter_map(|(i, line)| match forgotten.binary_search(&i) {
+                Ok(at) if at + 1 == forgot => Some(FORGOTTEN),
+                Ok(_) => None,
+                Err(_) => Some(line.as_str()),
+            })
+            .collect();
+        (lines, forgot)
     }
 }
 
@@ -789,6 +839,7 @@ fn listed<'a>(seats: impl IntoIterator<Item = Seat<'a>>) -> String {
 mod tests {
     use super::*;
 
+    use crate::model::estimate;
     use crate::werewolf::llm::Configuration;
     use crate::werewolf::tests::{announcement, logged, received, selection, tentative, utterance};
     use crate::werewolf::{ENVIRONMENT, Rules, to_the_environment};
@@ -879,6 +930,7 @@ mod tests {
             to: HashSet::from([id(to)]),
             message: announcement(seq, view),
             seen: None,
+            forgot: None,
         }
     }
 
@@ -890,6 +942,7 @@ mod tests {
             to: to_the_environment(),
             message: choice(from, seq, target),
             seen: None,
+            forgot: None,
         })
     }
 
@@ -1007,6 +1060,7 @@ mod tests {
             to: to.iter().map(|name| id(name)).collect(),
             message: tentative(seq, n, target),
             seen: None,
+            forgot: None,
         })
     }
 
@@ -1019,6 +1073,7 @@ mod tests {
             to: to.iter().map(|name| id(name)).collect(),
             message: utterance(seq, from, n, text),
             seen: Some(3),
+            forgot: None,
         })
     }
 
@@ -1028,6 +1083,7 @@ mod tests {
             from: id(from),
             message,
             seen: Some(3),
+            forgot: None,
         })
     }
 
@@ -1441,6 +1497,153 @@ mod tests {
                 "Night 3.",
             ]
         );
+    }
+
+    /// What ann says on the first day.
+    const ACCUSED: &str =
+        "I suspect wolf, who was very quiet last night and has said nothing since.";
+
+    /// What wolf says on the first day.
+    const DENIED: &str = "Not me. I was asleep all night, as every villager here was, I promise.";
+
+    /// What ann says on the second day.
+    const STILL: &str = "Wolf is gone and somebody still died, so I was wrong about the werewolf.";
+
+    /// The doctor's story of two days of talk with a night between them.
+    fn two_days_of_talk() -> Story {
+        let mut story = Story::of(id("doctor"));
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        let living = ["seer", "doctor", "ann"];
+        let known = [("doctor", Role::Doctor)];
+        recall_all(
+            &mut story,
+            [
+                heard(1, Phase::Day, &everyone, &known),
+                received(utterance(2, "ann", 1, ACCUSED)),
+                received(choice("ann", 2, "wolf")),
+                received(utterance(2, "wolf", 3, DENIED)),
+                heard(2, Phase::Night, &living, &known),
+                heard(2, Phase::Day, &["doctor", "ann"], &known),
+                received(utterance(4, "ann", 5, STILL)),
+            ],
+        );
+        story
+    }
+
+    /// The story's lines, as told in full.
+    fn in_full(story: &Story) -> Vec<&str> {
+        story.lines().iter().map(String::as_str).collect()
+    }
+
+    /// The estimate of `lines`, joined as a request joins them.
+    fn estimated(lines: &[&str]) -> u64 {
+        estimate(&lines.join("\n"))
+    }
+
+    #[test]
+    fn a_story_within_its_budget_is_told_whole() {
+        let story = two_days_of_talk();
+        let whole = in_full(&story);
+        assert_eq!(
+            whole,
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                &format!("ann says, \"{ACCUSED}\""),
+                &format!("wolf says, \"{DENIED}\""),
+                "ann votes against wolf.",
+                "You do not vote.",
+                "seer does not vote.",
+                "wolf does not vote.",
+                "wolf dies.",
+                "",
+                "Night 2.",
+                "seer dies.",
+                "",
+                "Day 2.",
+                &format!("ann says, \"{STILL}\""),
+            ]
+        );
+        assert_eq!(story.told_within(estimated(&whole)), (whole.clone(), 0));
+        assert_eq!(story.told_within(u64::MAX), (whole, 0));
+    }
+
+    #[test]
+    fn a_story_over_its_budget_forgets_talk_oldest_first_in_its_place() {
+        let story = two_days_of_talk();
+        let whole = in_full(&story);
+        let forgetting = |forgot: usize| -> Vec<&str> {
+            let talk = [3, 4, 15];
+            whole
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !talk[..forgot].contains(i) || *i == talk[forgot - 1])
+                .map(|(i, line)| {
+                    if talk[..forgot].contains(&i) {
+                        FORGOTTEN
+                    } else {
+                        line
+                    }
+                })
+                .collect()
+        };
+        assert_eq!(
+            forgetting(2),
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                "You don't remember what was said before this.",
+                "ann votes against wolf.",
+                "You do not vote.",
+                "seer does not vote.",
+                "wolf does not vote.",
+                "wolf dies.",
+                "",
+                "Night 2.",
+                "seer dies.",
+                "",
+                "Day 2.",
+                &format!("ann says, \"{STILL}\""),
+            ]
+        );
+        // The past day's talk is forgotten first, and only as much as has
+        // to be.
+        for forgot in 1..=2 {
+            let budget = estimated(&forgetting(forgot));
+            assert!(budget < estimated(&whole));
+            assert_eq!(story.told_within(budget), (forgetting(forgot), forgot));
+        }
+        // A token less, and the current day's talk goes too.
+        let budget = estimated(&forgetting(2)) - 1;
+        assert_eq!(story.told_within(budget), (forgetting(3), 3));
+    }
+
+    #[test]
+    fn a_story_over_its_budget_with_no_talk_left_is_told_with_none() {
+        let story = two_days_of_talk();
+        let none = vec![
+            "You are doctor, the doctor.",
+            "",
+            "Day 1.",
+            "ann votes against wolf.",
+            "You do not vote.",
+            "seer does not vote.",
+            "wolf does not vote.",
+            "wolf dies.",
+            "",
+            "Night 2.",
+            "seer dies.",
+            "",
+            "Day 2.",
+            FORGOTTEN,
+        ];
+        assert_eq!(story.told_within(0), (none, 3));
+        // A story with no talk is told whole however far over it is.
+        let mut quiet = Story::of(id("ann"));
+        quiet.recall(&heard(1, Phase::Day, &["wolf", "ann"], &[]));
+        assert_eq!(quiet.told_within(0), (in_full(&quiet), 0));
     }
 
     #[test]
@@ -1867,6 +2070,7 @@ mod tests {
             to: to_the_environment(),
             message: Message::EndPhase { seq: 1 },
             seen: None,
+            forgot: None,
         });
         assert!(narrator.narrate(&reminder).is_empty());
     }

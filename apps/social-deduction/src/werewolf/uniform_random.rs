@@ -138,7 +138,7 @@ impl Behavior for Player {
                 n: self.n,
                 target,
             };
-            act(&self.context, selection, to_the_environment(), None)?;
+            act(&self.context, selection, to_the_environment(), None, None)?;
         }
         Ok(())
     }
@@ -263,7 +263,7 @@ pub(crate) mod tests {
             (Message::Select { .. }, Phase::Day) => to_everyone_but(me, &view.alive),
             _ => to_the_environment(),
         };
-        act(context, message, to, None)
+        act(context, message, to, None, None)
     }
 
     /// A puppet's think loop: says each message it is reminded of when the
@@ -414,6 +414,7 @@ pub(crate) mod tests {
                 to,
                 message: Message::Announce { seq, .. },
                 seen,
+                forgot,
             } = entry
             {
                 assert_eq!(from, ENVIRONMENT);
@@ -421,6 +422,7 @@ pub(crate) mod tests {
                 assert!(to.iter().all(|player| roles.contains_key(player)), "{to:?}");
                 assert!(*seq >= 1, "{seq}");
                 assert_eq!(*seen, None);
+                assert_eq!(*forgot, None);
                 *actions.entry((from, *n)).or_default() += 1;
                 announced += 1;
             }
@@ -436,6 +438,7 @@ pub(crate) mod tests {
                         ..
                     },
                 seen,
+                forgot,
             } = entry
             {
                 assert_eq!(from, said);
@@ -444,6 +447,7 @@ pub(crate) mod tests {
                 assert_eq!(*to, to_the_environment());
                 assert!(*seq >= 1, "{seq}");
                 assert_eq!(*seen, None);
+                assert_eq!(*forgot, None);
                 *actions.entry((from, *n)).or_default() += 1;
                 selected += 1;
             }

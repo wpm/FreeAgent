@@ -372,6 +372,40 @@ fn the_context_window_the_provider_reports_is_used_unless_the_command_line_gives
     );
 }
 
+/// A context window the default table's later requests do not fit whole.
+const SMALL_WINDOW: &str = "1500";
+
+#[test]
+fn in_a_small_context_window_the_players_forget_old_talk_and_play_to_the_end() {
+    let base_url = playing(&[EXAMPLE_MODEL]);
+    let config = configured("forgetting", "minimal.toml", &base_url, EXAMPLE_MODEL);
+    let args = [
+        &config,
+        "--night-limit",
+        "1s",
+        "--day-limit",
+        "2s",
+        "--ratify-limit",
+        "1s",
+        "--context-window",
+        SMALL_WINDOW,
+    ];
+    let told =
+        format!("The model's context window is {SMALL_WINDOW} tokens, as the command line says.");
+    let (events, _) = assert_plays_the_default_table("llm", "LLM", &args, &[&told]);
+    // A player's first request, by night, tells the whole story, and a
+    // request that forgot nothing is logged as before.
+    let forgot: Vec<Option<usize>> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            Entry::Action { from, forgot, .. } if from != "environment" => Some(*forgot),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(forgot[0], None);
+    assert!(forgot.iter().any(Option::is_some), "{forgot:?}");
+}
+
 #[test]
 fn a_context_window_of_0_is_refused_before_anything_is_printed() {
     let base_url = playing(&[EXAMPLE_MODEL]);

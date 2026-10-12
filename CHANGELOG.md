@@ -24,6 +24,12 @@ workflow takes a version's notes from here.
   from `--context-window`, `context_window` in `[model]`, the provider's
   listing of the model, or a default of 4096 tokens, and told and logged
   with where it came from.
+- A model player's request fits the context window: every request asks
+  for a reply of at most 1024 tokens, and when the story would not fit
+  beside the rest, by estimate, the player forgets talk, oldest first, and
+  is told "You don't remember what was said before this." The log's action
+  and withheld entries carry `forgot`, how many lines of talk were left
+  out, when any were.
 - `social-deduction models`, which lists the models a provider serves.
   `--check` asks each model to play as by night and as by day and marks
   those that answer both requests well, and those that do only when not

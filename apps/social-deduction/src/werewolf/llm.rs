@@ -33,8 +33,10 @@
 //! every message's, and neither remembers the message nor wakes for it.
 //! Each time it is woken, it tells the model the story so far and where the
 //! game stands, with how long the phase lasts, and carries out what the
-//! model answers. The call is made in the player's think loop, so the
-//! player keeps perceiving while the model works.
+//! model answers. The request fits the context window by estimate: when
+//! the story would not, the oldest talk is forgotten for that request. The
+//! call is made in the player's think loop, so the player keeps perceiving
+//! while the model works.
 //!
 //! By night a player is woken once, by its announcement, and has the model
 //! select one of its [candidates] with one `select` call, sent to
@@ -63,16 +65,17 @@
 //! and the game goes on. The player logs an [`Entry::Observation`] for each
 //! message it receives and an [`Entry::Action`] for each utterance and
 //! selection it sends, numbered together from 1, with how many memories the
-//! model was shown when it made the call that produced the message. Before
-//! a game begins, [`check_plays`] asks the model once as a player would by
-//! night and once as by day, so a model that does not answer either request
-//! well fails at launch, in the provider's words. Every request makes the
-//! model call a tool, unless the probe finds the model refuses that, and
-//! then every request asks it to call one, and an answer in prose is a
-//! failure like any other. [`game`] builds the
-//! episode from the deal, the rules, the model, and the [`Configuration`]
-//! the log opens with, which [`Settings::configuration`] records from the
-//! settings, the deal and the rendered prompts.
+//! model was shown when it made the call that produced the message and how
+//! many lines of talk that call forgot. Before a game begins,
+//! [`check_plays`] asks the model once as a player would by night and once
+//! as by day, so a model that does not answer either request well fails at
+//! launch, in the provider's words. Every request makes the model call a
+//! tool, unless the probe finds the model refuses that, and then every
+//! request asks it to call one, and an answer in prose is a failure like
+//! any other. [`game`] builds the episode from the deal, the rules, the
+//! model, and the [`Configuration`] the log opens with, which
+//! [`Settings::configuration`] records from the settings, the deal and the
+//! rendered prompts.
 
 use super::announced;
 use super::report::Story;
@@ -81,8 +84,8 @@ use super::{
     awake, candidates, observe, receivers,
 };
 use crate::model::{
-    self, CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT, Request, Response, Tool, ToolChoice, api_key,
-    key_variable,
+    self, CONTEXT_WINDOW, MAX_TOKENS, Provider, REQUEST_TIMEOUT, Request, Response, Tool,
+    ToolChoice, api_key, estimate, key_variable,
 };
 use anyhow::{Context as _, anyhow, bail};
 use async_trait::async_trait;
@@ -676,6 +679,7 @@ pub fn game(
     let mut prompts = configuration.prompts.clone();
     let model_id = configuration.model.clone();
     let tool_choice = configuration.tool_choice;
+    let context_window = configuration.context_window.tokens;
     let players: Vec<PlayerId> = roles.keys().cloned().collect();
     let environment = announced::init(
         roles,
@@ -693,6 +697,7 @@ pub fn game(
             prompt,
             model_id.clone(),
             tool_choice,
+            context_window,
             Arc::clone(&model),
         )
     };
@@ -790,6 +795,8 @@ struct Mind {
     model_id: String,
     /// Whether each request makes the model call a tool.
     tool_choice: ToolChoice,
+    /// The model's context window, in tokens, which each request fits.
+    context_window: u64,
     /// The model asked each time the player is woken.
     model: Arc<dyn model::Model>,
 }
@@ -805,6 +812,15 @@ struct Remembered {
     story: Story,
 }
 
+/// What the model was shown for a call: how many memories the story was
+/// told from, and how many lines of talk it forgot to fit the context
+/// window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Shown {
+    seen: usize,
+    forgot: usize,
+}
+
 /// A phase as a player was announced it: its number, what the player may
 /// see of it, and how long it lasts.
 #[derive(Clone)]
@@ -816,12 +832,14 @@ struct Announced {
 
 impl Mind {
     /// The mind of `me` with nothing in its history yet, told `prompt`,
-    /// asking `model` as the model `model_id` under `tool_choice`.
+    /// asking `model` as the model `model_id` under `tool_choice`, within
+    /// `context_window` tokens.
     fn new(
         me: PlayerId,
         prompt: String,
         model_id: String,
         tool_choice: ToolChoice,
+        context_window: u64,
         model: Arc<dyn model::Model>,
     ) -> Self {
         Self {
@@ -836,6 +854,7 @@ impl Mind {
             prompt,
             model_id,
             tool_choice,
+            context_window,
             model,
         }
     }
@@ -851,14 +870,17 @@ impl Mind {
         remembered.history.push(event);
     }
 
-    /// The story so far, its lines joined, and how many memories it was
-    /// told from.
-    fn story(&self) -> (String, usize) {
+    /// The story so far within `budget` tokens, its lines joined, and
+    /// what it was told from: how many memories, and how many lines of talk
+    /// it forgot to fit.
+    fn story(&self, budget: u64) -> (String, Shown) {
         let remembered = self.remembered.lock().unwrap();
-        (
-            remembered.story.lines().join("\n"),
-            remembered.history.len(),
-        )
+        let (lines, forgot) = remembered.story.told_within(budget);
+        let shown = Shown {
+            seen: remembered.history.len(),
+            forgot,
+        };
+        (lines.join("\n"), shown)
     }
 
     /// The next number for a message to others: one up from the last.
@@ -947,15 +969,23 @@ impl Player {
     /// Builds a player's two loops once the episode has made their
     /// contexts: the perceive loop as the actor, and the think loop. The
     /// player `me` is told `prompt`, and asks `model` as the model
-    /// `model_id` under `tool_choice`.
+    /// `model_id` under `tool_choice`, within `context_window` tokens.
     pub fn init(
         me: PlayerId,
         prompt: String,
         model_id: String,
         tool_choice: ToolChoice,
+        context_window: u64,
         model: Arc<dyn model::Model>,
     ) -> (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>) {
-        let mind = Arc::new(Mind::new(me, prompt, model_id, tool_choice, model));
+        let mind = Arc::new(Mind::new(
+            me,
+            prompt,
+            model_id,
+            tool_choice,
+            context_window,
+            model,
+        ));
         let shared = Arc::clone(&mind);
         let behavior: Builder<Actor> =
             Box::new(move |context| Actor::Player(Player { context, mind }));
@@ -984,25 +1014,35 @@ impl Player {
 
     /// The request for a decision in the phase `view` shows, which lasts
     /// `limit`: the system prompt, then the story so far, a blank line, and
-    /// where the game stands, with `tools` to answer with. With it, how
-    /// many memories the story was told from.
+    /// where the game stands, with `tools` to answer with. The story fits
+    /// what is left of the context window once the reply, the system
+    /// prompt, the tools and the situation are counted, by estimate,
+    /// forgetting talk if it has to. With the request, what the story was
+    /// told from.
     fn request(
         &self,
         view: &View,
         limit: Duration,
         tools: Vec<Tool>,
-    ) -> anyhow::Result<(Request, usize)> {
+    ) -> anyhow::Result<(Request, Shown)> {
         let me = &self.context.id;
-        let (story, seen) = self.mind.story();
-        let asked = format!("{story}\n\n{}", situation(me, view, limit)?);
+        let situation = format!("\n\n{}", situation(me, view, limit)?);
+        // Everything but the story, as `request` puts it together.
+        let taken = MAX_TOKENS
+            + estimate(&self.mind.prompt)
+            + estimate(&serde_json::to_string(&tools)?)
+            + estimate(&format!("{situation} {ANSWER}"));
+        let (story, shown) = self
+            .mind
+            .story(self.mind.context_window.saturating_sub(taken));
         let request = request(
             &self.mind.model_id,
             self.mind.tool_choice,
             &self.mind.prompt,
-            asked,
+            story + &situation,
             tools,
         );
-        Ok((request, seen))
+        Ok((request, shown))
     }
 
     /// Woken, decide: take the wake-up, and ask the model about the phase
@@ -1058,10 +1098,10 @@ impl Player {
         limit: Duration,
         candidates: &[PlayerId],
     ) -> anyhow::Result<()> {
-        let (request, seen) = self.request(view, limit, night_tools(candidates))?;
+        let (request, shown) = self.request(view, limit, night_tools(candidates))?;
         let response = self.mind.model.complete(&request).await?;
         let target = selected(&response, candidates)?;
-        self.carry_out(seq, view, vec![Sending::Select(target)], seen)?;
+        self.carry_out(seq, view, vec![Sending::Select(target)], shown)?;
         Ok(())
     }
 
@@ -1081,18 +1121,18 @@ impl Player {
         limit: Duration,
         candidates: &[PlayerId],
     ) -> anyhow::Result<()> {
-        let (request, seen) = self.request(view, limit, day_tools(candidates, limit))?;
+        let (request, shown) = self.request(view, limit, day_tools(candidates, limit))?;
         let response = self.mind.model.complete(&request).await?;
         let Asked { sends, wait } = asked(&response, candidates, limit)?;
-        let still_on = self.carry_out(seq, view, sends, seen)?;
+        let still_on = self.carry_out(seq, view, sends, shown)?;
         if still_on && let Some(after) = wait {
             self.remind(seq, after)?;
         }
         Ok(())
     }
 
-    /// Carry out `sends`, what a response made from `seen` memories asked
-    /// for in the phase numbered `seq`, which `view` shows, if that is
+    /// Carry out `sends`, what a response made from what it was `shown`
+    /// asked for in the phase numbered `seq`, which `view` shows, if that is
     /// still the phase the player was last announced: send each in order,
     /// numbered, to whom the rules of the game send it. A call may begin in
     /// one phase and end in the next, and then nothing is sent, and each
@@ -1103,7 +1143,7 @@ impl Player {
         seq: u64,
         view: &View,
         sends: Vec<Sending>,
-        seen: usize,
+        shown: Shown,
     ) -> anyhow::Result<bool> {
         let me = &self.context.id;
         let still_on = self.mind.in_phase(seq);
@@ -1111,12 +1151,13 @@ impl Player {
             if still_on {
                 let message = sending.message(seq, me, self.mind.number());
                 let to = receivers(&message, me, view);
-                self.send(message, to, seen)?;
+                self.send(message, to, shown)?;
             } else {
                 self.context.log(Entry::Withheld {
                     from: me.clone(),
                     message: sending.message(seq, me, 0),
-                    seen: Some(seen),
+                    seen: Some(shown.seen),
+                    forgot: Some(shown.forgot),
                 });
             }
         }
@@ -1124,13 +1165,19 @@ impl Player {
     }
 
     /// Remember sending `message` and send it to everyone in `to`, logged
-    /// as the player's action with `seen`, how many memories the model was
-    /// shown when it made the call that produced it.
-    fn send(&self, message: Message, to: HashSet<ActorId>, seen: usize) -> anyhow::Result<()> {
+    /// as the player's action with what the model was `shown` when it made
+    /// the call that produced it.
+    fn send(&self, message: Message, to: HashSet<ActorId>, shown: Shown) -> anyhow::Result<()> {
         self.remember(Memory::Acted {
             message: message.clone(),
         });
-        act(&self.context, message, to, Some(seen))
+        act(
+            &self.context,
+            message,
+            to,
+            Some(shown.seen),
+            Some(shown.forgot),
+        )
     }
 
     /// Set a reminder to be woken `after` from now in the phase numbered
@@ -1592,8 +1639,8 @@ fn target(call: &model::Call, candidates: &[PlayerId]) -> anyhow::Result<PlayerI
 mod tests {
     use super::*;
     use crate::model::canned;
-    use crate::model::fake::{FakeModel, SAID, choosing_first, voted_in_this_phase};
-    use crate::werewolf::report::Narrator;
+    use crate::model::fake::{FakeModel, SAID, canned_calls, choosing_first, voted_in_this_phase};
+    use crate::werewolf::report::{FORGOTTEN, Narrator};
     use crate::werewolf::tests::{
         Played, announcement, between_the_deal_and_the_end, logged, observed_by,
         observed_by_the_environment, one_wolf_against, received, run, seen, seen_by_day, selection,
@@ -2515,6 +2562,7 @@ player2 = \"Cautious.\"
                         told(id),
                         MODEL_ID.to_string(),
                         ToolChoice::Required,
+                        CONTEXT_WINDOW,
                         Arc::clone(&model),
                     )
                 })
@@ -2646,6 +2694,7 @@ player2 = \"Cautious.\"
                     from,
                     message,
                     seen,
+                    ..
                 } if from == player => Some((message, *seen)),
                 _ => None,
             })
@@ -2836,6 +2885,85 @@ player2 = \"Cautious.\"
         }
     }
 
+    /// The estimate of all `request` takes of its context window: the
+    /// system prompt, the tools as JSON, the user message, and the reply.
+    fn estimated(request: &Request) -> u64 {
+        let messages: u64 = request
+            .messages
+            .iter()
+            .map(|message| estimate(&message.content))
+            .sum();
+        messages + estimate(&serde_json::to_string(&request.tools).unwrap()) + request.max_tokens
+    }
+
+    /// How many lines of talk each of the players' actions says the model
+    /// forgot, in the log's order.
+    fn forgotten(logged: &[Entry]) -> Vec<Option<usize>> {
+        logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Action { from, forgot, .. } if from != ENVIRONMENT => Some(*forgot),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_game_in_a_small_window_plays_to_the_end_its_later_requests_forgetting_talk() {
+        // Everyone plays as the canned player does, at length.
+        let model = answering(|request| {
+            let calls: Vec<Made> = canned_calls(&serde_json::to_value(request)?)?
+                .into_iter()
+                .map(|(name, arguments)| match name.as_str() {
+                    SPEAK => speaking(&SAID.repeat(10)),
+                    _ => (name, arguments),
+                })
+                .collect();
+            Ok(Response::calling(&calls))
+        });
+        let roles = doctored();
+        let window = 1500;
+        let configuration = Configuration {
+            context_window: ContextWindow {
+                tokens: window,
+                source: Source::CommandLine,
+            },
+            ..configuration(&roles)
+        };
+        let (winner, logged, _) =
+            play_configured(roles, quick(), configuration, Arc::clone(&model))
+                .await
+                .unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        for request in model.requests() {
+            assert_eq!(request.max_tokens, 1024);
+            assert!(estimated(&request) <= window, "{request:?}");
+        }
+        // The doctor tells its whole story at first, and by the end of the
+        // second day forgets the oldest talk, saying so.
+        let asked = asked_of(&model, "doc");
+        assert!(!asked[0].contains(FORGOTTEN), "{asked:?}");
+        assert!(asked.last().unwrap().contains(FORGOTTEN), "{asked:?}");
+        let forgot = forgotten(&logged);
+        assert_eq!(forgot[0], Some(0));
+        assert!(
+            forgot.iter().any(|forgot| forgot.is_some_and(|n| n > 0)),
+            "{forgot:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_within_the_window_forgets_nothing() {
+        let model = answering(choosing_first);
+        let (_, logged, _) = play(doctored(), quick(), Arc::clone(&model)).await.unwrap();
+        for asked in asked_of(&model, "doc") {
+            assert!(!asked.contains(FORGOTTEN), "{asked}");
+        }
+        let forgot = forgotten(&logged);
+        assert!(!forgot.is_empty());
+        assert!(forgot.iter().all(|forgot| *forgot == Some(0)), "{forgot:?}");
+    }
+
     /// A player's memory of sending `message`, in no episode in particular.
     fn sent(message: Message) -> Event<Memory> {
         logged(Memory::Acted { message })
@@ -2848,6 +2976,7 @@ player2 = \"Cautious.\"
             told("wolf"),
             MODEL_ID.to_string(),
             ToolChoice::Required,
+            CONTEXT_WINDOW,
             Arc::new(FakeModel::failing("down")),
         );
         let pack = [("wolf", Role::Werewolf)];
@@ -2881,7 +3010,7 @@ player2 = \"Cautious.\"
             assert_eq!(remembered.story.lines(), fresh.lines());
         }
         assert_eq!(
-            mind.story(),
+            mind.story(u64::MAX),
             (
                 [
                     "You are wolf, the only werewolf.",
@@ -2901,7 +3030,10 @@ player2 = \"Cautious.\"
                     "Night 2.",
                 ]
                 .join("\n"),
-                script.len()
+                Shown {
+                    seen: script.len(),
+                    forgot: 0,
+                }
             )
         );
     }
@@ -3056,6 +3188,7 @@ player2 = \"Cautious.\"
                 limit: rules().night_limit,
             },
             seen: None,
+            forgot: None,
         };
         assert_eq!(between[1], announced(1, "ann", Role::Villager));
         assert_eq!(between[2], announced(2, "bob", Role::Villager));
@@ -3320,6 +3453,7 @@ player2 = \"Cautious.\"
         for request in &requests {
             assert_eq!(request.model, MODEL_ID);
             assert_eq!(request.tool_choice, ToolChoice::Required);
+            assert_eq!(request.max_tokens, 1024);
             assert!(request.messages[1].content.ends_with(ANSWER));
             assert_eq!(request.messages.len(), 2);
             assert_eq!(request.messages[0].role, model::Role::System);
