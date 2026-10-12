@@ -114,6 +114,15 @@ workflow takes a version's notes from here.
   such a day. The narration tells "player4 withdraws their vote and is
   undecided again.", and a retraction that does not count as "player4
   withdraws their vote, but the withdrawal does not count."
+- `social-deduction avalon`, which plays *The Resistance: Avalon* with
+  random players, any valid table of 5 to 10 players and all eight roles,
+  from the command line: `--merlin`, `--percival`, `--servants`,
+  `--assassin`, `--morgana`, `--mordred`, `--oberon` and `--minions`, and
+  `--propose-limit`, `--vote-limit`, `--quest-limit` and
+  `--assassinate-limit`. The environment counts only the choices the rules
+  allow. The game is told on standard output and logged to standard error,
+  each phase ending with `Proposed`, `Tallied`, `Quested` or
+  `Assassinated`.
 
 ### Changed
 

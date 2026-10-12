@@ -4,7 +4,9 @@
 //! models a provider serves, which belongs to no game.
 
 use clap::{Args, Parser};
-use free_agent::{Episode, Logger};
+use free_agent::{Behavior, Episode, Event, Logger};
+use serde::Serialize;
+use social_deduction::avalon;
 use social_deduction::model::spec::Probed;
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
@@ -12,7 +14,7 @@ use social_deduction::model::{
 use social_deduction::werewolf::config::{self, Config, Overrides};
 use social_deduction::werewolf::prompted;
 use social_deduction::werewolf::report::Narrator;
-use social_deduction::werewolf::{self, Actor, Entry, Team};
+use social_deduction::werewolf::{self, Team};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -26,6 +28,8 @@ use tokio::sync::oneshot;
 enum CommandLine {
     /// Werewolf: werewolves against villagers, by night and by day.
     Werewolf(Werewolf),
+    /// Avalon: good against evil, over five quests.
+    Avalon(Avalon),
     /// List the models a provider serves, and which of them play when
     /// asked.
     #[command(after_help = known_providers_help())]
@@ -52,6 +56,18 @@ struct Werewolf {
     config: Option<PathBuf>,
     #[command(flatten)]
     overrides: Overrides,
+    #[command(flatten)]
+    logging: Logging,
+}
+
+/// A game of Avalon: what the command line says of the table and the
+/// limits, every player random.
+#[derive(Args, Debug, PartialEq)]
+struct Avalon {
+    #[command(flatten)]
+    roles: avalon::RoleCounts,
+    #[command(flatten)]
+    limits: avalon::PhaseLimits,
     #[command(flatten)]
     logging: Logging,
 }
@@ -102,9 +118,39 @@ async fn main() -> anyhow::Result<()> {
             let configuration = settings.configuration(&deal, &prompts, models)?;
             let players = config::players(&configuration, &deal, &handles);
             let rules = settings.rules();
-            play(logging.enabled(), |winner, logger| {
-                werewolf::game(deal, rules, configuration, winner, players, logger)
-            })
+            let mut narrator = Narrator::default();
+            play(
+                logging.enabled(),
+                move |event| narrator.narrate(event),
+                |logger| {
+                    let (winner, _) = oneshot::channel::<Team>();
+                    werewolf::game(deal, rules, configuration, winner, players, logger)
+                },
+            )
+            .await
+        }
+        CommandLine::Avalon(Avalon {
+            roles,
+            limits,
+            logging,
+        }) => {
+            let deal = roles.table()?.deal();
+            let rules = limits.rules();
+            let mut narrator = avalon::report::Narrator::default();
+            play(
+                logging.enabled(),
+                move |event| narrator.narrate(event),
+                |logger| {
+                    let (winner, _) = oneshot::channel();
+                    avalon::game(
+                        deal,
+                        rules,
+                        winner,
+                        |_| avalon::random::Player::init(),
+                        logger,
+                    )
+                },
+            )
             .await
         }
         CommandLine::Models {
@@ -236,26 +282,28 @@ fn listing(models: &[(String, Option<Mark>)]) -> String {
     listing
 }
 
-/// Play one game, the episode `game` builds once given where to send the
-/// winner and the logger the environment holds. The narration goes to
+/// Play one game, the episode `game` builds once given the logger the
+/// environment holds. The narration `narrate` makes of each event goes to
 /// standard output as the game happens, and so does the log to standard
 /// error as JSON lines when `logging` is on.
-async fn play(
+async fn play<A, L>(
     logging: bool,
-    game: impl FnOnce(oneshot::Sender<Team>, Logger<Entry>) -> Episode<Actor>,
-) -> anyhow::Result<()> {
-    // The winner reaches the log too, which is where it is read from here.
-    let (winner, _won) = oneshot::channel();
+    mut narrate: impl FnMut(&Event<L>) -> Vec<String> + Send + 'static,
+    game: impl FnOnce(Logger<L>) -> Episode<A>,
+) -> anyhow::Result<()>
+where
+    A: Behavior<Log = L> + 'static,
+    L: Serialize + Send + 'static,
+{
     let (logger, mut log) = unbounded_channel();
-    let episode = game(winner, logger);
+    let episode = game(logger);
     let telling = tokio::spawn(async move {
-        let mut narrator = Narrator::default();
         let mut stdout = io::stdout();
         while let Some(event) = log.recv().await {
             if logging {
                 event.write(io::stderr())?;
             }
-            for line in narrator.narrate(&event) {
+            for line in narrate(&event) {
                 writeln!(stdout, "{line}")?;
             }
         }
@@ -445,6 +493,109 @@ mod tests {
             "{line}"
         );
         assert!(help.contains("[CONFIG]"), "{help}");
+    }
+
+    #[test]
+    fn avalon_takes_the_counts_the_limits_and_the_log_flags_and_no_file() {
+        assert_eq!(
+            parsed(&["avalon"]),
+            CommandLine::Avalon(Avalon {
+                roles: avalon::RoleCounts::default(),
+                limits: avalon::PhaseLimits::default(),
+                logging: Logging::default(),
+            })
+        );
+        let args = [
+            "avalon",
+            "--merlin",
+            "1",
+            "--percival",
+            "1",
+            "--servants",
+            "3",
+            "--assassin",
+            "1",
+            "--morgana",
+            "1",
+            "--mordred",
+            "1",
+            "--oberon",
+            "1",
+            "--minions",
+            "2",
+            "--propose-limit",
+            "30s",
+            "--vote-limit",
+            "1m 30s",
+            "--quest-limit",
+            "2m",
+            "--assassinate-limit",
+            "5s",
+            "--no-log",
+        ];
+        assert_eq!(
+            parsed(&args),
+            CommandLine::Avalon(Avalon {
+                roles: avalon::RoleCounts {
+                    merlin: Some(1),
+                    percival: Some(1),
+                    servants: Some(3),
+                    assassin: Some(1),
+                    morgana: Some(1),
+                    mordred: Some(1),
+                    oberon: Some(1),
+                    minions: Some(2),
+                },
+                limits: avalon::PhaseLimits {
+                    propose_limit: Some(Duration::from_secs(30)),
+                    vote_limit: Some(Duration::from_secs(90)),
+                    quest_limit: Some(Duration::from_secs(120)),
+                    assassinate_limit: Some(Duration::from_secs(5)),
+                },
+                logging: Logging {
+                    log: false,
+                    no_log: true
+                },
+            })
+        );
+        let refused = |args: &[&str]| {
+            CommandLine::try_parse_from([&["social-deduction", "avalon"], args].concat()).is_err()
+        };
+        assert!(refused(&["game.toml"]));
+        assert!(refused(&["--vote-limit", "30"]));
+        assert!(refused(&["--werewolves", "1"]));
+    }
+
+    #[test]
+    fn the_avalon_help_names_the_defaults_the_code_fills_in() {
+        let table = avalon::Table::default();
+        let counts = table
+            .counts()
+            .map(|(role, count)| (avalon::RoleCounts::flag(role), count.to_string()));
+        let rules = avalon::Rules::default();
+        let limits = [
+            ("--propose-limit", rules.propose_limit),
+            ("--vote-limit", rules.vote_limit),
+            ("--quest-limit", rules.quest_limit),
+            ("--assassinate-limit", rules.assassinate_limit),
+        ]
+        .map(|(option, limit)| {
+            (
+                option.to_string(),
+                humantime::format_duration(limit).to_string(),
+            )
+        });
+        let mut command = CommandLine::command();
+        let avalon = command.find_subcommand_mut("avalon").unwrap();
+        assert_eq!(
+            avalon.get_about().unwrap().to_string(),
+            "Avalon: good against evil, over five quests"
+        );
+        let help = avalon.render_help().to_string();
+        for (option, default) in counts.into_iter().chain(limits) {
+            let line = help.lines().find(|line| line.contains(&option)).unwrap();
+            assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
+        }
     }
 
     #[test]

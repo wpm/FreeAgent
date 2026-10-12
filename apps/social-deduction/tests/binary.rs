@@ -3,6 +3,7 @@
 //! lines.
 
 use free_agent::Event;
+use social_deduction::avalon;
 use social_deduction::model::ToolChoice;
 use social_deduction::model::canned::{
     day_refusal, playing, playing_only, playing_within, refusal, refusing, refusing_days,
@@ -261,7 +262,7 @@ fn the_variants_and_the_model_options_are_gone() {
 fn help_lists_the_games_the_file_the_role_counts_and_the_limits() {
     let help = printed(&["--help"]);
     assert!(
-        help.contains("werewolf") && help.contains("models"),
+        help.contains("werewolf") && help.contains("avalon") && help.contains("models"),
         "{help}"
     );
     let help = printed(&["werewolf", "--help"]);
@@ -1001,4 +1002,121 @@ fn the_models_command_refuses_a_key_variable_that_is_not_set_before_asking_anyon
     let stderr = refused(&["models", &base_url, "--api-key-env", name]);
     assert!(stderr.contains(name), "{stderr}");
     assert!(!stderr.contains(&base_url), "{stderr}");
+}
+
+/// Play Avalon with `args` after the game: the events on standard error,
+/// parsed, and what was printed.
+fn played_avalon(args: &[&str]) -> (Vec<Event<avalon::Entry>>, String) {
+    let output = succeeded(&[&["avalon"], args].concat());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let events = stderr
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    (events, String::from_utf8(output.stdout).unwrap())
+}
+
+/// Every role the deal Avalon's log opens with seats, in seat order.
+fn avalon_roles(events: &[Event<avalon::Entry>]) -> Vec<avalon::Role> {
+    let Some(avalon::Entry::Start {
+        roles, strategies, ..
+    }) = events.first().map(|event| &event.payload)
+    else {
+        panic!("{events:?}");
+    };
+    assert!(strategies.values().all(|strategy| strategy == "random"));
+    let mut roles: Vec<avalon::Role> = roles.values().copied().collect();
+    roles.sort_unstable();
+    roles
+}
+
+#[test]
+fn avalon_plays_the_default_table_to_the_end_and_tells_it() {
+    let (events, printed) = played_avalon(&[]);
+    let episode = events[0].episode;
+    assert!(events.iter().all(|event| event.episode == episode));
+    use avalon::Role::{Assassin, Merlin, Minion, Servant};
+    assert_eq!(
+        avalon_roles(&events),
+        [Merlin, Servant, Servant, Assassin, Minion]
+    );
+    let Some(avalon::Entry::End { winner, .. }) = events.last().map(|event| &event.payload) else {
+        panic!("{events:?}");
+    };
+    // The account opens with the table, a player to a line, then the
+    // limits, goes through the first proposal, set off by a blank line,
+    // and closes with the winner and how long the game took.
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines[0], "5 players:", "{printed}");
+    assert!(lines[1].ends_with(", plays random"), "{printed}");
+    assert_eq!(
+        lines[6], "A proposal waits 1m, a vote 1m, a quest 1m and the assassination 1m.",
+        "{printed}"
+    );
+    assert_eq!(lines[7], "", "{printed}");
+    assert!(
+        lines[8].starts_with("Quest 1, proposal 1 of 5. player1 ("),
+        "{printed}"
+    );
+    let won = match winner {
+        avalon::Team::Good => "Good wins ",
+        avalon::Team::Evil => "Evil wins ",
+    };
+    assert!(lines[lines.len() - 2].starts_with(won), "{printed}");
+    assert!(
+        lines[lines.len() - 1].starts_with("The game took "),
+        "{printed}"
+    );
+}
+
+#[test]
+fn avalon_plays_any_valid_table_under_the_limits_given() {
+    let args = [
+        "--servants",
+        "3",
+        "--minions",
+        "2",
+        "--percival",
+        "1",
+        "--morgana",
+        "1",
+        "--vote-limit",
+        "90s",
+    ];
+    let (events, printed) = played_avalon(&args);
+    use avalon::Role::{Assassin, Merlin, Minion, Morgana, Percival, Servant};
+    assert_eq!(
+        avalon_roles(&events),
+        [
+            Merlin, Percival, Servant, Servant, Servant, Assassin, Morgana, Minion, Minion
+        ]
+    );
+    assert!(printed.starts_with("9 players:\n"), "{printed}");
+    assert!(
+        printed.contains("A proposal waits 1m, a vote 1m 30s, a quest 1m"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn avalon_no_log_leaves_standard_error_empty() {
+    let output = succeeded(&["avalon", "--no-log"]);
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .starts_with("5 players:\n")
+    );
+}
+
+#[test]
+fn avalon_refuses_an_invalid_table_saying_what_is_wrong() {
+    let stderr = refused(&["avalon", "--merlin", "0", "--servants", "3"]);
+    assert!(
+        stderr.contains("a table has Merlin exactly when it has an Assassin"),
+        "{stderr}"
+    );
+    let stderr = refused(&["avalon", "--servants", "0"]);
+    assert!(stderr.contains("5 to 10 players"), "{stderr}");
+    assert_usage_error(&["avalon", "game.toml"]);
 }

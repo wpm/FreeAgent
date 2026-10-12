@@ -3,6 +3,7 @@
 
 #![warn(missing_docs)]
 
+pub mod avalon;
 pub mod model;
 pub mod report;
 pub mod seat;
