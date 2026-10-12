@@ -2,7 +2,7 @@
 //! choosing in this process, so that no test reaches the network. Nothing
 //! but tests uses this module.
 
-use super::fake::first_enumerated;
+use super::fake::canned_calls;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread::JoinHandle;
@@ -124,10 +124,12 @@ pub fn unreachable() -> String {
 }
 
 /// A provider that plays, kept for the rest of the process: it answers
-/// every listing request with `ids`, and every completion request by
-/// calling the tool the request forces with the first value its enumerated
-/// parameter allows, as a player's `select` tool asks for a `target` from
-/// an `enum` of candidates. Anything else asked of it is not found.
+/// every listing request with `ids`, and every completion request as the
+/// canned player does, with the calls [`canned_calls`] makes: offered one
+/// tool, it calls it with the first value its enumerated parameter allows,
+/// as a player's `select` tool asks for a `target` from an `enum` of
+/// candidates; offered a day's three, it speaks and votes once a day and
+/// waits after that. Anything else asked of it is not found.
 pub fn playing(ids: &[&str]) -> String {
     playing_only(ids, ids)
 }
@@ -146,7 +148,10 @@ pub fn playing_only(ids: &[&str], selecting: &[&str]) -> String {
             return response("400 Bad Request", &error("the request names no model"));
         };
         if selecting.iter().any(|id| id == model) {
-            response("200 OK", &selecting_first(request))
+            match canned_calls(request) {
+                Ok(calls) => response("200 OK", &completion_of(&calls)),
+                Err(error) => response("400 Bad Request", &self::error(&format!("{error:#}"))),
+            }
         } else {
             response("400 Bad Request", &error(&refusal(model)))
         }
@@ -206,21 +211,27 @@ fn error(message: &str) -> String {
     serde_json::json!({"error": {"message": message, "type": "invalid_request_error"}}).to_string()
 }
 
-/// The completion that calls the one tool `request`, a completion request
-/// in the protocol's JSON, offers, with the first value its enumerated
-/// parameter allows.
-fn selecting_first(request: &serde_json::Value) -> String {
-    let function = &request["tools"][0]["function"];
-    let (parameter, first) = first_enumerated(&function["parameters"]).unwrap();
-    completion(
-        function["name"].as_str().unwrap(),
-        &serde_json::json!({parameter: first}),
-    )
-}
-
 /// A completion in OpenAI's shape whose one choice calls the tool `name`
 /// with `arguments`, with the fields a provider adds that are not read.
 pub fn completion(name: &str, arguments: &serde_json::Value) -> String {
+    completion_of(&[(name.to_string(), arguments.clone())])
+}
+
+/// A completion in OpenAI's shape whose one choice makes each of `calls`, a
+/// tool's name and its arguments, in order, with the fields a provider adds
+/// that are not read.
+pub fn completion_of(calls: &[(String, serde_json::Value)]) -> String {
+    let tool_calls: Vec<serde_json::Value> = calls
+        .iter()
+        .enumerate()
+        .map(|(i, (name, arguments))| {
+            serde_json::json!({
+                "id": format!("call_{}", i + 1),
+                "type": "function",
+                "function": {"name": name, "arguments": arguments.to_string()},
+            })
+        })
+        .collect();
     serde_json::json!({
         "id": "chatcmpl-1",
         "object": "chat.completion",
@@ -232,11 +243,7 @@ pub fn completion(name: &str, arguments: &serde_json::Value) -> String {
             "message": {
                 "role": "assistant",
                 "content": null,
-                "tool_calls": [{
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": name, "arguments": arguments.to_string()},
-                }],
+                "tool_calls": tool_calls,
             },
         }],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
@@ -247,7 +254,7 @@ pub fn completion(name: &str, arguments: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::fake::selecting;
+    use crate::model::fake::{SAID, by_day, selecting};
     use crate::model::{Model, Provider, REQUEST_TIMEOUT, Response};
     use serde_json::json;
 
@@ -263,6 +270,29 @@ mod tests {
                 Response::tool_call("select", &json!({"target": candidates[0]}))
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_playing_provider_speaks_and_votes_by_day_and_refuses_a_request_it_cannot_play() {
+        let base_url = playing(&["qwen2.5-7b-instruct"]);
+        let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
+        let answer = provider
+            .complete(&by_day(&["player2", "player3"], 60, "Day 1."))
+            .await
+            .unwrap();
+        assert_eq!(
+            answer,
+            Response::calling(&[
+                ("speak".to_string(), json!({"text": SAID})),
+                ("select".to_string(), json!({"target": "player2"})),
+            ])
+        );
+        // A request offering a tool it cannot use is refused as bad, as a
+        // server would.
+        let error = provider.complete(&selecting(&[])).await.unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("400 Bad Request"), "{shown}");
+        assert!(shown.contains("select"), "{shown}");
     }
 
     #[tokio::test]
