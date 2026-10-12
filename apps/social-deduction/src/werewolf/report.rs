@@ -359,11 +359,12 @@ impl Narrator {
     }
 
     /// The environment's tentative decision: `target` will be voted out
-    /// once the votes have stood for `ratify`, or nobody is about to be.
+    /// once the votes have selected them for `ratify`, or nobody is about
+    /// to be.
     fn tentative(&self, target: Option<&PlayerId>, ratify: Duration) -> String {
         match target {
             Some(target) => format!(
-                "{} will be voted out in {} unless the votes change.",
+                "{} will be voted out in {} unless the votes stop selecting them.",
                 self.seat(target),
                 format_duration(ratify)
             ),
@@ -1148,7 +1149,7 @@ mod tests {
         );
         assert_eq!(
             narrator.narrate(&decided(2, 5, Some("ann"), &everyone)),
-            ["ann (villager) will be voted out in 20s unless the votes change."]
+            ["ann (villager) will be voted out in 20s unless the votes stop selecting them."]
         );
         assert_eq!(
             selected(&mut narrator, "ann", 2, "wolf"),
@@ -1165,7 +1166,7 @@ mod tests {
         );
         assert_eq!(
             narrator.narrate(&decided(2, 7, Some("ann"), &everyone)),
-            ["ann (villager) will be voted out in 20s unless the votes change."]
+            ["ann (villager) will be voted out in 20s unless the votes stop selecting them."]
         );
     }
 
@@ -1349,7 +1350,7 @@ mod tests {
         );
         assert_eq!(
             narrator.recall(&received(tentative(2, 5, Some("wolf")))),
-            ["wolf will be voted out in 20s unless the votes change."]
+            ["wolf will be voted out in 20s unless the votes stop selecting them."]
         );
         assert_eq!(
             narrator.recall(&chose("doctor", 2, "wolf")),
@@ -1379,7 +1380,7 @@ mod tests {
                 "Day 1.",
                 "ann says, \"I suspect wolf.\"",
                 "ann votes against wolf.",
-                "wolf will be voted out in 20s unless the votes change.",
+                "wolf will be voted out in 20s unless the votes stop selecting them.",
                 "You vote against wolf.",
                 "seer votes against ann.",
                 "wolf says, \"Not me.\"",
@@ -1451,7 +1452,7 @@ mod tests {
                 "Day 1.",
                 "ann says, \"I suspect wolf.\"",
                 "ann votes against wolf.",
-                "wolf will be voted out in 20s unless the votes change.",
+                "wolf will be voted out in 20s unless the votes stop selecting them.",
                 "You vote against wolf.",
                 "seer votes against ann.",
                 "wolf says, \"Not me.\"",
