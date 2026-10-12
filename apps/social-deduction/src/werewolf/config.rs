@@ -158,21 +158,10 @@ pub struct Random {}
 pub struct Prompted {
     /// The system prompt template.
     pub system: String,
-    /// The name of the model asked, which may be left out when the file
-    /// defines exactly one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-}
-
-impl Prompted {
-    /// The name of the model this strategy asks, of `models`: the one it
-    /// names, otherwise the only one.
-    pub fn model_name<'a, M>(&'a self, models: &'a BTreeMap<String, M>) -> &'a str {
-        self.model
-            .as_ref()
-            .or(models.keys().next())
-            .map_or("", String::as_str)
-    }
+    /// The name of the model asked. The file may leave it out when it
+    /// defines exactly one, which [`Config::parse`] fills in.
+    #[serde(default)]
+    pub model: String,
 }
 
 /// The text of the configuration file at `path`.
@@ -322,7 +311,7 @@ impl Config {
     /// naming a model the file does not define, or naming none when the
     /// file does not define exactly one.
     pub fn parse(file: &str) -> anyhow::Result<Self> {
-        let config: Self = toml::from_str(file)?;
+        let mut config: Self = toml::from_str(file)?;
         if let Some(taken) = VARIABLES.iter().find(|v| config.text.contains_key(**v)) {
             bail!("[text] has a block named {taken}, which is a template variable");
         }
@@ -342,18 +331,21 @@ impl Config {
         {
             bail!("the file's strategy is {name}, which is not a strategy");
         }
-        for (name, strategy) in &config.strategies {
-            if let Strategy::Prompted(prompted) = strategy {
-                match &prompted.model {
-                    Some(model) if !config.models.contains_key(model) => {
-                        bail!("strategy {name} names the model {model}, which is not defined")
-                    }
-                    None if config.models.len() != 1 => bail!(
+        for (name, strategy) in &mut config.strategies {
+            let Strategy::Prompted(prompted) = strategy else {
+                continue;
+            };
+            let model = &prompted.model;
+            if model.is_empty() {
+                let [only] = config.models.keys().collect::<Vec<_>>()[..] else {
+                    bail!(
                         "strategy {name} names no model, which it may leave out only when the file defines exactly one; it defines {}",
                         config.models.len()
-                    ),
-                    _ => {}
-                }
+                    );
+                };
+                prompted.model = only.clone();
+            } else if !config.models.contains_key(model) {
+                bail!("strategy {name} names the model {model}, which is not defined");
             }
         }
         Ok(config)
@@ -501,7 +493,7 @@ impl Settings {
     /// The name of the model the strategy `name` asks, if it is prompted.
     fn model_of(&self, name: &str) -> Option<&str> {
         match &self.strategies[name] {
-            Strategy::Prompted(prompted) => Some(prompted.model_name(&self.config.models)),
+            Strategy::Prompted(prompted) => Some(&prompted.model),
             Strategy::Random(_) => None,
         }
     }
@@ -778,7 +770,8 @@ pub struct Configuration {
     /// How long a day's votes had to stand to be ratified.
     #[serde(with = "humantime_serde")]
     pub ratify_limit: Duration,
-    /// Every strategy as written, by name, [`RANDOM`] included.
+    /// Every strategy, by name, [`RANDOM`] included, each prompted one
+    /// naming the model it asks.
     pub strategies: BTreeMap<String, Strategy>,
     /// How many seats of each role played each strategy.
     pub allotments: Allotments,
@@ -804,7 +797,7 @@ pub fn players(
     let mut prompted = HashMap::new();
     for (seat, Dealt { strategy, .. }) in deal {
         if let Strategy::Prompted(strategy) = &configuration.strategies[strategy] {
-            let name = strategy.model_name(&configuration.models);
+            let name = &strategy.model;
             let model = &configuration.models[name];
             let player = (
                 configuration.prompts[seat].clone(),
@@ -965,22 +958,27 @@ system = "{{ name }} the {{ role }}"
     }
 
     #[test]
-    fn a_strategy_of_either_policy_parses_and_is_written_as_it_was() {
+    fn a_strategy_of_either_policy_parses_and_is_written_with_its_model() {
         let file = format!("{PLAIN}[strategies.dice]\npolicy = \"random\"\n");
         let config = Config::parse(&file).unwrap();
         assert_eq!(config.strategies["dice"], Strategy::Random(Random {}));
+        // The file's one model, filled in.
         assert_eq!(
             config.strategies["plain"],
             Strategy::Prompted(Prompted {
                 system: "{{ name }} the {{ role }}".to_string(),
-                model: None,
+                model: "qwen".to_string(),
             })
         );
         assert_eq!(
             serde_json::to_value(&config.strategies).unwrap(),
             json!({
                 "dice": {"policy": "random"},
-                "plain": {"policy": "prompted", "system": "{{ name }} the {{ role }}"},
+                "plain": {
+                    "policy": "prompted",
+                    "system": "{{ name }} the {{ role }}",
+                    "model": "qwen",
+                },
             })
         );
     }
@@ -2057,7 +2055,7 @@ count = 1
         let prompted = |system: &str| {
             Strategy::Prompted(Prompted {
                 system: system.to_string(),
-                model: None,
+                model: "qwen".to_string(),
             })
         };
         assert_eq!(

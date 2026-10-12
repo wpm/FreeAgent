@@ -1136,7 +1136,7 @@ mod tests {
         };
         let strategy = Strategy::Prompted(config::Prompted {
             system: "You are {{ name }}.".to_string(),
-            model: None,
+            model: MODEL.to_string(),
         });
         Configuration {
             role_counts: all.into_iter().map(|role| (role, count(role))).collect(),
