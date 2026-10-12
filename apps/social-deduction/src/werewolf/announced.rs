@@ -427,8 +427,7 @@ impl Behavior for Environment {
     /// record it if it counts. One that changes the tentative decision has
     /// every living player told, and one that changes it to a player
     /// restarts the ratify timer; the last one a phase is waiting for ends
-    /// it.
-    /// Anything else is ignored.
+    /// it. Anything else is ignored.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
         if let Message::Select {
             seq,
