@@ -174,7 +174,7 @@ impl Mind {
         Self {
             remembered: Mutex::new(Remembered {
                 history: Vec::new(),
-                story: Story::of(me),
+                story: Story::of(me, ratified),
             }),
             n: AtomicU64::new(0),
             announced: Mutex::new(None),
@@ -1696,7 +1696,7 @@ mod tests {
             mind.remember(event.clone());
             let remembered = mind.remembered.lock().unwrap();
             assert_eq!(remembered.history, script[..=n]);
-            let mut fresh = Story::of("wolf".to_string());
+            let mut fresh = Story::of("wolf".to_string(), true);
             for event in &remembered.history {
                 fresh.recall(event);
             }
