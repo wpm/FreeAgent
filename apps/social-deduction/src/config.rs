@@ -538,7 +538,7 @@ pub struct Configuration<G: game::Game> {
 
 /// Each seat's player, as `deal` dealt it a strategy and `configuration`
 /// sets the strategy up: a random player, or a prompted player told its
-/// system prompt and its game's briefing, asking its strategy's model by
+/// system prompt and its game's limits, asking its strategy's model by
 /// the model's id, under its tool choice and within its context window,
 /// through that model's handle in `handles`.
 pub fn players<G: game::Game>(
@@ -546,7 +546,7 @@ pub fn players<G: game::Game>(
     deal: &HashMap<PlayerId, Dealt<G::Role>>,
     handles: &Handles,
 ) -> impl FnMut(&PlayerId) -> game::Seat<G> + use<G> {
-    let briefing = G::briefing(&configuration.limits);
+    let limits = configuration.limits.clone();
     let mut asking = HashMap::new();
     for (seat, Dealt { strategy, .. }) in deal {
         if let Strategy::Prompted(strategy) = &configuration.strategies[strategy] {
@@ -570,7 +570,7 @@ pub fn players<G: game::Game>(
             tool_choice,
             context_window,
             model,
-            briefing.clone(),
+            limits.clone(),
         ),
         None => random::Player::init(),
     }

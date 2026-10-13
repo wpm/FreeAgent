@@ -285,8 +285,8 @@ pub(crate) struct Mind<G: Game> {
     context_window: u64,
     /// The model asked each time the player is woken.
     model: Arc<dyn model::Model>,
-    /// What it is told of the rules besides its prompt.
-    pub(crate) briefing: G::Briefing,
+    /// How long each phase of its game waits.
+    pub(crate) limits: G::Limits,
 }
 
 /// A player's history and the story that tells it, kept together so that
@@ -319,8 +319,8 @@ struct Announced<G: Game> {
 }
 
 impl<G: Game> Mind<G> {
-    /// The mind of `me` with nothing in its history yet, told `prompt` and
-    /// `briefing`, asking `model` as the model `model_id` under
+    /// The mind of `me` with nothing in its history yet, told `prompt`, in a
+    /// game under `limits`, asking `model` as the model `model_id` under
     /// `tool_choice`, within `context_window` tokens.
     pub(crate) fn new(
         me: PlayerId,
@@ -329,12 +329,12 @@ impl<G: Game> Mind<G> {
         tool_choice: ToolChoice,
         context_window: u64,
         model: Arc<dyn model::Model>,
-        briefing: G::Briefing,
+        limits: G::Limits,
     ) -> Self {
         Self {
             remembered: Mutex::new(Remembered {
                 history: Vec::new(),
-                story: G::story(me, &briefing),
+                story: G::story(me, &limits),
             }),
             n: AtomicU64::new(0),
             announced: Mutex::new(None),
@@ -345,7 +345,7 @@ impl<G: Game> Mind<G> {
             tool_choice,
             context_window,
             model,
-            briefing,
+            limits,
         }
     }
 
@@ -412,6 +412,16 @@ impl<G: Game> Mind<G> {
             .map_or(0, |announced| announced.seq)
     }
 
+    /// Whether `message` counts for `me`, tagged with the phase it is in,
+    /// and if it does, whether it [wakes](Game::wakes) it.
+    fn counts(&self, me: &PlayerId, message: &Message<G>) -> Option<bool> {
+        let announced = self.announced.lock().unwrap();
+        let announced = announced
+            .as_ref()
+            .filter(|announced| message.seq() == Some(announced.seq))?;
+        Some(G::wakes(me, message, &announced.view))
+    }
+
     /// Mark a wake-up waiting, and say whether none was before: whether
     /// the think loop has to be handed one.
     fn waking(&self) -> bool {
@@ -459,9 +469,9 @@ pub struct Player<G: Game> {
 impl<G: Game> Player<G> {
     /// Builds a player's two loops once the episode has made their
     /// contexts: the perceive loop as the actor, and the think loop. The
-    /// player `me` is told `prompt` and `briefing`, and asks `model` as the
-    /// model `model_id` under `tool_choice`, within `context_window`
-    /// tokens.
+    /// player `me` is told `prompt`, in a game under `limits`, and asks
+    /// `model` as the model `model_id` under `tool_choice`, within
+    /// `context_window` tokens.
     pub fn init(
         me: PlayerId,
         prompt: String,
@@ -469,7 +479,7 @@ impl<G: Game> Player<G> {
         tool_choice: ToolChoice,
         context_window: u64,
         model: Arc<dyn model::Model>,
-        briefing: G::Briefing,
+        limits: G::Limits,
     ) -> Seat<G> {
         let mind = Arc::new(Mind::new(
             me,
@@ -478,7 +488,7 @@ impl<G: Game> Player<G> {
             tool_choice,
             context_window,
             model,
-            briefing,
+            limits,
         ));
         let shared = Arc::clone(&mind);
         let behavior: Builder<Actor<G>> =
@@ -644,13 +654,13 @@ impl<G: Game> Behavior for Player<G> {
         {
             self.mind.announce(*seq, view, *limit);
         }
-        let counts = message.seq().is_some_and(|seq| self.mind.in_phase(seq));
+        let counts = self.mind.counts(&self.context.id, message);
         observe(&self.context, message.sender(), n, self.mind.seq());
-        if counts && let Some(Announced { view, .. }) = self.mind.announced() {
+        if let Some(wakes) = counts {
             self.remember(Memory::Observed {
                 message: message.clone(),
             });
-            if G::wakes(&self.context.id, message, &view) {
+            if wakes {
                 self.wake()?;
             }
         }

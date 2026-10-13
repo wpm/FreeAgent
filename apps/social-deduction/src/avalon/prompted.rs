@@ -616,6 +616,7 @@ mod tests {
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
         let model: Arc<dyn model::Model> = model;
+        let limits = rules.clone();
         let player = |id: &PlayerId| {
             puppets.remove(id.as_str()).unwrap_or_else(|| {
                 Player::init(
@@ -625,7 +626,7 @@ mod tests {
                     tool_choice,
                     window,
                     Arc::clone(&model),
-                    (),
+                    limits.clone(),
                 )
             })
         };
@@ -1632,7 +1633,7 @@ mod tests {
             ToolChoice::Required,
             CONTEXT_WINDOW,
             Arc::new(FakeModel::failing("down")),
-            (),
+            Rules::default(),
         );
         let announced = |seq, phase, team: &[&str]| {
             crate::avalon::tests::announcement(seq, view_of("Player 3", phase, team))

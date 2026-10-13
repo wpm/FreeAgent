@@ -63,8 +63,6 @@ pub trait Game: Debug + Clone + PartialEq + Send + Sync + 'static {
     type Event: Carried;
     /// A prompted player's account of its own game.
     type Story: Account<Self> + Send + 'static;
-    /// What a prompted player is told of the rules besides its prompt.
-    type Briefing: Clone + Send + Sync + 'static;
     /// What tells the game as it happens, from the log.
     type Narrator: Narrate<Self>;
     /// The actor that holds the game.
@@ -100,13 +98,9 @@ pub trait Game: Debug + Clone + PartialEq + Send + Sync + 'static {
     /// of the game.
     fn receivers(message: &Message<Self>, me: &PlayerId, view: &Self::View) -> HashSet<ActorId>;
 
-    /// What a prompted player is told of the rules besides its prompt, in
-    /// a game under `limits`.
-    fn briefing(limits: &Self::Limits) -> Self::Briefing;
-
-    /// The story `me`, told `briefing`, tells of its own game, with nothing
+    /// The story `me` tells of its own game under `limits`, with nothing
     /// in it yet.
-    fn story(me: PlayerId, briefing: &Self::Briefing) -> Self::Story;
+    fn story(me: PlayerId, limits: &Self::Limits) -> Self::Story;
 
     /// Whether `message`, which a prompted player `me` remembers in the
     /// phase `view` shows, wakes it.

@@ -73,8 +73,6 @@ impl Game for Avalon {
     type Event = Outcome;
     type Story = report::Story;
     type Narrator = report::Narrator;
-    /// Nothing: the prompt says it all.
-    type Briefing = ();
     type Environment = announced::Environment;
     #[cfg(test)]
     type Puppet = tests::Puppet;
@@ -107,9 +105,7 @@ impl Game for Avalon {
         receivers(message, me, view)
     }
 
-    fn briefing(_: &Rules) {}
-
-    fn story(me: PlayerId, (): &()) -> report::Story {
+    fn story(me: PlayerId, _: &Rules) -> report::Story {
         report::Story::of(me)
     }
 
@@ -931,11 +927,21 @@ impl Move {
 
 impl Tagged for Move {
     fn number(&self) -> Option<u64> {
-        Some(self.choice().1)
+        match self {
+            Move::Propose { n, .. }
+            | Move::Vote { n, .. }
+            | Move::Perform { n, .. }
+            | Move::Select { n, .. } => Some(*n),
+        }
     }
 
     fn seq(&self) -> u64 {
-        self.choice().0
+        match self {
+            Move::Propose { seq, .. }
+            | Move::Vote { seq, .. }
+            | Move::Perform { seq, .. }
+            | Move::Select { seq, .. } => *seq,
+        }
     }
 
     /// The player who chose.

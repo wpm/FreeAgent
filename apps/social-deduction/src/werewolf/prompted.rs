@@ -80,7 +80,7 @@ async fn select_by_night(
     limit: Duration,
     candidates: &[PlayerId],
 ) -> anyhow::Result<()> {
-    let voting = Voting::of(player.mind.briefing, false);
+    let voting = Voting::of(player.mind.limits.ratified(), false);
     let situation = situation(&player.context.id, view, limit, voting)?;
     let (request, shown) = player.request(&situation, night_tools(candidates));
     let response = player.complete(seq, &request).await?;
@@ -106,7 +106,7 @@ async fn play_by_day(
     limit: Duration,
     candidates: &[PlayerId],
 ) -> anyhow::Result<()> {
-    let voting = Voting::of(player.mind.briefing, voted(player, seq));
+    let voting = Voting::of(player.mind.limits.ratified(), voted(player, seq));
     let tools = day_tools(candidates, limit, voting);
     let situation = situation(&player.context.id, view, limit, voting)?;
     let (request, shown) = player.request(&situation, tools);
@@ -619,7 +619,7 @@ mod tests {
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
         let model: Arc<dyn model::Model> = model;
-        let ratified = rules.ratified();
+        let limits = Werewolf::limits(&rules);
         let player = |id: &PlayerId| {
             puppets.remove(id.as_str()).unwrap_or_else(|| {
                 Player::init(
@@ -629,7 +629,7 @@ mod tests {
                     ToolChoice::Required,
                     CONTEXT_WINDOW,
                     Arc::clone(&model),
-                    ratified,
+                    limits.clone(),
                 )
             })
         };
@@ -996,7 +996,10 @@ mod tests {
             ToolChoice::Required,
             CONTEXT_WINDOW,
             Arc::new(FakeModel::failing("down")),
-            true,
+            Limits {
+                ratify_limit: Duration::from_secs(20),
+                ..Werewolf::limits(&Rules::default())
+            },
         );
         let pack = [("wolf", Role::Werewolf)];
         let night_2 = View {

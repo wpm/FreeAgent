@@ -75,8 +75,6 @@ impl Game for Werewolf {
     type Event = Outcome;
     type Story = report::Story;
     type Narrator = report::Narrator;
-    /// Whether the day's vote is ratified.
-    type Briefing = bool;
     type Environment = announced::Environment;
     #[cfg(test)]
     type Puppet = tests::Puppet;
@@ -119,13 +117,8 @@ impl Game for Werewolf {
         receivers(message, me, view)
     }
 
-    /// Whether the day's vote is ratified, as the ratify limit says.
-    fn briefing(limits: &Limits) -> bool {
-        ratified(limits.ratify_limit)
-    }
-
-    fn story(me: PlayerId, ratified: &bool) -> report::Story {
-        report::Story::of(me, *ratified)
+    fn story(me: PlayerId, limits: &Limits) -> report::Story {
+        report::Story::of(me, limits.ratified())
     }
 
     /// An announcement wakes a player awake in the phase; by day, so does
@@ -155,7 +148,7 @@ impl Game for Werewolf {
         limits: &Limits,
     ) -> anyhow::Result<u64> {
         let alive = seats.iter().cloned().collect();
-        let ratified = ratified(limits.ratify_limit);
+        let ratified = limits.ratified();
         prompted::unstoried(
             model_id,
             prompt,
@@ -567,6 +560,12 @@ pub struct Limits {
 }
 
 impl Limits {
+    /// Whether the day's vote is ratified, which it is when the ratify
+    /// limit is above zero.
+    pub fn ratified(&self) -> bool {
+        ratified(self.ratify_limit)
+    }
+
     /// The rules a game is played under: the default rules, with these
     /// limits.
     pub fn rules(&self) -> Rules {
