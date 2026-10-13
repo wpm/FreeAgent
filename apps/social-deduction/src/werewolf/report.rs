@@ -10,12 +10,14 @@
 
 use super::prompted::Memory;
 use super::{Ending, Entry, Hunt, Message, Phase, Role, Team, View, awake, ratified};
-use crate::report::{configured, in_order, in_prose, late, seat_order, told_within, whole_seconds};
+use crate::report::{
+    Seat, configured, in_order, in_prose, late, seat_order, told_within, whole_seconds,
+};
 use crate::seat::{ENVIRONMENT, PlayerId};
 use free_agent::{ActorId, Event};
 use humantime::format_duration;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fmt::{self, Write as _};
+use std::fmt::Write as _;
 use std::num::NonZero;
 use std::time::{Duration, SystemTime};
 
@@ -435,11 +437,8 @@ impl Narrator {
     }
 
     /// `player` as this account names it: with its role when known.
-    fn seat<'a>(&self, player: &'a PlayerId) -> Seat<'a> {
-        Seat {
-            player,
-            role: self.roles.get(player).copied(),
-        }
+    fn seat<'a>(&self, player: &'a PlayerId) -> Seat<'a, Role> {
+        Seat::named(player, &self.roles)
     }
 
     /// Takes in the roles an view shows that were not known. In a
@@ -734,23 +733,6 @@ impl Story {
     /// The story itself keeps every line.
     pub fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
         told_within(&self.narrator.account, |line| *line == Line::Talk, budget)
-    }
-}
-
-/// A player as an account names it: `player (role)` when the role is
-/// known, the name alone when it is not.
-#[derive(Debug, Clone, Copy)]
-struct Seat<'a> {
-    player: &'a PlayerId,
-    role: Option<Role>,
-}
-
-impl fmt::Display for Seat<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.role {
-            Some(role) => write!(f, "{} ({role})", self.player),
-            None => f.write_str(self.player),
-        }
     }
 }
 

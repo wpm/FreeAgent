@@ -41,7 +41,7 @@ use crate::seat::{
     ENVIRONMENT, PlayerId, seats, to_everyone_but, to_the_environment, to_the_players_but,
 };
 use async_trait::async_trait;
-use free_agent::{ActorId, ActorInit, Behavior, Builder, Context, Episode, Logger, ThinkBuilder};
+use free_agent::{ActorId, ActorInit, Behavior, Context, Episode, Logger};
 use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -52,16 +52,10 @@ use tokio::sync::oneshot;
 
 /// How a seat is built: its player's behavior, and its think loop if it
 /// has one.
-pub type Seat = (Builder<Actor>, Option<ThinkBuilder<Message, Entry>>);
+pub type Seat = crate::seat::Seat<Actor>;
 
 /// What a seat is dealt: a role, and the strategy its player plays.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Dealt {
-    /// The role.
-    pub role: Role,
-    /// The name of the strategy.
-    pub strategy: String,
-}
+pub type Dealt = crate::seat::Dealt<Role>;
 
 /// An episode of a game of `deal` under `rules`: the announcing
 /// environment, which may reach and stop every player, logs
@@ -1012,7 +1006,7 @@ pub(crate) mod tests {
     use super::prompted::Memory;
     use super::*;
     use crate::strategy::{RANDOM, Random, Strategy};
-    use free_agent::{Event, Think};
+    use free_agent::{Builder, Event, Think, ThinkBuilder};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};

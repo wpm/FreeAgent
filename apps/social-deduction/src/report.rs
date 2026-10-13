@@ -1,5 +1,5 @@
 //! What every game shares in telling its story: the order the seats are
-//! told in, lists in prose, how long something took, the models in play,
+//! told in, how a player is named, lists in prose, how long something took, the models in play,
 //! whether a message comes late, and how a player's story forgets talk to
 //! fit a budget.
 
@@ -9,7 +9,7 @@ use crate::model::{ToolChoice, tokens};
 use crate::seat::{PlayerId, PlayerName};
 use humantime::format_duration;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::time::Duration;
 
@@ -31,6 +31,35 @@ pub(crate) fn in_order<'a>(players: impl IntoIterator<Item = &'a PlayerId>) -> V
 /// comes before `Player 10`.
 pub fn seat_order(a: &PlayerId, b: &PlayerId) -> Ordering {
     PlayerName::from(a.as_str()).cmp(&PlayerName::from(b.as_str()))
+}
+
+/// A player as an account names it: `player (role)` when the role is
+/// known, the name alone when it is not.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Seat<'a, R> {
+    /// The player.
+    pub(crate) player: &'a PlayerId,
+    /// Its role, when the account knows it.
+    pub(crate) role: Option<R>,
+}
+
+impl<'a, R: Copy> Seat<'a, R> {
+    /// `player` as an account knowing `roles` names it.
+    pub(crate) fn named(player: &'a PlayerId, roles: &HashMap<PlayerId, R>) -> Self {
+        Seat {
+            player,
+            role: roles.get(player).copied(),
+        }
+    }
+}
+
+impl<R: fmt::Display> fmt::Display for Seat<'_, R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.role {
+            Some(role) => write!(f, "{} ({role})", self.player),
+            None => f.write_str(self.player),
+        }
+    }
 }
 
 /// `named` as a list in prose: "a", "a and b", "a, b and c".
@@ -133,6 +162,14 @@ pub(crate) mod tests {
             in_order(&players),
             ["ann", "Player 1", "Player 2", "Player 10"]
         );
+    }
+
+    #[test]
+    fn a_player_is_named_with_its_role_when_the_account_knows_it() {
+        let roles = HashMap::from([("ann".to_string(), "seer")]);
+        let named = |player: &str| Seat::named(&player.to_string(), &roles).to_string();
+        assert_eq!(named("ann"), "ann (seer)");
+        assert_eq!(named("bob"), "bob");
     }
 
     #[test]
