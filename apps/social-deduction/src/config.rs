@@ -7,9 +7,12 @@
 //! so that `toml` places every error inside the game's settings at its line
 //! and column.
 
+use crate::model::spec::Spec;
+use crate::strategy::{RANDOM, Strategy};
 use crate::{avalon, werewolf};
-use anyhow::Context as _;
+use anyhow::{Context as _, bail};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// One game's settled settings, of either kind, boxed, since the two
@@ -57,6 +60,60 @@ pub fn load(path: &Path) -> anyhow::Result<Game> {
         })
     };
     settled().with_context(|| format!("invalid configuration file {}", path.display()))
+}
+
+/// Check what every game's configuration file holds alike: its `text`
+/// blocks, its `models`, the file's `strategy`, and its `strategies`,
+/// whose templates take `variables` besides the text blocks. A text block
+/// named like one of the `variables` is an error, since the templates could
+/// not tell them apart, and so is a model's context window of 0, a
+/// strategy named [`RANDOM`], a file's `strategy` that is not defined, and
+/// a prompted strategy naming a model the file does not define, or naming
+/// none when the file does not define exactly one. A prompted strategy
+/// that names no model, of a file that defines one, is given that one.
+pub(crate) fn check_common(
+    text: &BTreeMap<String, String>,
+    models: &BTreeMap<String, Spec>,
+    strategy: Option<&String>,
+    strategies: &mut BTreeMap<String, Strategy>,
+    variables: &[&str],
+) -> anyhow::Result<()> {
+    if let Some(taken) = variables.iter().find(|v| text.contains_key(**v)) {
+        bail!("[text] has a block named {taken}, which is a template variable");
+    }
+    if let Some((name, _)) = models
+        .iter()
+        .find(|(_, model)| model.context_window == Some(0))
+    {
+        bail!("[models.{name}] context_window is 0; a context window holds at least 1 token");
+    }
+    if strategies.contains_key(RANDOM) {
+        bail!("[strategies.{RANDOM}] is built in, and may not be defined");
+    }
+    if let Some(name) = strategy
+        && name != RANDOM
+        && !strategies.contains_key(name)
+    {
+        bail!("the file's strategy is {name}, which is not a strategy");
+    }
+    for (name, strategy) in strategies {
+        let Strategy::Prompted(prompted) = strategy else {
+            continue;
+        };
+        let model = &prompted.model;
+        if model.is_empty() {
+            let [only] = models.keys().collect::<Vec<_>>()[..] else {
+                bail!(
+                    "strategy {name} names no model, which it may leave out only when the file defines exactly one; it defines {}",
+                    models.len()
+                );
+            };
+            prompted.model = only.clone();
+        } else if !models.contains_key(model) {
+            bail!("strategy {name} names the model {model}, which is not defined");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -201,5 +258,118 @@ mod tests {
         let path = Path::new("no-such-file.toml");
         let shown = format!("{:#}", load(path).unwrap_err());
         assert_invalid(&shown, path, "No such file");
+    }
+
+    /// What every game's configuration file holds alike, as written.
+    #[derive(Deserialize)]
+    struct Common {
+        strategy: Option<String>,
+        #[serde(default)]
+        models: BTreeMap<String, Spec>,
+        #[serde(default)]
+        text: BTreeMap<String, String>,
+        #[serde(default)]
+        strategies: BTreeMap<String, Strategy>,
+    }
+
+    /// One model, `qwen`, and one prompted strategy, `plain`, naming none.
+    const PLAIN: &str = r#"
+[models.qwen]
+base_url = "http://localhost:1234/v1"
+id = "qwen2.5-7b-instruct"
+[strategies.plain]
+policy = "prompted"
+system = "{{ name }}"
+"#;
+
+    /// The strategies `file` defines once checked, with the template
+    /// variable `name`, or the error the check gives, causes included.
+    fn checked(file: &str) -> Result<BTreeMap<String, Strategy>, String> {
+        let mut common: Common = toml::from_str(file).unwrap();
+        check_common(
+            &common.text,
+            &common.models,
+            common.strategy.as_ref(),
+            &mut common.strategies,
+            &["name"],
+        )
+        .map(|()| common.strategies)
+        .map_err(|error| format!("{error:#}"))
+    }
+
+    /// Whether `plain`, of `strategies`, is prompted and asks `model`.
+    fn plain_asks(strategies: &BTreeMap<String, Strategy>, model: &str) -> bool {
+        matches!(&strategies["plain"], Strategy::Prompted(prompted) if prompted.model == model)
+    }
+
+    #[test]
+    fn a_prompted_strategy_may_leave_its_model_out_only_when_the_file_defines_one() {
+        assert!(plain_asks(&checked(PLAIN).unwrap(), "qwen"));
+        let two = format!(
+            "{PLAIN}[models.claude]\nbase_url = \"https://api.anthropic.com/v1\"\nid = \"claude\"\n"
+        );
+        assert_eq!(
+            checked(&two).unwrap_err(),
+            "strategy plain names no model, which it may leave out only when the file defines exactly one; it defines 2"
+        );
+        let none = "[strategies.plain]\npolicy = \"prompted\"\nsystem = \"Hi.\"\n";
+        let shown = checked(none).unwrap_err();
+        assert!(shown.ends_with("it defines 0"), "{shown}");
+        // Named, either may be asked.
+        let named = two.replace(
+            "policy = \"prompted\"",
+            "policy = \"prompted\"\nmodel = \"claude\"",
+        );
+        assert!(plain_asks(&checked(&named).unwrap(), "claude"));
+    }
+
+    #[test]
+    fn a_model_that_is_not_defined_is_an_error_naming_the_strategy() {
+        let file = PLAIN.replace(
+            "policy = \"prompted\"",
+            "policy = \"prompted\"\nmodel = \"claude\"",
+        );
+        assert_eq!(
+            checked(&file).unwrap_err(),
+            "strategy plain names the model claude, which is not defined"
+        );
+    }
+
+    #[test]
+    fn the_random_strategy_is_built_in_and_may_not_be_defined() {
+        let file = "[strategies.random]\npolicy = \"random\"\n";
+        assert_eq!(
+            checked(file).unwrap_err(),
+            "[strategies.random] is built in, and may not be defined"
+        );
+    }
+
+    #[test]
+    fn a_context_window_of_0_is_an_error_naming_the_model() {
+        let file = PLAIN.replace("id = ", "context_window = 0\nid = ");
+        assert_eq!(
+            checked(&file).unwrap_err(),
+            "[models.qwen] context_window is 0; a context window holds at least 1 token"
+        );
+    }
+
+    #[test]
+    fn a_text_block_named_like_a_variable_is_an_error_naming_it() {
+        let file = format!("{PLAIN}[text]\nname = \"Taken.\"\n");
+        assert_eq!(
+            checked(&file).unwrap_err(),
+            "[text] has a block named name, which is a template variable"
+        );
+    }
+
+    #[test]
+    fn the_file_s_strategy_is_random_or_one_it_defines() {
+        for strategy in [RANDOM, "plain"] {
+            checked(&format!("strategy = \"{strategy}\"\n{PLAIN}")).unwrap();
+        }
+        assert_eq!(
+            checked(&format!("strategy = \"cautious\"\n{PLAIN}")).unwrap_err(),
+            "the file's strategy is cautious, which is not a strategy"
+        );
     }
 }

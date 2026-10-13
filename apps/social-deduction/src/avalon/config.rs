@@ -26,6 +26,7 @@
 //! deal, and [`players`] builds each seat's player from it.
 
 use super::{Dealt, Role, Rules, Seat, Table, prompted, random};
+use crate::config::check_common;
 use crate::model::Provider;
 use crate::model::spec::{self, Handles, Models, Spec};
 use crate::model::window::{self, ContextWindow};
@@ -164,51 +165,17 @@ pub struct Settings {
 }
 
 impl Config {
-    /// Parse `file`, the text of a configuration file. A `[text]` block
-    /// named like one of the template variables is an error, since the
-    /// templates could not tell them apart, and so is a model's context
-    /// window of 0, a strategy named [`RANDOM`], a file's `strategy` that
-    /// is not defined, and a prompted strategy naming a model the file does
-    /// not define, or naming none when the file does not define exactly
-    /// one.
+    /// Parse `file`, the text of a configuration file, and check it as
+    /// [`check_common`] does, with this game's template variables.
     pub fn parse(file: &str) -> anyhow::Result<Self> {
         let mut config: Self = toml::from_str(file)?;
-        if let Some(taken) = VARIABLES.iter().find(|v| config.text.contains_key(**v)) {
-            bail!("[text] has a block named {taken}, which is a template variable");
-        }
-        if let Some((name, _)) = config
-            .models
-            .iter()
-            .find(|(_, model)| model.context_window == Some(0))
-        {
-            bail!("[models.{name}] context_window is 0; a context window holds at least 1 token");
-        }
-        if config.strategies.contains_key(RANDOM) {
-            bail!("[strategies.{RANDOM}] is built in, and may not be defined");
-        }
-        if let Some(name) = &config.strategy
-            && name != RANDOM
-            && !config.strategies.contains_key(name)
-        {
-            bail!("the file's strategy is {name}, which is not a strategy");
-        }
-        for (name, strategy) in &mut config.strategies {
-            let Strategy::Prompted(prompted) = strategy else {
-                continue;
-            };
-            let model = &prompted.model;
-            if model.is_empty() {
-                let [only] = config.models.keys().collect::<Vec<_>>()[..] else {
-                    bail!(
-                        "strategy {name} names no model, which it may leave out only when the file defines exactly one; it defines {}",
-                        config.models.len()
-                    );
-                };
-                prompted.model = only.clone();
-            } else if !config.models.contains_key(model) {
-                bail!("strategy {name} names the model {model}, which is not defined");
-            }
-        }
+        check_common(
+            &config.text,
+            &config.models,
+            config.strategy.as_ref(),
+            &mut config.strategies,
+            &VARIABLES,
+        )?;
         Ok(config)
     }
 
@@ -743,52 +710,15 @@ policy = "random"
     }
 
     #[test]
-    fn a_prompted_strategy_may_leave_its_model_out_only_when_the_file_defines_one() {
-        let two = format!(
-            "{STRATEGIES}[models.claude]\nbase_url = \"https://api.anthropic.com/v1\"\nid = \"claude\"\n"
-        );
-        assert_eq!(
-            unsettled(&two),
-            "strategy plain names no model, which it may leave out only when the file defines exactly one; it defines 2"
-        );
-        let none = "[strategies.plain]\npolicy = \"prompted\"\nsystem = \"Hi.\"\n";
-        let shown = unsettled(none);
-        assert!(shown.ends_with("it defines 0"), "{shown}");
-        let named = two.replace(
+    fn a_model_named_empty_is_an_error_naming_the_strategy() {
+        let file = STRATEGIES.replace(
             "policy = \"prompted\"",
-            "policy = \"prompted\"\nmodel = \"claude\"",
+            "policy = \"prompted\"\nmodel = \"\"",
         );
-        let config = Config::parse(&named).unwrap();
-        assert!(
-            matches!(&config.strategies["plain"], Strategy::Prompted(prompted) if prompted.model == "claude")
-        );
-    }
-
-    #[test]
-    fn a_model_named_empty_or_not_defined_is_an_error_naming_the_strategy() {
-        let named = |model: &str| {
-            STRATEGIES.replace(
-                "policy = \"prompted\"",
-                &format!("policy = \"prompted\"\nmodel = \"{model}\""),
-            )
-        };
-        let shown = unsettled(&named(""));
+        let shown = unsettled(&file);
         assert!(
             shown.contains("[strategies.plain]") && shown.contains("model is empty"),
             "{shown}"
-        );
-        assert_eq!(
-            unsettled(&named("claude")),
-            "strategy plain names the model claude, which is not defined"
-        );
-    }
-
-    #[test]
-    fn the_random_strategy_is_built_in_and_may_not_be_defined() {
-        let file = "[strategies.random]\npolicy = \"random\"\n";
-        assert_eq!(
-            unsettled(file),
-            "[strategies.random] is built in, and may not be defined"
         );
     }
 
@@ -825,15 +755,6 @@ policy = "random"
     #[test]
     fn a_duration_the_file_cannot_parse_is_an_error() {
         assert!(Config::parse("[phases]\nvote_limit = \"a while\"\n").is_err());
-    }
-
-    #[test]
-    fn a_context_window_of_0_is_an_error_naming_the_model() {
-        let file = STRATEGIES.replace("id = ", "context_window = 0\nid = ");
-        assert_eq!(
-            unsettled(&file),
-            "[models.qwen] context_window is 0; a context window holds at least 1 token"
-        );
     }
 
     #[test]
