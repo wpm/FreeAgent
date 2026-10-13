@@ -876,6 +876,7 @@ fn listed<'a>(seats: impl IntoIterator<Item = Seat<'a>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seat::id;
 
     use crate::model::estimate;
     use crate::model::spec::ModelInPlay;
@@ -888,10 +889,6 @@ mod tests {
     use crate::werewolf::{Dealt, Rules};
     use std::collections::BTreeMap;
     use std::time::{Duration, UNIX_EPOCH};
-
-    fn id(name: &str) -> PlayerId {
-        name.to_string()
-    }
 
     /// `event`, logged or remembered `seconds` into the game.
     fn at<L>(seconds: f64, event: Event<L>) -> Event<L> {

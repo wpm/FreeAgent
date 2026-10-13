@@ -611,13 +611,10 @@ mod tests {
     use crate::avalon::{Rules, State};
     use crate::model::spec::ModelInPlay;
     use crate::seat::ENVIRONMENT;
+    use crate::seat::id;
     use crate::strategy::RANDOM;
     use std::collections::HashSet;
     use std::time::UNIX_EPOCH;
-
-    fn id(name: &str) -> PlayerId {
-        name.to_string()
-    }
 
     /// `entry`, logged `seconds` into the game.
     fn at(seconds: u64, entry: Entry) -> Event<Entry> {

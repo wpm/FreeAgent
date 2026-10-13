@@ -354,10 +354,7 @@ mod tests {
     };
     use crate::avalon::{Actor, Ballot, Deed, Phase, QuestResult, Role, Tally};
     use crate::seat::ENVIRONMENT;
-
-    fn id(name: &str) -> PlayerId {
-        name.to_string()
-    }
+    use crate::seat::id;
 
     /// The default table, with its first proposal open.
     fn opened() -> (Game, Opened) {
