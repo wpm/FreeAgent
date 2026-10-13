@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
                 // anything else.
                 let prompts = settings.prompts()?;
                 let (models, handles) = settings.set_up(&prompts).await?;
-                let deal = settings.deal();
+                let deal = settings.lineup.deal();
                 let configuration = settings.configuration(&deal, &prompts, models)?;
                 let players = werewolf::config::players(&configuration, &deal, &handles);
                 let rules = settings.rules();
@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
                 // in play set up before any actor is built.
                 let prompts = settings.prompts()?;
                 let (models, handles) = settings.set_up(&prompts).await?;
-                let deal = settings.deal();
+                let deal = settings.lineup.deal();
                 let configuration = settings.configuration(&deal, &prompts, models)?;
                 let players = avalon::config::players(&configuration, &deal, &handles);
                 let rules = settings.rules;

@@ -3,74 +3,46 @@
 //! with the defaults in the code. A setting comes from the file if it is
 //! given there, otherwise from the code.
 //!
-//! The file defines named models, each a [`Spec`], and named
-//! [`Strategy`]s, each a policy with its parameters, and allots each role's
-//! seats among the strategies. The strategy [`RANDOM`] is always defined.
-//! [`Settings::deal`] deals the (role, strategy) pairs the allotments make
-//! to the seats at random.
-//!
-//! A prompted player's system prompt is a `minijinja` template from its
-//! strategy, rendered for its seat and role. [`Settings::prompts`] renders
-//! every [`SystemPrompt`] a game could call for, so that a broken template
-//! stops the program before any game begins.
+//! The file is every game's [`crate::config::Config`], with Avalon's
+//! [`Phases`] and [`Roles`]. A prompted player's system prompt is rendered
+//! for its seat and role, with the variables `name`, `role`, as
+//! [`Role::told`] tells it, and `team`, `good` or `evil`.
 //!
 //! A model is in play when a prompted strategy that names it is allotted a
 //! seat. [`Settings::set_up`] sets up each model in play before any actor
 //! is built: it reads the key, settles the [`ContextWindow`] and asks the
 //! model to play. The API key never appears in the file. The file names
-//! the environment variable that holds it, and [`Spec::api_key`] reads
-//! that variable into a [`SecretString`](secrecy::SecretString), which is redacted wherever it is
-//! shown.
+//! the environment variable that holds it, and
+//! [`Spec::api_key`](crate::model::spec::Spec::api_key) reads that
+//! variable into a [`SecretString`](secrecy::SecretString), which is
+//! redacted wherever it is shown.
 //!
 //! The log records the [`Configuration`] a game ran under right after the
 //! deal, and [`players`] builds each seat's player from it.
 
 use super::{Dealt, Role, Rules, Seat, Table, prompted, random};
-use crate::config::check_common;
+use crate::config::Lineup;
 use crate::model::Provider;
 use crate::model::spec::{self, Handles, Models, Spec};
 use crate::model::window::{self, ContextWindow};
 use crate::seat::PlayerId;
-use crate::strategy::{RANDOM, Random, RoleConfig, Strategy};
-use anyhow::{Context as _, anyhow, bail};
-use minijinja::{Environment, UndefinedBehavior, Value, context};
-use rand::seq::SliceRandom;
+use crate::strategy::{RoleConfig, Strategy};
+use minijinja::context;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, btree_map};
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 /// The variables every template has besides the text blocks.
 const VARIABLES: [&str; 3] = ["name", "role", "team"];
 
-/// The configuration file, as written. Every table may be left out, and an
-/// unknown key anywhere is an error, so a misspelled setting fails loudly.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Config {
-    /// The `game` key, which [`crate::config::load`] reads first and
-    /// checks. A file parsed here may leave it out.
-    #[serde(default)]
-    #[expect(dead_code, reason = "config::load reads the game key itself")]
-    game: Option<crate::config::Name>,
-    /// The strategy every role not allotted otherwise plays, [`RANDOM`]
-    /// unless it says.
-    pub strategy: Option<String>,
-    /// How long each phase waits for the players.
-    #[serde(default)]
-    pub phases: Phases,
-    /// The models, by name, and how to reach each.
-    #[serde(default)]
-    pub models: BTreeMap<String, Spec>,
-    /// Named blocks of text for the templates to use.
-    #[serde(default)]
-    pub text: BTreeMap<String, String>,
-    /// The strategies, by name, besides [`RANDOM`].
-    #[serde(default)]
-    pub strategies: BTreeMap<String, Strategy>,
-    /// How many of each role there are, and which strategies they play.
-    #[serde(default)]
-    pub roles: Roles,
+/// The configuration file, as written.
+pub type Config = crate::config::Config<Phases, Roles>;
+
+/// Parse `file`, the text of a configuration file, as
+/// [`crate::config::Config::parse`] parses it, with Avalon's template
+/// variables.
+pub fn parse(file: &str) -> anyhow::Result<Config> {
+    Config::parse(file, &VARIABLES)
 }
 
 /// The `[phases]` table: how long each phase waits for the players, for
@@ -92,8 +64,8 @@ pub struct Phases {
     pub assassinate_limit: Option<Duration>,
 }
 
-/// The `[roles]` tables, one per role. A role the file does not mention
-/// has nothing said about it.
+/// The `[roles]` tables, one per role, each named as the role in lower
+/// case. A role the file does not mention has nothing said about it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Roles {
@@ -139,14 +111,12 @@ impl Roles {
     }
 }
 
-/// The name of the table `[roles.<name>]` that speaks of `role`: the
-/// role's name in lower case, such as `servant`.
-fn key(role: Role) -> String {
-    role.to_string().to_lowercase()
-}
-
 /// How many seats of each role play each strategy, by name.
-pub type Allotments = BTreeMap<Role, BTreeMap<String, usize>>;
+pub type Allotments = crate::config::Allotments<Role>;
+
+/// One player's system prompt, rendered for a seat dealt a role and a
+/// prompted strategy.
+pub type SystemPrompt = crate::config::SystemPrompt<Role>;
 
 /// The settings that took effect: the file as written, and the settings
 /// the file and the code have a say in, decided.
@@ -158,47 +128,15 @@ pub struct Settings {
     pub table: Table,
     /// The rules, with the limits that took effect.
     pub rules: Rules,
-    /// Every strategy, by name: the file's, and [`RANDOM`].
-    pub strategies: BTreeMap<String, Strategy>,
-    /// How many seats of each role play each strategy.
-    pub allotments: Allotments,
+    /// Every strategy, and how many seats of each role play each.
+    pub lineup: Lineup<Role>,
 }
 
 impl Config {
-    /// Parse `file`, the text of a configuration file, and check what every
-    /// game's file holds alike, with this game's template variables: a
-    /// `[text]` block named like one of them is an error, and so is a
-    /// model's context window of 0, a strategy named [`RANDOM`], a file's
-    /// `strategy` that is not defined, and a prompted strategy naming a
-    /// model the file does not define, or naming none when the file does
-    /// not define exactly one.
-    pub fn parse(file: &str) -> anyhow::Result<Self> {
-        let mut config: Self = toml::from_str(file)?;
-        check_common(
-            &config.text,
-            &config.models,
-            config.strategy.as_deref(),
-            &mut config.strategies,
-            &VARIABLES,
-        )?;
-        Ok(config)
-    }
-
     /// The settings that take effect: each limit from the file if given
-    /// there, otherwise from the code; and each role's allotment. A role's
-    /// `strategies` table allots its seats first. With the role's own
-    /// `strategy`, that strategy fills the rest of the role's count, from
-    /// the file if given there, otherwise from the code, and a count in the
-    /// file that is less than the table allots is an error naming the role
-    /// and both numbers. Without one, the role has as many seats as the
-    /// table allots, and a count in the file that disagrees is an error
-    /// naming the role and both numbers. A role with no table plays one
-    /// strategy, its own `strategy`, otherwise the file's, otherwise
-    /// [`RANDOM`], and has the count from the file if given there,
-    /// otherwise from the code. A strategy allotted that is not defined is
-    /// an error naming the role. The table the counts make is then checked
-    /// as [`Table::check`] checks it, and a prompted strategy allotted a
-    /// seat is an error naming the strategy and the role.
+    /// there, otherwise from the code; and each role's allotment, as
+    /// [`crate::config::Config::allot`] allots it. The table the counts
+    /// make is then checked as [`Table::check`] checks it.
     pub fn settle(self) -> anyhow::Result<Settings> {
         let (code, file) = (Rules::default(), &self.phases);
         let rules = Rules {
@@ -207,47 +145,8 @@ impl Config {
             quest_limit: file.quest_limit.unwrap_or(code.quest_limit),
             assassinate_limit: file.assassinate_limit.unwrap_or(code.assassinate_limit),
         };
-        let mut strategies = self.strategies.clone();
-        strategies.insert(RANDOM.to_string(), Strategy::Random(Random {}));
-        let mut allotments = Allotments::new();
-        for (role, default) in Table::default().counts() {
-            let file = self.roles.get(role);
-            let key = key(role);
-            let allotted = match (&file.strategies, &file.strategy) {
-                (Some(table), filling) => {
-                    let allots: usize = table.values().sum();
-                    if let Some(count) = file.count
-                        && (count < allots || filling.is_none() && count != allots)
-                    {
-                        bail!(
-                            "[roles.{key}] count is {count}, but [roles.{key}.strategies] allots {allots}"
-                        );
-                    }
-                    let mut table = table.clone();
-                    let left = file.count.unwrap_or(default).saturating_sub(allots);
-                    if let Some(filling) = filling
-                        && left > 0
-                    {
-                        *table.entry(filling.clone()).or_default() += left;
-                    }
-                    table
-                }
-                (None, _) => {
-                    let strategy = file
-                        .strategy
-                        .as_ref()
-                        .or(self.strategy.as_ref())
-                        .map_or(RANDOM, String::as_str);
-                    let count = file.count.unwrap_or(default);
-                    BTreeMap::from([(strategy.to_string(), count)])
-                }
-            };
-            if let Some(name) = allotted.keys().find(|name| !strategies.contains_key(*name)) {
-                bail!("the {role} is allotted {name}, which is not a strategy");
-            }
-            allotments.insert(role, allotted);
-        }
-        let seats = |role| allotments[&role].values().sum();
+        let lineup = self.allot(Table::default().counts(), Roles::get)?;
+        let seats = |role| lineup.allotments[&role].values().sum();
         let table = Table {
             merlin: seats(Role::Merlin),
             percival: seats(Role::Percival),
@@ -262,123 +161,26 @@ impl Config {
         Ok(Settings {
             table,
             rules,
-            strategies,
-            allotments,
+            lineup,
             config: self,
         })
     }
 }
 
-/// One player's system prompt, rendered for a seat dealt a role and a
-/// prompted strategy.
-#[derive(Debug)]
-pub struct SystemPrompt {
-    /// The seat, `Player 1` onward.
-    pub seat: PlayerId,
-    /// The role the seat was dealt.
-    pub role: Role,
-    /// The name of the strategy the seat was dealt.
-    pub strategy: String,
-    /// The rendered prompt.
-    pub text: String,
-}
-
 impl Settings {
-    /// Each (role, strategy) pair at the table, in the order the roles are
-    /// dealt and then by the strategy's name, with the strategy and how
-    /// many seats it is allotted.
-    fn at_the_table(&self) -> impl Iterator<Item = (Role, &str, &Strategy, usize)> {
-        self.allotments.iter().flat_map(move |(role, allotted)| {
-            allotted
-                .iter()
-                .filter(|(_, seats)| **seats > 0)
-                .map(move |(name, seats)| (*role, name.as_str(), &self.strategies[name], *seats))
-        })
-    }
-
-    /// Deal the (role, strategy) pairs the allotments make, one per seat,
-    /// at random to the seats `Player 1` onward.
-    pub fn deal(&self) -> HashMap<PlayerId, Dealt> {
-        let mut pairs: Vec<Dealt> = self
-            .at_the_table()
-            .flat_map(|(role, strategy, _, seats)| {
-                let dealt = Dealt {
-                    role,
-                    strategy: strategy.to_string(),
-                };
-                std::iter::repeat_n(dealt, seats)
-            })
-            .collect();
-        pairs.shuffle(&mut rand::rng());
-        self.table.seats().zip(pairs).collect()
-    }
-
-    /// The name of the model the strategy `name` asks, if it is prompted.
-    fn model_of(&self, name: &str) -> Option<&str> {
-        match &self.strategies[name] {
-            Strategy::Prompted(prompted) => Some(&prompted.model),
-            Strategy::Random(_) => None,
-        }
-    }
-
     /// The models in play, by name: those a prompted strategy at the table
     /// asks.
     pub fn models_in_play(&self) -> BTreeMap<&str, &Spec> {
-        self.at_the_table()
-            .filter_map(|(_, strategy, _, _)| self.model_of(strategy))
-            .map(|name| (name, &self.config.models[name]))
-            .collect()
+        self.lineup.models_in_play(&self.config.models)
     }
 
-    /// Render the system prompt of every seat for every (role, strategy)
-    /// pair at the table whose strategy is prompted, since any seat may be
-    /// dealt any of them, in seat order and then the order of the pairs.
-    /// A prompt is rendered from its strategy's `system` template, with the
-    /// variables `name`, `role`, as [`Role::told`] tells it, `team`,
-    /// `good` or `evil`, and every `[text]` block. An undefined variable is an error. A template that
-    /// does not compile is an error naming the strategy; one that does not
-    /// render, the strategy, the seat and the role.
+    /// Render every system prompt a game could call for, as
+    /// [`Lineup::prompts`] renders it, with the variables `role`, as
+    /// [`Role::told`] tells it, and `team`, `good` or `evil`.
     pub fn prompts(&self) -> anyhow::Result<Vec<SystemPrompt>> {
-        let mut env = Environment::new();
-        env.set_undefined_behavior(UndefinedBehavior::Strict);
-        // Each strategy's template is compiled once, and rendered once a
-        // seat for each role it is allotted.
-        let mut templates = BTreeMap::new();
-        let mut pairs = Vec::new();
-        for (role, name, strategy, _) in self.at_the_table() {
-            if let Strategy::Prompted(prompted) = strategy {
-                if let btree_map::Entry::Vacant(vacant) = templates.entry(name) {
-                    let template = env.template_from_str(&prompted.system).with_context(|| {
-                        format!("compiling the prompt template of strategy {name}")
-                    })?;
-                    vacant.insert(template);
-                }
-                pairs.push((role, name));
-            }
-        }
-        let blocks = Value::from(&self.config.text);
-        let mut prompts = Vec::new();
-        for seat in self.table.seats() {
-            for &(role, name) in &pairs {
-                let text = templates[name]
-                    .render(context! {
-                        name => &seat,
-                        role => role.told(),
-                        team => role.team().to_string(),
-                        ..blocks.clone()
-                    })
-                    .with_context(|| {
-                        format!("rendering the prompt of strategy {name} for {seat} as the {role}")
-                    })?;
-                prompts.push(SystemPrompt {
-                    seat: seat.clone(),
-                    role,
-                    strategy: name.to_string(),
-                    text,
-                });
-            }
-        }
-        Ok(prompts)
+        let variables =
+            |role: Role| context! { role => role.told(), team => role.team().to_string() };
+        self.lineup.prompts(&self.config.text, variables)
     }
 
     /// The context window of the model `name`, settled as
@@ -391,25 +193,27 @@ impl Settings {
         reported: Option<u64>,
         prompts: &[SystemPrompt],
     ) -> anyhow::Result<ContextWindow> {
-        let needed = self.unstoried(name, prompts);
+        let needed = self.unstoried(name, prompts)?;
         window::settle(name, &self.config.models[name], reported, needed)
     }
 
     /// The most a request to the model `name` takes of the context window
     /// before its story, by estimate, for any of `prompts` whose strategy
     /// asks it.
-    fn unstoried(&self, name: &str, prompts: &[SystemPrompt]) -> u64 {
+    fn unstoried(&self, name: &str, prompts: &[SystemPrompt]) -> anyhow::Result<u64> {
         let seats: Vec<PlayerId> = self.table.seats().collect();
         let id = &self.config.models[name].id;
-        prompts
-            .iter()
-            .filter(|prompt| self.model_of(&prompt.strategy) == Some(name))
-            .map(|prompt| {
-                let (text, seat, role) = (&prompt.text, &prompt.seat, prompt.role);
-                prompted::unstoried(id, text, seat, role, &seats, &self.rules)
-            })
-            .max()
-            .unwrap_or_default()
+        self.lineup.unstoried(name, prompts, |prompt| {
+            let (text, seat, role) = (&prompt.text, &prompt.seat, prompt.role);
+            Ok(prompted::unstoried(
+                id,
+                text,
+                seat,
+                role,
+                &seats,
+                &self.rules,
+            ))
+        })
     }
 
     /// Set up each model in play as [`spec::set_up`] sets it up, settling
@@ -417,7 +221,7 @@ impl Settings {
     /// each phase waits on, which settles the tool choice. A model the file
     /// defines and no strategy at the table asks is not contacted.
     pub async fn set_up(&self, prompts: &[SystemPrompt]) -> anyhow::Result<(Models, Handles)> {
-        let needed = |name: &str| Ok(self.unstoried(name, prompts));
+        let needed = |name: &str| self.unstoried(name, prompts);
         let probe = async |provider: &Provider, id: &str| prompted::check_plays(provider, id).await;
         spec::set_up(self.models_in_play(), needed, probe).await
     }
@@ -426,42 +230,24 @@ impl Settings {
     /// it right after the deal: every setting as it took effect, every
     /// strategy and the allotments, `models`, the models in play as
     /// [`Settings::set_up`] set them up, each prompted player's system
-    /// prompt from `prompts`, which [`Settings::prompts`] rendered, and the
-    /// text blocks as written. A prompted player with no prompt rendered
-    /// for its role and strategy is an error naming the seat, the role and
-    /// the strategy.
+    /// prompt from `prompts`, which [`Settings::prompts`] rendered, as
+    /// [`Lineup::told`] tells it, and the text blocks as written.
     pub fn configuration(
         &self,
         deal: &HashMap<PlayerId, Dealt>,
         prompts: &[SystemPrompt],
         models: Models,
     ) -> anyhow::Result<Configuration> {
-        let rendered: HashMap<(&PlayerId, Role, &str), &str> = prompts
-            .iter()
-            .map(|prompt| {
-                let pair = (&prompt.seat, prompt.role, prompt.strategy.as_str());
-                (pair, prompt.text.as_str())
-            })
-            .collect();
-        let mut told = BTreeMap::new();
-        for (seat, Dealt { role, strategy }) in deal {
-            if self.model_of(strategy).is_some() {
-                let text = rendered.get(&(seat, *role, strategy)).ok_or_else(|| {
-                    anyhow!("no system prompt rendered for {seat} as the {role} playing {strategy}")
-                })?;
-                told.insert(seat.clone(), text.to_string());
-            }
-        }
         Ok(Configuration {
             role_counts: self.table.counts().into_iter().collect(),
             propose_limit: self.rules.propose_limit,
             vote_limit: self.rules.vote_limit,
             quest_limit: self.rules.quest_limit,
             assassinate_limit: self.rules.assassinate_limit,
-            strategies: self.strategies.clone(),
-            allotments: self.allotments.clone(),
+            strategies: self.lineup.strategies.clone(),
+            allotments: self.lineup.allotments.clone(),
             models,
-            prompts: told,
+            prompts: self.lineup.told(deal, prompts)?,
             text: self.config.text.clone(),
         })
     }
@@ -488,8 +274,8 @@ pub struct Configuration {
     /// How long the assassination waited for the Assassin.
     #[serde(with = "humantime_serde")]
     pub assassinate_limit: Duration,
-    /// Every strategy, by name, [`RANDOM`] included, each prompted one
-    /// naming the model it asks.
+    /// Every strategy, by name, [`RANDOM`](crate::strategy::RANDOM)
+    /// included, each prompted one naming the model it asks.
     pub strategies: BTreeMap<String, Strategy>,
     /// How many seats of each role played each strategy.
     pub allotments: Allotments,
@@ -502,40 +288,22 @@ pub struct Configuration {
 }
 
 /// Each seat's player, as `deal` dealt it a strategy and `configuration`
-/// sets the strategy up: a random player, or a prompted player told its
-/// system prompt and asking its strategy's model through its handle in
-/// `handles`.
+/// sets the strategy up, as [`crate::config::players`] builds it: a random
+/// player, or a prompted player.
 pub fn players(
     configuration: &Configuration,
     deal: &HashMap<PlayerId, Dealt>,
     handles: &Handles,
 ) -> impl FnMut(&PlayerId) -> Seat + use<> {
-    let mut prompted = HashMap::new();
-    for (seat, Dealt { strategy, .. }) in deal {
-        if let Strategy::Prompted(strategy) = &configuration.strategies[strategy] {
-            let name = &strategy.model;
-            let model = &configuration.models[name];
-            let player = (
-                configuration.prompts[seat].clone(),
-                model.id.clone(),
-                model.tool_choice,
-                model.context_window.tokens,
-                Arc::clone(&handles[name]),
-            );
-            prompted.insert(seat.clone(), player);
-        }
-    }
-    move |id: &PlayerId| match prompted.remove(id) {
-        Some((prompt, model_id, tool_choice, context_window, model)) => prompted::Player::init(
-            id.clone(),
-            prompt,
-            model_id,
-            tool_choice,
-            context_window,
-            model,
-        ),
-        None => random::Player::init(),
-    }
+    crate::config::players(
+        &configuration.strategies,
+        &configuration.models,
+        &configuration.prompts,
+        deal,
+        handles,
+        random::Player::init,
+        prompted::Player::init,
+    )
 }
 
 #[cfg(test)]
@@ -549,9 +317,10 @@ mod tests {
     use crate::model::spec::ModelInPlay;
     use crate::model::window::Source;
     use crate::model::{self, CONTEXT_WINDOW, REQUEST_TIMEOUT, ToolChoice};
-    use crate::strategy::Prompted;
+    use crate::strategy::{Prompted, RANDOM, Random};
     use serde_json::json;
     use std::collections::HashSet;
+    use std::sync::Arc;
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::sync::oneshot;
 
@@ -573,12 +342,12 @@ policy = "random"
 
     /// The settings `file` produces under the code defaults.
     fn settle(file: &str) -> Settings {
-        Config::parse(file).unwrap().settle().unwrap()
+        parse(file).unwrap().settle().unwrap()
     }
 
     /// The error `file` settles to, causes included.
     fn unsettled(file: &str) -> String {
-        let error = Config::parse(file).and_then(Config::settle).unwrap_err();
+        let error = parse(file).and_then(Config::settle).unwrap_err();
         format!("{error:#}")
     }
 
@@ -593,7 +362,7 @@ policy = "random"
     /// The example file `name`, parsed.
     fn example(name: &str) -> Config {
         let path = format!("{}/configs/avalon/{name}", env!("CARGO_MANIFEST_DIR"));
-        Config::parse(&std::fs::read_to_string(path).unwrap()).unwrap()
+        parse(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
 
     #[test]
@@ -644,9 +413,9 @@ policy = "random"
     #[test]
     fn the_random_config_plays_the_code_defaults_with_no_models() {
         let example = example("random.toml").settle().unwrap();
-        let none = Config::parse("").unwrap().settle().unwrap();
+        let none = parse("").unwrap().settle().unwrap();
         let configured = |settings: &Settings| {
-            let deal = settings.deal();
+            let deal = settings.lineup.deal();
             settings.configuration(&deal, &[], Models::new()).unwrap()
         };
         assert_eq!(configured(&example), configured(&none));
@@ -659,7 +428,7 @@ policy = "random"
         let settings = settle("");
         assert_eq!(settings.table, Table::default());
         assert_eq!(
-            settings.allotments,
+            settings.lineup.allotments,
             Table::default()
                 .counts()
                 .into_iter()
@@ -667,64 +436,10 @@ policy = "random"
                 .collect::<Allotments>()
         );
         assert_eq!(
-            settings.strategies,
+            settings.lineup.strategies,
             BTreeMap::from([(RANDOM.to_string(), Strategy::Random(Random {}))])
         );
         assert_eq!(settings.rules, Rules::default());
-    }
-
-    #[test]
-    fn a_strategy_of_either_policy_parses_and_is_written_with_its_model() {
-        let config = Config::parse(STRATEGIES).unwrap();
-        assert_eq!(config.strategies["dice"], Strategy::Random(Random {}));
-        // The file's one model, filled in.
-        assert_eq!(
-            config.strategies["plain"],
-            Strategy::Prompted(Prompted {
-                system: "{{ name }} the {{ role }}".to_string(),
-                model: "qwen".to_string(),
-            })
-        );
-        assert_eq!(
-            serde_json::to_value(&config.strategies).unwrap(),
-            json!({
-                "coin": {"policy": "random"},
-                "dice": {"policy": "random"},
-                "plain": {
-                    "policy": "prompted",
-                    "system": "{{ name }} the {{ role }}",
-                    "model": "qwen",
-                },
-            })
-        );
-    }
-
-    #[test]
-    fn a_strategy_takes_its_policy_s_parameters_and_only_those() {
-        for strategy in [
-            "policy = \"random\"\nsystem = \"Hi.\"\n",
-            "policy = \"random\"\nmodel = \"qwen\"\n",
-            "policy = \"prompted\"\nsystem = \"Hi.\"\ntemperature = 0.5\n",
-            "policy = \"prompted\"\nmodel = \"qwen\"\n",
-            "policy = \"scripted\"\n",
-            "system = \"Hi.\"\n",
-        ] {
-            let file = format!("{STRATEGIES}[strategies.odd]\n{strategy}");
-            assert!(Config::parse(&file).is_err(), "{strategy}");
-        }
-    }
-
-    #[test]
-    fn a_model_named_empty_is_an_error_naming_the_strategy() {
-        let file = STRATEGIES.replace(
-            "policy = \"prompted\"",
-            "policy = \"prompted\"\nmodel = \"\"",
-        );
-        let shown = unsettled(&file);
-        assert!(
-            shown.contains("[strategies.plain]") && shown.contains("model is empty"),
-            "{shown}"
-        );
     }
 
     #[test]
@@ -737,14 +452,14 @@ policy = "random"
             format!("{STRATEGIES}[prompt]\nsystem = \"\"\n"),
             format!("{STRATEGIES}[model]\nbase_url = \"\"\nid = \"\"\n"),
         ] {
-            assert!(Config::parse(&file).is_err(), "{file}");
+            assert!(parse(&file).is_err(), "{file}");
         }
     }
 
     #[test]
     fn werewolf_s_limits_are_unknown_keys() {
         for limit in ["night_limit", "day_limit", "ratify_limit"] {
-            let error = Config::parse(&format!("[phases]\n{limit} = \"1m\"\n")).unwrap_err();
+            let error = parse(&format!("[phases]\n{limit} = \"1m\"\n")).unwrap_err();
             assert!(format!("{error:#}").contains(limit), "{error:#}");
         }
     }
@@ -752,23 +467,29 @@ policy = "random"
     #[test]
     fn an_unknown_role_is_an_error() {
         for role in ["werewolf", "hunter", "servants", "minions", "Merlin"] {
-            let error = Config::parse(&format!("[roles.{role}]\ncount = 1\n")).unwrap_err();
+            let error = parse(&format!("[roles.{role}]\ncount = 1\n")).unwrap_err();
             assert!(format!("{error:#}").contains(role), "{error:#}");
         }
     }
 
     #[test]
     fn a_duration_the_file_cannot_parse_is_an_error() {
-        assert!(Config::parse("[phases]\nvote_limit = \"a while\"\n").is_err());
+        assert!(parse("[phases]\nvote_limit = \"a while\"\n").is_err());
     }
 
     #[test]
     fn a_text_block_named_like_a_variable_is_an_error_naming_it() {
         for variable in VARIABLES {
             let file = format!("{STRATEGIES}[text]\n{variable} = \"Taken.\"\n");
-            let error = Config::parse(&file).unwrap_err();
+            let error = parse(&file).unwrap_err();
             assert!(format!("{error:#}").contains(variable), "{error:#}");
         }
+    }
+
+    /// The name of the table `[roles.<name>]` that speaks of `role`: the
+    /// role's name in lower case, such as `servant`.
+    fn key(role: Role) -> String {
+        role.to_string().to_lowercase()
     }
 
     #[test]
@@ -784,7 +505,7 @@ policy = "random"
         for (role, _) in Table::default().counts() {
             let file = format!("{STRATEGIES}[roles.{}]\nstrategy = \"dice\"\n", key(role));
             let settings = settle(&file);
-            for (other, allotted) in &settings.allotments {
+            for (other, allotted) in &settings.lineup.allotments {
                 let strategy = if *other == role { "dice" } else { RANDOM };
                 assert!(allotted.contains_key(strategy), "{role}: {allotted:?}");
             }
@@ -792,147 +513,16 @@ policy = "random"
     }
 
     #[test]
-    fn a_role_is_allotted_by_its_strategies_its_strategy_or_the_file_s_in_that_order() {
-        let file = format!(
-            "strategy = \"coin\"
-{STRATEGIES}
-[roles.servant.strategies]
-dice = 1
-coin = 2
-[roles.minion]
-strategy = \"dice\"
-[roles.assassin]
-strategy = \"coin\"
-[roles.assassin.strategies]
-dice = 1
-"
-        );
-        let settings = settle(&file);
+    fn an_allotment_error_names_the_role_s_table_in_lower_case_and_the_role_as_written() {
+        let file = format!("{STRATEGIES}[roles.servant.strategies]\ncoin = 1\n[roles.servant]\n");
         assert_eq!(
-            settings.allotments,
-            Allotments::from([
-                (Role::Merlin, allotted(&[("coin", 1)])),
-                (Role::Percival, allotted(&[("coin", 0)])),
-                (Role::Servant, allotted(&[("coin", 2), ("dice", 1)])),
-                (Role::Assassin, allotted(&[("dice", 1)])),
-                (Role::Morgana, allotted(&[("coin", 0)])),
-                (Role::Mordred, allotted(&[("coin", 0)])),
-                (Role::Oberon, allotted(&[("coin", 0)])),
-                (Role::Minion, allotted(&[("dice", 1)])),
-            ])
-        );
-        assert_eq!(
-            settings.table,
-            Table {
-                servants: 3,
-                ..Table::default()
-            }
-        );
-        // Random without a strategy of its own or the file's.
-        let settings = settle(STRATEGIES);
-        assert_eq!(settings.allotments[&Role::Merlin], allotted(&[(RANDOM, 1)]));
-    }
-
-    #[test]
-    fn a_role_s_strategy_fills_the_seats_its_strategies_table_leaves() {
-        let file = |count: &str| {
-            format!(
-                "{STRATEGIES}[roles.servant]\n{count}strategy = \"dice\"\n[roles.servant.strategies]\ncoin = 1\n"
-            )
-        };
-        let servants = |file: &str| settle(file).allotments[&Role::Servant].clone();
-        assert_eq!(
-            servants(&file("count = 5\n")),
-            allotted(&[("coin", 1), ("dice", 4)])
-        );
-        // The code's count without the file's.
-        assert_eq!(servants(&file("")), allotted(&[("coin", 1), ("dice", 1)]));
-        // A count the table fills leaves nothing to fill.
-        let full = file("count = 2\n").replace("coin = 1", "coin = 2");
-        assert_eq!(servants(&full), allotted(&[("coin", 2)]));
-        // A strategy in the table and filling adds up.
-        let both = file("count = 4\n").replace("coin = 1", "coin = 1\ndice = 1");
-        assert_eq!(servants(&both), allotted(&[("coin", 1), ("dice", 3)]));
-        // A count the table overfills is an error naming both numbers.
-        assert_eq!(
-            unsettled(&file("count = 0\n")),
+            unsettled(&format!("{file}count = 0\n")),
             "[roles.servant] count is 0, but [roles.servant.strategies] allots 1"
         );
-        // Without a count, a table that allots more than the code's count
-        // has as many seats as it allots.
-        let more = file("").replace("coin = 1", "coin = 4");
-        assert_eq!(servants(&more), allotted(&[("coin", 4)]));
-        // A strategy that fills is checked like any other.
         assert_eq!(
-            unsettled(&file("count = 5\n").replace("\"dice\"", "\"wild\"")),
+            unsettled(&format!("{file}strategy = \"wild\"\n")),
             "the Servant is allotted wild, which is not a strategy"
         );
-    }
-
-    #[test]
-    fn a_strategies_table_s_seats_are_the_role_s_count_and_a_count_that_disagrees_is_an_error() {
-        let file = format!("{STRATEGIES}[roles.minion.strategies]\ndice = 1\ncoin = 1\n");
-        let agreeing = format!("{file}[roles.minion]\ncount = 2\n");
-        assert_eq!(settle(&agreeing).table.minions, 2);
-        let disagreeing = format!("{file}[roles.minion]\ncount = 1\n");
-        assert_eq!(
-            unsettled(&disagreeing),
-            "[roles.minion] count is 1, but [roles.minion.strategies] allots 2"
-        );
-    }
-
-    #[test]
-    fn a_strategy_allotted_that_is_not_defined_is_an_error_naming_the_role() {
-        let files = [
-            ("[roles.mordred.strategies]\nwild = 1\n", "Mordred"),
-            ("[roles.percival]\nstrategy = \"wild\"\n", "Percival"),
-        ];
-        for (roles, role) in files {
-            assert_eq!(
-                unsettled(&format!("{STRATEGIES}{roles}")),
-                format!("the {role} is allotted wild, which is not a strategy")
-            );
-        }
-    }
-
-    #[test]
-    fn the_file_s_strategy_must_be_defined_even_when_every_role_is_allotted_otherwise() {
-        let mut file = format!("strategy = \"cautous\"\n{STRATEGIES}");
-        for (role, _) in Table::default().counts() {
-            file.push_str(&format!("[roles.{}]\nstrategy = \"dice\"\n", key(role)));
-        }
-        assert_eq!(
-            unsettled(&file),
-            "the file's strategy is cautous, which is not a strategy"
-        );
-        settle(&format!("strategy = \"{RANDOM}\"\n{STRATEGIES}"));
-    }
-
-    #[test]
-    fn a_prompted_strategy_may_be_allotted_to_any_role_beside_random_ones() {
-        let allotted = [
-            ("strategy = \"plain\"\n", Role::Merlin),
-            (
-                "[roles.oberon]\ncount = 1\nstrategy = \"plain\"\n",
-                Role::Oberon,
-            ),
-            ("[roles.minion.strategies]\nplain = 1\n", Role::Minion),
-        ];
-        for (roles, role) in allotted {
-            let file = match roles.starts_with('[') {
-                true => format!("{STRATEGIES}{roles}"),
-                false => format!("{roles}{STRATEGIES}"),
-            };
-            let settings = settle(&file);
-            assert_eq!(settings.allotments[&role]["plain"], 1, "{role}");
-            let in_play: Vec<&str> = settings.models_in_play().into_keys().collect();
-            assert_eq!(in_play, ["qwen"], "{role}");
-        }
-        // Allotted no seat, a prompted strategy puts no model in play.
-        let settings = settle(&format!(
-            "{STRATEGIES}[roles.percival]\nstrategy = \"plain\"\n"
-        ));
-        assert!(settings.models_in_play().is_empty());
     }
 
     /// A file giving every role a count, for a table of ten: one of each
@@ -1025,65 +615,6 @@ assassinate_limit = \"4m\"
         assert_eq!(secs(&settle("").rules), secs(&code));
     }
 
-    /// A table of one Merlin, dice, and two Servants, one random and one
-    /// coin, with the Assassin and a Minion random.
-    fn mixed() -> Settings {
-        let file = format!(
-            "{STRATEGIES}
-[roles.merlin]
-strategy = \"dice\"
-[roles.servant.strategies]
-random = 1
-coin = 1
-"
-        );
-        settle(&file)
-    }
-
-    #[test]
-    fn every_pair_is_dealt_as_many_times_as_allotted_to_the_seats_from_player_1() {
-        let settings = mixed();
-        let deal = settings.deal();
-        let mut seats: Vec<&PlayerId> = deal.keys().collect();
-        seats.sort();
-        assert_eq!(
-            seats,
-            ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
-        );
-        let mut pairs: Vec<(Role, &str)> = deal
-            .values()
-            .map(|dealt| (dealt.role, dealt.strategy.as_str()))
-            .collect();
-        pairs.sort();
-        assert_eq!(
-            pairs,
-            [
-                (Role::Merlin, "dice"),
-                (Role::Servant, "coin"),
-                (Role::Servant, RANDOM),
-                (Role::Assassin, RANDOM),
-                (Role::Minion, RANDOM),
-            ]
-        );
-    }
-
-    #[test]
-    fn the_deal_is_shuffled_in_roles_and_in_strategies() {
-        let settings = mixed();
-        let deals: Vec<HashMap<PlayerId, Dealt>> = (0..100).map(|_| settings.deal()).collect();
-        // Every seat is dealt Merlin playing dice in some deal, and a
-        // Servant playing coin in another.
-        for strategy in ["dice", "coin"] {
-            let seats: HashSet<&PlayerId> = deals
-                .iter()
-                .flat_map(|deal| deal.iter())
-                .filter(|(_, dealt)| dealt.strategy == strategy)
-                .map(|(seat, _)| seat)
-                .collect();
-            assert_eq!(seats.len(), 5, "{strategy}: {seats:?}");
-        }
-    }
-
     /// A file saying something under every table, for a game of Merlin,
     /// the Assassin, two Servants and a Minion.
     fn configured() -> String {
@@ -1112,7 +643,7 @@ count = 1
         // Each setting from the file or the code.
         let settings = settle(&configured());
         let configuration = settings
-            .configuration(&settings.deal(), &[], Models::new())
+            .configuration(&settings.lineup.deal(), &[], Models::new())
             .unwrap();
         let random = || Strategy::Random(Random {});
         assert_eq!(
@@ -1157,7 +688,7 @@ count = 1
     {
         let settings = settle(&configured());
         let configuration = settings
-            .configuration(&settings.deal(), &[], Models::new())
+            .configuration(&settings.lineup.deal(), &[], Models::new())
             .unwrap();
         let entry = Entry::Configuration(Box::new(configuration));
         let json = serde_json::to_value(&entry).unwrap();
@@ -1181,11 +712,11 @@ count = 1
     #[tokio::test(start_paused = true)]
     async fn the_configuration_is_logged_right_after_the_deal_with_an_empty_file_and_with_the_random_config()
      {
-        let none = Config::parse("").unwrap();
+        let none = parse("").unwrap();
         let example = example("random.toml");
         for config in [none, example] {
             let settings = config.settle().unwrap();
-            let deal = settings.deal();
+            let deal = settings.lineup.deal();
             let configuration = settings.configuration(&deal, &[], Models::new()).unwrap();
             let (winner, won) = oneshot::channel();
             let (logger, log) = unbounded_channel();
@@ -1236,41 +767,6 @@ system = "{{ name }}, {{ role }}"
     }
 
     #[test]
-    fn every_seat_is_rendered_for_every_prompted_pair_at_the_table_in_order() {
-        // Merlin and the Minion play `plain`, the Assassin `bold`, and the
-        // Servants `random`.
-        let file = format!(
-            "{PLAIN}[strategies.bold]\npolicy = \"prompted\"\nsystem = \"Bold {{{{ name }}}}.\"\n\
-             [roles.assassin]\nstrategy = \"bold\"\n[roles.servant]\nstrategy = \"random\"\n"
-        );
-        let prompts = settle(&file).prompts().unwrap();
-        let rendered: Vec<(&str, Role, &str)> = prompts
-            .iter()
-            .map(|prompt| (prompt.seat.as_str(), prompt.role, prompt.strategy.as_str()))
-            .collect();
-        let seats = ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"];
-        let expected: Vec<(&str, Role, &str)> = seats
-            .into_iter()
-            .flat_map(|seat| {
-                [
-                    (seat, Role::Merlin, "plain"),
-                    (seat, Role::Assassin, "bold"),
-                    (seat, Role::Minion, "plain"),
-                ]
-            })
-            .collect();
-        assert_eq!(rendered, expected);
-        assert_eq!(
-            prompt(&prompts, "Player 2", Role::Assassin, "bold"),
-            "Bold Player 2."
-        );
-        assert_eq!(
-            prompt(&prompts, "Player 5", Role::Minion, "plain"),
-            "Player 5, a minion of Mordred"
-        );
-    }
-
-    #[test]
     fn every_role_is_rendered_as_a_sentence_names_it_with_its_team() {
         let mut file = PLAIN.replace("{{ role }}", "{{ role }}, on the {{ team }} side");
         file.push_str("[roles.percival]\ncount = 1\n[roles.servant]\ncount = 1\n");
@@ -1296,47 +792,6 @@ system = "{{ name }}, {{ role }}"
         }
     }
 
-    #[test]
-    fn every_text_block_is_a_variable_and_a_persona_is_not() {
-        let file = PLAIN.replace("{{ name }}, {{ role }}", "{{ rules }} {{ merlin }}");
-        let file = format!("{file}[text]\nrules = \"The rules.\"\nmerlin = \"Hide.\"\n");
-        let prompts = settle(&file).prompts().unwrap();
-        assert_eq!(
-            prompt(&prompts, "Player 1", Role::Servant, "plain"),
-            "The rules. Hide."
-        );
-        let file = PLAIN.replace("{{ role }}", "{{ role }}[{{ persona }}]");
-        let error = settle(&file).prompts().unwrap_err();
-        assert!(format!("{error:#}").contains("persona"), "{error:#}");
-    }
-
-    #[test]
-    fn a_template_that_does_not_render_is_an_error_naming_the_strategy_the_seat_and_the_role() {
-        let file = PLAIN.replace("{{ name }}, {{ role }}", "{{ rulez }}");
-        let error = settle(&file).prompts().unwrap_err();
-        let shown = format!("{error:#}");
-        assert!(
-            shown.starts_with("rendering the prompt of strategy plain for Player 1 as the Merlin"),
-            "{shown}"
-        );
-        assert!(shown.contains("rulez"), "{shown}");
-    }
-
-    #[test]
-    fn a_template_that_does_not_compile_is_an_error_naming_the_strategy() {
-        let file = PLAIN.replace("{{ name }}, {{ role }}", "{% if %}");
-        let error = settle(&file).prompts().unwrap_err();
-        let shown = format!("{error:#}");
-        assert!(
-            shown.starts_with("compiling the prompt template of strategy plain"),
-            "{shown}"
-        );
-        assert!(shown.contains("syntax"), "{shown}");
-        // A strategy at no seat of the table is not compiled.
-        let file = file.replace("strategy = \"plain\"\n[models", "[models");
-        assert!(settle(&file).prompts().unwrap().is_empty());
-    }
-
     /// A file of two models, `qwen` and `claude`, and a strategy asking
     /// each, `plain` and `smart`, with `rest` after the strategies.
     fn two_models(rest: &str) -> String {
@@ -1356,16 +811,6 @@ system = \"Smart {{{{ name }}}}.\"
             "system = \"{{ name }},",
             "model = \"qwen\"\nsystem = \"{{ name }},",
         )
-    }
-
-    #[test]
-    fn a_model_is_in_play_when_a_strategy_at_the_table_asks_it() {
-        let settings = settle(&two_models(""));
-        let in_play: Vec<&str> = settings.models_in_play().into_keys().collect();
-        assert_eq!(in_play, ["qwen"]);
-        let both = settle(&two_models("[roles.minion]\nstrategy = \"smart\"\n"));
-        let in_play: Vec<&str> = both.models_in_play().into_keys().collect();
-        assert_eq!(in_play, ["claude", "qwen"]);
     }
 
     /// The file [`two_models`] makes, with `claude` at `claude_url` asked
@@ -1476,8 +921,8 @@ system = \"Smart {{{{ name }}}}.\"
                 prompt.text = "x".repeat(12000);
             }
         }
-        let plain = settings.unstoried("qwen", &prompts);
-        let smart = settings.unstoried("claude", &prompts);
+        let plain = settings.unstoried("qwen", &prompts).unwrap();
+        let smart = settings.unstoried("claude", &prompts).unwrap();
         assert!(smart > plain + 3900, "{smart} {plain}");
         assert!(smart < plain + 4500, "{smart} {plain}");
         assert_eq!(
@@ -1510,7 +955,11 @@ system = \"Smart {{{{ name }}}}.\"
             phases.push_str(&format!("{phase}_limit = \"1h 59m 59s\"\n"));
         }
         let slow = settle(&file(&phases));
-        let needed = |settings: &Settings| settings.unstoried("qwen", &settings.prompts().unwrap());
+        let needed = |settings: &Settings| {
+            settings
+                .unstoried("qwen", &settings.prompts().unwrap())
+                .unwrap()
+        };
         assert!(needed(&ten) > needed(&five));
         assert!(needed(&slow) > needed(&five));
     }
@@ -1589,27 +1038,6 @@ system = \"Smart {{{{ name }}}}.\"
         assert_eq!(
             Narrator::default().narrate(&logged(entry)),
             ["qwen's context window is 8192 tokens, as the configuration file says."]
-        );
-    }
-
-    #[test]
-    fn a_prompted_player_with_no_prompt_rendered_is_an_error_naming_the_seat_the_role_and_the_strategy()
-     {
-        let settings = mixed_settings();
-        let mut deal = mixed_deal();
-        deal.insert(
-            "Player 4".to_string(),
-            Dealt {
-                role: Role::Minion,
-                strategy: "plain".to_string(),
-            },
-        );
-        let error = settings
-            .configuration(&deal, &settings.prompts().unwrap(), Models::new())
-            .unwrap_err();
-        assert_eq!(
-            format!("{error:#}"),
-            "no system prompt rendered for Player 4 as the Minion playing plain"
         );
     }
 
