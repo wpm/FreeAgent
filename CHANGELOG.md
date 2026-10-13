@@ -139,6 +139,9 @@ workflow takes a version's notes from here.
 
 ### Changed
 
+- Seats are named `Player 1` onward, capitalized with a space before the
+  number. Players are told in seat order: alphabetically by name, whatever
+  its case, then by number, so `Player 2` comes before `Player 10`.
 - Actors talk by sending messages alone: `Context::request`,
   `Behavior::answer` and the reply are gone, so a behavior handles
   everything in `receive`. The uniform-random variant plays the announcing

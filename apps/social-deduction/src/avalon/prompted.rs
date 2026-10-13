@@ -60,7 +60,7 @@ use super::{
 };
 use crate::model::spec::Probed;
 use crate::model::{self, Request, Response, Tool, ToolChoice};
-use crate::seat::PlayerId;
+use crate::seat::{PlayerId, seats};
 use anyhow::{Context as _, anyhow, bail};
 use async_trait::async_trait;
 use free_agent::{ActorId, Behavior, Builder, Context, Event, Think, ThinkBuilder};
@@ -724,7 +724,7 @@ fn tools(duty: Option<&Duty>, limit: Duration) -> Vec<Tool> {
 
 /// The placeholder seats the probe asks about.
 fn placeholders() -> Vec<PlayerId> {
-    (1..=5).map(|seat| format!("player{seat}")).collect()
+    seats(5).collect()
 }
 
 /// How long each phase the probe asks about lasts.
@@ -1245,7 +1245,7 @@ mod tests {
     /// Every seat of the default table but `prompted` a player who never
     /// chooses.
     fn mute_but(prompted: &[&str]) -> HashMap<&'static str, Seat> {
-        ["player1", "player2", "player3", "player4", "player5"]
+        ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
             .into_iter()
             .filter(|seat| !prompted.contains(seat))
             .map(|seat| (seat, mute()))
@@ -1363,22 +1363,22 @@ mod tests {
     async fn the_leader_s_request_tells_the_prompt_the_story_and_the_situation_and_offers_propose()
     {
         let model = answering(choosing_first);
-        play_with(quick(), Arc::clone(&model), mute_but(&["player1"]))
+        play_with(quick(), Arc::clone(&model), mute_but(&["Player 1"]))
             .await
             .unwrap();
-        let seats = ["player1", "player2", "player3", "player4", "player5"];
+        let seats = ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"];
         assert_eq!(
             model.requests()[0],
             Request::offering(
                 MODEL_ID,
                 vec![
-                    model::Message::system("You are player1."),
+                    model::Message::system("You are Player 1."),
                     model::Message::user(
-                        "You are player1, Merlin, on the good side. You see that player2 and player5 are evil.\n\
+                        "You are Player 1, Merlin, on the good side. You see that Player 2 and Player 5 are evil.\n\
                          \n\
                          Quest 1, proposal 1 of 5. You lead and need a team of 2.\n\
                          \n\
-                         It is quest 1, proposal 1 of 5, led by player1. The quest needs a team \
+                         It is quest 1, proposal 1 of 5, led by Player 1. The quest needs a team \
                          of 2, and 1 sabotage fails it. The proposal lasts 10s. You lead: propose \
                          a team of 2. Answer by calling one of the tools."
                     ),
@@ -1430,47 +1430,47 @@ mod tests {
     fn each_phase_waits_on_the_leader_everyone_the_team_or_the_assassin_for_its_one_tool() {
         let duty =
             |seat: &str, phase, team: &[&str]| Duty::of(&id(seat), &view_of(seat, phase, team));
-        let seats: Vec<PlayerId> = ["player1", "player2", "player3", "player4", "player5"]
+        let seats: Vec<PlayerId> = ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
             .map(id)
             .into();
         // The leader proposes a team of the quest's size from every seat.
         assert_eq!(
-            duty("player1", Phase::Propose, &[]),
+            duty("Player 1", Phase::Propose, &[]),
             Some(Duty::Propose {
                 size: 2,
                 seats: seats.clone()
             })
         );
-        assert_eq!(duty("player3", Phase::Propose, &[]), None);
+        assert_eq!(duty("Player 3", Phase::Propose, &[]), None);
         // Everyone votes.
         for seat in &seats {
-            assert_eq!(duty(seat, Phase::Vote, &["player1"]), Some(Duty::Vote));
+            assert_eq!(duty(seat, Phase::Vote, &["Player 1"]), Some(Duty::Vote));
         }
         // A good member is offered only support, an evil one sabotage too,
         // and anyone else nothing.
-        let team = ["player1", "player2"];
+        let team = ["Player 1", "Player 2"];
         assert_eq!(
-            duty("player1", Phase::Quest, &team),
+            duty("Player 1", Phase::Quest, &team),
             Some(Duty::Perform {
                 deeds: vec![Deed::Support]
             })
         );
         assert_eq!(
-            duty("player2", Phase::Quest, &team),
+            duty("Player 2", Phase::Quest, &team),
             Some(Duty::Perform {
                 deeds: vec![Deed::Support, Deed::Sabotage]
             })
         );
-        assert_eq!(duty("player3", Phase::Quest, &team), None);
+        assert_eq!(duty("Player 3", Phase::Quest, &team), None);
         // The Assassin names anyone but itself and the Minion it sees as
         // evil.
         assert_eq!(
-            duty("player2", Phase::Assassinate, &[]),
+            duty("Player 2", Phase::Assassinate, &[]),
             Some(Duty::Select {
-                targets: ["player1", "player3", "player4"].map(id).into()
+                targets: ["Player 1", "Player 3", "Player 4"].map(id).into()
             })
         );
-        assert_eq!(duty("player1", Phase::Assassinate, &[]), None);
+        assert_eq!(duty("Player 1", Phase::Assassinate, &[]), None);
         // Each duty's tool comes between speak and wait, and a player with
         // none is offered those two alone.
         let names = |duty: Option<&Duty>| -> Vec<String> {
@@ -1490,7 +1490,7 @@ mod tests {
             ),
             (
                 Duty::Select {
-                    targets: vec![id("player1")],
+                    targets: vec![id("Player 1")],
                 },
                 SELECT,
             ),
@@ -1502,8 +1502,8 @@ mod tests {
             json!(["support"])
         );
         assert_eq!(
-            select(&[id("player3")]).parameters["properties"]["target"]["enum"],
-            json!(["player3"])
+            select(&[id("Player 3")]).parameters["properties"]["target"]["enum"],
+            json!(["Player 3"])
         );
         assert_eq!(
             vote().parameters["properties"]["approve"],
@@ -1514,39 +1514,47 @@ mod tests {
     #[test]
     fn the_situation_tells_the_quest_the_team_how_long_the_phase_lasts_and_what_is_asked() {
         let limit = Duration::from_secs(90);
-        let propose = view_of("player1", Phase::Propose, &[]);
-        let opening = "It is quest 1, proposal 1 of 5, led by player1. \
+        let propose = view_of("Player 1", Phase::Propose, &[]);
+        let opening = "It is quest 1, proposal 1 of 5, led by Player 1. \
                        The quest needs a team of 2, and 1 sabotage fails it.";
         assert_eq!(
-            situation(&propose, limit, Duty::of(&id("player1"), &propose).as_ref()),
+            situation(
+                &propose,
+                limit,
+                Duty::of(&id("Player 1"), &propose).as_ref()
+            ),
             format!("{opening} The proposal lasts 1m 30s. You lead: propose a team of 2.")
         );
         assert_eq!(
             situation(&propose, limit, None),
             format!("{opening} The proposal lasts 1m 30s. You may speak or wait.")
         );
-        let vote = view_of("player4", Phase::Vote, &["player1", "player3"]);
+        let vote = view_of("Player 4", Phase::Vote, &["Player 1", "Player 3"]);
         assert_eq!(
             situation(&vote, limit, Some(&Duty::Vote)),
             format!(
-                "{opening} The team proposed is player1 and player3. The vote lasts 1m 30s. \
+                "{opening} The team proposed is Player 1 and Player 3. The vote lasts 1m 30s. \
                  Vote to approve or reject the team."
             )
         );
-        let mut quest = view_of("player2", Phase::Quest, &["player1", "player2", "player4"]);
+        let mut quest = view_of(
+            "Player 2",
+            Phase::Quest,
+            &["Player 1", "Player 2", "Player 4"],
+        );
         quest.sabotages_needed = 2;
         let member = |role| Duty::Perform { deeds: deeds(role) };
         assert_eq!(
             situation(&quest, limit, Some(&member(Role::Assassin))),
-            "It is quest 1, proposal 1 of 5, led by player1. The quest needs a team of 2, \
-             and 2 sabotages fail it. The team proposed is player1, player2 and player4. \
+            "It is quest 1, proposal 1 of 5, led by Player 1. The quest needs a team of 2, \
+             and 2 sabotages fail it. The team proposed is Player 1, Player 2 and Player 4. \
              The quest lasts 1m 30s. You are on the quest: support or sabotage it."
         );
         assert!(
             situation(&quest, limit, Some(&member(Role::Percival)))
                 .ends_with("You are on the quest: support it.")
         );
-        let assassinate = view_of("player2", Phase::Assassinate, &[]);
+        let assassinate = view_of("Player 2", Phase::Assassinate, &[]);
         let targets = Duty::Select { targets: vec![] };
         assert!(
             situation(&assassinate, limit, Some(&targets)).ends_with(
@@ -1568,7 +1576,7 @@ mod tests {
         assert_eq!(winner, Team::Evil);
         assert_eq!(ending(&logged), (Team::Evil, Victory::Assassination));
         assert!(failed(&logged).is_empty(), "{logged:?}");
-        let seats: Vec<PlayerId> = ["player1", "player2", "player3", "player4", "player5"]
+        let seats: Vec<PlayerId> = ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
             .map(id)
             .into();
         // Talk goes to every other player and each choice to the
@@ -1600,11 +1608,11 @@ mod tests {
             }
         }
         assert!(said >= 5 * 7, "{said}");
-        let team = Choice::Team(["player1", "player2"].map(id).into());
+        let team = Choice::Team(["Player 1", "Player 2"].map(id).into());
         assert!(chosen[&team] >= 1, "{chosen:?}");
         assert_eq!(chosen[&Choice::Ballot(Ballot::Approve)], 15);
         assert_eq!(chosen[&Choice::Deed(Deed::Support)], 7);
-        assert_eq!(chosen[&Choice::Target(id("player1"))], 1);
+        assert_eq!(chosen[&Choice::Target(id("Player 1"))], 1);
         // Each player was asked what each phase is, as it sees it.
         let situations: HashSet<String> = model
             .requests()
@@ -1633,25 +1641,25 @@ mod tests {
             .await
             .unwrap();
         // The Assassin's last request, made as it names Merlin.
-        let asked = asked_of(&model, "player2");
+        let asked = asked_of(&model, "Player 2");
         let last = story(asked.last().unwrap());
         let lines: Vec<&str> = last.lines().collect();
         assert_eq!(
             lines[0],
-            "You are player2, the Assassin, on the evil side. You see that player5 is evil."
+            "You are Player 2, the Assassin, on the evil side. You see that Player 5 is evil."
         );
         for told in [
-            "Quest 1, proposal 1 of 5. player1 leads and needs a team of 2.",
-            "player1 says, \"I have nothing to add.\"",
-            "Everyone votes on the team of player1 and player2.",
+            "Quest 1, proposal 1 of 5. Player 1 leads and needs a team of 2.",
+            "Player 1 says, \"I have nothing to add.\"",
+            "Everyone votes on the team of Player 1 and Player 2.",
             "You approve the team.",
-            "player1, player2, player3, player4 and player5 approve.",
+            "Player 1, Player 2, Player 3, Player 4 and Player 5 approve.",
             "The team goes on the quest.",
-            "player1 and player2 go on quest 1, which 1 sabotage fails.",
+            "Player 1 and Player 2 go on quest 1, which 1 sabotage fails.",
             "You support the quest.",
             "The quest succeeds, with no sabotage.",
             "Quest 2, proposal 1 of 5. You lead and need a team of 3.",
-            "You propose player1, player2 and player3.",
+            "You propose Player 1, Player 2 and Player 3.",
             "The Assassin tries to name Merlin.",
         ] {
             assert!(lines.contains(&told), "{told}: {last}");
@@ -1661,7 +1669,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_player_the_phase_does_not_wait_on_is_offered_only_speak_and_wait() {
         let model = answering(choosing_first);
-        play_with(quick(), Arc::clone(&model), mute_but(&["player3"]))
+        play_with(quick(), Arc::clone(&model), mute_but(&["Player 3"]))
             .await
             .unwrap();
         let requests = model.requests();
@@ -1684,7 +1692,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_second_vote_is_sent_and_only_the_first_counts() {
-        // player1 proposes itself and player3, and player3 votes to approve
+        // Player 1 proposes itself and Player 3, and Player 3 votes to approve
         // and then to reject, in one response, and waits after that.
         let model = answering(|request| {
             let calls = match offers(request, VOTE) {
@@ -1695,10 +1703,10 @@ mod tests {
             };
             Ok(Response::calling(&calls))
         });
-        let mut puppets = mute_but(&["player3"]);
-        puppets.insert("player1", proposing_at_once(&["player1", "player3"]));
+        let mut puppets = mute_but(&["Player 3"]);
+        puppets.insert("Player 1", proposing_at_once(&["Player 1", "Player 3"]));
         let (_, logged, _) = play_with(quick(), model, puppets).await.unwrap();
-        let votes: Vec<&Message> = sent_by(&logged, "player3")
+        let votes: Vec<&Message> = sent_by(&logged, "Player 3")
             .into_iter()
             .filter(|(message, to)| {
                 assert_eq!(*to, &to_the_environment());
@@ -1706,7 +1714,7 @@ mod tests {
             })
             .map(|(message, _)| message)
             .collect();
-        let vote = |n, ballot| Choice::Ballot(ballot).message(2, id("player3"), n);
+        let vote = |n, ballot| Choice::Ballot(ballot).message(2, id("Player 3"), n);
         assert_eq!(votes, [&vote(1, Ballot::Approve), &vote(2, Ballot::Reject)]);
         let tally = logged
             .iter()
@@ -1717,20 +1725,20 @@ mod tests {
             .unwrap();
         assert_eq!(
             tally,
-            &Tally::of(HashMap::from([(id("player3"), Ballot::Approve)]), 5)
+            &Tally::of(HashMap::from([(id("Player 3"), Ballot::Approve)]), 5)
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn each_choice_goes_to_the_environment_alone_and_talk_to_every_other_player() {
-        // player2, the Assassin, proposes as leader of the second proposal,
-        // after player1 proposes nobody, puts itself on its team, approves
-        // it with player3 and player4, and sabotages the quest.
+        // Player 2, the Assassin, proposes as leader of the second proposal,
+        // after Player 1 proposes nobody, puts itself on its team, approves
+        // it with Player 3 and Player 4, and sabotages the quest.
         let model = answering(|request| {
             let calls = if offers(request, PROPOSE) {
                 vec![
-                    speaking("Me and player4."),
-                    proposing(&["player2", "player4"]),
+                    speaking("Me and Player 4."),
+                    proposing(&["Player 2", "Player 4"]),
                 ]
             } else if offers(request, PERFORM) {
                 vec![speaking("Done."), performing("sabotage")]
@@ -1748,17 +1756,17 @@ mod tests {
             }))
         };
         let puppets = HashMap::from([
-            ("player1", mute()),
-            ("player3", approver()),
-            ("player4", approver()),
-            ("player5", mute()),
+            ("Player 1", mute()),
+            ("Player 3", approver()),
+            ("Player 4", approver()),
+            ("Player 5", mute()),
         ]);
         let (_, logged, _) = play_with(quick(), model, puppets).await.unwrap();
-        let seats: Vec<PlayerId> = ["player1", "player2", "player3", "player4", "player5"]
+        let seats: Vec<PlayerId> = ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
             .map(id)
             .into();
-        let others = to_the_players_but(&id("player2"), &seats);
-        let sent = sent_by(&logged, "player2");
+        let others = to_the_players_but(&id("Player 2"), &seats);
+        let sent = sent_by(&logged, "Player 2");
         let proposal = sent
             .iter()
             .position(|(message, _)| matches!(message, Message::Propose { .. }))
@@ -1768,9 +1776,9 @@ mod tests {
             (
                 &utterance(
                     2,
-                    "player2",
+                    "Player 2",
                     sent[proposal - 1].0.number().unwrap(),
-                    "Me and player4."
+                    "Me and Player 4."
                 ),
                 &others
             )
@@ -1786,13 +1794,16 @@ mod tests {
         // Its utterances reach the other players, who observe them, and
         // its choices the environment alone.
         let n = sent[proposal - 1].0.number().unwrap();
-        assert!(observed_by(&logged, "player3").contains(&("player2", n, 2)));
+        assert!(observed_by(&logged, "Player 3").contains(&("Player 2", n, 2)));
         let environment = observed_by(&logged, ENVIRONMENT);
         assert!(
-            environment.contains(&("player2", n + 1, 2)),
+            environment.contains(&("Player 2", n + 1, 2)),
             "{environment:?}"
         );
-        assert!(!environment.contains(&("player2", n, 2)), "{environment:?}");
+        assert!(
+            !environment.contains(&("Player 2", n, 2)),
+            "{environment:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1800,30 +1811,31 @@ mod tests {
         // The leader speaks and then proposes a team of the wrong size.
         let model = answering(|request| {
             let calls = match offers(request, PROPOSE) {
-                true => vec![speaking("Trust me."), proposing(&["player1"])],
+                true => vec![speaking("Trust me."), proposing(&["Player 1"])],
                 false => vec![waiting(10)],
             };
             Ok(Response::calling(&calls))
         });
-        let (winner, logged, took) = play_with(quick(), Arc::clone(&model), mute_but(&["player1"]))
-            .await
-            .unwrap();
+        let (winner, logged, took) =
+            play_with(quick(), Arc::clone(&model), mute_but(&["Player 1"]))
+                .await
+                .unwrap();
         assert_eq!(winner, Team::Evil);
         // Five proposals lapse.
         assert_eq!(took, quick().propose_limit * 5);
         assert_eq!(
             failed(&logged)[0],
             (
-                "player1",
+                "Player 1",
                 1,
                 "the model proposed a team of 1, and the quest needs 2"
             )
         );
-        assert!(sent_by(&logged, "player1").is_empty(), "{logged:?}");
+        assert!(sent_by(&logged, "Player 1").is_empty(), "{logged:?}");
         let told = narrated(logged);
         assert!(
             told.contains(
-                &"player1 (Merlin) fails to play: the model proposed a team of 1, and the quest needs 2"
+                &"Player 1 (Merlin) fails to play: the model proposed a team of 1, and the quest needs 2"
                     .to_string()
             ),
             "{told:?}"
@@ -1832,7 +1844,7 @@ mod tests {
 
     #[test]
     fn a_response_is_judged_as_a_whole_and_its_calls_kept_in_order() {
-        let seats: Vec<PlayerId> = ["player1", "player2", "player3"].map(id).into();
+        let seats: Vec<PlayerId> = ["Player 1", "Player 2", "Player 3"].map(id).into();
         let limit = Duration::from_secs(60);
         let judged = |calls: &[Made], duty: Option<&Duty>| {
             super::asked(&Response::calling(calls), duty, limit)
@@ -1847,7 +1859,7 @@ mod tests {
             judged(
                 &[
                     speaking("Hi."),
-                    proposing(&["player3", "player1"]),
+                    proposing(&["Player 3", "Player 1"]),
                     waiting(60)
                 ],
                 Some(&propose)
@@ -1856,7 +1868,7 @@ mod tests {
             Asked {
                 sends: vec![
                     say("Hi."),
-                    choose(Choice::Team(["player3", "player1"].map(id).into()))
+                    choose(Choice::Team(["Player 3", "Player 1"].map(id).into()))
                 ],
                 wait: Some(Duration::from_secs(60)),
             }
@@ -1889,10 +1901,10 @@ mod tests {
             targets: seats[..2].to_vec(),
         };
         assert_eq!(
-            judged(&[selecting("player2")], Some(&assassin))
+            judged(&[selecting("Player 2")], Some(&assassin))
                 .unwrap()
                 .sends,
-            [choose(Choice::Target(id("player2")))]
+            [choose(Choice::Target(id("Player 2")))]
         );
         let good = Duty::Perform {
             deeds: deeds(Role::Servant),
@@ -1907,31 +1919,31 @@ mod tests {
             ),
             (
                 "another phase's tool",
-                vec![proposing(&["player1", "player2"])],
+                vec![proposing(&["Player 1", "Player 2"])],
                 Some(&Duty::Vote),
                 "the model called propose, which is not a tool it was offered",
             ),
             (
                 "too small a team",
-                vec![proposing(&["player1"])],
+                vec![proposing(&["Player 1"])],
                 Some(&propose),
                 "the model proposed a team of 1, and the quest needs 2",
             ),
             (
                 "the same player twice",
-                vec![proposing(&["player2", "player2"])],
+                vec![proposing(&["Player 2", "Player 2"])],
                 Some(&propose),
-                "the model proposed player2 twice",
+                "the model proposed Player 2 twice",
             ),
             (
                 "a player not at the table",
-                vec![proposing(&["player1", "player9"])],
+                vec![proposing(&["Player 1", "Player 9"])],
                 Some(&propose),
-                "the model proposed player9, who is not at the table",
+                "the model proposed Player 9, who is not at the table",
             ),
             (
                 "a team that is not a list",
-                vec![(PROPOSE.to_string(), json!({"team": "player1"}))],
+                vec![(PROPOSE.to_string(), json!({"team": "Player 1"}))],
                 Some(&propose),
                 "the arguments of the model's propose call",
             ),
@@ -1955,9 +1967,9 @@ mod tests {
             ),
             (
                 "a target not a candidate",
-                vec![selecting("player3")],
+                vec![selecting("Player 3")],
                 Some(&assassin),
-                "the model named player3, who is not a candidate",
+                "the model named Player 3, who is not a candidate",
             ),
             (
                 "a blank utterance",
@@ -2028,36 +2040,36 @@ mod tests {
         // The leader's model takes fifteen seconds, and each proposal lapses
         // after ten, so nothing it answers is sent.
         let model = Arc::new(FakeModel::answering(choosing_first).taking(Duration::from_secs(15)));
-        let (winner, logged, took) = play_with(quick(), model, mute_but(&["player1"]))
+        let (winner, logged, took) = play_with(quick(), model, mute_but(&["Player 1"]))
             .await
             .unwrap();
         assert_eq!(winner, Team::Evil);
         assert_eq!(took, quick().propose_limit * 5);
-        assert!(sent_by(&logged, "player1").is_empty(), "{logged:?}");
-        let withheld = withheld_by(&logged, "player1");
-        let team = Choice::Team(["player1", "player2"].map(id).into());
+        assert!(sent_by(&logged, "Player 1").is_empty(), "{logged:?}");
+        let withheld = withheld_by(&logged, "Player 1");
+        let team = Choice::Team(["Player 1", "Player 2"].map(id).into());
         assert_eq!(
             withheld[..2],
             [
-                &utterance(1, "player1", 0, SAID),
-                &team.clone().message(1, id("player1"), 0)
+                &utterance(1, "Player 1", 0, SAID),
+                &team.clone().message(1, id("Player 1"), 0)
             ]
         );
         let told = narrated(logged);
         assert!(!told.iter().any(|line| line.contains(SAID)), "{told:?}");
         assert!(
-            told.contains(&"player1 (Merlin) proposes nobody in time.".to_string()),
+            told.contains(&"Player 1 (Merlin) proposes nobody in time.".to_string()),
             "{told:?}"
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn messages_heard_during_a_call_lead_to_one_more_call_and_another_phase_s_to_none() {
-        // player3 takes two seconds to answer and waits the phase out.
-        // player4 says five things a second into each phase, while
-        // player3's first call is in progress: they wake player3 once
+        // Player 3 takes two seconds to answer and waits the phase out.
+        // Player 4 says five things a second into each phase, while
+        // Player 3's first call is in progress: they wake Player 3 once
         // more, and that call is told them all. Into the second phase it
-        // says something tagged with the first, which player3 observes and
+        // says something tagged with the first, which Player 3 observes and
         // neither remembers nor wakes for.
         let model = Arc::new(
             FakeModel::answering(|_| Ok(Response::calling(&[waiting(10)])))
@@ -2069,15 +2081,15 @@ mod tests {
                 .collect(),
             _ => vec![utterance(seq - 1, me, 10 + seq, "Old talk.")],
         });
-        let mut puppets = mute_but(&["player3"]);
+        let mut puppets = mute_but(&["Player 3"]);
         puppets.insert(
-            "player4",
+            "Player 4",
             crate::avalon::Actor::puppet_after(Duration::from_secs(1), talker),
         );
         let (_, logged, _) = play_with(quick(), Arc::clone(&model), puppets)
             .await
             .unwrap();
-        let asked = asked_of(&model, "player3");
+        let asked = asked_of(&model, "Player 3");
         let in_phase = |proposal: u8| -> Vec<&String> {
             asked
                 .iter()
@@ -2086,21 +2098,21 @@ mod tests {
         };
         let first = in_phase(1);
         assert_eq!(first.len(), 2, "{asked:?}");
-        assert!(!first[0].contains("player4 says"), "{}", first[0]);
+        assert!(!first[0].contains("Player 4 says"), "{}", first[0]);
         for i in 1..=5 {
-            let heard = format!("player4 says, \"Point {i}.\"");
+            let heard = format!("Player 4 says, \"Point {i}.\"");
             assert!(story(first[1]).contains(&heard), "{}", first[1]);
         }
         assert_eq!(in_phase(2).len(), 1, "{asked:?}");
         assert!(asked.iter().all(|asked| !asked.contains("Old talk.")));
-        let observed = observed_by(&logged, "player3");
-        assert!(observed.contains(&("player4", 12, 2)), "{observed:?}");
+        let observed = observed_by(&logged, "Player 3");
+        assert!(observed.contains(&("Player 4", 12, 2)), "{observed:?}");
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_wait_wakes_the_player_when_it_is_up_unless_a_later_wait_or_the_end_of_the_phase_came_first()
      {
-        // player3 asks to wait five seconds and then two, of which only the
+        // Player 3 asks to wait five seconds and then two, of which only the
         // second counts; woken by it, it asks to wait nine, which is after
         // the proposal lapses, so it is not woken again until the next one.
         // After that it speaks whenever it is woken.
@@ -2113,11 +2125,11 @@ mod tests {
                 &answer.unwrap_or_else(|| vec![speaking("Hm.")]),
             ))
         });
-        let (_, logged, _) = play_with(quick(), Arc::clone(&model), mute_but(&["player3"]))
+        let (_, logged, _) = play_with(quick(), Arc::clone(&model), mute_but(&["Player 3"]))
             .await
             .unwrap();
         assert!(failed(&logged).is_empty(), "{logged:?}");
-        let asked = asked_of(&model, "player3");
+        let asked = asked_of(&model, "Player 3");
         let in_first = asked
             .iter()
             .filter(|asked| situated(asked).contains("proposal 1 of 5"))
@@ -2137,7 +2149,7 @@ mod tests {
         assert_eq!(failed(&logged).len(), 25);
         let told = narrated(logged);
         assert!(
-            told.contains(&"player3 (Servant) fails to play: the model is down".to_string()),
+            told.contains(&"Player 3 (Servant) fails to play: the model is down".to_string()),
             "{told:?}"
         );
     }
@@ -2152,7 +2164,7 @@ mod tests {
             five(),
             quick(),
             Arc::clone(&model),
-            mute_but(&["player1"]),
+            mute_but(&["Player 1"]),
             ToolChoice::Auto,
             CONTEXT_WINDOW,
         )
@@ -2160,7 +2172,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             failed(&logged)[0],
-            ("player1", 1, "the model made no tool call")
+            ("Player 1", 1, "the model made no tool call")
         );
         let requests = model.requests();
         assert!(!requests.is_empty());
@@ -2211,7 +2223,7 @@ mod tests {
         for request in model.requests() {
             assert!(model::estimated(&request) <= window, "{request:?}");
         }
-        let asked = asked_of(&model, "player2");
+        let asked = asked_of(&model, "Player 2");
         assert!(!asked[0].contains(FORGOTTEN), "{asked:?}");
         assert!(asked.last().unwrap().contains(FORGOTTEN), "{asked:?}");
         let forgot = forgotten(&logged);
@@ -2242,28 +2254,28 @@ mod tests {
     #[test]
     fn the_story_kept_with_the_history_is_at_every_step_a_fresh_narration_of_it() {
         let mind = Mind::new(
-            id("player3"),
-            told("player3"),
+            id("Player 3"),
+            told("Player 3"),
             MODEL_ID.to_string(),
             ToolChoice::Required,
             CONTEXT_WINDOW,
             Arc::new(FakeModel::failing("down")),
         );
         let announced = |seq, phase, team: &[&str]| {
-            crate::avalon::tests::announcement(seq, view_of("player3", phase, team))
+            crate::avalon::tests::announcement(seq, view_of("Player 3", phase, team))
         };
         let script = [
             received(announced(1, Phase::Propose, &[])),
-            received(utterance(1, "player1", 1, "Me and you.")),
-            sent(utterance(1, "player3", 1, "Fine.")),
-            received(announced(2, Phase::Vote, &["player1", "player3"])),
-            sent(Choice::Ballot(Ballot::Approve).message(2, id("player3"), 2)),
+            received(utterance(1, "Player 1", 1, "Me and you.")),
+            sent(utterance(1, "Player 3", 1, "Fine.")),
+            received(announced(2, Phase::Vote, &["Player 1", "Player 3"])),
+            sent(Choice::Ballot(Ballot::Approve).message(2, id("Player 3"), 2)),
         ];
         for (n, event) in script.iter().enumerate() {
             mind.remember(event.clone());
             let remembered = mind.remembered.lock().unwrap();
             assert_eq!(remembered.history, script[..=n]);
-            let mut fresh = Story::of(id("player3"));
+            let mut fresh = Story::of(id("Player 3"));
             for event in &remembered.history {
                 fresh.recall(event);
             }
@@ -2273,13 +2285,13 @@ mod tests {
             mind.story(u64::MAX),
             (
                 [
-                    "You are player3, a loyal servant of Arthur, on the good side.",
+                    "You are Player 3, a loyal servant of Arthur, on the good side.",
                     "",
-                    "Quest 1, proposal 1 of 5. player1 leads and needs a team of 2.",
-                    "player1 says, \"Me and you.\"",
+                    "Quest 1, proposal 1 of 5. Player 1 leads and needs a team of 2.",
+                    "Player 1 says, \"Me and you.\"",
                     "You say, \"Fine.\"",
                     "",
-                    "Everyone votes on the team of player1 and player3.",
+                    "Everyone votes on the team of Player 1 and Player 3.",
                     "You approve the team.",
                 ]
                 .join("\n"),
@@ -2411,14 +2423,14 @@ mod tests {
 
     #[test]
     fn the_request_before_its_story_is_the_largest_of_the_four_phases() {
-        let seats: Vec<PlayerId> = (1..=10).map(|seat| format!("player{seat}")).collect();
+        let seats: Vec<PlayerId> = (1..=10).map(|seat| format!("Player {seat}")).collect();
         let rules = Rules::default();
         let limit = Duration::from_secs(60);
-        let me = id("player1");
+        let me = id("Player 1");
         let needed = unstoried(MODEL_ID, "Hi.", &me, Role::Assassin, &seats, &rules);
         let view = View {
             team: None,
-            ..view_of("player1", Phase::Propose, &[])
+            ..view_of("Player 1", Phase::Propose, &[])
         };
         let proposing = request(
             MODEL_ID,

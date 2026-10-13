@@ -61,7 +61,7 @@ use super::{
 };
 use crate::model::spec::Probed;
 use crate::model::{self, Request, Response, Tool, ToolChoice};
-use crate::seat::PlayerId;
+use crate::seat::{PlayerId, seats};
 use anyhow::{Context as _, anyhow, bail};
 use async_trait::async_trait;
 use free_agent::{ActorId, Behavior, Builder, Context, Event, Think, ThinkBuilder};
@@ -737,8 +737,8 @@ fn day_asked(voting: Voting) -> &'static str {
 }
 
 /// The two placeholder candidates the probe asks about.
-fn placeholders() -> [PlayerId; 2] {
-    ["player1".to_string(), "player2".to_string()]
+fn placeholders() -> Vec<PlayerId> {
+    seats(2).collect()
 }
 
 /// How long the probe's day lasts.
@@ -1867,7 +1867,7 @@ mod tests {
             logged[1],
             Entry::Configuration(Box::new(configuration(&roles)))
         );
-        // Every living player is announced the night, in name order, each
+        // Every living player is announced the night, in seat order, each
         // shown its own view.
         let everyone = ["wolf", "ann", "bob"];
         let announced = |n: u64, to: &str, known: Role| Entry::Action {
@@ -2442,7 +2442,7 @@ mod tests {
     async fn the_probe_judges_each_answer_as_a_player_s_is_judged() {
         let candidates = placeholders();
         // By night, as a selection; by day, as a whole.
-        let elsewhere = Response::tool_call(SELECT, &json!({"target": "player3"}));
+        let elsewhere = Response::tool_call(SELECT, &json!({"target": "Player 3"}));
         let too_long = Response::calling(&[speaking("Hello."), waiting(61)]);
         let judged = [
             ("night", selected(&elsewhere, &candidates).unwrap_err()),

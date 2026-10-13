@@ -230,7 +230,7 @@ pub fn selecting(candidates: &[&str]) -> Request {
     Request::offering(
         "qwen2.5-7b-instruct",
         vec![
-            Message::system("You are player1."),
+            Message::system("You are Player 1."),
             Message::user("Select."),
         ],
         vec![select_tool(candidates)],
@@ -280,7 +280,7 @@ pub fn by_day(candidates: &[&str], limit: u64, story: &str) -> Request {
     Request::offering(
         "qwen2.5-7b-instruct",
         vec![
-            Message::system("You are player1."),
+            Message::system("You are Player 1."),
             Message::user(format!("{story}\n\nIt is day 1. Speak, vote, or wait.")),
         ],
         tools,
@@ -301,8 +301,8 @@ mod tests {
                 &json!({"asked": request.messages[1].content}),
             ))
         });
-        let first = selecting(&["player2"]);
-        let mut second = selecting(&["player3"]);
+        let first = selecting(&["Player 2"]);
+        let mut second = selecting(&["Player 3"]);
         second.messages[1] = Message::user("Select again.");
         let answer = model.complete(&first).await.unwrap();
         assert_eq!(
@@ -319,18 +319,18 @@ mod tests {
 
     #[tokio::test]
     async fn the_fake_responds_with_a_fixed_response_or_fails_with_a_message() {
-        let fixed = Response::tool_call("select", &json!({"target": "player3"}));
+        let fixed = Response::tool_call("select", &json!({"target": "Player 3"}));
         let model = FakeModel::responding(fixed.clone());
         assert_eq!(
-            model.complete(&selecting(&["player2"])).await.unwrap(),
+            model.complete(&selecting(&["Player 2"])).await.unwrap(),
             fixed
         );
         assert_eq!(
-            model.complete(&selecting(&["player4"])).await.unwrap(),
+            model.complete(&selecting(&["Player 4"])).await.unwrap(),
             fixed
         );
         let model = FakeModel::failing("the model is down");
-        let error = model.complete(&selecting(&["player2"])).await.unwrap_err();
+        let error = model.complete(&selecting(&["Player 2"])).await.unwrap_err();
         assert_eq!(format!("{error:#}"), "the model is down");
         assert_eq!(model.requests().len(), 1);
     }
@@ -339,11 +339,11 @@ mod tests {
     async fn the_fake_takes_as_long_as_it_is_told_to_answer() {
         let model = FakeModel::answering(choosing_first).taking(Duration::from_secs(3));
         let asked = Instant::now();
-        let answer = model.complete(&selecting(&["player2"])).await.unwrap();
+        let answer = model.complete(&selecting(&["Player 2"])).await.unwrap();
         assert_eq!(asked.elapsed(), Duration::from_secs(3));
         assert_eq!(
             answer,
-            Response::tool_call("select", &json!({"target": "player2"}))
+            Response::tool_call("select", &json!({"target": "Player 2"}))
         );
     }
 
@@ -351,12 +351,12 @@ mod tests {
     async fn choosing_first_calls_the_one_tool_offered_with_the_first_enumerated_value() {
         let model = FakeModel::answering(choosing_first);
         let answer = model
-            .complete(&selecting(&["player3", "player2"]))
+            .complete(&selecting(&["Player 3", "Player 2"]))
             .await
             .unwrap();
         assert_eq!(
             answer,
-            Response::tool_call("select", &json!({"target": "player3"}))
+            Response::tool_call("select", &json!({"target": "Player 3"}))
         );
     }
 
@@ -364,7 +364,7 @@ mod tests {
     fn choosing_first_fails_a_request_with_nothing_to_choose_from() {
         let error = choosing_first(&selecting(&[])).unwrap_err();
         assert!(format!("{error:#}").contains("select"), "{error:#}");
-        let mut request = selecting(&["player2"]);
+        let mut request = selecting(&["Player 2"]);
         request.tools[0].parameters = json!({"type": "object", "properties": {}});
         assert!(choosing_first(&request).is_err());
     }
@@ -373,27 +373,27 @@ mod tests {
     fn by_day_the_canned_player_speaks_and_votes_once_then_waits_out_the_day() {
         // Woken for the first time in the day, it speaks and votes.
         let request = by_day(
-            &["player2", "player3"],
+            &["Player 2", "Player 3"],
             60,
-            "Day 1.\nplayer2 votes against you.",
+            "Day 1.\nPlayer 2 votes against you.",
         );
         assert_eq!(
             choosing_first(&request).unwrap(),
             Response::calling(&[
                 ("speak".to_string(), json!({"text": SAID})),
-                ("select".to_string(), json!({"target": "player2"})),
+                ("select".to_string(), json!({"target": "Player 2"})),
             ])
         );
         // Woken again in a day it has voted in, it waits as long as it may.
-        let story = "Day 1.\nYou say, \"I have nothing to add.\"\nYou vote against player2.";
-        let request = by_day(&["player2", "player3"], 60, story);
+        let story = "Day 1.\nYou say, \"I have nothing to add.\"\nYou vote against Player 2.";
+        let request = by_day(&["Player 2", "Player 3"], 60, story);
         assert_eq!(
             choosing_first(&request).unwrap(),
             Response::tool_call("wait", &json!({"seconds": 60}))
         );
         // A vote in an earlier phase does not count as this phase's.
-        let story = "Day 1.\nYou vote against player2.\nplayer2 dies.\n\nDay 2.";
-        let request = by_day(&["player3"], 60, story);
+        let story = "Day 1.\nYou vote against Player 2.\nPlayer 2 dies.\n\nDay 2.";
+        let request = by_day(&["Player 3"], 60, story);
         assert_eq!(choosing_first(&request).unwrap().tool_calls().len(), 2);
     }
 
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn in_avalon_the_canned_player_speaks_and_acts_once_a_phase_then_waits() {
-        let seats = json!({"type": "string", "enum": ["player1", "player2", "player3"]});
+        let seats = json!({"type": "string", "enum": ["Player 1", "Player 2", "Player 3"]});
         let acts = [
             (
                 taking(
@@ -432,7 +432,7 @@ mod tests {
                     "team",
                     json!({"type": "array", "items": seats, "minItems": 2, "maxItems": 2}),
                 ),
-                json!({"team": ["player1", "player2"]}),
+                json!({"team": ["Player 1", "Player 2"]}),
             ),
             (
                 taking("vote", "approve", json!({"type": "boolean"})),
@@ -448,7 +448,7 @@ mod tests {
             ),
             (
                 taking("select", "target", seats.clone()),
-                json!({"target": "player1"}),
+                json!({"target": "Player 1"}),
             ),
         ];
         for (tool, arguments) in acts {
@@ -495,11 +495,11 @@ mod tests {
 
     #[test]
     fn the_canned_player_fails_a_day_s_request_missing_a_tool_it_needs() {
-        let mut request = by_day(&["player2"], 60, "Day 1.");
+        let mut request = by_day(&["Player 2"], 60, "Day 1.");
         request.tools.remove(0);
         let error = choosing_first(&request).unwrap_err();
         assert!(format!("{error:#}").contains("string"), "{error:#}");
-        let mut request = by_day(&["player2"], 60, "Day 1.\nYou vote against player2.");
+        let mut request = by_day(&["Player 2"], 60, "Day 1.\nYou vote against Player 2.");
         request.tools.remove(2);
         let error = choosing_first(&request).unwrap_err();
         assert!(format!("{error:#}").contains("bounded"), "{error:#}");
@@ -507,11 +507,11 @@ mod tests {
         // protocol's JSON.
         let error = canned_calls(&json!({"model": "m"})).unwrap_err();
         assert!(format!("{error:#}").contains("no tools"), "{error:#}");
-        let request = by_day(&["player2"], 60, "Day 1.");
+        let request = by_day(&["Player 2"], 60, "Day 1.");
         let mut json = serde_json::to_value(&request).unwrap();
         json["messages"] = json!([]);
         json["tools"][1]["function"]["name"] = Value::Null;
         let calls = canned_calls(&json).unwrap();
-        assert_eq!(calls[1], (String::new(), json!({"target": "player2"})));
+        assert_eq!(calls[1], (String::new(), json!({"target": "Player 2"})));
     }
 }

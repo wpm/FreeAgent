@@ -658,7 +658,7 @@ mod tests {
     fn opens(seconds: u64, seq: u64, phase: Phase, team: &[&str]) -> Event<Entry> {
         at(
             seconds,
-            announced("player1", seq, view_of("player1", phase, team)),
+            announced("Player 1", seq, view_of("Player 1", phase, team)),
         )
     }
 
@@ -679,11 +679,11 @@ mod tests {
             told,
             [
                 "5 players:",
-                "player1, Merlin, plays random",
-                "player2, Assassin, plays random",
-                "player3, Servant, plays random",
-                "player4, Servant, plays random",
-                "player5, Minion, plays random",
+                "Player 1, Merlin, plays random",
+                "Player 2, Assassin, plays random",
+                "Player 3, Servant, plays random",
+                "Player 4, Servant, plays random",
+                "Player 5, Minion, plays random",
                 "A proposal waits 1m, a vote 1m 30s, a quest 1m and the assassination 1m.",
             ]
         );
@@ -696,22 +696,22 @@ mod tests {
             narrator.narrate(&opens(0, 1, Phase::Propose, &[])),
             [
                 "",
-                "Quest 1, proposal 1 of 5. player1 (Merlin) leads and needs a team of 2."
+                "Quest 1, proposal 1 of 5. Player 1 (Merlin) leads and needs a team of 2."
             ]
         );
         // The same phase announced to another player adds nothing.
-        let again = announced("player2", 1, view_of("player2", Phase::Propose, &[]));
+        let again = announced("Player 2", 1, view_of("Player 2", Phase::Propose, &[]));
         assert!(narrator.narrate(&at(0, again)).is_empty());
         assert_eq!(
-            narrator.narrate(&opens(3, 2, Phase::Vote, &["player1", "player3"])),
+            narrator.narrate(&opens(3, 2, Phase::Vote, &["Player 1", "Player 3"])),
             ["The proposal took 3s.", "", "Everyone votes on the team."]
         );
         assert_eq!(
-            narrator.narrate(&opens(5, 3, Phase::Quest, &["player1", "player3"])),
+            narrator.narrate(&opens(5, 3, Phase::Quest, &["Player 1", "Player 3"])),
             [
                 "The vote took 2s.",
                 "",
-                "player1 (Merlin) and player3 (Servant) go on quest 1, which 1 sabotage fails."
+                "Player 1 (Merlin) and Player 3 (Servant) go on quest 1, which 1 sabotage fails."
             ]
         );
         assert_eq!(
@@ -743,13 +743,17 @@ mod tests {
     #[test]
     fn a_quest_that_two_sabotages_fail_says_so() {
         let mut narrator = dealt_five();
-        let mut view = view_of("player1", Phase::Quest, &["player1", "player2", "player3"]);
+        let mut view = view_of(
+            "Player 1",
+            Phase::Quest,
+            &["Player 1", "Player 2", "Player 3"],
+        );
         view.sabotages_needed = 2;
         assert_eq!(
-            narrator.narrate(&logged(announced("player1", 1, view))),
+            narrator.narrate(&logged(announced("Player 1", 1, view))),
             [
                 "",
-                "player1 (Merlin), player2 (Assassin) and player3 (Servant) go on quest 1, which 2 sabotages fail."
+                "Player 1 (Merlin), Player 2 (Assassin) and Player 3 (Servant) go on quest 1, which 2 sabotages fail."
             ]
         );
     }
@@ -760,25 +764,27 @@ mod tests {
         narrator.narrate(&opens(0, 1, Phase::Propose, &[]));
         let proposed = Entry::Proposed {
             seq: 1,
-            team: Some(team(&["player1", "player4", "player5"])),
+            team: Some(team(&["Player 1", "Player 4", "Player 5"])),
         };
         assert_eq!(
             narrator.narrate(&logged(proposed)),
-            ["player1 (Merlin) proposes player1 (Merlin), player4 (Servant) and player5 (Minion)."]
+            [
+                "Player 1 (Merlin) proposes Player 1 (Merlin), Player 4 (Servant) and Player 5 (Minion)."
+            ]
         );
         let lapsed = Entry::Proposed { seq: 1, team: None };
         assert_eq!(
             narrator.narrate(&logged(lapsed)),
-            ["player1 (Merlin) proposes nobody in time."]
+            ["Player 1 (Merlin) proposes nobody in time."]
         );
         // A proposal never announced names no leader.
         let unknown = Entry::Proposed {
             seq: 9,
-            team: Some(team(&["player2"])),
+            team: Some(team(&["Player 2"])),
         };
         assert_eq!(
             narrator.narrate(&logged(unknown)),
-            ["The leader proposes player2 (Assassin)."]
+            ["The leader proposes Player 2 (Assassin)."]
         );
     }
 
@@ -787,25 +793,25 @@ mod tests {
         let narrator = dealt_five();
         let tally = Tally::of(
             HashMap::from([
-                (id("player1"), Ballot::Approve),
-                (id("player3"), Ballot::Approve),
-                (id("player2"), Ballot::Reject),
+                (id("Player 1"), Ballot::Approve),
+                (id("Player 3"), Ballot::Approve),
+                (id("Player 2"), Ballot::Reject),
             ]),
             5,
         );
         assert_eq!(
             narrator.tallied(&tally),
             [
-                "player1 (Merlin) and player3 (Servant) approve.",
-                "player2 (Assassin) rejects.",
-                "player4 (Servant) and player5 (Minion) do not vote.",
+                "Player 1 (Merlin) and Player 3 (Servant) approve.",
+                "Player 2 (Assassin) rejects.",
+                "Player 4 (Servant) and Player 5 (Minion) do not vote.",
                 "The team does not go."
             ]
         );
-        let ballots = ["player1", "player2", "player3", "player4", "player5"]
+        let ballots = ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
             .map(|player| {
                 let ballot = match player {
-                    "player2" | "player5" => Ballot::Reject,
+                    "Player 2" | "Player 5" => Ballot::Reject,
                     _ => Ballot::Approve,
                 };
                 (id(player), ballot)
@@ -818,15 +824,15 @@ mod tests {
                 tally: Tally::of(ballots, 5),
             })),
             [
-                "player1 (Merlin), player3 (Servant) and player4 (Servant) approve.",
-                "player2 (Assassin) and player5 (Minion) reject.",
+                "Player 1 (Merlin), Player 3 (Servant) and Player 4 (Servant) approve.",
+                "Player 2 (Assassin) and Player 5 (Minion) reject.",
                 "The team goes on the quest."
             ]
         );
-        let lone = Tally::of(HashMap::from([(id("player4"), Ballot::Reject)]), 5);
+        let lone = Tally::of(HashMap::from([(id("Player 4"), Ballot::Reject)]), 5);
         assert_eq!(
             narrator.tallied(&lone)[1],
-            "player1 (Merlin), player2 (Assassin), player3 (Servant) and player5 (Minion) do not vote."
+            "Player 1 (Merlin), Player 2 (Assassin), Player 3 (Servant) and Player 5 (Minion) do not vote."
         );
     }
 
@@ -837,7 +843,7 @@ mod tests {
             logged(Entry::Quested {
                 seq: 3,
                 result: QuestResult {
-                    team: team(&["player1", "player2"]),
+                    team: team(&["Player 1", "Player 2"]),
                     sabotages,
                     succeeded,
                 },
@@ -868,12 +874,12 @@ mod tests {
             })
         };
         assert_eq!(
-            narrator.narrate(&named(Some("player1"), true)),
-            ["The Assassin names player1 (Merlin), who is Merlin."]
+            narrator.narrate(&named(Some("Player 1"), true)),
+            ["The Assassin names Player 1 (Merlin), who is Merlin."]
         );
         assert_eq!(
-            narrator.narrate(&named(Some("player3"), false)),
-            ["The Assassin names player3 (Servant), who is not Merlin."]
+            narrator.narrate(&named(Some("Player 3"), false)),
+            ["The Assassin names Player 3 (Servant), who is not Merlin."]
         );
         assert_eq!(
             narrator.narrate(&named(None, false)),
@@ -911,23 +917,23 @@ mod tests {
         narrator.narrate(&opens(0, 1, Phase::Propose, &[]));
         let spoke = |seq, text| {
             logged(Entry::Action {
-                from: id("player3"),
+                from: id("Player 3"),
                 n: 1,
-                to: HashSet::from([id("player1")]),
-                message: utterance(seq, "player3", 1, text),
+                to: HashSet::from([id("Player 1")]),
+                message: utterance(seq, "Player 3", 1, text),
                 seen: None,
                 forgot: None,
             })
         };
         assert_eq!(
             narrator.narrate(&spoke(1, "Take me.")),
-            ["player3 (Servant) says, \"Take me.\""]
+            ["Player 3 (Servant) says, \"Take me.\""]
         );
-        narrator.narrate(&opens(1, 2, Phase::Vote, &["player1", "player3"]));
+        narrator.narrate(&opens(1, 2, Phase::Vote, &["Player 1", "Player 3"]));
         assert!(narrator.narrate(&spoke(1, "Take me.")).is_empty());
         let withheld = |message| {
             logged(Entry::Withheld {
-                from: id("player3"),
+                from: id("Player 3"),
                 message,
                 seen: Some(4),
                 forgot: None,
@@ -935,7 +941,7 @@ mod tests {
         };
         assert!(
             narrator
-                .narrate(&withheld(utterance(2, "player3", 0, "Yes.")))
+                .narrate(&withheld(utterance(2, "Player 3", 0, "Yes.")))
                 .is_empty()
         );
     }
@@ -944,13 +950,13 @@ mod tests {
     fn a_choice_withheld_goes_untold() {
         let mut narrator = dealt_five();
         narrator.narrate(&opens(0, 1, Phase::Propose, &[]));
-        narrator.narrate(&opens(0, 2, Phase::Vote, &["player1", "player2"]));
+        narrator.narrate(&opens(0, 2, Phase::Vote, &["Player 1", "Player 2"]));
         for message in [
-            Choice::Ballot(Ballot::Approve).message(1, id("player2"), 0),
+            Choice::Ballot(Ballot::Approve).message(1, id("Player 2"), 0),
             Message::Wake,
         ] {
             let withheld = Entry::Withheld {
-                from: id("player2"),
+                from: id("Player 2"),
                 message,
                 seen: Some(4),
                 forgot: None,
@@ -965,21 +971,21 @@ mod tests {
         narrator.narrate(&opens(0, 1, Phase::Propose, &[]));
         let failed = |seq| {
             logged(Entry::Failed {
-                player: id("player4"),
+                player: id("Player 4"),
                 seq,
                 error: "connection refused".to_string(),
             })
         };
         assert_eq!(
             narrator.narrate(&failed(1)),
-            ["player4 (Servant) fails to play: connection refused"]
+            ["Player 4 (Servant) fails to play: connection refused"]
         );
-        narrator.narrate(&opens(0, 2, Phase::Vote, &["player1", "player2"]));
+        narrator.narrate(&opens(0, 2, Phase::Vote, &["Player 1", "Player 2"]));
         assert_eq!(
             narrator.narrate(&failed(1)),
-            ["player4 (Servant) fails to play for proposal 1 of quest 1: connection refused"]
+            ["Player 4 (Servant) fails to play for proposal 1 of quest 1: connection refused"]
         );
-        narrator.narrate(&opens(0, 3, Phase::Quest, &["player1", "player2"]));
+        narrator.narrate(&opens(0, 3, Phase::Quest, &["Player 1", "Player 2"]));
         narrator.narrate(&opens(0, 4, Phase::Assassinate, &[]));
         narrator.narrate(&opens(0, 5, Phase::Propose, &[]));
         let cases = [
@@ -991,7 +997,7 @@ mod tests {
             assert_eq!(
                 narrator.narrate(&failed(seq)),
                 [format!(
-                    "player4 (Servant) fails to play for {phase}: connection refused"
+                    "Player 4 (Servant) fails to play for {phase}: connection refused"
                 )]
             );
         }
@@ -1002,16 +1008,16 @@ mod tests {
         let mut narrator = dealt_five();
         let observed = Entry::Observation {
             by: ENVIRONMENT.to_string(),
-            from: id("player1"),
+            from: id("Player 1"),
             n: 1,
             seq: 1,
         };
         assert!(narrator.narrate(&logged(observed)).is_empty());
         let chose = Entry::Action {
-            from: id("player1"),
+            from: id("Player 1"),
             n: 1,
             to: HashSet::from([ENVIRONMENT.to_string()]),
-            message: Choice::Ballot(Ballot::Approve).message(2, id("player1"), 1),
+            message: Choice::Ballot(Ballot::Approve).message(2, id("Player 1"), 1),
             seen: None,
             forgot: None,
         };
@@ -1108,7 +1114,7 @@ mod tests {
     }
 
     /// The opening line of the story the player in `seat` of a table of
-    /// `roles`, seated from `player1`, tells.
+    /// `roles`, seated from `Player 1`, tells.
     fn opening(roles: &[Role], seat: &str) -> String {
         let state = State::new(seated(roles));
         let story = told(seat, [heard(announcement(1, state.view(&id(seat))))]);
@@ -1122,46 +1128,46 @@ mod tests {
             Merlin, Percival, Servant, Assassin, Morgana, Mordred, Oberon, Minion,
         ];
         assert_eq!(
-            opening(&everyone, "player1"),
-            "You are player1, Merlin, on the good side. You see that player4, player5, player7 and player8 are evil."
+            opening(&everyone, "Player 1"),
+            "You are Player 1, Merlin, on the good side. You see that Player 4, Player 5, Player 7 and Player 8 are evil."
         );
         assert_eq!(
-            opening(&everyone, "player2"),
-            "You are player2, Percival, on the good side. One of player1 and player5 is Merlin and the other Morgana."
+            opening(&everyone, "Player 2"),
+            "You are Player 2, Percival, on the good side. One of Player 1 and Player 5 is Merlin and the other Morgana."
         );
         assert_eq!(
-            opening(&everyone, "player3"),
-            "You are player3, a loyal servant of Arthur, on the good side."
+            opening(&everyone, "Player 3"),
+            "You are Player 3, a loyal servant of Arthur, on the good side."
         );
         assert_eq!(
-            opening(&everyone, "player4"),
-            "You are player4, the Assassin, on the evil side. You see that player5, player6 and player8 are evil."
+            opening(&everyone, "Player 4"),
+            "You are Player 4, the Assassin, on the evil side. You see that Player 5, Player 6 and Player 8 are evil."
         );
         assert_eq!(
-            opening(&everyone, "player7"),
-            "You are player7, Oberon, on the evil side."
+            opening(&everyone, "Player 7"),
+            "You are Player 7, Oberon, on the evil side."
         );
         let five = [Merlin, Percival, Servant, Assassin, Minion];
         assert_eq!(
-            opening(&five, "player2"),
-            "You are player2, Percival, on the good side. You see that player1 is Merlin or Morgana."
+            opening(&five, "Player 2"),
+            "You are Player 2, Percival, on the good side. You see that Player 1 is Merlin or Morgana."
         );
         assert_eq!(
-            opening(&five, "player5"),
-            "You are player5, a minion of Mordred, on the evil side. You see that player4 is evil."
+            opening(&five, "Player 5"),
+            "You are Player 5, a minion of Mordred, on the evil side. You see that Player 4 is evil."
         );
     }
 
     #[test]
     fn a_player_s_story_tells_each_phase_how_the_one_before_came_out_and_what_it_did() {
-        // player3, a Servant, hears player1 talk and propose nobody, votes
-        // for player2's team, which it is on, supports the quest, which
-        // player2 sabotages, and leads the next.
-        let me = id("player3");
+        // Player 3, a Servant, hears Player 1 talk and propose nobody, votes
+        // for Player 2's team, which it is on, supports the quest, which
+        // Player 2 sabotages, and leads the next.
+        let me = id("Player 3");
         let mut state = State::new(five());
         let mut memories = vec![
             heard(announcement(1, state.view(&me))),
-            heard(utterance(1, "player1", 1, "Pick me.")),
+            heard(utterance(1, "Player 1", 1, "Pick me.")),
         ];
         let next = |state: &mut State, choices: &[(&str, Choice)], seq| {
             let choices = choices
@@ -1173,8 +1179,8 @@ mod tests {
             heard(announcement(seq + 1, state.view(&me)))
         };
         memories.push(next(&mut state, &[], 1));
-        let proposal = Choice::Team(team(&["player2", "player3"]));
-        memories.push(next(&mut state, &[("player2", proposal)], 2));
+        let proposal = Choice::Team(team(&["Player 2", "Player 3"]));
+        memories.push(next(&mut state, &[("Player 2", proposal)], 2));
         memories.push(sent(Choice::Ballot(Ballot::Approve).message(
             3,
             me.clone(),
@@ -1182,42 +1188,42 @@ mod tests {
         )));
         let approve = Choice::Ballot(Ballot::Approve);
         let ballots = [
-            ("player1", approve.clone()),
-            ("player2", approve.clone()),
-            ("player3", approve),
-            ("player4", Choice::Ballot(Ballot::Reject)),
+            ("Player 1", approve.clone()),
+            ("Player 2", approve.clone()),
+            ("Player 3", approve),
+            ("Player 4", Choice::Ballot(Ballot::Reject)),
         ];
         memories.push(next(&mut state, &ballots, 3));
         memories.push(sent(Choice::Deed(Deed::Support).message(4, me.clone(), 2)));
-        let deeds = [("player2", Choice::Deed(Deed::Sabotage))];
+        let deeds = [("Player 2", Choice::Deed(Deed::Sabotage))];
         memories.push(next(&mut state, &deeds, 4));
-        let proposed = Choice::Team(team(&["player1", "player3", "player4"]));
+        let proposed = Choice::Team(team(&["Player 1", "Player 3", "Player 4"]));
         memories.push(sent(proposed.message(5, me.clone(), 3)));
-        memories.push(sent(utterance(5, "player3", 4, "Trust me.")));
+        memories.push(sent(utterance(5, "Player 3", 4, "Trust me.")));
         assert_eq!(
-            told("player3", memories).lines(),
+            told("Player 3", memories).lines(),
             [
-                "You are player3, a loyal servant of Arthur, on the good side.",
+                "You are Player 3, a loyal servant of Arthur, on the good side.",
                 "",
-                "Quest 1, proposal 1 of 5. player1 leads and needs a team of 2.",
-                "player1 says, \"Pick me.\"",
-                "player1 proposes nobody in time.",
+                "Quest 1, proposal 1 of 5. Player 1 leads and needs a team of 2.",
+                "Player 1 says, \"Pick me.\"",
+                "Player 1 proposes nobody in time.",
                 "",
-                "Quest 1, proposal 2 of 5. player2 leads and needs a team of 2.",
+                "Quest 1, proposal 2 of 5. Player 2 leads and needs a team of 2.",
                 "",
-                "Everyone votes on the team of player2 and player3.",
+                "Everyone votes on the team of Player 2 and Player 3.",
                 "You approve the team.",
-                "player1, player2 and player3 approve.",
-                "player4 rejects.",
-                "player5 does not vote.",
+                "Player 1, Player 2 and Player 3 approve.",
+                "Player 4 rejects.",
+                "Player 5 does not vote.",
                 "The team goes on the quest.",
                 "",
-                "player2 and player3 go on quest 1, which 1 sabotage fails.",
+                "Player 2 and Player 3 go on quest 1, which 1 sabotage fails.",
                 "You support the quest.",
                 "The quest fails, with 1 sabotage.",
                 "",
                 "Quest 2, proposal 1 of 5. You lead and need a team of 3.",
-                "You propose player1, player3 and player4.",
+                "You propose Player 1, Player 3 and Player 4.",
                 "You say, \"Trust me.\"",
             ]
         );
@@ -1225,12 +1231,12 @@ mod tests {
 
     #[test]
     fn a_rejected_team_is_told_by_its_tally_and_the_assassination_by_its_heading() {
-        let me = id("player2");
+        let me = id("Player 2");
         let mut state = State::new(five());
         state.phase = Phase::Vote;
-        state.team = Some(team(&["player1", "player2"]));
+        state.team = Some(team(&["Player 1", "Player 2"]));
         let mut memories = vec![heard(announcement(1, state.view(&me)))];
-        let ballots = [("player2", Choice::Ballot(Ballot::Reject))]
+        let ballots = [("Player 2", Choice::Ballot(Ballot::Reject))]
             .map(|(player, choice)| (id(player), choice))
             .into();
         state.resolve(&ballots, 1);
@@ -1238,35 +1244,35 @@ mod tests {
         memories.push(heard(announcement(2, state.view(&me))));
         state.phase = Phase::Assassinate;
         memories.push(heard(announcement(3, state.view(&me))));
-        memories.push(sent(Choice::Target(id("player1")).message(
+        memories.push(sent(Choice::Target(id("Player 1")).message(
             3,
             me.clone(),
             1,
         )));
-        let story = told("player2", memories);
+        let story = told("Player 2", memories);
         assert_eq!(
             story.lines()[3..],
             [
-                "player2 rejects.",
-                "player1, player3, player4 and player5 do not vote.",
+                "Player 2 rejects.",
+                "Player 1, Player 3, Player 4 and Player 5 do not vote.",
                 "The team does not go.",
                 "",
                 "Quest 1, proposal 2 of 5. You lead and need a team of 2.",
                 "",
                 "The Assassin tries to name Merlin.",
-                "You name player1 as Merlin.",
+                "You name Player 1 as Merlin.",
             ]
         );
     }
 
     #[test]
     fn a_memory_that_is_neither_an_announcement_an_utterance_nor_a_choice_adds_nothing() {
-        let view = view_of("player3", Phase::Propose, &[]);
+        let view = view_of("Player 3", Phase::Propose, &[]);
         let story = told(
-            "player3",
+            "Player 3",
             [
                 heard(announcement(1, view)),
-                heard(Choice::Ballot(Ballot::Approve).message(1, id("player1"), 1)),
+                heard(Choice::Ballot(Ballot::Approve).message(1, id("Player 1"), 1)),
                 sent(Message::Wake),
             ],
         );
@@ -1278,21 +1284,21 @@ mod tests {
         [word; 20].join(" ")
     }
 
-    /// Two phases of talk at length: player3's story of player1 and
-    /// player2 talking in the first proposal, and itself in the second.
+    /// Two phases of talk at length: Player 3's story of Player 1 and
+    /// Player 2 talking in the first proposal, and itself in the second.
     fn two_phases_of_talk() -> Story {
-        let me = id("player3");
+        let me = id("Player 3");
         let mut state = State::new(five());
         let mut memories = vec![
             heard(announcement(1, state.view(&me))),
-            heard(utterance(1, "player1", 1, &at_length("First."))),
-            heard(utterance(1, "player2", 1, &at_length("Second."))),
+            heard(utterance(1, "Player 1", 1, &at_length("First."))),
+            heard(utterance(1, "Player 2", 1, &at_length("Second."))),
         ];
         state.resolve(&HashMap::new(), 1);
         state.next();
         memories.push(heard(announcement(2, state.view(&me))));
-        memories.push(sent(utterance(2, "player3", 1, &at_length("Third."))));
-        told("player3", memories)
+        memories.push(sent(utterance(2, "Player 3", 1, &at_length("Third."))));
+        told("Player 3", memories)
     }
 
     /// The tokens `lines` take, joined by newlines, by estimate.
@@ -1319,7 +1325,7 @@ mod tests {
         assert_eq!(told[3], FORGOTTEN);
         assert_eq!(
             told[4],
-            format!("player2 says, \"{}\"", at_length("Second."))
+            format!("Player 2 says, \"{}\"", at_length("Second."))
         );
         assert!(estimated(&told) <= budget, "{told:?}");
         // Short of everything, every line of talk is forgotten, and the
@@ -1329,12 +1335,12 @@ mod tests {
         assert_eq!(
             told,
             [
-                "You are player3, a loyal servant of Arthur, on the good side.",
+                "You are Player 3, a loyal servant of Arthur, on the good side.",
                 "",
-                "Quest 1, proposal 1 of 5. player1 leads and needs a team of 2.",
-                "player1 proposes nobody in time.",
+                "Quest 1, proposal 1 of 5. Player 1 leads and needs a team of 2.",
+                "Player 1 proposes nobody in time.",
                 "",
-                "Quest 1, proposal 2 of 5. player2 leads and needs a team of 2.",
+                "Quest 1, proposal 2 of 5. Player 2 leads and needs a team of 2.",
                 FORGOTTEN,
             ]
         );

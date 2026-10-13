@@ -28,6 +28,7 @@ use super::{
     Choices, Dealt, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Rules, State, Team, act,
     observe,
 };
+use crate::report::in_order;
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Context, Think};
 use std::collections::{HashMap, HashSet};
@@ -145,7 +146,7 @@ impl Game {
     }
 
     /// Open the next phase: number it, write every living player its
-    /// announcement, numbered in turn in name order, and wait on the
+    /// announcement, numbered in turn in seat order, and wait on the
     /// players awake in it.
     fn open(&mut self) -> anyhow::Result<Opened> {
         self.seq += 1;
@@ -154,8 +155,7 @@ impl Game {
             Phase::Night => self.rules.night_limit,
             Phase::Day => self.rules.day_limit,
         };
-        let mut alive: Vec<&PlayerId> = self.state.alive.iter().collect();
-        alive.sort();
+        let alive = in_order(&self.state.alive);
         let mut announcements = Vec::new();
         for player in alive {
             self.n += 1;

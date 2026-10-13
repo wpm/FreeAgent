@@ -36,7 +36,10 @@ pub mod prompted;
 pub mod random;
 pub mod report;
 
-use crate::seat::{ENVIRONMENT, PlayerId, to_everyone_but, to_the_environment, to_the_players_but};
+use crate::report::seat_order;
+use crate::seat::{
+    ENVIRONMENT, PlayerId, seats, to_everyone_but, to_the_environment, to_the_players_but,
+};
 use async_trait::async_trait;
 use clap::Args;
 use free_agent::{ActorId, ActorInit, Behavior, Builder, Context, Episode, Logger, ThinkBuilder};
@@ -330,11 +333,9 @@ impl Table {
         ]
     }
 
-    /// The seats, named `player1` onward, one per player. The names say
-    /// nothing about the roles, since every player sees every name.
+    /// The seats, named `Player 1` onward, one per player.
     pub fn seats(&self) -> impl Iterator<Item = PlayerId> {
-        let players: usize = self.counts().iter().map(|(_, count)| count).sum();
-        (1..=players).map(|seat| format!("player{seat}"))
+        seats(self.counts().iter().map(|(_, count)| count).sum())
     }
 }
 
@@ -976,7 +977,7 @@ pub trait Vote: Send + Sync {
     fn elect(&self, ballots: &HashMap<PlayerId, PlayerId>) -> Option<PlayerId>;
 }
 
-/// The players with the most votes, in name order so a tie-break depends
+/// The players with the most votes, in seat order so a tie-break depends
 /// on the random number alone. Empty when there are no ballots.
 fn most_votes(ballots: &HashMap<PlayerId, PlayerId>) -> Vec<PlayerId> {
     let mut votes: HashMap<&PlayerId, usize> = HashMap::new();
@@ -991,7 +992,7 @@ fn most_votes(ballots: &HashMap<PlayerId, PlayerId>) -> Vec<PlayerId> {
         .filter(|(_, count)| *count == most)
         .map(|(player, _)| player.clone())
         .collect();
-    most_votes.sort();
+    most_votes.sort_by(seat_order);
     most_votes
 }
 
@@ -1036,8 +1037,8 @@ pub struct View {
 /// werewolf does not kill a werewolf, the seer does not ask about anyone
 /// twice, and the doctor does not protect itself. By day, everyone living
 /// other than `me`, since the vote is about who the werewolves are, and a
-/// player who knows is the one with the most reason to vote. Sorted by
-/// name, so that a random choice among them depends on the random number
+/// player who knows is the one with the most reason to vote. In seat
+/// order, so that a random choice among them depends on the random number
 /// alone.
 pub fn candidates(me: &PlayerId, view: &View) -> Vec<PlayerId> {
     let eligible = |player: &PlayerId| view.phase == Phase::Day || !view.roles.contains_key(player);
@@ -1047,7 +1048,7 @@ pub fn candidates(me: &PlayerId, view: &View) -> Vec<PlayerId> {
         .filter(|player| *player != me && eligible(player))
         .cloned()
         .collect();
-    candidates.sort();
+    candidates.sort_by(seat_order);
     candidates
 }
 
@@ -1081,7 +1082,7 @@ pub(crate) mod tests {
             seers: 1,
         };
         let seats: Vec<_> = table.seats().collect();
-        assert_eq!(seats, ["player1", "player2", "player3", "player4"]);
+        assert_eq!(seats, ["Player 1", "Player 2", "Player 3", "Player 4"]);
     }
 
     #[test]

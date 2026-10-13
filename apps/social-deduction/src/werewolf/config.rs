@@ -338,7 +338,7 @@ impl Config {
 /// prompted strategy.
 #[derive(Debug)]
 pub struct SystemPrompt {
-    /// The seat, `player1` onward.
+    /// The seat, `Player 1` onward.
     pub seat: PlayerId,
     /// The role the seat was dealt.
     pub role: Role,
@@ -362,7 +362,7 @@ impl Settings {
     }
 
     /// Deal the (role, strategy) pairs the allotments make, one per seat,
-    /// at random to the seats `player1` onward.
+    /// at random to the seats `Player 1` onward.
     pub fn deal(&self) -> HashMap<PlayerId, Dealt> {
         let mut pairs: Vec<Dealt> = self
             .at_the_table()
@@ -1236,14 +1236,14 @@ count = 0
     }
 
     #[test]
-    fn every_pair_is_dealt_as_many_times_as_allotted_to_the_seats_from_player1() {
+    fn every_pair_is_dealt_as_many_times_as_allotted_to_the_seats_from_player_1() {
         let settings = mixed();
         let deal = settings.deal();
         let mut seats: Vec<&PlayerId> = deal.keys().collect();
         seats.sort();
         assert_eq!(
             seats,
-            ["player1", "player2", "player3", "player4", "player5"]
+            ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
         );
         let mut pairs: Vec<(Role, &str)> = deal
             .values()
@@ -1297,7 +1297,7 @@ count = 0
             .iter()
             .map(|prompt| (prompt.seat.as_str(), prompt.role, prompt.strategy.as_str()))
             .collect();
-        let seats = ["player1", "player2", "player3", "player4", "player5"];
+        let seats = ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"];
         let expected: Vec<(&str, Role, &str)> = seats
             .into_iter()
             .flat_map(|seat| {
@@ -1309,12 +1309,12 @@ count = 0
             .collect();
         assert_eq!(rendered, expected);
         assert_eq!(
-            prompt(&prompts, "player2", Role::Werewolf, "bold"),
-            "Bold player2."
+            prompt(&prompts, "Player 2", Role::Werewolf, "bold"),
+            "Bold Player 2."
         );
         assert_eq!(
-            prompt(&prompts, "player5", Role::Villager, "plain"),
-            "player5 the villager"
+            prompt(&prompts, "Player 5", Role::Villager, "plain"),
+            "Player 5 the villager"
         );
         // A table with no prompted strategy renders nothing.
         assert!(
@@ -1331,7 +1331,7 @@ count = 0
         let file = format!("{file}[text]\nrules = \"The rules.\"\nwolf = \"Howl.\"\n");
         let prompts = settle(&file, Overrides::default()).prompts().unwrap();
         assert_eq!(
-            prompt(&prompts, "player1", Role::Villager, "plain"),
+            prompt(&prompts, "Player 1", Role::Villager, "plain"),
             "The rules. Howl."
         );
         let file = PLAIN.replace("{{ role }}", "{{ role }}[{{ persona }}]");
@@ -1345,7 +1345,8 @@ count = 0
         let error = settle(&file, Overrides::default()).prompts().unwrap_err();
         let shown = format!("{error:#}");
         assert!(
-            shown.starts_with("rendering the prompt of strategy plain for player1 as the werewolf"),
+            shown
+                .starts_with("rendering the prompt of strategy plain for Player 1 as the werewolf"),
             "{shown}"
         );
         assert!(shown.contains("rulez"), "{shown}");
@@ -1602,7 +1603,7 @@ strategy = \"smart\"
             .collect();
         prompts[0].text = "x".repeat(longest);
         prompts.push(SystemPrompt {
-            seat: "player1".to_string(),
+            seat: "Player 1".to_string(),
             role: Role::Werewolf,
             strategy: RANDOM.to_string(),
             text: "x".repeat(longest * 2),
@@ -1721,9 +1722,9 @@ count = 1
             strategy: strategy.to_string(),
         };
         HashMap::from([
-            ("player1".to_string(), dealt(Role::Villager, "dice")),
-            ("player2".to_string(), dealt(Role::Werewolf, "bold")),
-            ("player3".to_string(), dealt(Role::Seer, "plain")),
+            ("Player 1".to_string(), dealt(Role::Villager, "dice")),
+            ("Player 2".to_string(), dealt(Role::Werewolf, "bold")),
+            ("Player 3".to_string(), dealt(Role::Seer, "plain")),
         ])
     }
 
@@ -1785,10 +1786,10 @@ count = 1
                 ]),
                 models: Models::from([("qwen".to_string(), qwen())]),
                 prompts: BTreeMap::from([
-                    ("player2".to_string(), "Bold player2.".to_string()),
+                    ("Player 2".to_string(), "Bold Player 2.".to_string()),
                     (
-                        "player3".to_string(),
-                        "The rules. player3 the seer".to_string()
+                        "Player 3".to_string(),
+                        "The rules. Player 3 the seer".to_string()
                     ),
                 ]),
                 text: BTreeMap::from([("rules".to_string(), "The rules.".to_string())]),
@@ -1801,7 +1802,7 @@ count = 1
      {
         let mut deal = dealt();
         deal.insert(
-            "player3".to_string(),
+            "Player 3".to_string(),
             Dealt {
                 role: Role::Doctor,
                 strategy: "plain".to_string(),
@@ -1811,7 +1812,7 @@ count = 1
             configuration_of(&settle(&configured(), Overrides::default()), &deal).unwrap_err();
         assert_eq!(
             format!("{error:#}"),
-            "no system prompt rendered for player3 as the doctor playing plain"
+            "no system prompt rendered for Player 3 as the doctor playing plain"
         );
     }
 

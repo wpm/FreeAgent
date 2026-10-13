@@ -2143,41 +2143,41 @@ mod tests {
     }
 
     #[test]
-    fn players_come_in_seat_order_with_player2_before_player10() {
+    fn players_come_in_seat_order_with_player_2_before_player_10() {
         let mut narrator = Narrator::default();
         let roles = HashMap::from([
-            (id("player10"), Role::Villager),
-            (id("player2"), Role::Werewolf),
-            (id("player1"), Role::Seer),
+            (id("Player 10"), Role::Villager),
+            (id("Player 2"), Role::Werewolf),
+            (id("Player 1"), Role::Seer),
         ]);
         assert_eq!(
             narrator.narrate(&dealt(roles)),
             [
                 "3 players:",
-                "player1, a seer, plays random",
-                "player2, a werewolf, plays bold",
-                "player10, a villager, plays random",
+                "Player 1, a seer, plays random",
+                "Player 2, a werewolf, plays bold",
+                "Player 10, a villager, plays random",
                 "A night waits 1m and a day 2m."
             ]
         );
-        let everyone = ["player1", "player2", "player10"];
-        narrator.narrate(&shown("player1", 1, Phase::Day, &everyone));
-        selected(&mut narrator, "player10", 2, "player2");
-        selected(&mut narrator, "player2", 2, "player10");
-        selected(&mut narrator, "player1", 2, "player2");
+        let everyone = ["Player 1", "Player 2", "Player 10"];
+        narrator.narrate(&shown("Player 1", 1, Phase::Day, &everyone));
+        selected(&mut narrator, "Player 10", 2, "Player 2");
+        selected(&mut narrator, "Player 2", 2, "Player 10");
+        selected(&mut narrator, "Player 1", 2, "Player 2");
         assert_eq!(
-            narrator.narrate(&ended(Team::Werewolves, 1, &["player2"])),
+            narrator.narrate(&ended(Team::Werewolves, 1, &["Player 2"])),
             [
-                "player1 (seer) votes against player2 (werewolf).",
-                "player2 (werewolf) votes against player10 (villager).",
-                "player10 (villager) votes against player2 (werewolf).",
-                "player1 and player10 die.",
+                "Player 1 (seer) votes against Player 2 (werewolf).",
+                "Player 2 (werewolf) votes against Player 10 (villager).",
+                "Player 10 (villager) votes against Player 2 (werewolf).",
+                "Player 1 and Player 10 die.",
                 "Day 1 took 0s.",
                 "",
                 "The werewolves win after 1 day.",
                 "The game took 0s.",
                 "Survivors:",
-                "player2 (werewolf)"
+                "Player 2 (werewolf)"
             ]
         );
     }

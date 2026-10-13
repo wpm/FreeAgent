@@ -413,7 +413,7 @@ mod tests {
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
         assert_eq!(provider.models().await.unwrap(), ["qwen2.5-7b-instruct"]);
         provider.listed("qwen2.5-7b-instruct").await.unwrap();
-        for candidates in [&["player3", "player2"][..], &["player1"]] {
+        for candidates in [&["Player 3", "Player 2"][..], &["Player 1"]] {
             assert_eq!(
                 provider.complete(&selecting(candidates)).await.unwrap(),
                 Response::tool_call("select", &json!({"target": candidates[0]}))
@@ -426,14 +426,14 @@ mod tests {
         let base_url = playing(&["qwen2.5-7b-instruct"]);
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
         let answer = provider
-            .complete(&by_day(&["player2", "player3"], 60, "Day 1."))
+            .complete(&by_day(&["Player 2", "Player 3"], 60, "Day 1."))
             .await
             .unwrap();
         assert_eq!(
             answer,
             Response::calling(&[
                 ("speak".to_string(), json!({"text": SAID})),
-                ("select".to_string(), json!({"target": "player2"})),
+                ("select".to_string(), json!({"target": "Player 2"})),
             ])
         );
         // A request offering a tool it cannot use is refused as bad, as a
@@ -450,9 +450,9 @@ mod tests {
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
         let first = provider
             .complete(&by_day(
-                &["player2", "player3"],
+                &["Player 2", "Player 3"],
                 60,
-                "You are player1, a villager.\n\nDay 1.",
+                "You are Player 1, a villager.\n\nDay 1.",
             ))
             .await
             .unwrap();
@@ -460,16 +460,16 @@ mod tests {
             first,
             Response::calling(&[
                 ("speak".to_string(), json!({"text": SAID})),
-                ("select".to_string(), json!({"target": "player2"})),
+                ("select".to_string(), json!({"target": "Player 2"})),
                 ("retract".to_string(), json!({})),
             ])
         );
         // Any other seat plays as the playing provider does.
         let other = provider
             .complete(&by_day(
-                &["player1", "player2"],
+                &["Player 1", "Player 2"],
                 60,
-                "You are player3, the seer.\n\nDay 1.",
+                "You are Player 3, the seer.\n\nDay 1.",
             ))
             .await
             .unwrap();
@@ -477,7 +477,7 @@ mod tests {
             other,
             Response::calling(&[
                 ("speak".to_string(), json!({"text": SAID})),
-                ("select".to_string(), json!({"target": "player1"})),
+                ("select".to_string(), json!({"target": "Player 1"})),
             ])
         );
         // Seats are in the order of their numbers, and the first is the one
@@ -491,13 +491,13 @@ mod tests {
             )
         };
         let tenth = provider
-            .complete(&seated("player2", &["player10", "player3"]))
+            .complete(&seated("Player 2", &["Player 10", "Player 3"]))
             .await
             .unwrap();
         assert_eq!(tenth.tool_calls().len(), 3);
         for (me, candidates) in [
-            ("player10", &["player2", "player11"][..]),
-            ("player3", &["player4", "player1"]),
+            ("Player 10", &["Player 2", "Player 11"][..]),
+            ("Player 3", &["Player 4", "Player 1"]),
         ] {
             let other = provider.complete(&seated(me, candidates)).await.unwrap();
             assert_eq!(other.tool_calls().len(), 2, "{me}");
@@ -505,16 +505,16 @@ mod tests {
         // So does the first seat once it has voted, and by night.
         let again = provider
             .complete(&by_day(
-                &["player2", "player3"],
+                &["Player 2", "Player 3"],
                 60,
-                "You are player1, a villager.\n\nDay 1.\nYou vote against player2.",
+                "You are Player 1, a villager.\n\nDay 1.\nYou vote against Player 2.",
             ))
             .await
             .unwrap();
         assert_eq!(again, Response::tool_call("wait", &json!({"seconds": 60})));
         assert_eq!(
-            provider.complete(&selecting(&["player2"])).await.unwrap(),
-            Response::tool_call("select", &json!({"target": "player2"}))
+            provider.complete(&selecting(&["Player 2"])).await.unwrap(),
+            Response::tool_call("select", &json!({"target": "Player 2"}))
         );
     }
 
@@ -525,8 +525,8 @@ mod tests {
         let listed = provider.listed("qwen2.5-7b-instruct").await.unwrap();
         assert_eq!(listed.context_window, Some(32768));
         assert_eq!(
-            provider.complete(&selecting(&["player2"])).await.unwrap(),
-            Response::tool_call("select", &json!({"target": "player2"}))
+            provider.complete(&selecting(&["Player 2"])).await.unwrap(),
+            Response::tool_call("select", &json!({"target": "Player 2"}))
         );
     }
 
@@ -539,10 +539,10 @@ mod tests {
             ["qwen2.5-7b-instruct", "gpt-0"]
         );
         assert_eq!(
-            provider.complete(&selecting(&["player2"])).await.unwrap(),
-            Response::tool_call("select", &json!({"target": "player2"}))
+            provider.complete(&selecting(&["Player 2"])).await.unwrap(),
+            Response::tool_call("select", &json!({"target": "Player 2"}))
         );
-        let mut request = selecting(&["player2"]);
+        let mut request = selecting(&["Player 2"]);
         request.model = "gpt-0".to_string();
         let error = provider.complete(&request).await.unwrap_err();
         let shown = format!("{error:#}");
@@ -553,7 +553,7 @@ mod tests {
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
         provider.listed("qwen2.5-7b-instruct").await.unwrap();
         let error = provider
-            .complete(&selecting(&["player2"]))
+            .complete(&selecting(&["Player 2"]))
             .await
             .unwrap_err();
         assert!(
@@ -569,11 +569,11 @@ mod tests {
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
         assert_eq!(provider.models().await.unwrap(), ["qwen2.5-7b-instruct"]);
         assert_eq!(
-            provider.complete(&selecting(&["player2"])).await.unwrap(),
-            Response::tool_call("select", &json!({"target": "player2"}))
+            provider.complete(&selecting(&["Player 2"])).await.unwrap(),
+            Response::tool_call("select", &json!({"target": "Player 2"}))
         );
         let error = provider
-            .complete(&by_day(&["player2", "player3"], 60, "Day 1."))
+            .complete(&by_day(&["Player 2", "Player 3"], 60, "Day 1."))
             .await
             .unwrap_err();
         let shown = format!("{error:#}");
@@ -609,7 +609,7 @@ mod tests {
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
         assert_eq!(provider.models().await.unwrap(), ["qwen2.5-7b-instruct"]);
         let error = provider
-            .complete(&selecting(&["player2"]))
+            .complete(&selecting(&["Player 2"]))
             .await
             .unwrap_err();
         let shown = format!("{error:#}");

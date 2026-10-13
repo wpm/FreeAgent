@@ -244,13 +244,13 @@ mod tests {
 
     #[test]
     fn a_request_serializes_to_the_protocol_s_json_with_the_tool_call_forced() {
-        let request = selecting(&["player2", "player3"]);
+        let request = selecting(&["Player 2", "Player 3"]);
         assert_eq!(
             serde_json::to_value(&request).unwrap(),
             json!({
                 "model": "qwen2.5-7b-instruct",
                 "messages": [
-                    {"role": "system", "content": "You are player1."},
+                    {"role": "system", "content": "You are Player 1."},
                     {"role": "user", "content": "Select."},
                 ],
                 "tools": [{
@@ -260,7 +260,7 @@ mod tests {
                         "description": "Knowing everything you know, select the best one.",
                         "parameters": {
                             "type": "object",
-                            "properties": {"target": {"type": "string", "enum": ["player2", "player3"]}},
+                            "properties": {"target": {"type": "string", "enum": ["Player 2", "Player 3"]}},
                             "required": ["target"],
                         },
                     },
@@ -286,7 +286,7 @@ mod tests {
         assert_eq!(json["tools"][1]["function"]["name"], "wait");
         assert_eq!(json["tool_choice"], "required");
         // One tool is a list of one.
-        let one = serde_json::to_value(selecting(&["player2"])).unwrap();
+        let one = serde_json::to_value(selecting(&["Player 2"])).unwrap();
         assert_eq!(one["tools"].as_array().unwrap().len(), 1);
     }
 
@@ -294,7 +294,7 @@ mod tests {
     fn a_request_that_allows_a_tool_call_serializes_its_tool_choice_as_auto() {
         let request = Request {
             tool_choice: ToolChoice::Auto,
-            ..selecting(&["player2"])
+            ..selecting(&["Player 2"])
         };
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["tool_choice"], "auto");
@@ -319,7 +319,7 @@ mod tests {
     fn a_response_may_call_several_tools_in_order() {
         let response = Response::calling(&[
             ("speak".to_string(), json!({"text": "Hello."})),
-            ("select".to_string(), json!({"target": "player2"})),
+            ("select".to_string(), json!({"target": "Player 2"})),
         ]);
         let calls = response.tool_calls();
         assert_eq!(calls.len(), 2);
@@ -327,29 +327,29 @@ mod tests {
         assert_eq!(calls[0].function.arguments, r#"{"text":"Hello."}"#);
         assert_eq!(calls[1].function.name, "select");
         assert_eq!(
-            Response::tool_call("select", &json!({"target": "player2"})),
-            Response::calling(&[("select".to_string(), json!({"target": "player2"}))])
+            Response::tool_call("select", &json!({"target": "Player 2"})),
+            Response::calling(&[("select".to_string(), json!({"target": "Player 2"}))])
         );
     }
 
     #[test]
     fn a_response_with_tool_calls_parses_and_its_extra_fields_are_ignored() {
-        let said = completion("select", &json!({"target": "player2"}));
+        let said = completion("select", &json!({"target": "Player 2"}));
         let response: Response = serde_json::from_str(&said).unwrap();
         let calls = response.tool_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.name, "select");
         assert_eq!(
             serde_json::from_str::<Value>(&calls[0].function.arguments).unwrap(),
-            json!({"target": "player2"})
+            json!({"target": "Player 2"})
         );
     }
 
     #[test]
     fn a_response_whose_message_has_no_tool_calls_or_null_ones_has_none() {
         for message in [
-            json!({"role": "assistant", "content": "I pick player2."}),
-            json!({"role": "assistant", "content": "I pick player2.", "tool_calls": null}),
+            json!({"role": "assistant", "content": "I pick Player 2."}),
+            json!({"role": "assistant", "content": "I pick Player 2.", "tool_calls": null}),
         ] {
             let said = json!({"choices": [{"message": message}]});
             let response: Response = serde_json::from_value(said).unwrap();

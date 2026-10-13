@@ -349,7 +349,7 @@ impl Config {
 /// prompted strategy.
 #[derive(Debug)]
 pub struct SystemPrompt {
-    /// The seat, `player1` onward.
+    /// The seat, `Player 1` onward.
     pub seat: PlayerId,
     /// The role the seat was dealt.
     pub role: Role,
@@ -373,7 +373,7 @@ impl Settings {
     }
 
     /// Deal the (role, strategy) pairs the allotments make, one per seat,
-    /// at random to the seats `player1` onward.
+    /// at random to the seats `Player 1` onward.
     pub fn deal(&self) -> HashMap<PlayerId, Dealt> {
         let mut pairs: Vec<Dealt> = self
             .at_the_table()
@@ -719,15 +719,15 @@ policy = "random"
                 .trim_start_matches("the ");
             assert!(rules.contains(named), "{named}: {rules}");
         }
-        let merlin = prompt(&prompts, "player3", Role::Merlin, "everyone");
+        let merlin = prompt(&prompts, "Player 3", Role::Merlin, "everyone");
         assert!(merlin.starts_with(rules.as_str()), "{merlin}");
         assert!(
-            merlin.ends_with("\n\nYou are player3, Merlin, on the good side."),
+            merlin.ends_with("\n\nYou are Player 3, Merlin, on the good side."),
             "{merlin}"
         );
-        let servant = prompt(&prompts, "player1", Role::Servant, "everyone");
+        let servant = prompt(&prompts, "Player 1", Role::Servant, "everyone");
         assert!(
-            servant.ends_with("\n\nYou are player1, a loyal servant of Arthur, on the good side."),
+            servant.ends_with("\n\nYou are Player 1, a loyal servant of Arthur, on the good side."),
             "{servant}"
         );
     }
@@ -1302,14 +1302,14 @@ coin = 1
     }
 
     #[test]
-    fn every_pair_is_dealt_as_many_times_as_allotted_to_the_seats_from_player1() {
+    fn every_pair_is_dealt_as_many_times_as_allotted_to_the_seats_from_player_1() {
         let settings = mixed();
         let deal = settings.deal();
         let mut seats: Vec<&PlayerId> = deal.keys().collect();
         seats.sort();
         assert_eq!(
             seats,
-            ["player1", "player2", "player3", "player4", "player5"]
+            ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
         );
         let mut pairs: Vec<(Role, &str)> = deal
             .values()
@@ -1516,7 +1516,7 @@ system = "{{ name }}, {{ role }}"
             .iter()
             .map(|prompt| (prompt.seat.as_str(), prompt.role, prompt.strategy.as_str()))
             .collect();
-        let seats = ["player1", "player2", "player3", "player4", "player5"];
+        let seats = ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"];
         let expected: Vec<(&str, Role, &str)> = seats
             .into_iter()
             .flat_map(|seat| {
@@ -1529,12 +1529,12 @@ system = "{{ name }}, {{ role }}"
             .collect();
         assert_eq!(rendered, expected);
         assert_eq!(
-            prompt(&prompts, "player2", Role::Assassin, "bold"),
-            "Bold player2."
+            prompt(&prompts, "Player 2", Role::Assassin, "bold"),
+            "Bold Player 2."
         );
         assert_eq!(
-            prompt(&prompts, "player5", Role::Minion, "plain"),
-            "player5, a minion of Mordred"
+            prompt(&prompts, "Player 5", Role::Minion, "plain"),
+            "Player 5, a minion of Mordred"
         );
     }
 
@@ -1558,8 +1558,8 @@ system = "{{ name }}, {{ role }}"
             (Role::Minion, "a minion of Mordred, on the evil side"),
         ] {
             assert_eq!(
-                prompt(&prompts, "player1", role, "plain"),
-                format!("player1, {told}")
+                prompt(&prompts, "Player 1", role, "plain"),
+                format!("Player 1, {told}")
             );
         }
     }
@@ -1570,7 +1570,7 @@ system = "{{ name }}, {{ role }}"
         let file = format!("{file}[text]\nrules = \"The rules.\"\nmerlin = \"Hide.\"\n");
         let prompts = settle(&file, Overrides::default()).prompts().unwrap();
         assert_eq!(
-            prompt(&prompts, "player1", Role::Servant, "plain"),
+            prompt(&prompts, "Player 1", Role::Servant, "plain"),
             "The rules. Hide."
         );
         let file = PLAIN.replace("{{ role }}", "{{ role }}[{{ persona }}]");
@@ -1584,7 +1584,7 @@ system = "{{ name }}, {{ role }}"
         let error = settle(&file, Overrides::default()).prompts().unwrap_err();
         let shown = format!("{error:#}");
         assert!(
-            shown.starts_with("rendering the prompt of strategy plain for player1 as the Merlin"),
+            shown.starts_with("rendering the prompt of strategy plain for Player 1 as the Merlin"),
             "{shown}"
         );
         assert!(shown.contains("rulez"), "{shown}");
@@ -1818,11 +1818,11 @@ system = \"Smart {{{{ name }}}}.\"
             strategy: strategy.to_string(),
         };
         HashMap::from([
-            ("player1".to_string(), dealt(Role::Servant, "plain")),
-            ("player2".to_string(), dealt(Role::Assassin, RANDOM)),
-            ("player3".to_string(), dealt(Role::Merlin, "plain")),
-            ("player4".to_string(), dealt(Role::Minion, RANDOM)),
-            ("player5".to_string(), dealt(Role::Servant, "plain")),
+            ("Player 1".to_string(), dealt(Role::Servant, "plain")),
+            ("Player 2".to_string(), dealt(Role::Assassin, RANDOM)),
+            ("Player 3".to_string(), dealt(Role::Merlin, "plain")),
+            ("Player 4".to_string(), dealt(Role::Minion, RANDOM)),
+            ("Player 5".to_string(), dealt(Role::Servant, "plain")),
         ])
     }
 
@@ -1847,13 +1847,13 @@ system = \"Smart {{{{ name }}}}.\"
             configuration.prompts,
             BTreeMap::from([
                 (
-                    "player1".to_string(),
-                    "player1, a loyal servant of Arthur".to_string()
+                    "Player 1".to_string(),
+                    "Player 1, a loyal servant of Arthur".to_string()
                 ),
-                ("player3".to_string(), "player3, Merlin".to_string()),
+                ("Player 3".to_string(), "Player 3, Merlin".to_string()),
                 (
-                    "player5".to_string(),
-                    "player5, a loyal servant of Arthur".to_string()
+                    "Player 5".to_string(),
+                    "Player 5, a loyal servant of Arthur".to_string()
                 ),
             ])
         );
@@ -1877,7 +1877,7 @@ system = \"Smart {{{{ name }}}}.\"
         let settings = mixed_settings();
         let mut deal = mixed_deal();
         deal.insert(
-            "player4".to_string(),
+            "Player 4".to_string(),
             Dealt {
                 role: Role::Minion,
                 strategy: "plain".to_string(),
@@ -1888,7 +1888,7 @@ system = \"Smart {{{{ name }}}}.\"
             .unwrap_err();
         assert_eq!(
             format!("{error:#}"),
-            "no system prompt rendered for player4 as the Minion playing plain"
+            "no system prompt rendered for Player 4 as the Minion playing plain"
         );
     }
 
@@ -1925,7 +1925,7 @@ system = \"Smart {{{{ name }}}}.\"
         // player's with no model to have been shown anything, a prompted
         // player's by a model shown its memories. Only prompted players
         // talk.
-        let prompted: HashSet<&str> = ["player1", "player3", "player5"].into();
+        let prompted: HashSet<&str> = ["Player 1", "Player 3", "Player 5"].into();
         let mut chose = HashSet::new();
         for entry in &entries {
             if let Entry::Action {
