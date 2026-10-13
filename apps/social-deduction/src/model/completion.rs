@@ -5,8 +5,9 @@
 //! either forces the model to call one, so the model cannot answer with
 //! prose instead, or allows it to, for a model that refuses to be forced.
 //! A [`Response`] is
-//! read for the tool calls it carries. Unknown fields in a response are
-//! ignored, so a provider's additions do not break parsing.
+//! read for the tool calls it carries, and keeps the usage its provider
+//! reports, as sent. Unknown fields in a response are ignored, so a
+//! provider's additions do not break parsing.
 
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
@@ -157,11 +158,17 @@ impl<F> Function<F> {
     }
 }
 
-/// What a model answered: its choices, of which the first is read.
+/// What a model answered: its choices, of which the first is read, and
+/// what its provider reported the call consumed.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Response {
     /// The model's answers. A provider sends one unless asked for more.
     pub choices: Vec<Choice>,
+    /// What the provider reported the call consumed, exactly as sent: its
+    /// fields differ by provider, and it is recorded, not read. `None` when
+    /// the response has none or it is null.
+    #[serde(default)]
+    pub usage: Option<Value>,
 }
 
 impl Response {
@@ -189,6 +196,16 @@ impl Response {
                     tool_calls: Some(tool_calls),
                 },
             }],
+            usage: None,
+        }
+    }
+
+    /// This response, its provider reporting `usage` for it, for tests to
+    /// answer with.
+    pub fn reporting(self, usage: Value) -> Self {
+        Self {
+            usage: Some(usage),
+            ..self
         }
     }
 
@@ -355,6 +372,39 @@ mod tests {
             let response: Response = serde_json::from_value(said).unwrap();
             assert!(response.tool_calls().is_empty(), "{response:?}");
         }
+    }
+
+    #[test]
+    fn a_response_s_usage_is_kept_as_sent_including_fields_not_known_here() {
+        let usage = json!({
+            "prompt_tokens": 120,
+            "completion_tokens": 30,
+            "total_tokens": 150,
+            "prompt_tokens_details": {"cached_tokens": 100},
+            "completion_tokens_details": {"reasoning_tokens": 12},
+            "cost": 0.0004,
+        });
+        let said = json!({"choices": [], "usage": usage});
+        let response: Response = serde_json::from_value(said).unwrap();
+        assert_eq!(response.usage, Some(usage.clone()));
+        assert_eq!(
+            Response::tool_call("select", &json!({"target": "Player 2"}))
+                .reporting(usage.clone())
+                .usage,
+            Some(usage)
+        );
+    }
+
+    #[test]
+    fn a_response_with_no_usage_or_a_null_one_has_none() {
+        for said in [
+            json!({"choices": []}),
+            json!({"choices": [], "usage": null}),
+        ] {
+            let response: Response = serde_json::from_value(said).unwrap();
+            assert_eq!(response.usage, None, "{response:?}");
+        }
+        assert_eq!(Response::calling(&[]).usage, None);
     }
 
     #[test]

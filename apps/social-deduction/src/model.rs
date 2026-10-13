@@ -514,7 +514,7 @@ impl Model for Provider {
 
 #[cfg(test)]
 mod tests {
-    use super::canned::{answering, bound, completion, listing, unreachable};
+    use super::canned::{answering, bound, completion, listing, reported, unreachable};
     use super::fake::selecting;
     use super::*;
     use serde_json::json;
@@ -924,7 +924,7 @@ mod tests {
         let response = provider.complete(&request).await.unwrap();
         assert_eq!(
             response,
-            Response::tool_call("select", &json!({"target": "Player 2"}))
+            Response::tool_call("select", &json!({"target": "Player 2"})).reporting(reported())
         );
         let served = served.join().unwrap();
         let head = &served.head;

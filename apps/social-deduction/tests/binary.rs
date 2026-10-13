@@ -6,8 +6,8 @@ use free_agent::Event;
 use social_deduction::avalon;
 use social_deduction::model::ToolChoice;
 use social_deduction::model::canned::{
-    day_refusal, playing, playing_only, playing_within, refusal, refusing, refusing_days,
-    refusing_required, retracting, serving, unreachable, wanting_a_key,
+    day_refusal, playing, playing_only, playing_within, recording, refusal, refusing,
+    refusing_days, refusing_required, reported, retracting, serving, unreachable, wanting_a_key,
 };
 use social_deduction::model::window::{ContextWindow, Source};
 use social_deduction::seat::PlayerId;
@@ -533,6 +533,30 @@ fn a_game_of_model_players_is_logged_from_the_configuration_to_the_result() {
         .filter(|event| matches!(event.payload, Entry::Configuration(_)))
         .count();
     assert_eq!(configurations, 1);
+}
+
+#[test]
+fn every_call_a_player_makes_logs_its_usage_and_the_probe_logs_none() {
+    let (base_url, requests) = recording(&[EXAMPLE_MODEL]);
+    let config = configured("usage", &base_url, EXAMPLE_MODEL, &[]);
+    let (events, _) = played(&[config.as_str()]);
+    let (roles, _) = start(&events);
+    let usages: Vec<(&PlayerId, &serde_json::Value)> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            Entry::Usage { player, usage, .. } => Some((player, usage)),
+            _ => None,
+        })
+        .collect();
+    assert!(!usages.is_empty(), "{events:?}");
+    for (player, usage) in &usages {
+        assert!(roles.contains_key(*player), "{player}");
+        assert_eq!(*usage, &reported());
+    }
+    // The probe's two requests are logged nowhere. A call still underway
+    // when the game ends logs nothing either.
+    let probed = 2;
+    assert!(usages.len() <= requests.lock().unwrap().len() - probed);
 }
 
 #[test]
@@ -1263,6 +1287,34 @@ fn avalon_plays_a_table_of_random_evil_and_prompted_good_to_the_end() {
         printed.contains("says, \"I have nothing to add.\""),
         "{printed}"
     );
+}
+
+#[test]
+fn every_call_an_avalon_player_makes_logs_its_usage_and_the_probe_logs_none() {
+    let (base_url, requests) = recording(&[EXAMPLE_MODEL]);
+    let config = avalon_prompted("avalon-usage", &base_url, "");
+    let (events, _) = played_avalon(&[&config]);
+    let Some(avalon::Entry::Start { roles, .. }) = events.first().map(|event| &event.payload)
+    else {
+        panic!("{events:?}");
+    };
+    let usages: Vec<(&PlayerId, &serde_json::Value)> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            avalon::Entry::Usage { player, usage, .. } => Some((player, usage)),
+            _ => None,
+        })
+        .collect();
+    assert!(!usages.is_empty(), "{events:?}");
+    for (player, usage) in &usages {
+        assert!(roles.contains_key(*player), "{player}");
+        assert_eq!(*usage, &reported());
+    }
+    // The probe's four requests, one for each kind of phase, are logged
+    // nowhere. A call still underway when the game ends logs nothing
+    // either.
+    let probed = 4;
+    assert!(usages.len() <= requests.lock().unwrap().len() - probed);
 }
 
 #[test]

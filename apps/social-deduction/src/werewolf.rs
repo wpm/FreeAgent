@@ -756,12 +756,13 @@ pub fn observe(context: &Context<Message, Entry>, from: ActorId, n: u64, seq: u6
 
 /// What the log holds: the deal, the configuration of a model-played game,
 /// every message sent as the action of its sender and the observation of
-/// its receiver, each message a model player withheld because its phase had
-/// ended, each failure of a model player to act, each night's hunt, each
-/// day's vote, and the result. Every actor logs its own actions and
-/// observations: the environment logs the deal, the configuration, the
-/// hunts, the votes and the result besides, and a player what it withholds
-/// and its failures. Only the result summarizes anything; the rest is kept
+/// its receiver, the usage the provider reported for each model call, each
+/// message a model player withheld because its phase had ended, each
+/// failure of a model player to act, each night's hunt, each day's vote, and
+/// the result. Every actor logs its own actions and observations: the
+/// environment logs the deal, the configuration, the hunts, the votes and
+/// the result besides, and a player its usages, what it withholds and its
+/// failures. Only the result summarizes anything; the rest is kept
 /// whole for whatever reads the log later. Every entry made during a phase
 /// names the phase in a field, so nothing about phases depends on the order
 /// entries reach the log or on their times.
@@ -854,6 +855,17 @@ pub enum Entry {
         seq: u64,
         /// What went wrong, as the error says it, causes included.
         error: String,
+    },
+    /// The model answered a call `player` made in the phase numbered `seq`,
+    /// and its provider reported `usage` for it, as sent. Logged by the
+    /// player.
+    Usage {
+        /// Who made the call.
+        player: PlayerId,
+        /// The phase the call was made in.
+        seq: u64,
+        /// What the provider reported, as sent.
+        usage: serde_json::Value,
     },
     /// The night numbered `seq` was resolved: whom the werewolves elected,
     /// and which doctors protected them. A night in which the werewolves
