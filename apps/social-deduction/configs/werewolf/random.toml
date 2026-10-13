@@ -2,7 +2,9 @@
 # table of random players with no models. Run it from the root of a
 # release archive, or from apps/social-deduction in a checkout, with
 #
-#     social-deduction werewolf configs/werewolf/random.toml
+#     social-deduction play configs/werewolf/random.toml
+
+game = "werewolf"
 
 [roles.werewolf]
 strategy = "random"

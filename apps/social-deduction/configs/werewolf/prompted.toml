@@ -4,7 +4,9 @@
 # from the root of a release archive, or from apps/social-deduction in a
 # checkout, with
 #
-#     social-deduction werewolf configs/werewolf/prompted.toml
+#     social-deduction play configs/werewolf/prompted.toml
+
+game = "werewolf"
 
 # Every role not allotted otherwise plays this strategy.
 strategy = "everyone"

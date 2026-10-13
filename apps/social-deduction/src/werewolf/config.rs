@@ -38,7 +38,6 @@ use minijinja::{Environment, UndefinedBehavior, Value, context};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, btree_map};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,6 +49,11 @@ const VARIABLES: [&str; 2] = ["name", "role"];
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// The `game` key, which [`crate::config::load`] reads first and
+    /// checks. A file parsed here may leave it out.
+    #[serde(default)]
+    #[expect(dead_code, reason = "config::load reads the game key itself")]
+    game: Option<crate::config::Name>,
     /// The strategy every role not allotted otherwise plays, [`RANDOM`]
     /// unless it says.
     pub strategy: Option<String>,
@@ -68,11 +72,6 @@ pub struct Config {
     /// How many of each role there are, and which strategies they play.
     #[serde(default)]
     pub roles: Roles,
-}
-
-/// The text of the configuration file at `path`.
-fn read(path: &Path) -> anyhow::Result<String> {
-    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
 }
 
 /// The `[phases]` table: how long each phase waits for the players, and
@@ -146,12 +145,6 @@ pub struct Settings {
 }
 
 impl Config {
-    /// Read and parse the file at `path`. Reading it says nothing about
-    /// the API keys, so a file can be checked without them being set.
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
-        Self::parse(&read(path)?).with_context(|| format!("in {}", path.display()))
-    }
-
     /// Parse `file`, the text of a configuration file. A `[text]` block
     /// named like one of the template variables is an error, since the
     /// templates could not tell them apart, and so is a model's context
@@ -604,6 +597,12 @@ system = "{{ name }} the {{ role }}"
             .collect()
     }
 
+    /// The example file `name`, parsed.
+    fn example(name: &str) -> Config {
+        let path = format!("{}/configs/werewolf/{name}", env!("CARGO_MANIFEST_DIR"));
+        Config::parse(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
     #[test]
     fn the_configs_parse_and_render_and_are_the_two_documented() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/configs/werewolf");
@@ -614,9 +613,9 @@ system = "{{ name }} the {{ role }}"
         names.sort();
         assert_eq!(names, ["prompted.toml", "random.toml"]);
         for name in names {
-            let file = Path::new(dir).join(&name);
-            let config = Config::load(&file).unwrap_or_else(|e| panic!("{name}: {e:#}"));
-            let settings = config.settle().unwrap_or_else(|e| panic!("{name}: {e:#}"));
+            let settings = example(&name)
+                .settle()
+                .unwrap_or_else(|e| panic!("{name}: {e:#}"));
             let prompts = settings
                 .prompts()
                 .unwrap_or_else(|e| panic!("{name}: {e:#}"));
@@ -637,8 +636,7 @@ system = "{{ name }} the {{ role }}"
 
     #[test]
     fn the_random_config_plays_the_code_defaults_with_no_models() {
-        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/configs/werewolf/random.toml");
-        let example = Config::load(Path::new(file)).unwrap().settle().unwrap();
+        let example = example("random.toml").settle().unwrap();
         let none = Config::parse("").unwrap().settle().unwrap();
         let configured = |settings: &Settings| {
             let deal = settings.deal();
@@ -646,15 +644,6 @@ system = "{{ name }} the {{ role }}"
         };
         assert_eq!(configured(&example), configured(&none));
         assert!(example.models_in_play().is_empty());
-    }
-
-    #[test]
-    fn a_file_that_is_not_there_is_an_error_naming_it() {
-        let error = Config::load(Path::new("no-such-file.toml")).unwrap_err();
-        assert!(
-            format!("{error:#}").contains("no-such-file.toml"),
-            "{error:#}"
-        );
     }
 
     #[test]

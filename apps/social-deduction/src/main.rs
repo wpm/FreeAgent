@@ -1,5 +1,5 @@
-//! Play a social deduction game: name the game and its configuration file,
-//! deal the roles and strategies, run one game, log it to standard error as
+//! Play a social deduction game: name its configuration file, which names
+//! the game, deal the roles and strategies, run one game, log it to standard error as
 //! JSON lines, and tell it on standard output as it happens. Or list the
 //! models a provider serves, which belongs to no game.
 
@@ -7,11 +7,11 @@ use clap::{Args, Parser};
 use free_agent::{Behavior, Episode, Event, Logger};
 use serde::Serialize;
 use social_deduction::avalon;
+use social_deduction::config::{self, Game};
 use social_deduction::model::spec::Probed;
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
 };
-use social_deduction::werewolf::config::{self, Config};
 use social_deduction::werewolf::prompted;
 use social_deduction::werewolf::report::Narrator;
 use social_deduction::werewolf::{self, Team};
@@ -22,14 +22,12 @@ use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::oneshot;
 
-/// The command line: a game, or a command that belongs to no game.
+/// The command line: a game to play, or a command that belongs to no game.
 #[derive(Parser, Debug, PartialEq)]
 #[command(version, about)]
 enum CommandLine {
-    /// Werewolf: werewolves against villagers, by night and by day.
-    Werewolf(Game),
-    /// Avalon: good against evil, over five quests.
-    Avalon(Game),
+    /// Play a game: the configuration file names which
+    Play(Play),
     /// List the models a provider serves, and which of them play when
     /// asked.
     #[command(after_help = known_providers_help())]
@@ -48,10 +46,10 @@ enum CommandLine {
     },
 }
 
-/// A game: its configuration file, and whether it is logged.
+/// A game to play: its configuration file, and whether it is logged.
 #[derive(Args, Debug, PartialEq)]
-struct Game {
-    /// The TOML configuration file
+struct Play {
+    /// The TOML configuration file, whose `game` key names the game
     config: PathBuf,
     #[command(flatten)]
     logging: Logging,
@@ -84,49 +82,50 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match CommandLine::parse() {
-        CommandLine::Werewolf(Game { config, logging }) => {
-            let settings = Config::load(&config)?.settle()?;
-            // Every prompt is rendered, and every model in play set up,
-            // before any actor is built, so that a template that is broken
-            // or a model that does not play fails before anything else.
-            let prompts = settings.prompts()?;
-            let (models, handles) = settings.set_up(&prompts).await?;
-            let deal = settings.deal();
-            let configuration = settings.configuration(&deal, &prompts, models)?;
-            let players = config::players(&configuration, &deal, &handles);
-            let rules = settings.rules();
-            let mut narrator = Narrator::default();
-            play(
-                logging.enabled(),
-                move |event| narrator.narrate(event),
-                |logger| {
-                    let (winner, _) = oneshot::channel::<Team>();
-                    werewolf::game(deal, rules, configuration, winner, players, logger)
-                },
-            )
-            .await
-        }
-        CommandLine::Avalon(Game { config, logging }) => {
-            let settings = avalon::config::Config::load(&config)?.settle()?;
-            // As in Werewolf, every prompt is rendered and every model in
-            // play set up before any actor is built.
-            let prompts = settings.prompts()?;
-            let (models, handles) = settings.set_up(&prompts).await?;
-            let deal = settings.deal();
-            let configuration = settings.configuration(&deal, &prompts, models)?;
-            let players = avalon::config::players(&configuration, &deal, &handles);
-            let rules = settings.rules;
-            let mut narrator = avalon::report::Narrator::default();
-            play(
-                logging.enabled(),
-                move |event| narrator.narrate(event),
-                |logger| {
-                    let (winner, _) = oneshot::channel();
-                    avalon::game(deal, rules, configuration, winner, players, logger)
-                },
-            )
-            .await
-        }
+        CommandLine::Play(Play { config, logging }) => match config::load(&config)? {
+            Game::Werewolf(settings) => {
+                // Every prompt is rendered, and every model in play set
+                // up, before any actor is built, so that a template that is
+                // broken or a model that does not play fails before
+                // anything else.
+                let prompts = settings.prompts()?;
+                let (models, handles) = settings.set_up(&prompts).await?;
+                let deal = settings.deal();
+                let configuration = settings.configuration(&deal, &prompts, models)?;
+                let players = werewolf::config::players(&configuration, &deal, &handles);
+                let rules = settings.rules();
+                let mut narrator = Narrator::default();
+                play(
+                    logging.enabled(),
+                    move |event| narrator.narrate(event),
+                    |logger| {
+                        let (winner, _) = oneshot::channel::<Team>();
+                        werewolf::game(deal, rules, configuration, winner, players, logger)
+                    },
+                )
+                .await
+            }
+            Game::Avalon(settings) => {
+                // As in Werewolf, every prompt is rendered and every model
+                // in play set up before any actor is built.
+                let prompts = settings.prompts()?;
+                let (models, handles) = settings.set_up(&prompts).await?;
+                let deal = settings.deal();
+                let configuration = settings.configuration(&deal, &prompts, models)?;
+                let players = avalon::config::players(&configuration, &deal, &handles);
+                let rules = settings.rules;
+                let mut narrator = avalon::report::Narrator::default();
+                play(
+                    logging.enabled(),
+                    move |event| narrator.narrate(event),
+                    |logger| {
+                        let (winner, _) = oneshot::channel();
+                        avalon::game(deal, rules, configuration, winner, players, logger)
+                    },
+                )
+                .await
+            }
+        },
         CommandLine::Models {
             base_url,
             api_key_env,
@@ -303,16 +302,15 @@ mod tests {
         CommandLine::parse_from([&["social-deduction"], args].concat())
     }
 
-    /// The command line `args` parse to, after the binary's and the
-    /// game's names.
-    fn werewolf(args: &[&str]) -> CommandLine {
-        parsed(&[&["werewolf"], args].concat())
+    /// The command line `args` parse to, after the binary's name and
+    /// `play`.
+    fn play(args: &[&str]) -> CommandLine {
+        parsed(&[&["play"], args].concat())
     }
 
-    /// The command line of a game of Werewolf played from `game.toml`
-    /// with `logging`.
+    /// The command line of a game played from `game.toml` with `logging`.
     fn logged(logging: Logging) -> CommandLine {
-        CommandLine::Werewolf(Game {
+        CommandLine::Play(Play {
             config: PathBuf::from("game.toml"),
             logging,
         })
@@ -327,40 +325,39 @@ mod tests {
     }
 
     #[test]
-    fn the_command_line_is_a_game_and_its_configuration_file() {
+    fn the_command_line_plays_a_configuration_file() {
         CommandLine::command().debug_assert();
-        assert_eq!(werewolf(&["game.toml"]), logged(Logging::default()));
-        assert_eq!(
-            parsed(&["avalon", "game.toml"]),
-            CommandLine::Avalon(Game {
-                config: PathBuf::from("game.toml"),
-                logging: Logging::default(),
-            })
-        );
+        assert_eq!(play(&["game.toml"]), logged(Logging::default()));
     }
 
     #[test]
-    fn a_game_without_a_configuration_file_is_an_error_naming_it() {
-        for game in ["werewolf", "avalon"] {
-            let error = CommandLine::try_parse_from(["social-deduction", game]).unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument, "{game}");
-            assert!(error.to_string().contains("<CONFIG>"), "{error}");
-        }
-    }
-
-    #[test]
-    fn a_game_takes_one_configuration_file_at_most() {
+    fn the_games_are_not_subcommands() {
         for game in ["werewolf", "avalon"] {
             assert_eq!(
-                refused(&[game, "game.toml", "other.toml"]),
-                Some(ErrorKind::UnknownArgument),
+                refused(&[game, "game.toml"]),
+                Some(ErrorKind::InvalidSubcommand),
                 "{game}"
             );
         }
     }
 
     #[test]
-    fn werewolf_takes_the_log_flags_and_the_last_of_the_two_wins() {
+    fn play_without_a_configuration_file_is_an_error_naming_it() {
+        let error = CommandLine::try_parse_from(["social-deduction", "play"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+        assert!(error.to_string().contains("<CONFIG>"), "{error}");
+    }
+
+    #[test]
+    fn play_takes_one_configuration_file_at_most() {
+        assert_eq!(
+            refused(&["play", "game.toml", "other.toml"]),
+            Some(ErrorKind::UnknownArgument)
+        );
+    }
+
+    #[test]
+    fn play_takes_the_log_flags_and_the_last_of_the_two_wins() {
         let off = || Logging {
             log: false,
             no_log: true,
@@ -369,16 +366,9 @@ mod tests {
             log: true,
             no_log: false,
         };
-        assert_eq!(werewolf(&["game.toml", "--no-log"]), logged(off()));
-        assert_eq!(werewolf(&["game.toml", "--no-log", "--log"]), logged(on()));
-        assert_eq!(werewolf(&["game.toml", "--log", "--no-log"]), logged(off()));
-        assert_eq!(
-            parsed(&["avalon", "game.toml", "--no-log"]),
-            CommandLine::Avalon(Game {
-                config: PathBuf::from("game.toml"),
-                logging: off(),
-            })
-        );
+        assert_eq!(play(&["game.toml", "--no-log"]), logged(off()));
+        assert_eq!(play(&["game.toml", "--no-log", "--log"]), logged(on()));
+        assert_eq!(play(&["game.toml", "--log", "--no-log"]), logged(off()));
     }
 
     #[test]
@@ -402,7 +392,7 @@ mod tests {
 
     #[test]
     fn the_settings_the_file_holds_are_not_flags() {
-        let werewolf = [
+        let flags = [
             "--werewolves",
             "--villagers",
             "--doctors",
@@ -410,8 +400,6 @@ mod tests {
             "--night-limit",
             "--day-limit",
             "--ratify-limit",
-        ];
-        let avalon = [
             "--merlin",
             "--percival",
             "--servants",
@@ -424,46 +412,44 @@ mod tests {
             "--vote-limit",
             "--quest-limit",
             "--assassinate-limit",
+            "--game",
+            "--model-base-url",
+            "--model-id",
+            "--context-window",
         ];
-        for game in ["werewolf", "avalon"] {
-            for flag in werewolf.iter().chain(&avalon) {
-                assert_eq!(
-                    refused(&[game, "game.toml", flag, "1"]),
-                    Some(ErrorKind::UnknownArgument),
-                    "{game} {flag}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn werewolf_takes_no_model_options() {
-        for option in ["--model-base-url", "--model-id", "--context-window"] {
-            assert!(
-                refused(&["werewolf", "game.toml", option, "x"]).is_some(),
-                "{option}"
+        for flag in flags {
+            assert_eq!(
+                refused(&["play", "game.toml", flag, "1"]),
+                Some(ErrorKind::UnknownArgument),
+                "{flag}"
             );
         }
     }
 
     #[test]
-    fn the_help_of_each_game_lists_the_configuration_file_and_the_log_flags_alone() {
+    fn the_commands_are_play_and_models_and_play_lists_the_file_and_the_log_flags_alone() {
         let mut command = CommandLine::command();
-        for game in ["werewolf", "avalon"] {
-            let subcommand = command.find_subcommand_mut(game).unwrap();
-            let arguments: Vec<String> = subcommand
-                .get_arguments()
-                .map(|argument| argument.get_id().to_string())
-                .collect();
-            assert_eq!(arguments, ["config", "log", "no_log"], "{game}");
-            let help = subcommand.render_help().to_string();
-            assert!(help.contains("<CONFIG>"), "{help}");
-            assert!(help.contains("The TOML configuration file"), "{help}");
-        }
-        let avalon = command.find_subcommand_mut("avalon").unwrap();
+        let commands: Vec<&str> = command
+            .get_subcommands()
+            .map(|subcommand| subcommand.get_name())
+            .filter(|name| *name != "help")
+            .collect();
+        assert_eq!(commands, ["play", "models"]);
+        let play = command.find_subcommand_mut("play").unwrap();
         assert_eq!(
-            avalon.get_about().unwrap().to_string(),
-            "Avalon: good against evil, over five quests"
+            play.get_about().unwrap().to_string(),
+            "Play a game: the configuration file names which"
+        );
+        let arguments: Vec<String> = play
+            .get_arguments()
+            .map(|argument| argument.get_id().to_string())
+            .collect();
+        assert_eq!(arguments, ["config", "log", "no_log"]);
+        let help = play.render_help().to_string();
+        assert!(help.contains("<CONFIG>"), "{help}");
+        assert!(
+            help.contains("The TOML configuration file, whose `game` key names the game"),
+            "{help}"
         );
     }
 
@@ -493,7 +479,7 @@ mod tests {
         );
         let args = [
             "social-deduction",
-            "werewolf",
+            "play",
             "models",
             "http://localhost:1234/v1",
         ];

@@ -48,13 +48,21 @@ fn refused(args: &[&str]) -> String {
 /// Play Werewolf with `args` after the game: the events on standard error,
 /// parsed, and what was printed.
 fn played(args: &[&str]) -> (Vec<Event<Entry>>, String) {
-    let output = succeeded(&[&["werewolf"], args].concat());
+    let output = succeeded(&[&["play"], args].concat());
     let stderr = String::from_utf8(output.stderr).unwrap();
     let events = stderr
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     (events, String::from_utf8(output.stdout).unwrap())
+}
+
+/// Assert that `stderr` calls the configuration file at `path` invalid.
+fn assert_invalid(stderr: &str, path: &str) {
+    assert!(
+        stderr.contains(&format!("invalid configuration file {path}")),
+        "{stderr}"
+    );
 }
 
 /// The deal the log opens with: every player's role and strategy.
@@ -159,7 +167,7 @@ fn the_random_config_plays_every_player_random_and_is_logged_from_the_deal_to_th
 #[test]
 fn no_log_leaves_standard_error_empty_and_the_game_is_still_told() {
     let random = example("random.toml");
-    let output = succeeded(&["werewolf", &random, "--no-log"]);
+    let output = succeeded(&["play", &random, "--no-log"]);
     assert!(output.stderr.is_empty(), "{output:?}");
     let printed = String::from_utf8(output.stdout).unwrap();
     assert!(printed.starts_with("7 players:\n"), "{printed}");
@@ -176,7 +184,7 @@ fn no_log_leaves_standard_error_empty_and_the_game_is_still_told() {
 fn the_table_is_dealt_as_the_file_asks() {
     let config = written(
         "table",
-        "[roles.werewolf]\ncount = 1\n[roles.villager]\ncount = 2\n\
+        "game = \"werewolf\"\n[roles.werewolf]\ncount = 1\n[roles.villager]\ncount = 2\n\
          [roles.doctor]\ncount = 0\n[roles.seer]\ncount = 0\n",
     );
     let (events, _) = played(&[&config]);
@@ -192,7 +200,7 @@ fn the_table_is_dealt_as_the_file_asks() {
 fn werewolf_takes_the_limits_from_the_file() {
     let config = written(
         "limits",
-        "[phases]\nnight_limit = \"5s\"\nday_limit = \"1m\"\n",
+        "game = \"werewolf\"\n[phases]\nnight_limit = \"5s\"\nday_limit = \"1m\"\n",
     );
     let (events, _) = played(&[&config]);
     let Some(Entry::Start {
@@ -225,24 +233,38 @@ fn an_unratified_day_ends_once_everyone_has_voted_and_is_logged_as_such() {
 }
 
 #[test]
-fn a_game_must_be_named() {
+fn a_command_must_be_named() {
     assert_usage_error(&[]);
 }
 
 #[test]
-fn a_game_without_a_configuration_file_is_a_usage_error_naming_it() {
-    let stderr = assert_usage_error(&["werewolf"]);
+fn play_without_a_configuration_file_is_a_usage_error_naming_it() {
+    let stderr = assert_usage_error(&["play"]);
     assert!(stderr.contains("<CONFIG>"), "{stderr}");
 }
 
 #[test]
+fn the_games_are_unrecognized_subcommands() {
+    for game in ["werewolf", "avalon"] {
+        let stderr = assert_usage_error(&[game, &example("random.toml")]);
+        assert!(
+            stderr.contains(&format!("unrecognized subcommand '{game}'")),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
 fn the_settings_the_file_holds_are_unknown_arguments() {
-    let refusals = [
-        (example("random.toml"), "--werewolves", "werewolf"),
-        (avalon_example("random.toml"), "--vote-limit", "avalon"),
-    ];
-    for (config, flag, game) in refusals {
-        let stderr = assert_usage_error(&[game, &config, flag, "1"]);
+    let config = example("random.toml");
+    for flag in [
+        "--werewolves",
+        "--vote-limit",
+        "--model-base-url",
+        "--model-id",
+        "--context-window",
+    ] {
+        let stderr = assert_usage_error(&["play", &config, flag, "1"]);
         assert!(
             stderr.contains(&format!("unexpected argument '{flag}'")),
             "{stderr}"
@@ -251,35 +273,51 @@ fn the_settings_the_file_holds_are_unknown_arguments() {
 }
 
 #[test]
-fn the_variants_and_the_model_options_are_gone() {
-    // A variant's name is read as a configuration file's.
-    for variant in ["uniform-random", "llm"] {
-        let stderr = refused(&["werewolf", variant]);
-        assert!(stderr.contains(&format!("reading {variant}")), "{stderr}");
-    }
-    assert_usage_error(&["werewolf", "llm", "game.toml"]);
-    for option in ["--model-base-url", "--model-id", "--context-window"] {
-        assert_usage_error(&["werewolf", option, "1"]);
-    }
+fn help_lists_play_and_models_and_play_the_file_and_the_log_flags_alone() {
+    let help = printed(&["--help"]);
+    let commands: Vec<&str> = help
+        .split("Commands:")
+        .nth(1)
+        .unwrap()
+        .split("Options:")
+        .next()
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(commands, ["play", "models", "help"], "{help}");
+    let help = printed(&["play", "--help"]);
+    assert!(help.contains("<CONFIG>"), "{help}");
+    let flags: Vec<&str> = help
+        .split_whitespace()
+        .filter(|word| word.starts_with("--"))
+        .collect();
+    assert_eq!(flags, ["--log", "--no-log", "--help"], "{help}");
 }
 
 #[test]
-fn help_lists_the_games_and_for_each_the_file_and_the_log_flags_alone() {
-    let help = printed(&["--help"]);
-    assert!(
-        help.contains("werewolf") && help.contains("avalon") && help.contains("models"),
-        "{help}"
-    );
-    for game in ["werewolf", "avalon"] {
-        let help = printed(&[game, "--help"]);
-        for option in ["<CONFIG>", "--log", "--no-log"] {
-            assert!(help.contains(option), "{help}");
-        }
-        let flags: Vec<&str> = help
-            .split_whitespace()
-            .filter(|word| word.starts_with("--"))
-            .collect();
-        assert_eq!(flags, ["--log", "--no-log", "--help"], "{help}");
+fn a_malformed_file_is_an_invalid_configuration_before_any_game_output() {
+    for (test, file, said) in [
+        ("no-game", "strategy = \"random\"\n", "missing field `game`"),
+        (
+            "chess",
+            "game = \"chess\"\n",
+            "unknown variant `chess`, expected `werewolf` or `avalon`",
+        ),
+        (
+            "werewolf-merlin",
+            "game = \"werewolf\"\n[roles.merlin]\ncount = 1\n",
+            "unknown field `merlin`",
+        ),
+    ] {
+        let config = written(test, file);
+        let stderr = refused(&["play", &config]);
+        assert_invalid(&stderr, &config);
+        assert!(stderr.contains(said), "{stderr}");
+        assert!(
+            stderr.contains("line ") && stderr.contains("column "),
+            "{stderr}"
+        );
     }
 }
 
@@ -429,7 +467,7 @@ fn a_context_window_with_no_room_for_a_story_is_refused_before_anything_is_print
         EXAMPLE_MODEL,
         &["context_window = 1500"],
     );
-    let stderr = refused(&["werewolf", &config]);
+    let stderr = refused(&["play", &config]);
     assert!(
         stderr.contains("[models.qwen] context_window is 1500 tokens, smaller than the"),
         "{stderr}"
@@ -445,7 +483,7 @@ fn a_context_window_of_0_is_refused_before_anything_is_printed() {
         EXAMPLE_MODEL,
         &["context_window = 0"],
     );
-    let stderr = refused(&["werewolf", &config]);
+    let stderr = refused(&["play", &config]);
     assert!(
         stderr
             .contains("[models.qwen] context_window is 0; a context window holds at least 1 token"),
@@ -566,7 +604,8 @@ fn a_table_of_random_werewolves_and_prompted_villagers_plays_to_the_end() {
     std::fs::write(
         &path,
         format!(
-            "[phases]
+            "game = \"werewolf\"
+[phases]
 {}
 [models.qwen]
 base_url = \"{base_url}\"
@@ -688,11 +727,11 @@ fn a_template_that_cannot_render_is_an_error_before_anything_is_printed() {
     let path = format!("{}/broken-template.toml", env!("CARGO_TARGET_TMPDIR"));
     std::fs::write(
         &path,
-        "strategy = \"plain\"\n[models.m]\nbase_url = \"http://localhost:1234/v1\"\nid = \"m\"\n\
+        "game = \"werewolf\"\nstrategy = \"plain\"\n[models.m]\nbase_url = \"http://localhost:1234/v1\"\nid = \"m\"\n\
          [strategies.plain]\npolicy = \"prompted\"\nsystem = \"{{ rulez }}\"\n",
     )
     .unwrap();
-    let stderr = refused(&["werewolf", &path]);
+    let stderr = refused(&["play", &path]);
     for expected in ["plain", "Player 1", "werewolf", "rulez"] {
         assert!(stderr.contains(expected), "{stderr}");
     }
@@ -741,7 +780,8 @@ fn a_ratify_limit_longer_than_the_day_limit_is_refused_before_anything_is_printe
     let base_url = playing(&[EXAMPLE_MODEL]);
     let config = configured("ratify", &base_url, EXAMPLE_MODEL, &[]);
     rephased(&config, &["day_limit = \"10s\"", "ratify_limit = \"20s\""]);
-    let stderr = refused(&["werewolf", &config]);
+    let stderr = refused(&["play", &config]);
+    assert_invalid(&stderr, &config);
     assert!(
         stderr.contains("the ratify limit (20s) is longer than the day limit (10s)"),
         "{stderr}"
@@ -750,8 +790,8 @@ fn a_ratify_limit_longer_than_the_day_limit_is_refused_before_anything_is_printe
 
 #[test]
 fn a_configuration_file_that_cannot_be_read_is_an_error_naming_it() {
-    let stderr = refused(&["werewolf", "no-such-file.toml"]);
-    assert!(stderr.contains("no-such-file.toml"), "{stderr}");
+    let stderr = refused(&["play", "no-such-file.toml"]);
+    assert_invalid(&stderr, "no-such-file.toml");
 }
 
 #[test]
@@ -774,7 +814,7 @@ fn a_model_that_does_not_play_when_asked_is_refused_in_the_provider_s_words() {
     ];
     for (name, base_url, phase, said) in refusals {
         let config = configured(name, &base_url, EXAMPLE_MODEL, &[]);
-        let stderr = refused(&["werewolf", &config]);
+        let stderr = refused(&["play", &config]);
         assert!(
             stderr.starts_with("Error: setting up the model qwen"),
             "{stderr}"
@@ -799,7 +839,7 @@ fn a_model_that_does_not_play_when_asked_is_refused_in_the_provider_s_words() {
 fn a_model_its_provider_does_not_serve_is_refused() {
     let base_url = serving(&["llama-3.1-8b-instruct"]);
     let config = configured("unserved", &base_url, EXAMPLE_MODEL, &[]);
-    let stderr = refused(&["werewolf", &config]);
+    let stderr = refused(&["play", &config]);
     assert!(stderr.contains("the model qwen"), "{stderr}");
     assert!(stderr.contains(&base_url), "{stderr}");
     assert!(stderr.contains(EXAMPLE_MODEL), "{stderr}");
@@ -882,7 +922,7 @@ fn the_second_model_failing_its_probe_is_refused_naming_it_and_nothing_is_played
         &claude_url,
         "claude-sonnet-4-5",
     );
-    let stderr = refused(&["werewolf", &config]);
+    let stderr = refused(&["play", &config]);
     assert!(
         stderr.starts_with("Error: setting up the model qwen"),
         "{stderr}"
@@ -1031,7 +1071,7 @@ fn the_models_command_refuses_a_key_variable_that_is_not_set_before_asking_anyon
 /// Play Avalon with `args` after the game: the events on standard error,
 /// parsed, and what was printed.
 fn played_avalon(args: &[&str]) -> (Vec<Event<avalon::Entry>>, String) {
-    let output = succeeded(&[&["avalon"], args].concat());
+    let output = succeeded(&[&["play"], args].concat());
     let stderr = String::from_utf8(output.stderr).unwrap();
     let events = stderr
         .lines()
@@ -1097,7 +1137,7 @@ fn avalon_plays_the_default_table_to_the_end_and_tells_it() {
 fn avalon_plays_any_valid_table_under_the_limits_the_file_gives() {
     let config = written(
         "avalon-table",
-        "[phases]\nvote_limit = \"90s\"\n[roles.servant]\ncount = 3\n[roles.minion]\ncount = 2\n\
+        "game = \"avalon\"\n[phases]\nvote_limit = \"90s\"\n[roles.servant]\ncount = 3\n[roles.minion]\ncount = 2\n\
          [roles.percival]\ncount = 1\n[roles.morgana]\ncount = 1\n",
     );
     let (events, printed) = played_avalon(&[&config]);
@@ -1117,7 +1157,7 @@ fn avalon_plays_any_valid_table_under_the_limits_the_file_gives() {
 
 #[test]
 fn avalon_no_log_leaves_standard_error_empty() {
-    let output = succeeded(&["avalon", &avalon_example("random.toml"), "--no-log"]);
+    let output = succeeded(&["play", &avalon_example("random.toml"), "--no-log"]);
     assert!(output.stderr.is_empty(), "{output:?}");
     assert!(
         String::from_utf8(output.stdout)
@@ -1130,17 +1170,21 @@ fn avalon_no_log_leaves_standard_error_empty() {
 fn avalon_refuses_an_invalid_table_saying_what_is_wrong() {
     let config = written(
         "avalon-no-merlin",
-        "[roles.merlin]\ncount = 0\n[roles.servant]\ncount = 3\n",
+        "game = \"avalon\"\n[roles.merlin]\ncount = 0\n[roles.servant]\ncount = 3\n",
     );
-    let stderr = refused(&["avalon", &config]);
+    let stderr = refused(&["play", &config]);
+    assert_invalid(&stderr, &config);
     assert!(
         stderr.contains("a table has Merlin exactly when it has an Assassin"),
         "{stderr}"
     );
-    let config = written("avalon-too-few", "[roles.servant]\ncount = 0\n");
-    let stderr = refused(&["avalon", &config]);
+    let config = written(
+        "avalon-too-few",
+        "game = \"avalon\"\n[roles.servant]\ncount = 0\n",
+    );
+    let stderr = refused(&["play", &config]);
     assert!(stderr.contains("5 to 10 players"), "{stderr}");
-    assert_usage_error(&["avalon", "game.toml", "other.toml"]);
+    assert_usage_error(&["play", "game.toml", "other.toml"]);
 }
 
 /// The configuration Avalon's log has right after the deal.
@@ -1190,7 +1234,7 @@ fn written(test: &str, file: &str) -> String {
 fn avalon_takes_the_role_counts_and_the_limits_from_the_file() {
     let config = written(
         "avalon-counted",
-        "[phases]\nvote_limit = \"2m\"\nquest_limit = \"3m\"\n[roles.servant]\ncount = 3\n[roles.minion]\ncount = 2\n",
+        "game = \"avalon\"\n[phases]\nvote_limit = \"2m\"\nquest_limit = \"3m\"\n[roles.servant]\ncount = 3\n[roles.minion]\ncount = 2\n",
     );
     let (events, printed) = played_avalon(&[&config]);
     let configuration = avalon_configuration(&events);
@@ -1203,12 +1247,6 @@ fn avalon_takes_the_role_counts_and_the_limits_from_the_file() {
         printed.contains("A proposal waits 1m, a vote 2m, a quest 3m"),
         "{printed}"
     );
-}
-
-#[test]
-fn avalon_refuses_a_file_it_cannot_read() {
-    let stderr = refused(&["avalon", "no-such-file.toml"]);
-    assert!(stderr.contains("no-such-file.toml"), "{stderr}");
 }
 
 /// A configuration file written for this test: Avalon's prompted example,
@@ -1321,7 +1359,7 @@ fn every_call_an_avalon_player_makes_logs_its_usage_and_the_probe_logs_none() {
 fn avalon_refuses_a_model_that_does_not_play_naming_it_before_anything_is_printed() {
     let base_url = refusing(&[EXAMPLE_MODEL]);
     let config = avalon_prompted("avalon-refused", &base_url, "");
-    let stderr = refused(&["avalon", &config]);
+    let stderr = refused(&["play", &config]);
     for said in [
         "setting up the model qwen".to_string(),
         format!("{EXAMPLE_MODEL} did not answer as the leader"),

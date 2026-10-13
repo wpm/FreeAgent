@@ -3,7 +3,9 @@
 # from the root of a release archive, or from apps/social-deduction in a
 # checkout, with
 #
-#     social-deduction avalon configs/avalon/prompted.toml
+#     social-deduction play configs/avalon/prompted.toml
+
+game = "avalon"
 
 # Every role not allotted otherwise plays this strategy.
 strategy = "everyone"
