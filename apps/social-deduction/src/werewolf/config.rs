@@ -1024,14 +1024,14 @@ count = 8
             "the ratify limit (30s) is longer than the day limit (20s)"
         );
         // Against the code's day limit when the file gives none.
-        let longer = format!(
-            "[phases]\nratify_limit = \"{}\"\n",
-            format_duration(Rules::default().day_limit + Duration::from_secs(1))
-        );
-        assert!(
-            unsettled(&longer).starts_with("the ratify limit"),
-            "{}",
-            unsettled(&longer)
+        let day_limit = Rules::default().day_limit;
+        let ratify_limit = format_duration(day_limit + Duration::from_secs(1));
+        assert_eq!(
+            unsettled(&format!("[phases]\nratify_limit = \"{ratify_limit}\"\n")),
+            format!(
+                "the ratify limit ({ratify_limit}) is longer than the day limit ({})",
+                format_duration(day_limit)
+            )
         );
         // One as long as the day is allowed.
         let file = "[phases]\nday_limit = \"20s\"\nratify_limit = \"20s\"\n";
