@@ -360,6 +360,11 @@ fn error(message: &str) -> String {
     serde_json::json!({"error": {"message": message, "type": "invalid_request_error"}}).to_string()
 }
 
+/// The usage every canned completion reports.
+pub fn reported() -> serde_json::Value {
+    serde_json::json!({"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})
+}
+
 /// A completion in OpenAI's shape whose one choice calls the tool `name`
 /// with `arguments`, with the fields a provider adds that are not read.
 pub fn completion(name: &str, arguments: &serde_json::Value) -> String {
@@ -395,7 +400,7 @@ pub fn completion_of(calls: &[(String, serde_json::Value)]) -> String {
                 "tool_calls": tool_calls,
             },
         }],
-        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        "usage": reported(),
     })
     .to_string()
 }
@@ -417,6 +422,7 @@ mod tests {
             assert_eq!(
                 provider.complete(&selecting(candidates)).await.unwrap(),
                 Response::tool_call("select", &json!({"target": candidates[0]}))
+                    .reporting(reported())
             );
         }
     }
@@ -435,6 +441,7 @@ mod tests {
                 ("speak".to_string(), json!({"text": SAID})),
                 ("select".to_string(), json!({"target": "Player 2"})),
             ])
+            .reporting(reported())
         );
         // A request offering a tool it cannot use is refused as bad, as a
         // server would.
@@ -463,6 +470,7 @@ mod tests {
                 ("select".to_string(), json!({"target": "Player 2"})),
                 ("retract".to_string(), json!({})),
             ])
+            .reporting(reported())
         );
         // Any other seat plays as the playing provider does.
         let other = provider
@@ -479,6 +487,7 @@ mod tests {
                 ("speak".to_string(), json!({"text": SAID})),
                 ("select".to_string(), json!({"target": "Player 1"})),
             ])
+            .reporting(reported())
         );
         // Seats are in the order of their numbers, and the first is the one
         // that sorts before every candidate, not only the one it votes
@@ -511,10 +520,13 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(again, Response::tool_call("wait", &json!({"seconds": 60})));
+        assert_eq!(
+            again,
+            Response::tool_call("wait", &json!({"seconds": 60})).reporting(reported())
+        );
         assert_eq!(
             provider.complete(&selecting(&["Player 2"])).await.unwrap(),
-            Response::tool_call("select", &json!({"target": "Player 2"}))
+            Response::tool_call("select", &json!({"target": "Player 2"})).reporting(reported())
         );
     }
 
@@ -526,7 +538,7 @@ mod tests {
         assert_eq!(listed.context_window, Some(32768));
         assert_eq!(
             provider.complete(&selecting(&["Player 2"])).await.unwrap(),
-            Response::tool_call("select", &json!({"target": "Player 2"}))
+            Response::tool_call("select", &json!({"target": "Player 2"})).reporting(reported())
         );
     }
 
@@ -540,7 +552,7 @@ mod tests {
         );
         assert_eq!(
             provider.complete(&selecting(&["Player 2"])).await.unwrap(),
-            Response::tool_call("select", &json!({"target": "Player 2"}))
+            Response::tool_call("select", &json!({"target": "Player 2"})).reporting(reported())
         );
         let mut request = selecting(&["Player 2"]);
         request.model = "gpt-0".to_string();
@@ -570,7 +582,7 @@ mod tests {
         assert_eq!(provider.models().await.unwrap(), ["qwen2.5-7b-instruct"]);
         assert_eq!(
             provider.complete(&selecting(&["Player 2"])).await.unwrap(),
-            Response::tool_call("select", &json!({"target": "Player 2"}))
+            Response::tool_call("select", &json!({"target": "Player 2"})).reporting(reported())
         );
         let error = provider
             .complete(&by_day(&["Player 2", "Player 3"], 60, "Day 1."))

@@ -422,6 +422,21 @@ impl Player {
         Ok(())
     }
 
+    /// Ask the model `request` in the phase numbered `seq`, and log the
+    /// usage its provider reports for the answer, if it reports one, before
+    /// the answer is judged.
+    async fn complete(&self, seq: u64, request: &Request) -> anyhow::Result<Response> {
+        let mut response = self.mind.model.complete(request).await?;
+        if let Some(usage) = response.usage.take() {
+            self.context.log(Entry::Usage {
+                player: self.context.id.clone(),
+                seq,
+                usage,
+            });
+        }
+        Ok(response)
+    }
+
     /// Ask the model to select one of `candidates` in the night numbered
     /// `seq`, which `view` shows and which lasts `limit`, and send the
     /// selection to the environment, unless the night has ended by the time
@@ -439,7 +454,7 @@ impl Player {
     ) -> anyhow::Result<()> {
         let voting = Voting::of(self.mind.ratified, false);
         let (request, shown) = self.request(view, limit, voting, night_tools(candidates))?;
-        let response = self.mind.model.complete(&request).await?;
+        let response = self.complete(seq, &request).await?;
         let target = selected(&response, candidates)?;
         self.carry_out(seq, view, vec![Sending::Select(target)], shown)?;
         Ok(())
@@ -466,7 +481,7 @@ impl Player {
         let voting = Voting::of(self.mind.ratified, self.mind.voted(seq));
         let tools = day_tools(candidates, limit, voting);
         let (request, shown) = self.request(view, limit, voting, tools)?;
-        let response = self.mind.model.complete(&request).await?;
+        let response = self.complete(seq, &request).await?;
         let Asked { sends, wait } = asked(&response, candidates, limit, voting)?;
         let still_on = self.carry_out(seq, view, sends, shown)?;
         if still_on && let Some(after) = wait {
@@ -1424,6 +1439,17 @@ mod tests {
         ])
     }
 
+    /// Two werewolves and two villagers, at parity once the first night
+    /// ends, so a game of them ends with nobody selecting anything.
+    fn at_parity() -> HashMap<PlayerId, Role> {
+        HashMap::from([
+            ("wolf1".to_string(), Role::Werewolf),
+            ("wolf2".to_string(), Role::Werewolf),
+            ("ann".to_string(), Role::Villager),
+            ("bob".to_string(), Role::Villager),
+        ])
+    }
+
     /// The answer that selects the werewolf itself, who is no candidate.
     fn naming_itself(_: &Request) -> anyhow::Result<Response> {
         Ok(Response::tool_call(SELECT, &json!({"target": "wolf"})))
@@ -1797,14 +1823,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_game_whose_model_always_fails_is_told_failure_by_failure_and_still_ends() {
-        // Two werewolves against two villagers are at parity once the first
-        // night ends, so the game ends with nobody selecting anything.
-        let roles = HashMap::from([
-            ("wolf1".to_string(), Role::Werewolf),
-            ("wolf2".to_string(), Role::Werewolf),
-            ("ann".to_string(), Role::Villager),
-            ("bob".to_string(), Role::Villager),
-        ]);
+        let roles = at_parity();
         let model = Arc::new(FakeModel::failing("the model is down"));
         let (winner, entries, took) = play(roles, quick(), model).await.unwrap();
         assert_eq!(winner, Team::Werewolves);
@@ -2186,6 +2205,127 @@ mod tests {
                     .all(|asked| !asked.contains("bob votes against dan")),
                 "{other}: {asked:?}"
             );
+        }
+    }
+
+    /// `answer`, its provider reporting a usage naming whose request it
+    /// answered.
+    fn reporting(
+        answer: impl Fn(&Request) -> anyhow::Result<Response> + Send + Sync + 'static,
+    ) -> Arc<FakeModel> {
+        answering(move |request| {
+            let usage = json!({"asked": request.messages[0].content});
+            answer(request).map(|response| response.reporting(usage))
+        })
+    }
+
+    /// The usages the players logged, each with where it is in the log,
+    /// who logged it, and in which phase, in the log's order.
+    fn usages(logged: &[Entry]) -> Vec<(usize, &str, u64, &serde_json::Value)> {
+        logged
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| match entry {
+                Entry::Usage { player, seq, usage } => Some((i, player.as_str(), *seq, usage)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The phases of what `player` logged sending, withholding or failing
+    /// after the entry at `i` in the log and before its next usage: what
+    /// came of the call whose usage is at `i`.
+    fn came_of(logged: &[Entry], i: usize, player: &str) -> Vec<Option<u64>> {
+        logged[i + 1..]
+            .iter()
+            .take_while(|entry| !matches!(entry, Entry::Usage { player: by, .. } if by == player))
+            .filter_map(|entry| match entry {
+                Entry::Action { from, message, .. } | Entry::Withheld { from, message, .. }
+                    if from == player =>
+                {
+                    Some(message.seq())
+                }
+                Entry::Failed {
+                    player: by, seq, ..
+                } if by == player => Some(Some(*seq)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn every_model_call_logs_the_usage_reported_naming_the_player_and_the_phase() {
+        let model = reporting(choosing_first);
+        let (_, logged, _) = play(doctored(), quick(), Arc::clone(&model)).await.unwrap();
+        let usages = usages(&logged);
+        assert_eq!(usages.len(), model.requests().len());
+        let mut came = 0;
+        for (i, player, seq, usage) in usages {
+            assert_eq!(*usage, json!({"asked": told(player)}));
+            let phases = came_of(&logged, i, player);
+            assert!(
+                phases.iter().all(|phase| *phase == Some(seq)),
+                "{player} in {seq}: {phases:?}"
+            );
+            came += phases.len();
+        }
+        assert!(came > 0);
+        // Narration leaves the usages out.
+        let without: Vec<Entry> = logged
+            .iter()
+            .filter(|entry| !matches!(entry, Entry::Usage { .. }))
+            .cloned()
+            .collect();
+        assert_eq!(narrated(logged), narrated(without));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_response_that_is_not_well_formed_logs_its_usage_before_its_failure() {
+        // The werewolf names itself by night, and everyone plays by day.
+        let model = reporting(|request| {
+            if is_day(request) {
+                choosing_first(request)
+            } else {
+                naming_itself(request)
+            }
+        });
+        let roles = one_wolf_against(&["ann", "bob"]);
+        let (_, logged, _) = play(roles, quick(), Arc::clone(&model)).await.unwrap();
+        let usages = usages(&logged);
+        let failures: Vec<(usize, &str, u64)> = logged
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| match entry {
+                Entry::Failed { player, seq, .. } => Some((i, player.as_str(), *seq)),
+                _ => None,
+            })
+            .collect();
+        assert!(!failures.is_empty());
+        for (failed, player, seq) in failures {
+            let (i, _, called, _) = usages
+                .iter()
+                .rev()
+                .find(|(i, by, _, _)| *i < failed && *by == player)
+                .unwrap();
+            assert_eq!(*called, seq, "{player}");
+            assert_eq!(came_of(&logged, *i, player), [Some(seq)], "{player}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_response_with_no_usage_or_no_response_logs_no_usage() {
+        // A game at parity ends even with a model that is down.
+        let roles = at_parity();
+        for answer in [
+            choosing_first as fn(&Request) -> anyhow::Result<Response>,
+            down,
+        ] {
+            let model = answering(answer);
+            let (_, logged, _) = play(roles.clone(), quick(), Arc::clone(&model))
+                .await
+                .unwrap();
+            assert!(!model.requests().is_empty());
+            assert!(usages(&logged).is_empty(), "{logged:?}");
         }
     }
 
