@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn a_request_is_estimated_at_its_messages_and_tools_each_with_an_allowance_and_the_reply() {
-        let request = selecting(&["player2", "player3"]);
+        let request = selecting(&["Player 2", "Player 3"]);
         let messages: u64 = request
             .messages
             .iter()
@@ -917,14 +917,14 @@ mod tests {
      {
         let (base_url, served) = answering(
             "200 OK",
-            &completion("select", &json!({"target": "player2"})),
+            &completion("select", &json!({"target": "Player 2"})),
         );
         let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
-        let request = selecting(&["player2", "player3"]);
+        let request = selecting(&["Player 2", "Player 3"]);
         let response = provider.complete(&request).await.unwrap();
         assert_eq!(
             response,
-            Response::tool_call("select", &json!({"target": "player2"}))
+            Response::tool_call("select", &json!({"target": "Player 2"}))
         );
         let served = served.join().unwrap();
         let head = &served.head;
@@ -944,11 +944,11 @@ mod tests {
     async fn a_completion_request_carries_the_key_as_a_bearer_token() {
         let (base_url, served) = answering(
             "200 OK",
-            &completion("select", &json!({"target": "player2"})),
+            &completion("select", &json!({"target": "Player 2"})),
         );
         let key = SecretString::from("sk-secret");
         let provider = Provider::new(base_url, Some(key), TIMEOUT).unwrap();
-        provider.complete(&selecting(&["player2"])).await.unwrap();
+        provider.complete(&selecting(&["Player 2"])).await.unwrap();
         let head = served.join().unwrap().head;
         assert!(
             head.contains(&"authorization: bearer sk-secret".to_string()),
@@ -964,7 +964,7 @@ mod tests {
         let key = SecretString::from("sk-secret");
         let provider = Provider::new(base_url.clone(), Some(key), TIMEOUT).unwrap();
         let error = provider
-            .complete(&selecting(&["player2"]))
+            .complete(&selecting(&["Player 2"]))
             .await
             .unwrap_err();
         let shown = format!("{error:#}");
@@ -1003,7 +1003,7 @@ mod tests {
             let (base_url, _served) = answering(answered, "{}");
             let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
             let error = provider
-                .complete(&selecting(&["player2"]))
+                .complete(&selecting(&["Player 2"]))
                 .await
                 .unwrap_err();
             assert_eq!(error.downcast_ref::<Rejection>().unwrap().status, status);
@@ -1016,7 +1016,7 @@ mod tests {
         // Nor does a provider that was not reached.
         let provider = Provider::new(unreachable(), None, TIMEOUT).unwrap();
         let error = provider
-            .complete(&selecting(&["player2"]))
+            .complete(&selecting(&["Player 2"]))
             .await
             .unwrap_err();
         assert!(!concerns_the_model(&error), "{error:#}");
@@ -1034,7 +1034,7 @@ mod tests {
         let provider = Provider::new(base_url, None, Duration::from_millis(100)).unwrap();
         let started = std::time::Instant::now();
         let error = provider
-            .complete(&selecting(&["player2"]))
+            .complete(&selecting(&["Player 2"]))
             .await
             .unwrap_err();
         assert!(started.elapsed() < TIMEOUT, "{error:#}");
@@ -1045,7 +1045,7 @@ mod tests {
         let (base_url, _served) = answering("200 OK", r#"{"choices": []}"#);
         let provider = Provider::new(base_url.clone(), None, TIMEOUT).unwrap();
         let error = provider
-            .complete(&selecting(&["player2"]))
+            .complete(&selecting(&["Player 2"]))
             .await
             .unwrap_err();
         let shown = format!("{error:#}");
@@ -1060,6 +1060,6 @@ mod tests {
     async fn a_completion_that_is_not_the_shape_expected_is_an_error() {
         let (base_url, _served) = answering("200 OK", r#"{"data": []}"#);
         let provider = Provider::new(base_url, None, TIMEOUT).unwrap();
-        assert!(provider.complete(&selecting(&["player2"])).await.is_err());
+        assert!(provider.complete(&selecting(&["Player 2"])).await.is_err());
     }
 }

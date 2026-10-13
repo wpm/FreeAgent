@@ -351,7 +351,7 @@ team in secret, and it goes when a strict majority of all the players
 approves. Each member of a team that goes supports or sabotages the quest
 in secret, and the quest fails when enough of them sabotage it: one,
 except two on the fourth quest with seven or more players. Only how many
-sabotaged it is told. `player1` leads first, and the lead passes in seat
+sabotaged it is told. `Player 1` leads first, and the lead passes in seat
 order after every proposal. Everyone may talk in every phase.
 
 Good wins with three successful quests, unless the Assassin then names
@@ -436,7 +436,7 @@ the game stands: the quest and the proposal, the leader, the team's size
 and the sabotages that fail it, the team proposed, how long the phase
 lasts, and what is asked of the player. The story opens with who the
 player is, which side it is on, and what it sees, such as "You are
-player4, Percival, on the good side. One of player1 and player3 is Merlin
+Player 4, Percival, on the good side. One of Player 1 and Player 3 is Merlin
 and the other Morgana.", and tells each
 phase, how the one before came out, the player's own choices and all
 talk. Every announcement carries the record of every team, vote and

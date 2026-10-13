@@ -250,8 +250,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_player_observes_what_it_is_sent_in_the_phase_it_is_in_and_does_nothing_about_it() {
-        // Player2 talks in every phase, once for the phase before it too.
-        // Player3, who plays at random, observes both in the phase it is
+        // Player 2 talks in every phase, once for the phase before it too.
+        // Player 3, who plays at random, observes both in the phase it is
         // in.
         let talker: Script = Box::new(|me, seq, _| {
             vec![
@@ -259,21 +259,21 @@ mod tests {
                 utterance(seq.saturating_sub(1), me, 200 + seq, "Late."),
             ]
         });
-        let mut puppets = HashMap::from([("player2", Actor::puppet(talker))]);
-        for player in ["player1", "player4", "player5"] {
+        let mut puppets = HashMap::from([("Player 2", Actor::puppet(talker))]);
+        for player in ["Player 1", "Player 4", "Player 5"] {
             puppets.insert(player, mute());
         }
         let (_, logged, _) = play(five(), quick(), puppets).await.unwrap();
-        let heard: Vec<(&str, u64, u64)> = observed_by(&logged, "player3")
+        let heard: Vec<(&str, u64, u64)> = observed_by(&logged, "Player 3")
             .into_iter()
-            .filter(|(from, _, seq)| *from == "player2" && *seq == 1)
+            .filter(|(from, _, seq)| *from == "Player 2" && *seq == 1)
             .collect();
-        assert_eq!(heard, [("player2", 101, 1), ("player2", 201, 1)]);
-        // Player3 never speaks: all it sends is choices.
+        assert_eq!(heard, [("Player 2", 101, 1), ("Player 2", 201, 1)]);
+        // Player 3 never speaks: all it sends is choices.
         let sent: Vec<&Message> = logged
             .iter()
             .filter_map(|entry| match entry {
-                Entry::Action { from, message, .. } if from == "player3" => Some(message),
+                Entry::Action { from, message, .. } if from == "Player 3" => Some(message),
                 _ => None,
             })
             .collect();
@@ -286,8 +286,8 @@ mod tests {
 
     #[test]
     fn a_leader_proposes_a_team_of_the_size_needed_drawn_from_every_team_itself_included() {
-        let me = id("player1");
-        let view = view_of("player1", Phase::Propose, &[]);
+        let me = id("Player 1");
+        let view = view_of("Player 1", Phase::Propose, &[]);
         let mut teams = HashSet::new();
         for _ in 0..500 {
             let team = choose(&me, &view).unwrap().team().unwrap().clone();
@@ -304,8 +304,8 @@ mod tests {
 
     #[test]
     fn a_player_approves_or_rejects_with_even_odds() {
-        let me = id("player3");
-        let view = view_of("player3", Phase::Vote, &["player1", "player2"]);
+        let me = id("Player 3");
+        let view = view_of("Player 3", Phase::Vote, &["Player 1", "Player 2"]);
         let ballots: Vec<Option<Choice>> = (0..200).map(|_| choose(&me, &view)).collect();
         for ballot in [Ballot::Approve, Ballot::Reject] {
             let cast = ballots
@@ -318,18 +318,18 @@ mod tests {
 
     #[test]
     fn a_good_member_supports_and_an_evil_one_supports_or_sabotages() {
-        let team = ["player1", "player2"];
-        let merlin = view_of("player1", Phase::Quest, &team);
+        let team = ["Player 1", "Player 2"];
+        let merlin = view_of("Player 1", Phase::Quest, &team);
         assert_eq!(merlin.role, Role::Merlin);
         for _ in 0..50 {
             assert_eq!(
-                choose(&id("player1"), &merlin),
+                choose(&id("Player 1"), &merlin),
                 Some(Choice::Deed(Deed::Support))
             );
         }
-        let assassin = view_of("player2", Phase::Quest, &team);
+        let assassin = view_of("Player 2", Phase::Quest, &team);
         let deeds: HashSet<Option<Choice>> = (0..100)
-            .map(|_| choose(&id("player2"), &assassin))
+            .map(|_| choose(&id("Player 2"), &assassin))
             .collect();
         assert_eq!(
             deeds,
@@ -342,16 +342,16 @@ mod tests {
 
     #[test]
     fn the_assassin_names_one_of_the_players_it_does_not_see_as_evil() {
-        let me = id("player2");
-        let view = view_of("player2", Phase::Assassinate, &[]);
+        let me = id("Player 2");
+        let view = view_of("Player 2", Phase::Assassinate, &[]);
         let named: HashSet<Option<Choice>> = (0..200).map(|_| choose(&me, &view)).collect();
-        let expected = ["player1", "player3", "player4"]
+        let expected = ["Player 1", "Player 3", "Player 4"]
             .map(|player| Some(Choice::Target(id(player))))
             .into();
         assert_eq!(named, expected);
         // Seeing everyone else as evil, it names nobody.
         let mut view = view;
-        view.players = vec![me.clone(), id("player5")];
+        view.players = vec![me.clone(), id("Player 5")];
         assert_eq!(choose(&me, &view), None);
     }
 

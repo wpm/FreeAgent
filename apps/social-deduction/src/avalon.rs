@@ -37,7 +37,9 @@ pub mod random;
 pub mod report;
 
 use crate::report::in_order;
-use crate::seat::{ENVIRONMENT, PlayerId, to_everyone_but, to_the_environment, to_the_players_but};
+use crate::seat::{
+    ENVIRONMENT, PlayerId, seats, to_everyone_but, to_the_environment, to_the_players_but,
+};
 use anyhow::ensure;
 use async_trait::async_trait;
 use clap::Args;
@@ -538,10 +540,9 @@ impl Table {
         Ok(())
     }
 
-    /// The seats, named `player1` onward, one per player. The names say
-    /// nothing about the roles, since every player sees every name.
+    /// The seats, named `Player 1` onward, one per player.
     pub fn seats(&self) -> impl Iterator<Item = PlayerId> {
-        (1..=self.players()).map(|seat| format!("player{seat}"))
+        seats(self.players())
     }
 }
 
@@ -1424,7 +1425,7 @@ pub(crate) mod tests {
         name.to_string()
     }
 
-    /// The default table, seated `player1` to `player5`: Merlin in the
+    /// The default table, seated `Player 1` to `Player 5`: Merlin in the
     /// first seat, the Assassin in the second, the Servants in the third
     /// and fourth, and the Minion in the fifth.
     pub(crate) fn five() -> HashMap<PlayerId, Role> {
@@ -1437,12 +1438,12 @@ pub(crate) mod tests {
         ])
     }
 
-    /// `roles`, seated in order from `player1`.
+    /// `roles`, seated in order from `Player 1`.
     pub(crate) fn seated(roles: &[Role]) -> HashMap<PlayerId, Role> {
         roles
             .iter()
             .enumerate()
-            .map(|(seat, role)| (format!("player{}", seat + 1), *role))
+            .map(|(seat, role)| (format!("Player {}", seat + 1), *role))
             .collect()
     }
 
@@ -1473,7 +1474,7 @@ pub(crate) mod tests {
     /// order.
     fn sight(roles: &[Role], seat: usize) -> Vec<(String, Seen)> {
         let state = State::new(seated(roles));
-        let sees = state.sees(&format!("player{seat}"));
+        let sees = state.sees(&format!("Player {seat}"));
         in_order(sees.keys())
             .into_iter()
             .map(|player| (player.clone(), sees[player]))
@@ -1486,7 +1487,7 @@ pub(crate) mod tests {
     }
 
     /// Every role at one table: Merlin, Percival, a Servant, the Assassin,
-    /// Morgana, Mordred, Oberon and a Minion, from `player1` to `player8`.
+    /// Morgana, Mordred, Oberon and a Minion, from `Player 1` to `Player 8`.
     const EVERYONE: [Role; 8] = [
         Role::Merlin,
         Role::Percival,
@@ -1500,13 +1501,16 @@ pub(crate) mod tests {
 
     #[test]
     fn merlin_sees_every_evil_player_but_mordred() {
-        let evil = as_seen(&["player4", "player5", "player7", "player8"], Seen::Evil);
+        let evil = as_seen(
+            &["Player 4", "Player 5", "Player 7", "Player 8"],
+            Seen::Evil,
+        );
         assert_eq!(sight(&EVERYONE, 1), evil);
     }
 
     #[test]
     fn percival_sees_merlin_and_morgana_alike() {
-        let seen = as_seen(&["player1", "player5"], Seen::MerlinOrMorgana);
+        let seen = as_seen(&["Player 1", "Player 5"], Seen::MerlinOrMorgana);
         assert_eq!(sight(&EVERYONE, 2), seen);
     }
 
@@ -1516,7 +1520,7 @@ pub(crate) mod tests {
             let evil: Vec<String> = [4, 5, 6, 8]
                 .into_iter()
                 .filter(|other| *other != seat)
-                .map(|other| format!("player{other}"))
+                .map(|other| format!("Player {other}"))
                 .collect();
             let evil: Vec<&str> = evil.iter().map(String::as_str).collect();
             assert_eq!(sight(&EVERYONE, seat), as_seen(&evil, Seen::Evil), "{seat}");
@@ -1663,8 +1667,8 @@ pub(crate) mod tests {
         };
         let start = rules.start(&dealt(&five(), RANDOM));
         let json = serde_json::to_value(&start).unwrap();
-        assert_eq!(json["Start"]["roles"]["player1"], "Merlin");
-        assert_eq!(json["Start"]["strategies"]["player1"], "random");
+        assert_eq!(json["Start"]["roles"]["Player 1"], "Merlin");
+        assert_eq!(json["Start"]["strategies"]["Player 1"], "random");
         assert_eq!(json["Start"]["propose_limit"], "1m 30s");
         assert_eq!(json["Start"]["vote_limit"], "1m");
         assert_eq!(json["Start"]["quest_limit"], "1m");
@@ -1680,18 +1684,18 @@ pub(crate) mod tests {
             Entry::Action {
                 from: ENVIRONMENT.to_string(),
                 n: 2,
-                to: HashSet::from([id("player2")]),
-                message: announcement(1, state.view(&id("player2"))),
+                to: HashSet::from([id("Player 2")]),
+                message: announcement(1, state.view(&id("Player 2"))),
                 seen: None,
                 forgot: None,
             },
             Entry::Action {
-                from: id("player1"),
+                from: id("Player 1"),
                 n: 1,
                 to: to_the_environment(),
-                message: Choice::Team(vec![id("player1"), id("player3")]).message(
+                message: Choice::Team(vec![id("Player 1"), id("Player 3")]).message(
                     1,
-                    id("player1"),
+                    id("Player 1"),
                     1,
                 ),
                 seen: None,
@@ -1699,32 +1703,32 @@ pub(crate) mod tests {
             },
             Entry::Observation {
                 by: ENVIRONMENT.to_string(),
-                from: id("player1"),
+                from: id("Player 1"),
                 n: 1,
                 seq: 1,
             },
             Entry::Withheld {
-                from: id("player2"),
-                message: utterance(2, "player2", 0, "Too late."),
+                from: id("Player 2"),
+                message: utterance(2, "Player 2", 0, "Too late."),
                 seen: Some(7),
                 forgot: None,
             },
             Entry::Failed {
-                player: id("player3"),
+                player: id("Player 3"),
                 seq: 3,
                 error: "connection refused".to_string(),
             },
             Entry::Proposed { seq: 1, team: None },
             Entry::Proposed {
                 seq: 2,
-                team: Some(vec![id("player2"), id("player3")]),
+                team: Some(vec![id("Player 2"), id("Player 3")]),
             },
             Entry::Tallied {
                 seq: 3,
                 tally: Tally::of(
                     HashMap::from([
-                        (id("player1"), Ballot::Approve),
-                        (id("player2"), Ballot::Reject),
+                        (id("Player 1"), Ballot::Approve),
+                        (id("Player 2"), Ballot::Reject),
                     ]),
                     5,
                 ),
@@ -1732,14 +1736,14 @@ pub(crate) mod tests {
             Entry::Quested {
                 seq: 4,
                 result: QuestResult {
-                    team: vec![id("player2"), id("player3")],
+                    team: vec![id("Player 2"), id("Player 3")],
                     sabotages: 1,
                     succeeded: false,
                 },
             },
             Entry::Assassinated {
                 seq: 20,
-                target: Some(id("player1")),
+                target: Some(id("Player 1")),
                 merlin: true,
             },
             Entry::Assassinated {
@@ -1772,7 +1776,7 @@ pub(crate) mod tests {
         let announce = Message::Announce {
             seq: 1,
             n: 1,
-            view: State::new(five()).view(&id("player1")),
+            view: State::new(five()).view(&id("Player 1")),
             limit: Duration::from_secs(90),
         };
         let json = serde_json::to_value(&announce).unwrap();
@@ -1795,7 +1799,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_message_to_others_is_numbered_and_names_its_phase_and_a_reminder_is_not() {
-        let view = State::new(five()).view(&id("player1"));
+        let view = State::new(five()).view(&id("Player 1"));
         let announced = announcement(2, view);
         assert_eq!(announced.number(), Some(2));
         assert_eq!(announced.seq(), Some(2));
@@ -1832,10 +1836,12 @@ pub(crate) mod tests {
 
     #[test]
     fn talk_goes_to_the_other_players_and_every_choice_to_the_environment_alone() {
-        let view = State::new(five()).view(&id("player1"));
-        let me = id("player1");
+        let view = State::new(five()).view(&id("Player 1"));
+        let me = id("Player 1");
         let [propose, vote, perform, select, say] = sent_by_ann();
-        let others: HashSet<PlayerId> = ["player2", "player3", "player4", "player5"].map(id).into();
+        let others: HashSet<PlayerId> = ["Player 2", "Player 3", "Player 4", "Player 5"]
+            .map(id)
+            .into();
         assert_eq!(receivers(&say, &me, &view), others);
         for choice in [propose, vote, perform, select] {
             assert_eq!(receivers(&choice, &me, &view), to_the_environment());
@@ -1845,11 +1851,11 @@ pub(crate) mod tests {
     #[test]
     fn the_first_seat_leads_the_first_proposal_of_the_first_quest() {
         let state = State::new(five());
-        let view = state.view(&id("player3"));
+        let view = state.view(&id("Player 3"));
         assert_eq!(view.quest.get(), 1);
         assert_eq!(view.proposal.get(), 1);
         assert_eq!(view.phase, Phase::Propose);
-        assert_eq!(view.leader, "player1");
+        assert_eq!(view.leader, "Player 1");
         assert_eq!(view.size, 2);
         assert_eq!(view.sabotages_needed, 1);
         assert_eq!(view.team, None);
@@ -1859,9 +1865,9 @@ pub(crate) mod tests {
         assert!(view.sees.is_empty());
         assert_eq!(
             view.players,
-            ["player1", "player2", "player3", "player4", "player5"]
+            ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
         );
-        assert_eq!(sorted(state.awaited()), ["player1"]);
+        assert_eq!(sorted(state.awaited()), ["Player 1"]);
     }
 
     /// `choices`, each player beside its choice.
@@ -1918,18 +1924,18 @@ pub(crate) mod tests {
         let mut state = State::new(five());
         let proposed = resolve(
             &mut state,
-            &choices(&[("player1", Choice::Team(team(&["player1", "player3"])))]),
+            &choices(&[("Player 1", Choice::Team(team(&["Player 1", "Player 3"])))]),
         );
         assert_eq!(
             proposed,
             Entry::Proposed {
                 seq: 1,
-                team: Some(team(&["player1", "player3"]))
+                team: Some(team(&["Player 1", "Player 3"]))
             }
         );
         assert_eq!(state.phase, Phase::Vote);
-        let view = state.view(&id("player4"));
-        assert_eq!(view.team, Some(team(&["player1", "player3"])));
+        let view = state.view(&id("Player 4"));
+        assert_eq!(view.team, Some(team(&["Player 1", "Player 3"])));
         assert_eq!(view.proposal.get(), 1);
         assert_eq!(sorted(state.awaited()).len(), 5);
     }
@@ -1942,21 +1948,21 @@ pub(crate) mod tests {
             Entry::Proposed { seq: 1, team: None }
         );
         assert_eq!(state.phase, Phase::Propose);
-        let view = state.view(&id("player4"));
-        assert_eq!(view.leader, "player2");
+        let view = state.view(&id("Player 4"));
+        assert_eq!(view.leader, "Player 2");
         assert_eq!(view.proposal.get(), 2);
         assert_eq!(view.quest.get(), 1);
         assert_eq!(view.tally, None);
-        assert_eq!(sorted(state.awaited()), ["player2"]);
+        assert_eq!(sorted(state.awaited()), ["Player 2"]);
     }
 
     #[test]
     fn the_lead_passes_in_seat_order_and_wraps_around() {
-        // Ten seats, so that player10 comes after player9 and before
-        // player1, and lapses that leave the count short of five.
+        // Ten seats, so that Player 10 comes after Player 9 and before
+        // Player 1, and lapses that leave the count short of five.
         let mut roles = seated(&[Role::Servant; 10]);
-        roles.insert(id("player1"), Role::Merlin);
-        roles.insert(id("player2"), Role::Assassin);
+        roles.insert(id("Player 1"), Role::Merlin);
+        roles.insert(id("Player 2"), Role::Assassin);
         let mut state = State::new(roles);
         let mut leaders = vec![];
         for _ in 0..3 {
@@ -1966,10 +1972,10 @@ pub(crate) mod tests {
             }
             // A quest starts the count of failed proposals over.
             leaders.push(state.leader().clone());
-            go_on(&mut state, &["player1", "player2", "player3"], &[]);
+            go_on(&mut state, &["Player 1", "Player 2", "Player 3"], &[]);
             assert_eq!(state.failed, 0);
         }
-        let expected: Vec<String> = (0..15).map(|i| format!("player{}", i % 10 + 1)).collect();
+        let expected: Vec<String> = (0..15).map(|i| format!("Player {}", i % 10 + 1)).collect();
         assert_eq!(leaders, expected);
     }
 
@@ -1983,12 +1989,18 @@ pub(crate) mod tests {
             let leader = state.leader().clone();
             resolve(
                 &mut state,
-                &choices(&[(leader.as_str(), Choice::Team(team(&["player1", "player2"])))]),
+                &choices(&[(
+                    leader.as_str(),
+                    Choice::Team(team(&["Player 1", "Player 2"])),
+                )]),
             );
-            resolve(&mut state, &ballots(&["player1", "player2"], &["player3"]));
+            resolve(
+                &mut state,
+                &ballots(&["Player 1", "Player 2"], &["Player 3"]),
+            );
             assert_eq!(state.winner(), None);
         }
-        assert_eq!(state.view(&id("player1")).proposal.get(), 5);
+        assert_eq!(state.view(&id("Player 1")).proposal.get(), 5);
         resolve(&mut state, &Choices::new());
         assert_eq!(state.winner(), Some((Team::Evil, Victory::Rejections)));
     }
@@ -1999,18 +2011,18 @@ pub(crate) mod tests {
         let mut state = State::new(five());
         resolve(
             &mut state,
-            &choices(&[("player1", Choice::Team(team(&["player1", "player2"])))]),
+            &choices(&[("Player 1", Choice::Team(team(&["Player 1", "Player 2"])))]),
         );
         let tallied = resolve(
             &mut state,
-            &ballots(&["player1", "player2"], &["player3", "player4"]),
+            &ballots(&["Player 1", "Player 2"], &["Player 3", "Player 4"]),
         );
         let tally = Tally {
             ballots: HashMap::from([
-                (id("player1"), Ballot::Approve),
-                (id("player2"), Ballot::Approve),
-                (id("player3"), Ballot::Reject),
-                (id("player4"), Ballot::Reject),
+                (id("Player 1"), Ballot::Approve),
+                (id("Player 2"), Ballot::Approve),
+                (id("Player 3"), Ballot::Reject),
+                (id("Player 4"), Ballot::Reject),
             ]),
             approved: false,
         };
@@ -2023,27 +2035,27 @@ pub(crate) mod tests {
         );
         // The tally is shown in the next proposal, and no team.
         assert_eq!(state.phase, Phase::Propose);
-        let view = state.view(&id("player5"));
+        let view = state.view(&id("Player 5"));
         assert_eq!(view.tally, Some(tally));
         assert_eq!(view.team, None);
-        assert_eq!(view.leader, "player2");
+        assert_eq!(view.leader, "Player 2");
         assert_eq!(view.proposal.get(), 2);
         // Three of five approve: the team goes, and the tally is shown on
         // the quest, with the team.
         resolve(
             &mut state,
-            &choices(&[("player2", Choice::Team(team(&["player2", "player3"])))]),
+            &choices(&[("Player 2", Choice::Team(team(&["Player 2", "Player 3"])))]),
         );
-        assert_eq!(state.view(&id("player5")).tally, None);
+        assert_eq!(state.view(&id("Player 5")).tally, None);
         resolve(
             &mut state,
-            &ballots(&["player1", "player2", "player3"], &[]),
+            &ballots(&["Player 1", "Player 2", "Player 3"], &[]),
         );
         assert_eq!(state.phase, Phase::Quest);
-        let view = state.view(&id("player5"));
+        let view = state.view(&id("Player 5"));
         assert!(view.tally.as_ref().unwrap().approved);
-        assert_eq!(view.team, Some(team(&["player2", "player3"])));
-        assert_eq!(sorted(state.awaited()), ["player2", "player3"]);
+        assert_eq!(view.team, Some(team(&["Player 2", "Player 3"])));
+        assert_eq!(sorted(state.awaited()), ["Player 2", "Player 3"]);
         // And with six players, three is not enough.
         let six = Tally::of(
             ballots(&["a", "b", "c"], &[])
@@ -2058,26 +2070,26 @@ pub(crate) mod tests {
     #[test]
     fn a_quest_fails_on_its_sabotages_and_a_missing_deed_supports() {
         let mut state = State::new(five());
-        let quested = go_on(&mut state, &["player2", "player3"], &["player2"]);
+        let quested = go_on(&mut state, &["Player 2", "Player 3"], &["Player 2"]);
         assert_eq!(
             quested,
             Entry::Quested {
                 seq: 1,
                 result: QuestResult {
-                    team: team(&["player2", "player3"]),
+                    team: team(&["Player 2", "Player 3"]),
                     sabotages: 1,
                     succeeded: false,
                 }
             }
         );
         // Nobody acts: the quest succeeds.
-        let quested = go_on(&mut state, &["player2", "player3", "player4"], &[]);
+        let quested = go_on(&mut state, &["Player 2", "Player 3", "Player 4"], &[]);
         assert_eq!(
             quested,
             Entry::Quested {
                 seq: 1,
                 result: QuestResult {
-                    team: team(&["player2", "player3", "player4"]),
+                    team: team(&["Player 2", "Player 3", "Player 4"]),
                     sabotages: 0,
                     succeeded: true,
                 }
@@ -2085,13 +2097,13 @@ pub(crate) mod tests {
         );
         // The next proposal is the third quest's, the record shows both,
         // and nobody sees who sabotaged.
-        let view = state.view(&id("player3"));
+        let view = state.view(&id("Player 3"));
         assert_eq!(view.quest.get(), 3);
         assert_eq!(view.phase, Phase::Propose);
         assert_eq!(view.record.len(), 2);
         assert!(!view.record[0].succeeded);
         assert_eq!(view.tally, None);
-        assert_eq!(view.leader, "player3");
+        assert_eq!(view.leader, "Player 3");
     }
 
     #[test]
@@ -2106,14 +2118,18 @@ pub(crate) mod tests {
             Role::Minion,
         ]);
         let mut state = State::new(roles.clone());
-        go_on(&mut state, &["player1", "player4"], &[]);
-        go_on(&mut state, &["player2", "player4", "player5"], &["player2"]);
-        go_on(&mut state, &["player1", "player4", "player5"], &[]);
-        assert_eq!(state.view(&id("player1")).sabotages_needed, 2);
+        go_on(&mut state, &["Player 1", "Player 4"], &[]);
+        go_on(
+            &mut state,
+            &["Player 2", "Player 4", "Player 5"],
+            &["Player 2"],
+        );
+        go_on(&mut state, &["Player 1", "Player 4", "Player 5"], &[]);
+        assert_eq!(state.view(&id("Player 1")).sabotages_needed, 2);
         let one = go_on(
             &mut state,
-            &["player2", "player4", "player5", "player6"],
-            &["player2"],
+            &["Player 2", "Player 4", "Player 5", "Player 6"],
+            &["Player 2"],
         );
         assert!(matches!(
             one,
@@ -2132,8 +2148,8 @@ pub(crate) mod tests {
         state.quest = NonZero::new(4).unwrap();
         let two = go_on(
             &mut state,
-            &["player2", "player3", "player4", "player5"],
-            &["player2", "player3"],
+            &["Player 2", "Player 3", "Player 4", "Player 5"],
+            &["Player 2", "Player 3"],
         );
         assert!(matches!(
             two,
@@ -2153,7 +2169,7 @@ pub(crate) mod tests {
         let mut state = State::new(five());
         for quest in 1..=3 {
             assert_eq!(state.winner(), None, "{quest}");
-            go_on(&mut state, &["player2", "player3"], &["player2"]);
+            go_on(&mut state, &["Player 2", "Player 3"], &["Player 2"]);
         }
         assert_eq!(state.winner(), Some((Team::Evil, Victory::Sabotage)));
     }
@@ -2161,25 +2177,29 @@ pub(crate) mod tests {
     #[test]
     fn three_successful_quests_go_to_the_assassination_where_naming_merlin_wins_for_evil() {
         let mut state = State::new(five());
-        go_on(&mut state, &["player1", "player3"], &[]);
-        go_on(&mut state, &["player2", "player3", "player4"], &["player2"]);
-        go_on(&mut state, &["player1", "player3"], &[]);
-        go_on(&mut state, &["player1", "player3", "player4"], &[]);
+        go_on(&mut state, &["Player 1", "Player 3"], &[]);
+        go_on(
+            &mut state,
+            &["Player 2", "Player 3", "Player 4"],
+            &["Player 2"],
+        );
+        go_on(&mut state, &["Player 1", "Player 3"], &[]);
+        go_on(&mut state, &["Player 1", "Player 3", "Player 4"], &[]);
         assert_eq!(state.winner(), None);
         assert_eq!(state.phase, Phase::Assassinate);
-        let view = state.view(&id("player2"));
+        let view = state.view(&id("Player 2"));
         assert_eq!(view.quest.get(), 4);
         assert_eq!(view.record.len(), 4);
-        assert_eq!(sorted(state.awaited()), ["player2"]);
+        assert_eq!(sorted(state.awaited()), ["Player 2"]);
         let named = resolve(
             &mut state,
-            &choices(&[("player2", Choice::Target(id("player1")))]),
+            &choices(&[("Player 2", Choice::Target(id("Player 1")))]),
         );
         assert_eq!(
             named,
             Entry::Assassinated {
                 seq: 1,
-                target: Some(id("player1")),
+                target: Some(id("Player 1")),
                 merlin: true
             }
         );
@@ -2190,7 +2210,7 @@ pub(crate) mod tests {
     fn at_the_assassination() -> State {
         let mut state = State::new(five());
         for _ in 0..3 {
-            go_on(&mut state, &["player1", "player3"], &[]);
+            go_on(&mut state, &["Player 1", "Player 3"], &[]);
         }
         assert_eq!(state.phase, Phase::Assassinate);
         state
@@ -2201,7 +2221,7 @@ pub(crate) mod tests {
         let mut state = at_the_assassination();
         let named = resolve(
             &mut state,
-            &choices(&[("player2", Choice::Target(id("player3")))]),
+            &choices(&[("Player 2", Choice::Target(id("Player 3")))]),
         );
         assert!(matches!(named, Entry::Assassinated { merlin: false, .. }));
         assert_eq!(state.winner(), Some((Team::Good, Victory::Quests)));
@@ -2228,7 +2248,7 @@ pub(crate) mod tests {
             Role::Minion,
         ]));
         for _ in 0..3 {
-            go_on(&mut state, &["player1", "player2"], &[]);
+            go_on(&mut state, &["Player 1", "Player 2"], &[]);
         }
         assert_eq!(state.winner(), Some((Team::Good, Victory::Quests)));
     }
@@ -2236,60 +2256,64 @@ pub(crate) mod tests {
     #[test]
     fn a_choice_is_legal_only_if_it_is_of_the_phases_kind_and_the_rules_allow_it() {
         let mut state = State::new(five());
-        let me = id("player1");
+        let me = id("Player 1");
         let legal = |state: &State, from: &str, choice: Choice| state.legal(&id(from), &choice);
         // A proposal takes a team of the size the quest needs, of distinct
         // players at the table.
         assert!(legal(
             &state,
-            "player1",
-            Choice::Team(team(&["player1", "player2"]))
-        ));
-        assert!(!legal(&state, "player1", Choice::Team(team(&["player1"]))));
-        assert!(!legal(
-            &state,
-            "player1",
-            Choice::Team(team(&["player1", "player2", "player3"]))
+            "Player 1",
+            Choice::Team(team(&["Player 1", "Player 2"]))
         ));
         assert!(!legal(
             &state,
-            "player1",
-            Choice::Team(team(&["player1", "player1"]))
+            "Player 1",
+            Choice::Team(team(&["Player 1"]))
         ));
         assert!(!legal(
             &state,
-            "player1",
-            Choice::Team(team(&["player1", "nobody"]))
+            "Player 1",
+            Choice::Team(team(&["Player 1", "Player 2", "Player 3"]))
         ));
-        assert!(!legal(&state, "player1", Choice::Ballot(Ballot::Approve)));
+        assert!(!legal(
+            &state,
+            "Player 1",
+            Choice::Team(team(&["Player 1", "Player 1"]))
+        ));
+        assert!(!legal(
+            &state,
+            "Player 1",
+            Choice::Team(team(&["Player 1", "nobody"]))
+        ));
+        assert!(!legal(&state, "Player 1", Choice::Ballot(Ballot::Approve)));
         resolve(
             &mut state,
-            &choices(&[("player1", Choice::Team(team(&["player1", "player2"])))]),
+            &choices(&[("Player 1", Choice::Team(team(&["Player 1", "Player 2"])))]),
         );
         // A vote takes a ballot.
-        assert!(legal(&state, "player3", Choice::Ballot(Ballot::Reject)));
-        assert!(!legal(&state, "player3", Choice::Deed(Deed::Support)));
+        assert!(legal(&state, "Player 3", Choice::Ballot(Ballot::Reject)));
+        assert!(!legal(&state, "Player 3", Choice::Deed(Deed::Support)));
         resolve(
             &mut state,
-            &ballots(&["player1", "player2", "player3"], &[]),
+            &ballots(&["Player 1", "Player 2", "Player 3"], &[]),
         );
         // A quest takes a deed, and only an evil player may sabotage.
-        assert!(legal(&state, "player1", Choice::Deed(Deed::Support)));
-        assert!(!legal(&state, "player1", Choice::Deed(Deed::Sabotage)));
-        assert!(legal(&state, "player2", Choice::Deed(Deed::Sabotage)));
-        assert!(!legal(&state, "player2", Choice::Target(me.clone())));
+        assert!(legal(&state, "Player 1", Choice::Deed(Deed::Support)));
+        assert!(!legal(&state, "Player 1", Choice::Deed(Deed::Sabotage)));
+        assert!(legal(&state, "Player 2", Choice::Deed(Deed::Sabotage)));
+        assert!(!legal(&state, "Player 2", Choice::Target(me.clone())));
         // The assassination takes another player at the table that the
         // Assassin does not see as evil.
         let state = at_the_assassination();
-        assert!(legal(&state, "player2", Choice::Target(id("player1"))));
-        assert!(legal(&state, "player2", Choice::Target(id("player3"))));
-        assert!(!legal(&state, "player2", Choice::Target(id("player2"))));
-        assert!(!legal(&state, "player2", Choice::Target(id("player5"))));
-        assert!(!legal(&state, "player2", Choice::Target(id("nobody"))));
+        assert!(legal(&state, "Player 2", Choice::Target(id("Player 1"))));
+        assert!(legal(&state, "Player 2", Choice::Target(id("Player 3"))));
+        assert!(!legal(&state, "Player 2", Choice::Target(id("Player 2"))));
+        assert!(!legal(&state, "Player 2", Choice::Target(id("Player 5"))));
+        assert!(!legal(&state, "Player 2", Choice::Target(id("nobody"))));
         assert!(!legal(
             &state,
-            "player2",
-            Choice::Team(team(&["player1", "player3"]))
+            "Player 2",
+            Choice::Team(team(&["Player 1", "Player 3"]))
         ));
     }
 
@@ -2313,12 +2337,12 @@ pub(crate) mod tests {
         check(&state);
         resolve(
             &mut state,
-            &choices(&[("player1", Choice::Team(team(&["player1", "player2"])))]),
+            &choices(&[("Player 1", Choice::Team(team(&["Player 1", "Player 2"])))]),
         );
         check(&state);
         resolve(
             &mut state,
-            &ballots(&["player1", "player2", "player3"], &[]),
+            &ballots(&["Player 1", "Player 2", "Player 3"], &[]),
         );
         check(&state);
         check(&at_the_assassination());
@@ -2327,9 +2351,9 @@ pub(crate) mod tests {
     #[test]
     fn the_assassins_candidates_are_the_others_it_does_not_see_as_evil_in_seat_order() {
         let state = at_the_assassination();
-        let me = id("player2");
+        let me = id("Player 2");
         let view = state.view(&me);
-        assert_eq!(candidates(&me, &view), ["player1", "player3", "player4"]);
+        assert_eq!(candidates(&me, &view), ["Player 1", "Player 3", "Player 4"]);
     }
 
     /// `players` in name order.

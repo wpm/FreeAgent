@@ -129,7 +129,7 @@ fn assert_plays_the_default_table(args: &[&str], notes: &[&str]) -> (Vec<Event<E
     assert!(!lines[won + 3..].is_empty(), "{printed}");
     for seat in &lines[won + 3..] {
         assert!(
-            seat.starts_with("player") && seat.ends_with(')'),
+            seat.starts_with("Player ") && seat.ends_with(')'),
             "{printed}"
         );
     }
@@ -666,7 +666,7 @@ fn a_template_that_cannot_render_is_an_error_before_anything_is_printed() {
     )
     .unwrap();
     let stderr = refused(&["werewolf", &path]);
-    for expected in ["plain", "player1", "werewolf", "rulez"] {
+    for expected in ["plain", "Player 1", "werewolf", "rulez"] {
         assert!(stderr.contains(expected), "{stderr}");
     }
 }
@@ -1055,7 +1055,7 @@ fn avalon_plays_the_default_table_to_the_end_and_tells_it() {
     );
     assert_eq!(lines[7], "", "{printed}");
     assert!(
-        lines[8].starts_with("Quest 1, proposal 1 of 5. player1 ("),
+        lines[8].starts_with("Quest 1, proposal 1 of 5. Player 1 ("),
         "{printed}"
     );
     let won = match winner {

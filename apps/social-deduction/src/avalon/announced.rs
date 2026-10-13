@@ -392,7 +392,10 @@ mod tests {
         let (mut game, proposal) = opened();
         assert_eq!(proposal.seq, 1);
         let to: Vec<&PlayerId> = proposal.announcements.iter().map(|(to, _)| to).collect();
-        assert_eq!(to, ["player1", "player2", "player3", "player4", "player5"]);
+        assert_eq!(
+            to,
+            ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
+        );
         let numbers: Vec<Option<u64>> = proposal
             .announcements
             .iter()
@@ -400,10 +403,10 @@ mod tests {
             .collect();
         assert_eq!(numbers, [1, 2, 3, 4, 5].map(Some));
         assert_eq!(proposal.limit, Rules::default().propose_limit);
-        assert_eq!(awaited(&game), ["player1"]);
+        assert_eq!(awaited(&game), ["Player 1"]);
         // The leader proposes, which is all the proposal waits for.
         assert_eq!(
-            game.choose(1, &id("player1"), team(&["player1", "player2"])),
+            game.choose(1, &id("Player 1"), team(&["Player 1", "Player 2"])),
             last()
         );
         game.end(1).unwrap();
@@ -415,11 +418,11 @@ mod tests {
     }
 
     #[test]
-    fn announcements_are_numbered_in_seat_order_with_player2_before_player10() {
+    fn announcements_are_numbered_in_seat_order_with_player_2_before_player_10() {
         let (winner, _) = oneshot::channel();
         let mut roles = seated(&[Role::Servant; 10]);
-        roles.insert(id("player1"), Role::Merlin);
-        roles.insert(id("player2"), Role::Assassin);
+        roles.insert(id("Player 1"), Role::Merlin);
+        roles.insert(id("Player 2"), Role::Assassin);
         let mut game = Game::new(roles, Rules::default(), winner);
         let opened = game.open();
         let to: Vec<&str> = opened
@@ -427,24 +430,24 @@ mod tests {
             .iter()
             .map(|(to, _)| to.as_str())
             .collect();
-        let expected: Vec<String> = (1..=10).map(|seat| format!("player{seat}")).collect();
+        let expected: Vec<String> = (1..=10).map(|seat| format!("Player {seat}")).collect();
         assert_eq!(to, expected);
     }
 
     #[test]
     fn the_last_choice_of_a_phase_ends_it() {
         let (mut game, Opened { seq, .. }) = opened();
-        game.choose(seq, &id("player1"), team(&["player1", "player2"]));
+        game.choose(seq, &id("Player 1"), team(&["Player 1", "Player 2"]));
         game.end(seq);
         let vote = game.open().seq;
-        for voter in ["player1", "player2", "player3", "player4"] {
+        for voter in ["Player 1", "Player 2", "Player 3", "Player 4"] {
             assert_eq!(
                 game.choose(vote, &id(voter), Choice::Ballot(Ballot::Approve)),
                 counted()
             );
         }
         assert_eq!(
-            game.choose(vote, &id("player5"), Choice::Ballot(Ballot::Reject)),
+            game.choose(vote, &id("Player 5"), Choice::Ballot(Ballot::Reject)),
             last()
         );
     }
@@ -452,28 +455,34 @@ mod tests {
     #[test]
     fn a_choice_that_is_late_early_unawaited_second_or_illegal_does_not_count() {
         let (mut game, Opened { seq, .. }) = opened();
-        let proposal = team(&["player1", "player2"]);
-        assert_eq!(game.choose(seq - 1, &id("player1"), proposal.clone()), None);
-        assert_eq!(game.choose(seq + 1, &id("player1"), proposal.clone()), None);
-        // Only the leader proposes.
-        assert_eq!(game.choose(seq, &id("player2"), proposal.clone()), None);
-        // A team of the wrong size, or a vote, is not a proposal.
-        assert_eq!(game.choose(seq, &id("player1"), team(&["player1"])), None);
+        let proposal = team(&["Player 1", "Player 2"]);
         assert_eq!(
-            game.choose(seq, &id("player1"), Choice::Ballot(Ballot::Approve)),
+            game.choose(seq - 1, &id("Player 1"), proposal.clone()),
+            None
+        );
+        assert_eq!(
+            game.choose(seq + 1, &id("Player 1"), proposal.clone()),
+            None
+        );
+        // Only the leader proposes.
+        assert_eq!(game.choose(seq, &id("Player 2"), proposal.clone()), None);
+        // A team of the wrong size, or a vote, is not a proposal.
+        assert_eq!(game.choose(seq, &id("Player 1"), team(&["Player 1"])), None);
+        assert_eq!(
+            game.choose(seq, &id("Player 1"), Choice::Ballot(Ballot::Approve)),
             None
         );
         assert!(game.underway.as_ref().unwrap().choices.is_empty());
-        assert_eq!(game.choose(seq, &id("player1"), proposal), last());
+        assert_eq!(game.choose(seq, &id("Player 1"), proposal), last());
         // A second proposal does not count.
         assert_eq!(
-            game.choose(seq, &id("player1"), team(&["player3", "player4"])),
+            game.choose(seq, &id("Player 1"), team(&["Player 3", "Player 4"])),
             None
         );
         // Nor does one after the phase has ended.
         game.end(seq).unwrap();
         assert_eq!(
-            game.choose(seq, &id("player1"), team(&["player3", "player4"])),
+            game.choose(seq, &id("Player 1"), team(&["Player 3", "Player 4"])),
             None
         );
     }
@@ -513,7 +522,7 @@ mod tests {
 
     /// The default table, every player playing `always(deed, target)`.
     fn everyone(deed: Deed, target: &'static str) -> HashMap<&'static str, crate::avalon::Seat> {
-        ["player1", "player2", "player3", "player4", "player5"]
+        ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
             .into_iter()
             .map(|player| (player, Actor::puppet(always(deed, target))))
             .collect()
@@ -521,7 +530,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_game_of_three_successful_quests_and_merlin_named_is_won_by_evil_without_waiting() {
-        let (winner, logged, took) = play(five(), quick(), everyone(Deed::Support, "player1"))
+        let (winner, logged, took) = play(five(), quick(), everyone(Deed::Support, "Player 1"))
             .await
             .unwrap();
         assert_eq!(winner, Team::Evil);
@@ -535,7 +544,7 @@ mod tests {
             let seq = i as u64 + 1;
             let ok = match i {
                 9 => {
-                    matches!(outcome, Entry::Assassinated { seq: s, target: Some(t), merlin: true } if *s == seq && t == "player1")
+                    matches!(outcome, Entry::Assassinated { seq: s, target: Some(t), merlin: true } if *s == seq && t == "Player 1")
                 }
                 _ => match i % 3 {
                     0 => matches!(outcome, Entry::Proposed { seq: s, team: Some(_) } if *s == seq),
@@ -553,7 +562,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn naming_someone_else_wins_for_good() {
-        let (winner, logged, _) = play(five(), quick(), everyone(Deed::Support, "player3"))
+        let (winner, logged, _) = play(five(), quick(), everyone(Deed::Support, "Player 3"))
             .await
             .unwrap();
         assert_eq!(winner, Team::Good);
@@ -564,7 +573,7 @@ mod tests {
     async fn evil_sabotaging_every_quest_wins_once_three_fail() {
         // Every leader takes itself and the next seat, so evil, in the
         // second and fifth seats, is on the first three teams.
-        let (winner, logged, _) = play(five(), quick(), everyone(Deed::Sabotage, "player1"))
+        let (winner, logged, _) = play(five(), quick(), everyone(Deed::Sabotage, "Player 1"))
             .await
             .unwrap();
         assert_eq!(winner, Team::Evil);
@@ -584,7 +593,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_leader_who_never_proposes_lets_five_proposals_lapse_and_evil_win() {
-        let puppets = ["player1", "player2", "player3", "player4", "player5"]
+        let puppets = ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
             .into_iter()
             .map(|player| (player, mute()))
             .collect();
@@ -606,8 +615,8 @@ mod tests {
     async fn a_vote_waits_out_its_limit_for_a_player_who_never_votes() {
         // Four approve and one never votes: the team goes once the vote
         // runs out, and the quest goes on.
-        let mut puppets = everyone(Deed::Support, "player3");
-        puppets.insert("player5", mute());
+        let mut puppets = everyone(Deed::Support, "Player 3");
+        puppets.insert("Player 5", mute());
         let (_, logged, took) = play(five(), quick(), puppets).await.unwrap();
         let tally = logged
             .iter()
@@ -618,11 +627,11 @@ mod tests {
             .unwrap();
         assert!(tally.approved);
         assert_eq!(tally.ballots.len(), 4);
-        // Three votes, and an assassination, without player5's ballot.
+        // Three votes, and an assassination, without Player 5's ballot.
         assert!(took >= quick().vote_limit * 3, "{took:?}");
     }
 
-    /// [`always`], supporting and naming player3, after each of the
+    /// [`always`], supporting and naming Player 3, after each of the
     /// `illegal` choices, and then `again`, if anything, as a second
     /// choice.
     fn cheating(illegal: Vec<Choice>, again: Option<Choice>) -> Script {
@@ -632,7 +641,7 @@ mod tests {
                 .zip(1..)
                 .map(|(choice, i)| choice.clone().message(seq, me.clone(), 100 * i + seq))
                 .collect();
-            said.extend(always(Deed::Support, "player3")(me, seq, view));
+            said.extend(always(Deed::Support, "Player 3")(me, seq, view));
             said.extend(
                 again
                     .clone()
@@ -647,42 +656,42 @@ mod tests {
         // Merlin sabotages; the Assassin names itself, an evil player it
         // sees, and a player not at the table; and a Servant proposes out
         // of turn, and votes again, against the team.
-        let mut puppets = everyone(Deed::Support, "player3");
+        let mut puppets = everyone(Deed::Support, "Player 3");
         let merlin = cheating(vec![Choice::Deed(Deed::Sabotage)], None);
         let assassin = cheating(
-            ["player2", "player5", "nobody"]
+            ["Player 2", "Player 5", "nobody"]
                 .map(|target| Choice::Target(id(target)))
                 .into(),
             None,
         );
         let servant = cheating(
-            vec![team(&["player3", "player4"])],
+            vec![team(&["Player 3", "Player 4"])],
             Some(Choice::Ballot(Ballot::Reject)),
         );
-        puppets.insert("player1", Actor::puppet(merlin));
-        puppets.insert("player2", Actor::puppet(assassin));
-        puppets.insert("player3", Actor::puppet(servant));
+        puppets.insert("Player 1", Actor::puppet(merlin));
+        puppets.insert("Player 2", Actor::puppet(assassin));
+        puppets.insert("Player 3", Actor::puppet(servant));
         let (winner, logged, _) = play(five(), quick(), puppets).await.unwrap();
-        // The quests all succeed, and the Assassin names player3.
+        // The quests all succeed, and the Assassin names Player 3.
         assert_eq!(winner, Team::Good);
         let observed = observed_by(&logged, ENVIRONMENT);
         for choice in [
-            ("player3", 101, 1),
-            ("player3", 902, 2),
-            ("player1", 103, 3),
-            ("player2", 110, 10),
-            ("player2", 210, 10),
-            ("player2", 310, 10),
+            ("Player 3", 101, 1),
+            ("Player 3", 902, 2),
+            ("Player 1", 103, 3),
+            ("Player 2", 110, 10),
+            ("Player 2", 210, 10),
+            ("Player 2", 310, 10),
         ] {
             assert!(observed.contains(&choice), "{choice:?}: {observed:?}");
         }
         let outcomes = outcomes(&logged);
         assert!(
-            matches!(outcomes[0], Entry::Proposed { team: Some(team), .. } if team == &["player1", "player2"]),
+            matches!(outcomes[0], Entry::Proposed { team: Some(team), .. } if team == &["Player 1", "Player 2"]),
             "{outcomes:?}"
         );
         assert!(
-            matches!(outcomes[1], Entry::Tallied { tally, .. } if tally.ballots[&id("player3")] == Ballot::Approve),
+            matches!(outcomes[1], Entry::Tallied { tally, .. } if tally.ballots[&id("Player 3")] == Ballot::Approve),
             "{outcomes:?}"
         );
         assert!(
@@ -690,7 +699,7 @@ mod tests {
             "{outcomes:?}"
         );
         assert!(
-            matches!(outcomes[9], Entry::Assassinated { target: Some(target), merlin: false, .. } if target == "player3"),
+            matches!(outcomes[9], Entry::Assassinated { target: Some(target), merlin: false, .. } if target == "Player 3"),
             "{outcomes:?}"
         );
     }
@@ -704,8 +713,8 @@ mod tests {
             ]
         });
         let mut puppets: HashMap<&str, crate::avalon::Seat> =
-            HashMap::from([("player1", Actor::puppet(meddler))]);
-        for player in ["player2", "player3", "player4", "player5"] {
+            HashMap::from([("Player 1", Actor::puppet(meddler))]);
+        for player in ["Player 2", "Player 3", "Player 4", "Player 5"] {
             puppets.insert(player, mute());
         }
         let (_, logged, took) = play(five(), quick(), puppets).await.unwrap();
@@ -722,7 +731,7 @@ mod tests {
             Role::Minion,
             Role::Minion,
         ]);
-        let (winner, logged, _) = play(roles, quick(), everyone(Deed::Support, "player1"))
+        let (winner, logged, _) = play(roles, quick(), everyone(Deed::Support, "Player 1"))
             .await
             .unwrap();
         assert_eq!(winner, Team::Good);
@@ -736,12 +745,12 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_assassin_who_names_nobody_lets_good_win_at_the_limit() {
-        let mut puppets = everyone(Deed::Support, "player1");
+        let mut puppets = everyone(Deed::Support, "Player 1");
         puppets.insert(
-            "player2",
+            "Player 2",
             Actor::puppet(Box::new(|me, seq, view| match view.phase {
                 Phase::Assassinate => vec![],
-                _ => always(Deed::Support, "player1")(me, seq, view),
+                _ => always(Deed::Support, "Player 1")(me, seq, view),
             })),
         );
         let (winner, logged, took) = play(five(), quick(), puppets).await.unwrap();
