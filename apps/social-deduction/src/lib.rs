@@ -4,6 +4,7 @@
 #![warn(missing_docs)]
 
 pub mod avalon;
+pub mod config;
 pub mod model;
 pub mod report;
 pub mod seat;

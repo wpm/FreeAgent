@@ -141,6 +141,12 @@ workflow takes a version's notes from here.
 
 ### Changed
 
+- **Breaking:** `social-deduction play CONFIG` replaces
+  `social-deduction werewolf CONFIG` and `social-deduction avalon CONFIG`,
+  and every configuration file names its game with `game = "werewolf"` or
+  `game = "avalon"`. A file is checked whole before the game begins, and
+  anything malformed in it, a setting of the other game's among them, is an
+  `invalid configuration file` error naming the file and the cause.
 - **Breaking:** A game is played from a configuration file, which is
   required: `social-deduction werewolf CONFIG` and
   `social-deduction avalon CONFIG`, each with `--log` or `--no-log`. The

@@ -2,7 +2,9 @@
 # table of random players with no models. Run it from the root of a
 # release archive, or from apps/social-deduction in a checkout, with
 #
-#     social-deduction avalon configs/avalon/random.toml
+#     social-deduction play configs/avalon/random.toml
+
+game = "avalon"
 
 [roles.merlin]
 strategy = "random"

@@ -449,10 +449,8 @@ mod tests {
             oberon: count(table.oberon),
             minion: count(table.minions),
         };
-        let config = Config {
-            roles,
-            ..Config::parse("").unwrap()
-        };
+        let mut config = Config::parse("").unwrap();
+        config.roles = roles;
         let settings = config.settle().unwrap();
         let configuration = settings
             .configuration(&settings.deal(), &[], Models::new())
