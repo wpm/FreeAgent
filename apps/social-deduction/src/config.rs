@@ -350,6 +350,9 @@ impl<R: Copy + Ord + Hash + fmt::Display> Lineup<R> {
         // Each strategy's template is compiled once, and rendered once a
         // seat for each role it is allotted.
         let mut templates = BTreeMap::new();
+        // Each pair's variables, with the text blocks, are the same for
+        // every seat.
+        let blocks = Value::from(text);
         let mut pairs = Vec::new();
         for (role, name, strategy, _) in self.at_the_table() {
             if let Strategy::Prompted(prompted) = strategy {
@@ -359,16 +362,15 @@ impl<R: Copy + Ord + Hash + fmt::Display> Lineup<R> {
                     })?;
                     vacant.insert(template);
                 }
-                pairs.push((role, name));
+                pairs.push((role, name, merge_maps([variables(role), blocks.clone()])));
             }
         }
-        let blocks = Value::from(text);
         let mut prompts = Vec::new();
         for seat in self.seats() {
-            for &(role, name) in &pairs {
-                let told = merge_maps([variables(role), blocks.clone()]);
+            for (role, name, told) in &pairs {
+                let (role, name) = (*role, *name);
                 let text = templates[name]
-                    .render(context! { name => &seat, ..told })
+                    .render(context! { name => &seat, ..told.clone() })
                     .with_context(|| {
                         format!("rendering the prompt of strategy {name} for {seat} as the {role}")
                     })?;
