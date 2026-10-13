@@ -146,8 +146,13 @@ pub struct Settings {
 }
 
 impl Config {
-    /// Parse `file`, the text of a configuration file, and check it as
-    /// [`check_common`] does, with this game's template variables.
+    /// Parse `file`, the text of a configuration file, and check what every
+    /// game's file holds alike, with this game's template variables: a
+    /// `[text]` block named like one of them is an error, and so is a
+    /// model's context window of 0, a strategy named [`RANDOM`], a file's
+    /// `strategy` that is not defined, and a prompted strategy naming a
+    /// model the file does not define, or naming none when the file does
+    /// not define exactly one.
     pub fn parse(file: &str) -> anyhow::Result<Self> {
         let mut config: Self = toml::from_str(file)?;
         check_common(

@@ -395,7 +395,7 @@ impl Story {
     /// The lines told, fitting within `budget` tokens by estimate once
     /// joined by newlines, and how many lines of talk were left out to fit.
     /// Talk is left out oldest first until the rest fits or none is left,
-    /// and [`FORGOTTEN`] stands in place of the last line left out, counted
+    /// and [`FORGOTTEN`](crate::report::FORGOTTEN) stands in place of the last line left out, counted
     /// with the rest. The story itself keeps every line.
     pub fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
         told_within(&self.account, |line| *line == Line::Talk, budget)
