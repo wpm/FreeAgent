@@ -2044,13 +2044,11 @@ mod tests {
             ]
         );
         let told = narrated(logged);
-        for line in [
-            format!("player1 (Merlin) is too late to say, for proposal 1 of quest 1: \"{SAID}\""),
-            "player1 (Merlin) is too late to propose player1 (Merlin) and player2 (Assassin) for proposal 1 of quest 1."
-                .to_string(),
-        ] {
-            assert!(told.contains(&line), "{line}: {told:?}");
-        }
+        assert!(!told.iter().any(|line| line.contains(SAID)), "{told:?}");
+        assert!(
+            told.contains(&"player1 (Merlin) proposes nobody in time.".to_string()),
+            "{told:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

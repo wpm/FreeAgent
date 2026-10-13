@@ -433,7 +433,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_selection_that_arrives_in_a_later_phase_is_observed_in_it_and_told_as_too_late() {
+    async fn a_selection_that_arrives_in_a_later_phase_is_observed_in_it_and_goes_untold() {
         // The werewolf kills bob the first night, and by day sends a
         // selection for the night instead of a vote, which the environment
         // observes by day. Nobody votes, so the day waits out its limit,
@@ -463,10 +463,7 @@ mod tests {
             .flat_map(|entry| narrator.narrate(&logged(entry)))
             .collect();
         assert!(
-            told.contains(
-                &"wolf (werewolf) chooses ann (villager) for night 1 too late to count."
-                    .to_string()
-            ),
+            !told.contains(&"wolf (werewolf) votes against ann (villager).".to_string()),
             "{told:?}"
         );
     }
