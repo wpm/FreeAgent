@@ -159,7 +159,7 @@ impl Narrator {
     /// `players`, as this account names them, as a list in prose, in the
     /// order given.
     fn listed(&self, players: &[PlayerId]) -> String {
-        in_prose(players.iter().map(|player| self.seat(player).to_string()))
+        in_prose(players.iter().map(|player| self.seat(player)))
     }
 
     /// What the announcement at `time` of the phase numbered `seq`, showing
@@ -392,11 +392,9 @@ impl Story {
         self.account.iter().map(|(text, _)| text.as_str()).collect()
     }
 
-    /// The lines told, fitting within `budget` tokens by estimate once
-    /// joined by newlines, and how many lines of talk were left out to fit.
-    /// Talk is left out oldest first until the rest fits or none is left,
-    /// and [`FORGOTTEN`](crate::report::FORGOTTEN) stands in place of the last line left out, counted
-    /// with the rest. The story itself keeps every line.
+    /// The lines told within `budget` tokens by estimate, the oldest talk
+    /// forgotten first to fit, and how many lines of talk were left out.
+    /// The story itself keeps every line.
     pub fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
         told_within(&self.account, |line| *line == Line::Talk, budget)
     }
@@ -420,9 +418,9 @@ impl Story {
             }
             Phase::Vote => format!(
                 "Everyone votes on the team of {}.",
-                in_prose(view.team.iter().flatten().cloned())
+                in_prose(view.team.iter().flatten())
             ),
-            Phase::Quest => questing(&in_prose(view.team.iter().flatten().cloned()), view),
+            Phase::Quest => questing(&in_prose(view.team.iter().flatten()), view),
             Phase::Assassinate => "The Assassin tries to name Merlin.".to_string(),
         });
         self.shown = Some(view.clone());
@@ -458,7 +456,7 @@ impl Story {
             )),
             either => said.push_str(&format!(
                 " You see that {} is Merlin or Morgana.",
-                in_prose(either.iter().cloned())
+                in_prose(either)
             )),
         }
         said
@@ -476,7 +474,7 @@ impl Story {
             }
             Phase::Vote => after.tally.as_ref().map_or(vec![], |tally| {
                 let players: Vec<&PlayerId> = before.players.iter().collect();
-                tallied(tally, &players, |who| in_prose(who.iter().cloned()))
+                tallied(tally, &players, |who| in_prose(who))
             }),
             Phase::Quest => after.record.last().map(quested).into_iter().collect(),
             _ => vec![],
@@ -486,7 +484,7 @@ impl Story {
     /// The player's own `choice`, told as made.
     fn chose(&self, choice: &Choice) -> String {
         match choice {
-            Choice::Team(team) => format!("You propose {}.", in_prose(team.iter().cloned())),
+            Choice::Team(team) => format!("You propose {}.", in_prose(team)),
             Choice::Ballot(Ballot::Approve) => "You approve the team.".to_string(),
             Choice::Ballot(Ballot::Reject) => "You reject the team.".to_string(),
             Choice::Deed(Deed::Support) => "You support the quest.".to_string(),

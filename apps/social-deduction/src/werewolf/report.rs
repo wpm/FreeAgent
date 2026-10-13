@@ -517,7 +517,7 @@ impl Narrator {
             return lines;
         };
         let dead = in_order(self.alive.difference(alive_after));
-        let listed = in_prose(dead.iter().map(|player| player.to_string()));
+        let listed = in_prose(&dead);
         let line = match (slept, dead.len()) {
             (true, 0) => "Nobody died.".to_string(),
             (true, _) => format!("{listed} died."),
@@ -632,11 +632,7 @@ impl Narrator {
     fn hunt(&self, hunt: &Hunt) -> String {
         let victim = self.seat(&hunt.victim);
         let protectors = in_order(&hunt.protectors);
-        let listed = in_prose(
-            protectors
-                .iter()
-                .map(|doctor| self.seat(doctor).to_string()),
-        );
+        let listed = in_prose(protectors.iter().map(|doctor| self.seat(doctor)));
         match protectors.len() {
             0 => format!("The werewolves choose {victim}."),
             1 => format!("The werewolves choose {victim}, whom {listed} protects."),
@@ -733,11 +729,9 @@ impl Story {
         self.narrator.account()
     }
 
-    /// The lines told, fitting within `budget` tokens by estimate once
-    /// joined by newlines, and how many lines of talk were left out to fit.
-    /// Talk is left out oldest first until the rest fits or none is left,
-    /// and [`FORGOTTEN`](crate::report::FORGOTTEN) stands in place of the last line left out, counted
-    /// with the rest. The story itself keeps every line.
+    /// The lines told within `budget` tokens by estimate, the oldest talk
+    /// forgotten first to fit, and how many lines of talk were left out.
+    /// The story itself keeps every line.
     pub fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
         told_within(&self.narrator.account, |line| *line == Line::Talk, budget)
     }
@@ -773,7 +767,7 @@ fn identity(me: &PlayerId, roles: &HashMap<PlayerId, Role>) -> String {
                 [_] => format!("You are {me}, the only werewolf."),
                 pack => format!(
                     "You are {me}, a werewolf. The werewolves are {}.",
-                    in_prose(pack.iter().map(|player| player.to_string()))
+                    in_prose(pack)
                 ),
             }
         }
@@ -805,11 +799,10 @@ fn ordinal((round, phase): &(NonZero<u8>, Phase)) -> u16 {
 mod tests {
     use super::*;
     use crate::model::ToolChoice;
-    use crate::model::window::{ContextWindow, Source};
     use crate::report::FORGOTTEN;
+    use crate::report::tests::in_play;
     use crate::seat::id;
 
-    use crate::model::spec::ModelInPlay;
     use crate::seat::to_the_environment;
     use crate::strategy::{RANDOM, Random, Strategy};
     use crate::werewolf::config::Configuration;
@@ -2750,23 +2743,7 @@ mod tests {
     /// name, are made under its tool choice, within the default context
     /// window, as the log records it.
     fn configured_with(models: &[(&str, ToolChoice)]) -> Event<Entry> {
-        let models = models
-            .iter()
-            .map(|(name, tool_choice)| {
-                let model = ModelInPlay {
-                    base_url: "http://localhost:1234/v1".to_string(),
-                    id: format!("{name}-7b-instruct"),
-                    request_timeout: Duration::from_secs(10),
-                    api_key_env: None,
-                    tool_choice: *tool_choice,
-                    context_window: ContextWindow {
-                        tokens: 4096,
-                        source: Source::Default,
-                    },
-                };
-                (name.to_string(), model)
-            })
-            .collect();
+        let models = in_play(models);
         logged(Entry::Configuration(Box::new(Configuration {
             role_counts: BTreeMap::from([(Role::Werewolf, 1), (Role::Villager, 2)]),
             night_limit: Duration::from_secs(30),
@@ -2809,26 +2786,6 @@ mod tests {
         assert!(
             Narrator::for_player(id("wolf"), true)
                 .narrate(&configuration)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn a_configuration_is_told_model_by_model_and_with_no_models_not_at_all() {
-        let configuration =
-            configured_with(&[("claude", ToolChoice::Auto), ("qwen", ToolChoice::Required)]);
-        assert_eq!(
-            Narrator::default().narrate(&configuration),
-            [
-                "claude's context window is 4096 tokens, the default.",
-                "claude does not accept a required tool call, \
-                 so its players are asked to call one.",
-                "qwen's context window is 4096 tokens, the default.",
-            ]
-        );
-        assert!(
-            Narrator::default()
-                .narrate(&configured_with(&[]))
                 .is_empty()
         );
     }

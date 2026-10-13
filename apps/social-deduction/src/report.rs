@@ -10,6 +10,7 @@ use crate::seat::{PlayerId, PlayerName};
 use humantime::format_duration;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::time::Duration;
 
 /// `elapsed` to the nearest whole second, as `humantime` writes it: `40s`,
@@ -33,8 +34,8 @@ pub fn seat_order(a: &PlayerId, b: &PlayerId) -> Ordering {
 }
 
 /// `named` as a list in prose: "a", "a and b", "a, b and c".
-pub(crate) fn in_prose(named: impl IntoIterator<Item = String>) -> String {
-    let named: Vec<String> = named.into_iter().collect();
+pub(crate) fn in_prose(named: impl IntoIterator<Item = impl fmt::Display>) -> String {
+    let named: Vec<String> = named.into_iter().map(|name| name.to_string()).collect();
     match named.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
         _ => named.concat(),
@@ -120,7 +121,7 @@ pub(crate) fn told_within<L>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::model::estimate;
     use crate::model::spec::ModelInPlay;
@@ -142,7 +143,7 @@ mod tests {
 
     #[test]
     fn three_or_more_are_listed_with_commas_and_a_last_and() {
-        let listed = |names: &[&str]| in_prose(names.iter().map(ToString::to_string));
+        let listed = |names: &[&str]| in_prose(names);
         assert_eq!(listed(&[]), "");
         assert_eq!(listed(&["a"]), "a");
         assert_eq!(listed(&["a", "b"]), "a and b");
@@ -152,7 +153,7 @@ mod tests {
 
     /// The models `models`, each in play under its tool choice within the
     /// default context window.
-    fn in_play(models: &[(&str, ToolChoice)]) -> Models {
+    pub(crate) fn in_play(models: &[(&str, ToolChoice)]) -> Models {
         models
             .iter()
             .map(|(name, tool_choice)| {

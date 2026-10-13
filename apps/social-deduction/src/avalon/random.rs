@@ -124,6 +124,7 @@ mod tests {
     };
     use crate::avalon::{PROPOSALS, Role, Rules, Table, game, sabotages_needed, team_size};
     use crate::model::spec::Models;
+    use crate::seat::id;
     use crate::seat::{ENVIRONMENT, to_the_environment};
     use crate::strategy::{RANDOM, RoleConfig};
     use free_agent::ActorId;
@@ -132,10 +133,6 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::sync::oneshot;
-
-    fn id(name: &str) -> PlayerId {
-        name.to_string()
-    }
 
     #[tokio::test(start_paused = true)]
     async fn a_game_is_logged_from_the_deal_to_the_end_and_told() {

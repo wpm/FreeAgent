@@ -74,7 +74,7 @@ pub fn load(path: &Path) -> anyhow::Result<Game> {
 pub(crate) fn check_common(
     text: &BTreeMap<String, String>,
     models: &BTreeMap<String, Spec>,
-    strategy: Option<&String>,
+    strategy: Option<&str>,
     strategies: &mut BTreeMap<String, Strategy>,
     variables: &[&str],
 ) -> anyhow::Result<()> {
@@ -289,7 +289,7 @@ system = "{{ name }}"
         check_common(
             &common.text,
             &common.models,
-            common.strategy.as_ref(),
+            common.strategy.as_deref(),
             &mut common.strategies,
             &["name"],
         )

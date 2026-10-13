@@ -177,7 +177,7 @@ impl Config {
         check_common(
             &config.text,
             &config.models,
-            config.strategy.as_ref(),
+            config.strategy.as_deref(),
             &mut config.strategies,
             &VARIABLES,
         )?;

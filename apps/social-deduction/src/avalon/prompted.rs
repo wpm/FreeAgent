@@ -641,10 +641,7 @@ fn situation(view: &View, limit: Duration, duty: Option<&Duty>) -> String {
         sabotages_fail(view.sabotages_needed)
     );
     if let Some(team) = &view.team {
-        said.push_str(&format!(
-            " The team proposed is {}.",
-            in_prose(team.iter().cloned())
-        ));
+        said.push_str(&format!(" The team proposed is {}.", in_prose(team)));
     }
     let asked = duty.map_or("You may speak or wait.".to_string(), Duty::asked);
     said.push_str(&format!(
