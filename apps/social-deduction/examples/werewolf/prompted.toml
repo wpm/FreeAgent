@@ -35,6 +35,8 @@ last werewolf is dead. The werewolves win when they are at least as many as
 the villagers.
 """
 
+# No `model` here because this file defines only one. Once you add a second
+# [models.*] table, every prompted strategy must name its model.
 [strategies.everyone]
 policy = "prompted"
 system = """

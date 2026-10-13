@@ -48,6 +48,8 @@ The evil roles, of whom all but Oberon see each other:
 - A minion of Mordred has no power of its own.
 """
 
+# No `model` here because this file defines only one. Once you add a second
+# [models.*] table, every prompted strategy must name its model.
 [strategies.everyone]
 policy = "prompted"
 system = """
