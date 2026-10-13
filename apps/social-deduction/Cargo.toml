@@ -14,6 +14,8 @@ publish = false
 # Which is not to say dist should skip it: it is the binary dist ships.
 [package.metadata.dist]
 dist = true
+# A game needs a configuration file, so the examples ship beside the binary.
+include = ["configs/"]
 
 [dependencies]
 anyhow.workspace = true

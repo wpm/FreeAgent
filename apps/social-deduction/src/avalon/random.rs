@@ -116,15 +116,13 @@ fn choose(me: &PlayerId, view: &View) -> Option<Choice> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::avalon::config::{Config, Overrides};
+    use crate::avalon::config::{Config, key};
     use crate::avalon::report::Narrator;
     use crate::avalon::tests::{
         Script, configured, dealt, five, logged, mute, observed_by, outcomes, play, quick, run,
         utterance, view_of,
     };
-    use crate::avalon::{
-        PROPOSALS, Role, RoleCounts, Rules, Table, game, sabotages_needed, team_size,
-    };
+    use crate::avalon::{PROPOSALS, Role, Rules, Table, game, sabotages_needed, team_size};
     use crate::model::spec::Models;
     use crate::seat::{ENVIRONMENT, to_the_environment};
     use crate::strategy::RANDOM;
@@ -437,21 +435,11 @@ mod tests {
     /// How many of `games` all-random games at `table` good wins, played
     /// one after another without logging.
     async fn good_wins(table: &Table, games: usize) -> usize {
-        let roles = RoleCounts {
-            merlin: Some(table.merlin),
-            percival: Some(table.percival),
-            servants: Some(table.servants),
-            assassin: Some(table.assassin),
-            morgana: Some(table.morgana),
-            mordred: Some(table.mordred),
-            oberon: Some(table.oberon),
-            minions: Some(table.minions),
-        };
-        let overrides = Overrides {
-            roles,
-            ..Overrides::default()
-        };
-        let settings = Config::default().settle(overrides).unwrap();
+        let file: String = table
+            .counts()
+            .map(|(role, count)| format!("[roles.{}]\ncount = {count}\n", key(role)))
+            .concat();
+        let settings = Config::parse(&file).unwrap().settle().unwrap();
         let configuration = settings
             .configuration(&settings.deal(), &[], Models::new())
             .unwrap();

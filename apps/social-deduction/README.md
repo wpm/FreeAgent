@@ -20,6 +20,19 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/wpm/FreeAgent/rele
 With a Rust toolchain, `cargo install --git https://github.com/wpm/FreeAgent social-deduction`
 builds it from source.
 
+A game is played from a configuration file. Each release archive holds a
+`configs/` directory beside the binary, with a table of random players and
+a table of prompted players for each game. The shell and PowerShell
+installers install the binary alone; take the configurations from the
+archive on the [release](https://github.com/wpm/FreeAgent/releases) or from
+[`apps/social-deduction/configs/`](configs) in the repository. From the
+root of an unpacked archive, or from `apps/social-deduction/` in a
+checkout:
+
+```sh
+social-deduction werewolf configs/werewolf/random.toml
+```
+
 ## Werewolf
 
 A few of the players are secretly werewolves; the rest are villagers, among
@@ -33,12 +46,12 @@ who is still alive. The villagers win when the last werewolf is dead. The
 werewolves win when they are at least as many as the villagers.
 
 ```sh
-social-deduction werewolf [CONFIG] [--werewolves N] [--villagers N] [--doctors N] [--seers N] [--night-limit 30s] [--day-limit 2m] [--ratify-limit 20s] [--log | --no-log]
+social-deduction werewolf CONFIG [--log | --no-log]
 ```
 
 The table seats two werewolves, three villagers, a doctor and a seer unless
-the counts say otherwise, and each phase waits a minute for its selections
-unless a limit says otherwise. The game is told on standard output as it
+the file's counts say otherwise, and each phase waits a minute for its
+selections unless the file's limits say otherwise. The game is told on standard output as it
 happens and logged to standard error as JSON Lines. `--no-log` leaves the
 log out, and `--log` keeps it; the last one given wins.
 
@@ -49,24 +62,23 @@ is a *policy*, a kind of player written in Rust, with its parameters:
   the living whose roles it does not know, by day everyone else living.
 - `prompted` is a language model, told a system prompt and asked to play.
 
-Without a configuration file every player plays the strategy `random`, so a
-game needs no model, provider, API key or file, and finishes in moments.
 The configuration file defines named models and named strategies, and
 allots each role's seats among the strategies, so a table may mix players:
 random werewolves against prompted villagers, or two werewolves with
 different prompts. The roles and strategies are dealt together at random:
 a seat is as likely as any other to get each role, and each seat of a role
 as likely as any other to get each of that role's strategies. The
-[examples](examples/werewolf) show a table of random players and a table
-of one prompted strategy for everyone:
+[configs](configs/werewolf) are a table of random players, which needs no
+model, provider or API key and finishes in moments, and a table of one
+prompted strategy for everyone:
 
 ```sh
-social-deduction werewolf examples/werewolf/random.toml
-social-deduction werewolf examples/werewolf/prompted.toml
+social-deduction werewolf configs/werewolf/random.toml
+social-deduction werewolf configs/werewolf/prompted.toml
 ```
 
-A setting comes from the command line if it is given there, otherwise from
-the file, otherwise from a default in the code. The log's second entry is
+A setting comes from the file if it is given there, otherwise from a
+default in the code. The log's second entry is
 the configuration as it took effect: the role counts and limits, every
 strategy as written, the allotments, each model in play with what was
 settled for it, each prompted player's rendered prompt, and the text
@@ -152,8 +164,8 @@ bold = 2
 
 A role with a `strategies` table and no `strategy` of its own has as many
 seats as the table allots. A role with no table plays its `strategy`,
-otherwise the file's `strategy`, otherwise `random`. A count given on the
-command line or in the file that the table's seats do not fit is an error
+otherwise the file's `strategy`, otherwise `random`. A count in the file
+that the table's seats do not fit is an error
 naming the role and both numbers, and so is a strategy allotted that is
 not defined. A strategy defined and never allotted is fine.
 
@@ -255,8 +267,8 @@ whatever is standing, and nobody is. A vote or retraction that leaves the
 decision as it was leaves the deadline as it was, so a player selected is
 voted out one ratify limit after the tentative decision naming them, unless
 another follows first. The ratify limit is `ratify_limit` under
-`[phases]`, or `--ratify-limit` on the command line, and may not be longer
-than the day limit. It is zero unless either says, and a day whose ratify
+`[phases]`, and may not be longer than the day limit. It is zero unless the
+file says, and a day whose ratify
 limit is zero is not ratified: each player's first vote counts, a
 retraction does not, and the day ends when everyone has voted or at its
 limit. The account tells what everyone says as they say it, and a player's
@@ -334,12 +346,12 @@ To play against a local [LM Studio](https://lmstudio.ai) server, download
 `qwen2.5-7b-instruct` there and start its server, which listens at
 `http://localhost:1234/v1`. `social-deduction models http://localhost:1234/v1 --check`
 lists what it serves and marks the models that play when asked, and
-[`examples/werewolf/prompted.toml`](examples/werewolf/prompted.toml)
+[`configs/werewolf/prompted.toml`](configs/werewolf/prompted.toml)
 plays it, once its `[models.qwen]` table names the model and server you
 have running:
 
 ```sh
-social-deduction werewolf examples/werewolf/prompted.toml
+social-deduction werewolf configs/werewolf/prompted.toml
 ```
 
 ## Avalon
@@ -382,15 +394,15 @@ Only the Assassin names Merlin, and only evil players sabotage. The
 environment counts only the choices the rules allow.
 
 ```sh
-social-deduction avalon [CONFIG] [--merlin N] [--percival N] [--servants N] [--assassin N] [--morgana N] [--mordred N] [--oberon N] [--minions N] [--propose-limit D] [--vote-limit D] [--quest-limit D] [--assassinate-limit D] [--log | --no-log]
+social-deduction avalon CONFIG [--log | --no-log]
 ```
 
 The table seats Merlin, the Assassin, two Servants and a Minion unless the
-counts say otherwise, and each phase waits a minute unless a limit says
-otherwise. A table seats 5 to 10 players, at most one of each role but
+file's counts say otherwise, and each phase waits a minute unless the
+file's limits say otherwise. A table seats 5 to 10 players, at most one of each role but
 Servant and Minion, and Merlin exactly when it seats an Assassin. The usual
 splits between good and evil are 3–2, 4–2, 4–3, 5–3, 6–3 and 6–4 for 5 to
-10 players. With no file, every player plays `random`: a leader proposes
+10 players. Under the strategy `random`, a leader proposes
 a team drawn at random, a vote approves or rejects with even odds, a good
 member supports and an evil one supports or sabotages with even odds, and
 the Assassin names one of the players it does not see as evil. The game is
@@ -400,18 +412,18 @@ Lines, as Werewolf's is.
 The configuration file is shaped like Werewolf's: a top-level `strategy`,
 `[models.<name>]`, `[text]`, `[strategies.<name>]` and each role's table,
 with the same allotments and the same precedence, a setting coming from the
-command line, otherwise the file, otherwise the code. The roles' tables are
+file, otherwise the code. The roles' tables are
 `[roles.merlin]`, `[roles.percival]`, `[roles.servant]`,
 `[roles.assassin]`, `[roles.morgana]`, `[roles.mordred]`,
 `[roles.oberon]` and `[roles.minion]`. `[phases]` takes `propose_limit`,
 `vote_limit`, `quest_limit` and `assassinate_limit`, a minute each unless
 they say. Once the counts settle, the table is checked as above. The log's
 second entry is the configuration as it took effect, as in Werewolf.
-[`examples/avalon/random.toml`](examples/avalon/random.toml) allots every
-role to `random`, and plays the game of no file:
+[`configs/avalon/random.toml`](configs/avalon/random.toml) allots every
+role to `random`, with no models:
 
 ```sh
-social-deduction avalon examples/avalon/random.toml
+social-deduction avalon configs/avalon/random.toml
 ```
 
 ### Prompted players in Avalon
@@ -459,12 +471,12 @@ The tool stays on offer, and the environment counts the player's first
 choice. A response with any call that is not well formed, such as a team of
 the wrong size, fails as a whole, and a response that comes after its
 phase has ended is withheld, as in Werewolf.
-[`examples/avalon/prompted.toml`](examples/avalon/prompted.toml) plays a
+[`configs/avalon/prompted.toml`](configs/avalon/prompted.toml) plays a
 game of model players against a local LM Studio server, once its
 `[models.qwen]` table names the model and server you have running:
 
 ```sh
-social-deduction avalon examples/avalon/prompted.toml
+social-deduction avalon configs/avalon/prompted.toml
 ```
 
 ```toml

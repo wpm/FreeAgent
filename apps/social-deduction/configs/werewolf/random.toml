@@ -1,0 +1,17 @@
+# Every role played by the random strategy, which is always defined: a
+# table of random players with no models. Run it from the root of a
+# release archive, or from apps/social-deduction in a checkout, with
+#
+#     social-deduction werewolf configs/werewolf/random.toml
+
+[roles.werewolf]
+strategy = "random"
+
+[roles.villager]
+strategy = "random"
+
+[roles.doctor]
+strategy = "random"
+
+[roles.seer]
+strategy = "random"

@@ -11,7 +11,7 @@ use social_deduction::model::spec::Probed;
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
 };
-use social_deduction::werewolf::config::{self, Config, Overrides};
+use social_deduction::werewolf::config::{self, Config};
 use social_deduction::werewolf::prompted;
 use social_deduction::werewolf::report::Narrator;
 use social_deduction::werewolf::{self, Team};
@@ -48,26 +48,20 @@ enum CommandLine {
     },
 }
 
-/// A game of Werewolf: its configuration file, if any, and what the
-/// command line says over it.
+/// A game of Werewolf: its configuration file, and whether it is logged.
 #[derive(Args, Debug, PartialEq)]
 struct Werewolf {
-    /// The TOML configuration file; without one, every player is random
-    config: Option<PathBuf>,
-    #[command(flatten)]
-    overrides: Overrides,
+    /// The TOML configuration file
+    config: PathBuf,
     #[command(flatten)]
     logging: Logging,
 }
 
-/// A game of Avalon: its configuration file, if any, and what the command
-/// line says over it.
+/// A game of Avalon: its configuration file, and whether it is logged.
 #[derive(Args, Debug, PartialEq)]
 struct Avalon {
-    /// The TOML configuration file; without one, every player is random
-    config: Option<PathBuf>,
-    #[command(flatten)]
-    overrides: avalon::config::Overrides,
+    /// The TOML configuration file
+    config: PathBuf,
     #[command(flatten)]
     logging: Logging,
 }
@@ -99,16 +93,8 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match CommandLine::parse() {
-        CommandLine::Werewolf(Werewolf {
-            config,
-            overrides,
-            logging,
-        }) => {
-            let config = match config {
-                Some(path) => Config::load(&path)?,
-                None => Config::default(),
-            };
-            let settings = config.settle(overrides)?;
+        CommandLine::Werewolf(Werewolf { config, logging }) => {
+            let settings = Config::load(&config)?.settle()?;
             // Every prompt is rendered, and every model in play set up,
             // before any actor is built, so that a template that is broken
             // or a model that does not play fails before anything else.
@@ -129,16 +115,8 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        CommandLine::Avalon(Avalon {
-            config,
-            overrides,
-            logging,
-        }) => {
-            let config = match config {
-                Some(path) => avalon::config::Config::load(&path)?,
-                None => avalon::config::Config::default(),
-            };
-            let settings = config.settle(overrides)?;
+        CommandLine::Avalon(Avalon { config, logging }) => {
+            let settings = avalon::config::Config::load(&config)?.settle()?;
             // As in Werewolf, every prompt is rendered and every model in
             // play set up before any actor is built.
             let prompts = settings.prompts()?;
@@ -324,9 +302,9 @@ where
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    use clap::error::ErrorKind;
     use social_deduction::model::canned::{self, refusal};
     use social_deduction::model::fake::{FakeModel, choosing_first};
-    use social_deduction::werewolf::{PhaseLimits, RoleCounts, Rules, Table};
     use std::collections::HashSet;
 
     /// The command line `args` parse to, after the binary's name.
@@ -340,33 +318,58 @@ mod tests {
         parsed(&[&["werewolf"], args].concat())
     }
 
-    /// The command line of a game of Werewolf with `logging` and nothing
-    /// else.
+    /// The command line of a game of Werewolf played from `game.toml`
+    /// with `logging`.
     fn logged(logging: Logging) -> CommandLine {
         CommandLine::Werewolf(Werewolf {
-            config: None,
-            overrides: Overrides::default(),
+            config: PathBuf::from("game.toml"),
             logging,
         })
     }
 
+    /// The error kind `clap` gives the command line `args`, after the
+    /// binary's name, or `None` when it parses.
+    fn refused(args: &[&str]) -> Option<ErrorKind> {
+        CommandLine::try_parse_from([&["social-deduction"], args].concat())
+            .err()
+            .map(|error| error.kind())
+    }
+
     #[test]
-    fn the_command_line_is_a_game_that_tells_unset_from_given() {
+    fn the_command_line_is_a_game_and_its_configuration_file() {
         CommandLine::command().debug_assert();
+        assert_eq!(werewolf(&["game.toml"]), logged(Logging::default()));
         assert_eq!(
-            parsed(&["werewolf", "--werewolves", "1"]),
-            CommandLine::Werewolf(Werewolf {
-                config: None,
-                overrides: Overrides {
-                    roles: RoleCounts {
-                        werewolves: Some(1),
-                        ..RoleCounts::default()
-                    },
-                    ..Overrides::default()
-                },
+            parsed(&["avalon", "game.toml"]),
+            CommandLine::Avalon(Avalon {
+                config: PathBuf::from("game.toml"),
                 logging: Logging::default(),
             })
         );
+    }
+
+    #[test]
+    fn a_game_without_a_configuration_file_is_an_error_naming_it() {
+        for game in ["werewolf", "avalon"] {
+            assert_eq!(
+                refused(&[game]),
+                Some(ErrorKind::MissingRequiredArgument),
+                "{game}"
+            );
+            let error = CommandLine::try_parse_from(["social-deduction", game]).unwrap_err();
+            assert!(error.to_string().contains("<CONFIG>"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_game_takes_one_configuration_file_at_most() {
+        for game in ["werewolf", "avalon"] {
+            assert_eq!(
+                refused(&[game, "game.toml", "other.toml"]),
+                Some(ErrorKind::UnknownArgument),
+                "{game}"
+            );
+        }
     }
 
     #[test]
@@ -379,13 +382,13 @@ mod tests {
             log: true,
             no_log: false,
         };
-        assert_eq!(werewolf(&["--no-log"]), logged(off()));
-        assert_eq!(werewolf(&["--no-log", "--log"]), logged(on()));
+        assert_eq!(werewolf(&["game.toml", "--no-log"]), logged(off()));
+        assert_eq!(werewolf(&["game.toml", "--no-log", "--log"]), logged(on()));
+        assert_eq!(werewolf(&["game.toml", "--log", "--no-log"]), logged(off()));
         assert_eq!(
-            werewolf(&["game.toml", "--log", "--no-log"]),
-            CommandLine::Werewolf(Werewolf {
-                config: Some(PathBuf::from("game.toml")),
-                overrides: Overrides::default(),
+            parsed(&["avalon", "game.toml", "--no-log"]),
+            CommandLine::Avalon(Avalon {
+                config: PathBuf::from("game.toml"),
                 logging: off(),
             })
         );
@@ -411,202 +414,70 @@ mod tests {
     }
 
     #[test]
-    fn werewolf_takes_a_file_the_role_counts_and_the_limits() {
-        let args = [
-            "game.toml",
+    fn the_settings_the_file_holds_are_not_flags() {
+        let werewolf = [
+            "--werewolves",
+            "--villagers",
+            "--doctors",
             "--seers",
-            "2",
             "--night-limit",
-            "30s",
             "--day-limit",
-            "1m 30s",
             "--ratify-limit",
-            "15s",
         ];
-        assert_eq!(
-            werewolf(&args),
-            CommandLine::Werewolf(Werewolf {
-                config: Some(PathBuf::from("game.toml")),
-                overrides: Overrides {
-                    roles: RoleCounts {
-                        seers: Some(2),
-                        ..RoleCounts::default()
-                    },
-                    limits: PhaseLimits {
-                        night_limit: Some(Duration::from_secs(30)),
-                        day_limit: Some(Duration::from_secs(90)),
-                    },
-                    ratify_limit: Some(Duration::from_secs(15)),
-                },
-                logging: Logging::default(),
-            })
-        );
-    }
-
-    #[test]
-    fn werewolf_takes_durations_in_humantime_form_and_one_file_at_most() {
-        let refused = |args: &[&str]| {
-            CommandLine::try_parse_from([&["social-deduction", "werewolf"], args].concat()).is_err()
-        };
-        assert!(refused(&["--night-limit", "soon"]));
-        assert!(refused(&["--day-limit", "30"]));
-        assert!(refused(&["--ratify-limit", "soon"]));
-        assert!(refused(&["llm", "game.toml"]));
+        let avalon = [
+            "--merlin",
+            "--percival",
+            "--servants",
+            "--assassin",
+            "--morgana",
+            "--mordred",
+            "--oberon",
+            "--minions",
+            "--propose-limit",
+            "--vote-limit",
+            "--quest-limit",
+            "--assassinate-limit",
+        ];
+        for game in ["werewolf", "avalon"] {
+            for flag in werewolf.iter().chain(&avalon) {
+                assert_eq!(
+                    refused(&[game, "game.toml", flag, "1"]),
+                    Some(ErrorKind::UnknownArgument),
+                    "{game} {flag}"
+                );
+            }
+        }
     }
 
     #[test]
     fn werewolf_takes_no_model_options() {
         for option in ["--model-base-url", "--model-id", "--context-window"] {
             assert!(
-                CommandLine::try_parse_from(["social-deduction", "werewolf", option, "x"]).is_err(),
+                refused(&["werewolf", "game.toml", option, "x"]).is_some(),
                 "{option}"
             );
         }
     }
 
     #[test]
-    fn the_help_names_the_defaults_the_code_fills_in() {
-        let table = Table::default();
-        let counts = [
-            ("--werewolves", table.werewolves.to_string()),
-            ("--villagers", table.villagers.to_string()),
-            ("--doctors", table.doctors.to_string()),
-            ("--seers", table.seers.to_string()),
-        ];
-        let rules = Rules::default();
-        let limits = [
-            ("--night-limit", rules.night_limit),
-            ("--day-limit", rules.day_limit),
-        ]
-        .map(|(option, limit)| (option, humantime::format_duration(limit).to_string()));
-        let help = CommandLine::command()
-            .find_subcommand_mut("werewolf")
-            .unwrap()
-            .render_help()
-            .to_string();
-        for (option, default) in counts.into_iter().chain(limits) {
-            let line = help.lines().find(|line| line.contains(option)).unwrap();
-            assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
-        }
-        // The ratify limit's default, zero, is told in words.
-        let line = help
-            .lines()
-            .find(|line| line.contains("--ratify-limit"))
-            .unwrap();
-        assert!(
-            line.ends_with("zero, the default, means a day is not ratified"),
-            "{line}"
-        );
-        assert!(help.contains("[CONFIG]"), "{help}");
-    }
-
-    #[test]
-    fn avalon_takes_a_file_the_counts_the_limits_and_the_log_flags() {
-        assert_eq!(
-            parsed(&["avalon"]),
-            CommandLine::Avalon(Avalon {
-                config: None,
-                overrides: avalon::config::Overrides::default(),
-                logging: Logging::default(),
-            })
-        );
-        let args = [
-            "avalon",
-            "game.toml",
-            "--merlin",
-            "1",
-            "--percival",
-            "1",
-            "--servants",
-            "3",
-            "--assassin",
-            "1",
-            "--morgana",
-            "1",
-            "--mordred",
-            "1",
-            "--oberon",
-            "1",
-            "--minions",
-            "2",
-            "--propose-limit",
-            "30s",
-            "--vote-limit",
-            "1m 30s",
-            "--quest-limit",
-            "2m",
-            "--assassinate-limit",
-            "5s",
-            "--no-log",
-        ];
-        assert_eq!(
-            parsed(&args),
-            CommandLine::Avalon(Avalon {
-                config: Some(PathBuf::from("game.toml")),
-                overrides: avalon::config::Overrides {
-                    roles: avalon::RoleCounts {
-                        merlin: Some(1),
-                        percival: Some(1),
-                        servants: Some(3),
-                        assassin: Some(1),
-                        morgana: Some(1),
-                        mordred: Some(1),
-                        oberon: Some(1),
-                        minions: Some(2),
-                    },
-                    limits: avalon::PhaseLimits {
-                        propose_limit: Some(Duration::from_secs(30)),
-                        vote_limit: Some(Duration::from_secs(90)),
-                        quest_limit: Some(Duration::from_secs(120)),
-                        assassinate_limit: Some(Duration::from_secs(5)),
-                    },
-                },
-                logging: Logging {
-                    log: false,
-                    no_log: true
-                },
-            })
-        );
-        let refused = |args: &[&str]| {
-            CommandLine::try_parse_from([&["social-deduction", "avalon"], args].concat()).is_err()
-        };
-        assert!(refused(&["game.toml", "other.toml"]));
-        assert!(refused(&["--vote-limit", "30"]));
-        assert!(refused(&["--ratify-limit", "5s"]));
-        assert!(refused(&["--werewolves", "1"]));
-    }
-
-    #[test]
-    fn the_avalon_help_names_the_defaults_the_code_fills_in() {
-        let table = avalon::Table::default();
-        let counts = table
-            .counts()
-            .map(|(role, count)| (avalon::RoleCounts::flag(role), count.to_string()));
-        let rules = avalon::Rules::default();
-        let limits = [
-            ("--propose-limit", rules.propose_limit),
-            ("--vote-limit", rules.vote_limit),
-            ("--quest-limit", rules.quest_limit),
-            ("--assassinate-limit", rules.assassinate_limit),
-        ]
-        .map(|(option, limit)| {
-            (
-                option.to_string(),
-                humantime::format_duration(limit).to_string(),
-            )
-        });
+    fn the_help_of_each_game_lists_the_configuration_file_and_the_log_flags_alone() {
         let mut command = CommandLine::command();
+        for game in ["werewolf", "avalon"] {
+            let subcommand = command.find_subcommand_mut(game).unwrap();
+            let arguments: Vec<String> = subcommand
+                .get_arguments()
+                .map(|argument| argument.get_id().to_string())
+                .collect();
+            assert_eq!(arguments, ["config", "log", "no_log"], "{game}");
+            let help = subcommand.render_help().to_string();
+            assert!(help.contains("<CONFIG>"), "{help}");
+            assert!(help.contains("The TOML configuration file"), "{help}");
+        }
         let avalon = command.find_subcommand_mut("avalon").unwrap();
         assert_eq!(
             avalon.get_about().unwrap().to_string(),
             "Avalon: good against evil, over five quests"
         );
-        let help = avalon.render_help().to_string();
-        for (option, default) in counts.into_iter().chain(limits) {
-            let line = help.lines().find(|line| line.contains(&option)).unwrap();
-            assert!(line.ends_with(&format!("[default: {default}]")), "{line}");
-        }
-        assert!(help.contains("[CONFIG]"), "{help}");
     }
 
     #[test]

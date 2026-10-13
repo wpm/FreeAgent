@@ -42,7 +42,6 @@ use crate::seat::{
 };
 use anyhow::ensure;
 use async_trait::async_trait;
-use clap::Args;
 use free_agent::{ActorId, ActorInit, Behavior, Builder, Context, Episode, Logger, ThinkBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -284,22 +283,6 @@ impl fmt::Display for Role {
 }
 
 impl Role {
-    /// The word a count of the role goes by on the command line: the
-    /// plural of a role a table may hold several of, `servants` and
-    /// `minions`, and the name of any other.
-    pub fn counted(self) -> &'static str {
-        match self {
-            Role::Merlin => "merlin",
-            Role::Percival => "percival",
-            Role::Servant => "servants",
-            Role::Assassin => "assassin",
-            Role::Morgana => "morgana",
-            Role::Mordred => "mordred",
-            Role::Oberon => "oberon",
-            Role::Minion => "minions",
-        }
-    }
-
     /// The role as a sentence names it after a player's name: "Merlin",
     /// "a loyal servant of Arthur", "the Assassin", "a minion of Mordred".
     pub fn told(self) -> &'static str {
@@ -358,94 +341,6 @@ pub enum Seen {
     Evil,
     /// The other player is Merlin or Morgana.
     MerlinOrMorgana,
-}
-
-/// How many of each role sit at the table, for a game to flatten into its
-/// command line arguments. A count left unset has no `clap` default, so
-/// that the game can tell it apart from a count that was given, and fill
-/// it in from the configuration file or [`Table::default`].
-#[derive(Args, Debug, Default, PartialEq, Eq)]
-pub struct RoleCounts {
-    /// How many Merlins.
-    #[arg(long, value_name = "N", help = how_many("Merlins", Table::default().merlin))]
-    pub merlin: Option<usize>,
-    /// How many Percivals.
-    #[arg(long, value_name = "N", help = how_many("Percivals", Table::default().percival))]
-    pub percival: Option<usize>,
-    /// How many loyal servants of Arthur.
-    #[arg(long, value_name = "N", help = how_many("Servants", Table::default().servants))]
-    pub servants: Option<usize>,
-    /// How many Assassins.
-    #[arg(long, value_name = "N", help = how_many("Assassins", Table::default().assassin))]
-    pub assassin: Option<usize>,
-    /// How many Morganas.
-    #[arg(long, value_name = "N", help = how_many("Morganas", Table::default().morgana))]
-    pub morgana: Option<usize>,
-    /// How many Mordreds.
-    #[arg(long, value_name = "N", help = how_many("Mordreds", Table::default().mordred))]
-    pub mordred: Option<usize>,
-    /// How many Oberons.
-    #[arg(long, value_name = "N", help = how_many("Oberons", Table::default().oberon))]
-    pub oberon: Option<usize>,
-    /// How many minions of Mordred.
-    #[arg(long, value_name = "N", help = how_many("Minions", Table::default().minions))]
-    pub minions: Option<usize>,
-}
-
-impl RoleCounts {
-    /// How many of `role` were given, if any.
-    pub fn get(&self, role: Role) -> Option<usize> {
-        match role {
-            Role::Merlin => self.merlin,
-            Role::Percival => self.percival,
-            Role::Servant => self.servants,
-            Role::Assassin => self.assassin,
-            Role::Morgana => self.morgana,
-            Role::Mordred => self.mordred,
-            Role::Oberon => self.oberon,
-            Role::Minion => self.minions,
-        }
-    }
-
-    /// The flag that gives how many of `role`, such as `--servants`.
-    pub fn flag(role: Role) -> String {
-        format!("--{}", role.counted())
-    }
-}
-
-/// The help for a count of `what`, naming the `default` the code fills in
-/// when the count is left unset.
-fn how_many(what: &str, default: usize) -> String {
-    format!("How many {what} [default: {default}]")
-}
-
-/// How long each phase waits for the players, for a game to flatten into
-/// its command line arguments. A limit left unset has no `clap` default, so
-/// that the game can tell it apart from a limit that was given, and fill it
-/// in from the configuration file or [`Rules::default`].
-#[derive(Args, Debug, Default, PartialEq, Eq)]
-pub struct PhaseLimits {
-    /// How long a proposal waits for its leader.
-    #[arg(long, value_name = "D", value_parser = humantime::parse_duration, help = how_long("a proposal waits", Rules::default().propose_limit))]
-    pub propose_limit: Option<Duration>,
-    /// How long a vote waits for the players.
-    #[arg(long, value_name = "D", value_parser = humantime::parse_duration, help = how_long("a vote waits", Rules::default().vote_limit))]
-    pub vote_limit: Option<Duration>,
-    /// How long a quest waits for its team.
-    #[arg(long, value_name = "D", value_parser = humantime::parse_duration, help = how_long("a quest waits", Rules::default().quest_limit))]
-    pub quest_limit: Option<Duration>,
-    /// How long the assassination waits for the Assassin.
-    #[arg(long, value_name = "D", value_parser = humantime::parse_duration, help = how_long("the assassination waits", Rules::default().assassinate_limit))]
-    pub assassinate_limit: Option<Duration>,
-}
-
-/// The help for a limit, saying what `waits`, and naming the `default`
-/// the code fills in when the limit is left unset.
-fn how_long(waits: &str, default: Duration) -> String {
-    format!(
-        "How long {waits} [default: {}]",
-        humantime::format_duration(default)
-    )
 }
 
 /// How many of each role sit at the table.
@@ -1534,7 +1429,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_role_is_named_and_counted_and_belongs_to_a_team() {
+    fn a_role_is_named_and_told_and_belongs_to_a_team() {
         let named = EVERYONE.map(|role| role.to_string());
         assert_eq!(
             named,
@@ -1564,36 +1459,6 @@ pub(crate) mod tests {
         assert_eq!(Team::Evil.to_string(), "evil");
         let unique: Vec<Role> = EVERYONE.into_iter().filter(|role| !role.unique()).collect();
         assert_eq!(unique, [Role::Servant, Role::Minion]);
-    }
-
-    #[test]
-    fn role_counts_give_each_roles_count_under_the_flag_clap_derives() {
-        let counts = RoleCounts {
-            servants: Some(3),
-            oberon: Some(1),
-            ..RoleCounts::default()
-        };
-        let got = Table::default().counts().map(|(role, _)| counts.get(role));
-        assert_eq!(got, [None, None, Some(3), None, None, None, Some(1), None]);
-        let all = RoleCounts {
-            merlin: Some(1),
-            percival: Some(2),
-            servants: Some(3),
-            assassin: Some(4),
-            morgana: Some(5),
-            mordred: Some(6),
-            oberon: Some(7),
-            minions: Some(8),
-        };
-        let got = EVERYONE.map(|role| all.get(role).unwrap());
-        assert_eq!(got, [1, 2, 3, 4, 5, 6, 7, 8]);
-        let flags: Vec<String> = RoleCounts::augment_args(clap::Command::new("avalon"))
-            .get_arguments()
-            .filter_map(|arg| arg.get_long().map(|long| format!("--{long}")))
-            .collect();
-        let named = EVERYONE.map(RoleCounts::flag);
-        assert_eq!(flags, named);
-        assert_eq!(named[2], "--servants");
     }
 
     #[test]
