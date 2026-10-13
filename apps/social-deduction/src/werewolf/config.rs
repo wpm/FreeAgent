@@ -47,7 +47,7 @@ const VARIABLES: [&str; 2] = ["name", "role"];
 
 /// The configuration file, as written. Every table may be left out, and an
 /// unknown key anywhere is an error, so a misspelled setting fails loudly.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// The strategy every role not allotted otherwise plays, [`RANDOM`]
@@ -232,10 +232,10 @@ impl Config {
         for (role, default) in Table::default().counts() {
             let file = self.roles.get(role);
             let allotted = match (&file.strategies, &file.strategy) {
-                (Some(table), Some(filling)) => {
+                (Some(table), filling) => {
                     let allots: usize = table.values().sum();
                     if let Some(count) = file.count
-                        && count < allots
+                        && (count < allots || filling.is_none() && count != allots)
                     {
                         bail!(
                             "[roles.{role}] count is {count}, but [roles.{role}.strategies] allots {allots}"
@@ -243,21 +243,12 @@ impl Config {
                     }
                     let mut table = table.clone();
                     let left = file.count.unwrap_or(default).saturating_sub(allots);
-                    if left > 0 {
+                    if let Some(filling) = filling
+                        && left > 0
+                    {
                         *table.entry(filling.clone()).or_default() += left;
                     }
                     table
-                }
-                (Some(table), None) => {
-                    let allots: usize = table.values().sum();
-                    if let Some(count) = file.count
-                        && count != allots
-                    {
-                        bail!(
-                            "[roles.{role}] count is {count}, but [roles.{role}.strategies] allots {allots}"
-                        );
-                    }
-                    table.clone()
                 }
                 (None, _) => {
                     let strategy = file
@@ -648,7 +639,7 @@ system = "{{ name }} the {{ role }}"
     fn the_random_config_plays_the_code_defaults_with_no_models() {
         let file = concat!(env!("CARGO_MANIFEST_DIR"), "/configs/werewolf/random.toml");
         let example = Config::load(Path::new(file)).unwrap().settle().unwrap();
-        let none = Config::default().settle().unwrap();
+        let none = Config::parse("").unwrap().settle().unwrap();
         let configured = |settings: &Settings| {
             let deal = settings.deal();
             settings.configuration(&deal, &[], Models::new()).unwrap()
@@ -667,7 +658,7 @@ system = "{{ name }} the {{ role }}"
     }
 
     #[test]
-    fn with_no_file_every_role_of_the_default_table_is_random() {
+    fn with_nothing_in_the_file_every_role_of_the_default_table_is_random() {
         let settings = settle("");
         assert_eq!(settings.table, Table::default());
         assert_eq!(

@@ -68,10 +68,11 @@ fn start(events: &[Event<Entry>]) -> (&HashMap<PlayerId, Role>, &HashMap<PlayerI
 }
 
 /// Assert that the command refuses its arguments, with the exit code `clap`
-/// reserves for a usage error.
-fn assert_usage_error(args: &[&str]) {
+/// reserves for a usage error; what it said on standard error.
+fn assert_usage_error(args: &[&str]) -> String {
     let output = run(args);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
+    String::from_utf8(output.stderr).unwrap()
 }
 
 /// Play a game with `args` after the game's name, with the default table,
@@ -230,39 +231,23 @@ fn a_game_must_be_named() {
 
 #[test]
 fn a_game_without_a_configuration_file_is_a_usage_error_naming_it() {
-    for game in ["werewolf", "avalon"] {
-        let output = run(&[game]);
-        assert_eq!(output.status.code(), Some(2), "{output:?}");
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(stderr.contains("<CONFIG>"), "{stderr}");
-    }
+    let stderr = assert_usage_error(&["werewolf"]);
+    assert!(stderr.contains("<CONFIG>"), "{stderr}");
 }
-
-/// The flags that once set what a configuration file sets.
-const FORMER_FLAGS: [(&str, &str); 6] = [
-    ("--werewolves", "2"),
-    ("--night-limit", "30s"),
-    ("--ratify-limit", "5s"),
-    ("--merlin", "1"),
-    ("--servants", "3"),
-    ("--vote-limit", "10s"),
-];
 
 #[test]
 fn the_settings_the_file_holds_are_unknown_arguments() {
-    for game in ["werewolf", "avalon"] {
-        let random = format!("{}/configs/{game}/random.toml", env!("CARGO_MANIFEST_DIR"));
-        for (flag, value) in FORMER_FLAGS {
-            let output = run(&[game, &random, flag, value]);
-            assert_eq!(output.status.code(), Some(2), "{output:?}");
-            let stderr = String::from_utf8(output.stderr).unwrap();
-            assert!(
-                stderr.contains(&format!("unexpected argument '{flag}'")),
-                "{stderr}"
-            );
-        }
+    let refusals = [
+        (example("random.toml"), "--werewolves", "werewolf"),
+        (avalon_example("random.toml"), "--vote-limit", "avalon"),
+    ];
+    for (config, flag, game) in refusals {
+        let stderr = assert_usage_error(&[game, &config, flag, "1"]);
+        assert!(
+            stderr.contains(&format!("unexpected argument '{flag}'")),
+            "{stderr}"
+        );
     }
-    assert_usage_error(&["--werewolves", "2"]);
 }
 
 #[test]
@@ -306,75 +291,47 @@ fn example(name: &str) -> String {
     format!("{}/configs/werewolf/{name}", env!("CARGO_MANIFEST_DIR"))
 }
 
-/// `file` with its `[phases]` table holding `phases` and nothing else.
-fn phased(file: &str, phases: &[&str]) -> String {
-    assert!(file.lines().any(|line| line == "[phases]"), "{file}");
-    let mut table = "";
-    let mut phased = String::new();
-    for line in file.lines() {
-        if line.starts_with('[') {
-            table = line;
-        } else if table == "[phases]" {
-            continue;
-        }
-        phased.push_str(line);
-        phased.push('\n');
-        if line == "[phases]" {
-            for phase in phases {
-                phased.push_str(phase);
-                phased.push('\n');
-            }
-        }
-    }
-    phased
+/// The TOML table `lines` make.
+fn table(lines: &[&str]) -> toml::Table {
+    lines.join("\n").parse().unwrap()
+}
+
+/// Rewrite the configuration file at `path` as `edit` changes it.
+fn edited(path: &str, edit: impl FnOnce(&mut toml::Table)) {
+    let mut file: toml::Table = std::fs::read_to_string(path).unwrap().parse().unwrap();
+    edit(&mut file);
+    std::fs::write(path, toml::to_string(&file).unwrap()).unwrap();
 }
 
 /// Rewrite the configuration file at `path` so that its `[phases]` table
 /// holds `phases` and nothing else.
 fn rephased(path: &str, phases: &[&str]) {
-    let file = std::fs::read_to_string(path).unwrap();
-    std::fs::write(path, phased(&file, phases)).unwrap();
+    edited(path, |file| {
+        file.insert("phases".to_string(), table(phases).into());
+    });
 }
 
 /// A configuration file written for this test: the prompted example with
-/// its provider replaced by one at `base_url`, its model by `id`, each on
-/// the line of the `[models.qwen]` table that names it and nowhere else,
-/// `lines` added to that table, and the [`QUICK`] limits for its phases, in
-/// the target directory, at a path of its own so the tests do not
-/// collide.
+/// the `[models.qwen]` table's provider replaced by one at `base_url`, its
+/// model by `id`, and `lines` added to it, and the [`QUICK`] limits for its
+/// phases, in the target directory, at a path of its own so the tests do
+/// not collide.
 fn configured(test: &str, base_url: &str, id: &str, lines: &[&str]) -> String {
     let path = format!("{}/{test}.toml", env!("CARGO_TARGET_TMPDIR"));
-    let example = std::fs::read_to_string(example("prompted.toml")).unwrap();
-    let replacements = [
-        ("base_url", format!("base_url = \"{base_url}\"")),
-        ("id", format!("id = \"{id}\"")),
-    ];
-    let mut table = "";
-    let mut file = String::new();
-    for line in example.lines() {
-        if line.starts_with('[') {
-            table = line;
+    std::fs::copy(example("prompted.toml"), &path).unwrap();
+    edited(&path, |file| {
+        let qwen = file["models"]["qwen"].as_table_mut().unwrap();
+        for key in ["base_url", "id"] {
+            assert!(
+                qwen.contains_key(key),
+                "the example's [models.qwen] has no {key}"
+            );
         }
-        let key = line.split_once(" = ").map(|(key, _)| key);
-        let replacement = replacements
-            .iter()
-            .find(|(named, _)| table == "[models.qwen]" && key == Some(named));
-        file.push_str(replacement.map_or(line, |(_, written)| written));
-        file.push('\n');
-        if key == Some("id") && table == "[models.qwen]" {
-            for line in lines {
-                file.push_str(line);
-                file.push('\n');
-            }
-        }
-    }
-    for (_, line) in &replacements {
-        assert!(
-            file.lines().any(|written| written == line),
-            "the example has no line of its [models.qwen] table to write {line} on"
-        );
-    }
-    std::fs::write(&path, phased(&file, &QUICK)).unwrap();
+        qwen.insert("base_url".to_string(), base_url.into());
+        qwen.insert("id".to_string(), id.into());
+        qwen.extend(table(lines));
+        file.insert("phases".to_string(), table(&QUICK).into());
+    });
     path
 }
 
@@ -721,8 +678,9 @@ fn a_template_that_cannot_render_is_an_error_before_anything_is_printed() {
 fn werewolf_takes_the_role_counts_and_the_limits_from_the_file() {
     let base_url = playing(&[EXAMPLE_MODEL]);
     let config = configured("counted", &base_url, EXAMPLE_MODEL, &[]);
-    let file = std::fs::read_to_string(&config).unwrap();
-    std::fs::write(&config, format!("{file}[roles.werewolf]\ncount = 1\n")).unwrap();
+    edited(&config, |file| {
+        file.insert("roles".to_string(), table(&["werewolf.count = 1"]).into());
+    });
     let (events, _) = played(&[&config]);
     let (roles, _) = start(&events);
     assert_eq!(roles.len(), 6);

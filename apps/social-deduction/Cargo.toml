@@ -37,3 +37,5 @@ toml.workspace = true
 [dev-dependencies]
 # A paused clock lets a test wait out a day's time limit without waiting.
 tokio = { workspace = true, features = ["test-util"] }
+# The binary's tests write configuration files by editing an example's tables.
+toml = { workspace = true, features = ["display"] }

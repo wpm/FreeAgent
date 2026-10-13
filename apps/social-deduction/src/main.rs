@@ -27,9 +27,9 @@ use tokio::sync::oneshot;
 #[command(version, about)]
 enum CommandLine {
     /// Werewolf: werewolves against villagers, by night and by day.
-    Werewolf(Werewolf),
+    Werewolf(Game),
     /// Avalon: good against evil, over five quests.
-    Avalon(Avalon),
+    Avalon(Game),
     /// List the models a provider serves, and which of them play when
     /// asked.
     #[command(after_help = known_providers_help())]
@@ -48,18 +48,9 @@ enum CommandLine {
     },
 }
 
-/// A game of Werewolf: its configuration file, and whether it is logged.
+/// A game: its configuration file, and whether it is logged.
 #[derive(Args, Debug, PartialEq)]
-struct Werewolf {
-    /// The TOML configuration file
-    config: PathBuf,
-    #[command(flatten)]
-    logging: Logging,
-}
-
-/// A game of Avalon: its configuration file, and whether it is logged.
-#[derive(Args, Debug, PartialEq)]
-struct Avalon {
+struct Game {
     /// The TOML configuration file
     config: PathBuf,
     #[command(flatten)]
@@ -93,7 +84,7 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match CommandLine::parse() {
-        CommandLine::Werewolf(Werewolf { config, logging }) => {
+        CommandLine::Werewolf(Game { config, logging }) => {
             let settings = Config::load(&config)?.settle()?;
             // Every prompt is rendered, and every model in play set up,
             // before any actor is built, so that a template that is broken
@@ -115,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        CommandLine::Avalon(Avalon { config, logging }) => {
+        CommandLine::Avalon(Game { config, logging }) => {
             let settings = avalon::config::Config::load(&config)?.settle()?;
             // As in Werewolf, every prompt is rendered and every model in
             // play set up before any actor is built.
@@ -321,13 +312,13 @@ mod tests {
     /// The command line of a game of Werewolf played from `game.toml`
     /// with `logging`.
     fn logged(logging: Logging) -> CommandLine {
-        CommandLine::Werewolf(Werewolf {
+        CommandLine::Werewolf(Game {
             config: PathBuf::from("game.toml"),
             logging,
         })
     }
 
-    /// The error kind `clap` gives the command line `args`, after the
+    /// The kind of error `clap` gives the command line `args`, after the
     /// binary's name, or `None` when it parses.
     fn refused(args: &[&str]) -> Option<ErrorKind> {
         CommandLine::try_parse_from([&["social-deduction"], args].concat())
@@ -341,7 +332,7 @@ mod tests {
         assert_eq!(werewolf(&["game.toml"]), logged(Logging::default()));
         assert_eq!(
             parsed(&["avalon", "game.toml"]),
-            CommandLine::Avalon(Avalon {
+            CommandLine::Avalon(Game {
                 config: PathBuf::from("game.toml"),
                 logging: Logging::default(),
             })
@@ -351,12 +342,8 @@ mod tests {
     #[test]
     fn a_game_without_a_configuration_file_is_an_error_naming_it() {
         for game in ["werewolf", "avalon"] {
-            assert_eq!(
-                refused(&[game]),
-                Some(ErrorKind::MissingRequiredArgument),
-                "{game}"
-            );
             let error = CommandLine::try_parse_from(["social-deduction", game]).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument, "{game}");
             assert!(error.to_string().contains("<CONFIG>"), "{error}");
         }
     }
@@ -387,7 +374,7 @@ mod tests {
         assert_eq!(werewolf(&["game.toml", "--log", "--no-log"]), logged(off()));
         assert_eq!(
             parsed(&["avalon", "game.toml", "--no-log"]),
-            CommandLine::Avalon(Avalon {
+            CommandLine::Avalon(Game {
                 config: PathBuf::from("game.toml"),
                 logging: off(),
             })

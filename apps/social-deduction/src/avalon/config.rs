@@ -45,7 +45,7 @@ const VARIABLES: [&str; 3] = ["name", "role", "team"];
 
 /// The configuration file, as written. Every table may be left out, and an
 /// unknown key anywhere is an error, so a misspelled setting fails loudly.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// The strategy every role not allotted otherwise plays, [`RANDOM`]
@@ -141,7 +141,7 @@ impl Roles {
 
 /// The name of the table `[roles.<name>]` that speaks of `role`: the
 /// role's name in lower case, such as `servant`.
-pub(crate) fn key(role: Role) -> String {
+fn key(role: Role) -> String {
     role.to_string().to_lowercase()
 }
 
@@ -235,13 +235,11 @@ impl Config {
     /// seat is an error naming the strategy and the role.
     pub fn settle(self) -> anyhow::Result<Settings> {
         let (code, file) = (Rules::default(), &self.phases);
-        // The file over the code.
-        let limit = |file: Option<Duration>, code| file.unwrap_or(code);
         let rules = Rules {
-            propose_limit: limit(file.propose_limit, code.propose_limit),
-            vote_limit: limit(file.vote_limit, code.vote_limit),
-            quest_limit: limit(file.quest_limit, code.quest_limit),
-            assassinate_limit: limit(file.assassinate_limit, code.assassinate_limit),
+            propose_limit: file.propose_limit.unwrap_or(code.propose_limit),
+            vote_limit: file.vote_limit.unwrap_or(code.vote_limit),
+            quest_limit: file.quest_limit.unwrap_or(code.quest_limit),
+            assassinate_limit: file.assassinate_limit.unwrap_or(code.assassinate_limit),
         };
         let mut strategies = self.strategies.clone();
         strategies.insert(RANDOM.to_string(), Strategy::Random(Random {}));
@@ -250,10 +248,10 @@ impl Config {
             let file = self.roles.get(role);
             let key = key(role);
             let allotted = match (&file.strategies, &file.strategy) {
-                (Some(table), Some(filling)) => {
+                (Some(table), filling) => {
                     let allots: usize = table.values().sum();
                     if let Some(count) = file.count
-                        && count < allots
+                        && (count < allots || filling.is_none() && count != allots)
                     {
                         bail!(
                             "[roles.{key}] count is {count}, but [roles.{key}.strategies] allots {allots}"
@@ -261,21 +259,12 @@ impl Config {
                     }
                     let mut table = table.clone();
                     let left = file.count.unwrap_or(default).saturating_sub(allots);
-                    if left > 0 {
+                    if let Some(filling) = filling
+                        && left > 0
+                    {
                         *table.entry(filling.clone()).or_default() += left;
                     }
                     table
-                }
-                (Some(table), None) => {
-                    let allots: usize = table.values().sum();
-                    if let Some(count) = file.count
-                        && count != allots
-                    {
-                        bail!(
-                            "[roles.{key}] count is {count}, but [roles.{key}.strategies] allots {allots}"
-                        );
-                    }
-                    table.clone()
                 }
                 (None, _) => {
                     let strategy = file
@@ -692,12 +681,12 @@ policy = "random"
     }
 
     #[test]
-    fn the_random_example_plays_the_game_of_no_file() {
+    fn the_random_config_plays_the_code_defaults_with_no_models() {
         let example = Config::load(Path::new(&example("random.toml")))
             .unwrap()
             .settle()
             .unwrap();
-        let none = Config::default().settle().unwrap();
+        let none = Config::parse("").unwrap().settle().unwrap();
         let configured = |settings: &Settings| {
             let deal = settings.deal();
             settings.configuration(&deal, &[], Models::new()).unwrap()
@@ -717,7 +706,7 @@ policy = "random"
     }
 
     #[test]
-    fn with_no_file_every_role_of_the_default_table_is_random() {
+    fn with_nothing_in_the_file_every_role_of_the_default_table_is_random() {
         let settings = settle("");
         assert_eq!(settings.table, Table::default());
         assert_eq!(
@@ -1287,8 +1276,9 @@ count = 1
     }
 
     #[tokio::test(start_paused = true)]
-    async fn the_configuration_is_logged_right_after_the_deal_with_no_file_and_with_the_example() {
-        let none = Config::default();
+    async fn the_configuration_is_logged_right_after_the_deal_with_an_empty_file_and_with_the_random_config()
+     {
+        let none = Config::parse("").unwrap();
         let example = Config::load(Path::new(&example("random.toml"))).unwrap();
         for config in [none, example] {
             let settings = config.settle().unwrap();
