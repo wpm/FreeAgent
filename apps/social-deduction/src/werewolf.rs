@@ -87,6 +87,20 @@ impl Game for Werewolf {
         }
     }
 
+    fn rules(limits: &Limits) -> Rules {
+        Rules {
+            night_limit: limits.night_limit,
+            day_limit: limits.day_limit,
+            ratify_limit: limits.ratify_limit,
+            ..Rules::default()
+        }
+    }
+
+    /// The role's name.
+    fn variables(role: Role) -> minijinja::Value {
+        minijinja::context! { role => role.to_string() }
+    }
+
     fn environment(
         deal: HashMap<PlayerId, Dealt>,
         rules: Rules,
@@ -564,17 +578,6 @@ impl Limits {
     /// limit is above zero.
     pub fn ratified(&self) -> bool {
         ratified(self.ratify_limit)
-    }
-
-    /// The rules a game is played under: the default rules, with these
-    /// limits.
-    pub fn rules(&self) -> Rules {
-        Rules {
-            night_limit: self.night_limit,
-            day_limit: self.day_limit,
-            ratify_limit: self.ratify_limit,
-            ..Rules::default()
-        }
     }
 }
 

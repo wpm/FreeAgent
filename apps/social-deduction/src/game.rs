@@ -74,6 +74,13 @@ pub trait Game: Debug + Clone + PartialEq + Send + Sync + 'static {
     /// How long each phase of a game under `rules` waits.
     fn limits(rules: &Self::Rules) -> Self::Limits;
 
+    /// The rules a game is played under: the default rules, with `limits`.
+    fn rules(limits: &Self::Limits) -> Self::Rules;
+
+    /// The variables a system prompt is rendered with for `role`, besides
+    /// the seat's `name` and the text blocks.
+    fn variables(role: Self::Role) -> minijinja::Value;
+
     /// Everything the episode needs to run the environment for a game of
     /// `deal` under `rules`: it may send to and stop every player, holds
     /// the logger, and thinks. It logs the deal, then `configuration`,
