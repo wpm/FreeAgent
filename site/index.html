@@ -51,8 +51,10 @@
   <pre><code>curl --proto '=https' --tlsv1.2 -LsSf https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-installer.sh | sh</code></pre>
   <h3>Windows</h3>
   <pre><code>powershell -ExecutionPolicy Bypass -c "irm https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-installer.ps1 | iex"</code></pre>
-  <p>Then deal a table and watch a game:</p>
-  <pre><code>social-deduction --werewolves 2 --villagers 3 --doctors 1 --seers 1</code></pre>
+  <p>Then, from the root of a release archive, whose <code>configs/</code>
+  directory holds the example configurations, deal a table and watch a
+  game:</p>
+  <pre><code>social-deduction werewolf configs/werewolf/random.toml</code></pre>
   <p>Every build is also on the
   <a href="https://github.com/wpm/FreeAgent/releases">releases page</a>
   as a plain archive.</p>

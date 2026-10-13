@@ -1,9 +1,7 @@
 //! The configuration of a game of Avalon: the [`Config`] a TOML file is
-//! parsed into, the [`Overrides`] the command line may give, and the
-//! [`Settings`] that take effect once the two are combined with the
-//! defaults in the code. A setting comes from the command line if it is
-//! given there, otherwise from the file, otherwise from the code. With no
-//! file, every player is random.
+//! parsed into, and the [`Settings`] that take effect once it is combined
+//! with the defaults in the code. A setting comes from the file if it is
+//! given there, otherwise from the code.
 //!
 //! The file defines named models, each a [`Spec`], and named
 //! [`Strategy`]s, each a policy with its parameters, and allots each role's
@@ -27,14 +25,13 @@
 //! The log records the [`Configuration`] a game ran under right after the
 //! deal, and [`players`] builds each seat's player from it.
 
-use super::{Dealt, PhaseLimits, Role, RoleCounts, Rules, Seat, Table, prompted, random};
+use super::{Dealt, Role, Rules, Seat, Table, prompted, random};
 use crate::model::Provider;
 use crate::model::spec::{self, Handles, Models, Spec};
 use crate::model::window::{self, ContextWindow};
 use crate::seat::PlayerId;
 use crate::strategy::{RANDOM, Random, RoleConfig, Strategy};
 use anyhow::{Context as _, anyhow, bail};
-use clap::Args;
 use minijinja::{Environment, UndefinedBehavior, Value, context};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
@@ -46,22 +43,9 @@ use std::time::Duration;
 /// The variables every template has besides the text blocks.
 const VARIABLES: [&str; 3] = ["name", "role", "team"];
 
-/// What the command line may say over the file: the role counts and the
-/// phase limits. Each is unset unless given, so that the file can be
-/// heard.
-#[derive(Args, Debug, Default, PartialEq, Eq)]
-pub struct Overrides {
-    /// How many of each role sit at the table.
-    #[command(flatten)]
-    pub roles: RoleCounts,
-    /// How long each phase waits for the players.
-    #[command(flatten)]
-    pub limits: PhaseLimits,
-}
-
 /// The configuration file, as written. Every table may be left out, and an
 /// unknown key anywhere is an error, so a misspelled setting fails loudly.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// The strategy every role not allotted otherwise plays, [`RANDOM`]
@@ -165,7 +149,7 @@ fn key(role: Role) -> String {
 pub type Allotments = BTreeMap<Role, BTreeMap<String, usize>>;
 
 /// The settings that took effect: the file as written, and the settings
-/// the command line and the code have a say in, decided.
+/// the file and the code have a say in, decided.
 #[derive(Debug)]
 pub struct Settings {
     /// The file as written.
@@ -234,79 +218,53 @@ impl Config {
         Ok(config)
     }
 
-    /// The settings that take effect with `overrides` from the command
-    /// line: each limit from the command line if given there, otherwise
-    /// from the file, otherwise from the code; and each role's allotment.
-    /// A role's `strategies` table allots its seats first. With the role's
-    /// own `strategy`, that strategy fills the rest of the role's count,
-    /// from the command line if given there, otherwise from the file,
-    /// otherwise from the code, and a count given that is less than the
-    /// table allots is an error naming the role and both numbers. Without
-    /// one, the role has as many seats as the table allots, and a count in
-    /// the file or on the command line that disagrees is an error naming the
-    /// role and both numbers. A role with no table plays one strategy, its
-    /// own `strategy`, otherwise the file's, otherwise [`RANDOM`], and has
-    /// the count from the command line if given there, otherwise from the
-    /// file, otherwise from the code. A strategy allotted that is not
-    /// defined is an error naming the role. The table the counts make is
-    /// then checked as [`Table::check`] checks it, and a prompted strategy
-    /// allotted a seat is an error naming the strategy and the role.
-    pub fn settle(self, overrides: Overrides) -> anyhow::Result<Settings> {
-        let code = Rules::default();
-        let (given, file) = (&overrides.limits, &self.phases);
-        // The command line over the file over the code.
-        let limit =
-            |given: Option<Duration>, file: Option<Duration>, code| given.or(file).unwrap_or(code);
+    /// The settings that take effect: each limit from the file if given
+    /// there, otherwise from the code; and each role's allotment. A role's
+    /// `strategies` table allots its seats first. With the role's own
+    /// `strategy`, that strategy fills the rest of the role's count, from
+    /// the file if given there, otherwise from the code, and a count in the
+    /// file that is less than the table allots is an error naming the role
+    /// and both numbers. Without one, the role has as many seats as the
+    /// table allots, and a count in the file that disagrees is an error
+    /// naming the role and both numbers. A role with no table plays one
+    /// strategy, its own `strategy`, otherwise the file's, otherwise
+    /// [`RANDOM`], and has the count from the file if given there,
+    /// otherwise from the code. A strategy allotted that is not defined is
+    /// an error naming the role. The table the counts make is then checked
+    /// as [`Table::check`] checks it, and a prompted strategy allotted a
+    /// seat is an error naming the strategy and the role.
+    pub fn settle(self) -> anyhow::Result<Settings> {
+        let (code, file) = (Rules::default(), &self.phases);
         let rules = Rules {
-            propose_limit: limit(given.propose_limit, file.propose_limit, code.propose_limit),
-            vote_limit: limit(given.vote_limit, file.vote_limit, code.vote_limit),
-            quest_limit: limit(given.quest_limit, file.quest_limit, code.quest_limit),
-            assassinate_limit: limit(
-                given.assassinate_limit,
-                file.assassinate_limit,
-                code.assassinate_limit,
-            ),
+            propose_limit: file.propose_limit.unwrap_or(code.propose_limit),
+            vote_limit: file.vote_limit.unwrap_or(code.vote_limit),
+            quest_limit: file.quest_limit.unwrap_or(code.quest_limit),
+            assassinate_limit: file.assassinate_limit.unwrap_or(code.assassinate_limit),
         };
         let mut strategies = self.strategies.clone();
         strategies.insert(RANDOM.to_string(), Strategy::Random(Random {}));
         let mut allotments = Allotments::new();
         for (role, default) in Table::default().counts() {
             let file = self.roles.get(role);
-            let given = overrides.roles.get(role);
             let key = key(role);
-            let file_count = (format!("[roles.{key}] count"), file.count);
-            let flag_count = (RoleCounts::flag(role), given);
             let allotted = match (&file.strategies, &file.strategy) {
-                (Some(table), Some(filling)) => {
+                (Some(table), filling) => {
                     let allots: usize = table.values().sum();
-                    let (setting, count) = match given {
-                        Some(_) => flag_count,
-                        None => file_count,
-                    };
-                    if let Some(count) = count
-                        && count < allots
+                    if let Some(count) = file.count
+                        && (count < allots || filling.is_none() && count != allots)
                     {
-                        bail!("{setting} is {count}, but [roles.{key}.strategies] allots {allots}");
+                        bail!(
+                            "[roles.{key}] count is {count}, but [roles.{key}.strategies] allots {allots}"
+                        );
                     }
                     let mut table = table.clone();
-                    let left = count.unwrap_or(default).saturating_sub(allots);
-                    if left > 0 {
+                    let left = file.count.unwrap_or(default).saturating_sub(allots);
+                    if let Some(filling) = filling
+                        && left > 0
+                    {
                         *table.entry(filling.clone()).or_default() += left;
                     }
                     table
-                }
-                (Some(table), None) => {
-                    let allots: usize = table.values().sum();
-                    for (setting, count) in [file_count, flag_count] {
-                        if let Some(count) = count
-                            && count != allots
-                        {
-                            bail!(
-                                "{setting} is {count}, but [roles.{key}.strategies] allots {allots}"
-                            );
-                        }
-                    }
-                    table.clone()
                 }
                 (None, _) => {
                     let strategy = file
@@ -314,7 +272,7 @@ impl Config {
                         .as_ref()
                         .or(self.strategy.as_ref())
                         .map_or(RANDOM, String::as_str);
-                    let count = given.or(file.count).unwrap_or(default);
+                    let count = file.count.unwrap_or(default);
                     BTreeMap::from([(strategy.to_string(), count)])
                 }
             };
@@ -647,25 +605,15 @@ policy = "random"
 policy = "random"
 "#;
 
-    /// The settings `file` and `overrides` produce under the code defaults.
-    fn settle(file: &str, overrides: Overrides) -> Settings {
-        Config::parse(file).unwrap().settle(overrides).unwrap()
+    /// The settings `file` produces under the code defaults.
+    fn settle(file: &str) -> Settings {
+        Config::parse(file).unwrap().settle().unwrap()
     }
 
-    /// The error `file` and `overrides` settle to, causes included.
-    fn unsettled(file: &str, overrides: Overrides) -> String {
-        let error = Config::parse(file)
-            .and_then(|config| config.settle(overrides))
-            .unwrap_err();
+    /// The error `file` settles to, causes included.
+    fn unsettled(file: &str) -> String {
+        let error = Config::parse(file).and_then(Config::settle).unwrap_err();
         format!("{error:#}")
-    }
-
-    /// Overrides giving the role counts `roles`.
-    fn counting(roles: RoleCounts) -> Overrides {
-        Overrides {
-            roles,
-            ..Overrides::default()
-        }
     }
 
     /// An allotment of `seats` to each named strategy.
@@ -678,12 +626,12 @@ policy = "random"
 
     /// The example file `name`.
     fn example(name: &str) -> String {
-        format!("{}/examples/avalon/{name}", env!("CARGO_MANIFEST_DIR"))
+        format!("{}/configs/avalon/{name}", env!("CARGO_MANIFEST_DIR"))
     }
 
     #[test]
-    fn the_examples_parse_and_render_and_are_the_two_documented() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/avalon");
+    fn the_configs_parse_and_render_and_are_the_two_documented() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/configs/avalon");
         let mut names: Vec<String> = std::fs::read_dir(dir)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
@@ -693,7 +641,7 @@ policy = "random"
         for name in &names {
             let settings = Config::load(Path::new(&example(name)))
                 .unwrap()
-                .settle(Overrides::default())
+                .settle()
                 .unwrap();
             assert_eq!(settings.table, Table::default(), "{name}");
             settings.prompts().unwrap();
@@ -702,7 +650,7 @@ policy = "random"
         // talk in every phase, and who it is.
         let settings = Config::load(Path::new(&example("prompted.toml")))
             .unwrap()
-            .settle(Overrides::default())
+            .settle()
             .unwrap();
         let prompts = settings.prompts().unwrap();
         let in_play: Vec<&str> = settings.models_in_play().into_keys().collect();
@@ -733,12 +681,12 @@ policy = "random"
     }
 
     #[test]
-    fn the_random_example_plays_the_game_of_no_file() {
+    fn the_random_config_plays_the_code_defaults_with_no_models() {
         let example = Config::load(Path::new(&example("random.toml")))
             .unwrap()
-            .settle(Overrides::default())
+            .settle()
             .unwrap();
-        let none = Config::default().settle(Overrides::default()).unwrap();
+        let none = Config::parse("").unwrap().settle().unwrap();
         let configured = |settings: &Settings| {
             let deal = settings.deal();
             settings.configuration(&deal, &[], Models::new()).unwrap()
@@ -758,8 +706,8 @@ policy = "random"
     }
 
     #[test]
-    fn with_no_file_every_role_of_the_default_table_is_random() {
-        let settings = settle("", Overrides::default());
+    fn with_nothing_in_the_file_every_role_of_the_default_table_is_random() {
+        let settings = settle("");
         assert_eq!(settings.table, Table::default());
         assert_eq!(
             settings.allotments,
@@ -823,11 +771,11 @@ policy = "random"
             "{STRATEGIES}[models.claude]\nbase_url = \"https://api.anthropic.com/v1\"\nid = \"claude\"\n"
         );
         assert_eq!(
-            unsettled(&two, Overrides::default()),
+            unsettled(&two),
             "strategy plain names no model, which it may leave out only when the file defines exactly one; it defines 2"
         );
         let none = "[strategies.plain]\npolicy = \"prompted\"\nsystem = \"Hi.\"\n";
-        let shown = unsettled(none, Overrides::default());
+        let shown = unsettled(none);
         assert!(shown.ends_with("it defines 0"), "{shown}");
         let named = two.replace(
             "policy = \"prompted\"",
@@ -847,13 +795,13 @@ policy = "random"
                 &format!("policy = \"prompted\"\nmodel = \"{model}\""),
             )
         };
-        let shown = unsettled(&named(""), Overrides::default());
+        let shown = unsettled(&named(""));
         assert!(
             shown.contains("[strategies.plain]") && shown.contains("model is empty"),
             "{shown}"
         );
         assert_eq!(
-            unsettled(&named("claude"), Overrides::default()),
+            unsettled(&named("claude")),
             "strategy plain names the model claude, which is not defined"
         );
     }
@@ -862,7 +810,7 @@ policy = "random"
     fn the_random_strategy_is_built_in_and_may_not_be_defined() {
         let file = "[strategies.random]\npolicy = \"random\"\n";
         assert_eq!(
-            unsettled(file, Overrides::default()),
+            unsettled(file),
             "[strategies.random] is built in, and may not be defined"
         );
     }
@@ -906,7 +854,7 @@ policy = "random"
     fn a_context_window_of_0_is_an_error_naming_the_model() {
         let file = STRATEGIES.replace("id = ", "context_window = 0\nid = ");
         assert_eq!(
-            unsettled(&file, Overrides::default()),
+            unsettled(&file),
             "[models.qwen] context_window is 0; a context window holds at least 1 token"
         );
     }
@@ -932,7 +880,7 @@ policy = "random"
         );
         for (role, _) in Table::default().counts() {
             let file = format!("{STRATEGIES}[roles.{}]\nstrategy = \"dice\"\n", key(role));
-            let settings = settle(&file, Overrides::default());
+            let settings = settle(&file);
             for (other, allotted) in &settings.allotments {
                 let strategy = if *other == role { "dice" } else { RANDOM };
                 assert!(allotted.contains_key(strategy), "{role}: {allotted:?}");
@@ -956,7 +904,7 @@ strategy = \"coin\"
 dice = 1
 "
         );
-        let settings = settle(&file, Overrides::default());
+        let settings = settle(&file);
         assert_eq!(
             settings.allotments,
             Allotments::from([
@@ -978,7 +926,7 @@ dice = 1
             }
         );
         // Random without a strategy of its own or the file's.
-        let settings = settle(STRATEGIES, Overrides::default());
+        let settings = settle(STRATEGIES);
         assert_eq!(settings.allotments[&Role::Merlin], allotted(&[(RANDOM, 1)]));
     }
 
@@ -989,62 +937,31 @@ dice = 1
                 "{STRATEGIES}[roles.servant]\n{count}strategy = \"dice\"\n[roles.servant.strategies]\ncoin = 1\n"
             )
         };
-        let servants =
-            |file: &str, overrides| settle(file, overrides).allotments[&Role::Servant].clone();
+        let servants = |file: &str| settle(file).allotments[&Role::Servant].clone();
         assert_eq!(
-            servants(&file("count = 5\n"), Overrides::default()),
+            servants(&file("count = 5\n")),
             allotted(&[("coin", 1), ("dice", 4)])
         );
-        // The count from the command line over the file's, and the code's
-        // without either.
-        let given = |servants| {
-            counting(RoleCounts {
-                servants: Some(servants),
-                ..RoleCounts::default()
-            })
-        };
-        assert_eq!(
-            servants(&file("count = 5\n"), given(4)),
-            allotted(&[("coin", 1), ("dice", 3)])
-        );
-        assert_eq!(
-            servants(&file(""), Overrides::default()),
-            allotted(&[("coin", 1), ("dice", 1)])
-        );
+        // The code's count without the file's.
+        assert_eq!(servants(&file("")), allotted(&[("coin", 1), ("dice", 1)]));
         // A count the table fills leaves nothing to fill.
         let full = file("count = 2\n").replace("coin = 1", "coin = 2");
-        assert_eq!(
-            servants(&full, Overrides::default()),
-            allotted(&[("coin", 2)])
-        );
+        assert_eq!(servants(&full), allotted(&[("coin", 2)]));
         // A strategy in the table and filling adds up.
         let both = file("count = 4\n").replace("coin = 1", "coin = 1\ndice = 1");
-        assert_eq!(
-            servants(&both, Overrides::default()),
-            allotted(&[("coin", 1), ("dice", 3)])
-        );
+        assert_eq!(servants(&both), allotted(&[("coin", 1), ("dice", 3)]));
         // A count the table overfills is an error naming both numbers.
         assert_eq!(
-            unsettled(&file("count = 0\n"), Overrides::default()),
+            unsettled(&file("count = 0\n")),
             "[roles.servant] count is 0, but [roles.servant.strategies] allots 1"
-        );
-        assert_eq!(
-            unsettled(&file("count = 5\n"), given(0)),
-            "--servants is 0, but [roles.servant.strategies] allots 1"
         );
         // Without a count, a table that allots more than the code's count
         // has as many seats as it allots.
         let more = file("").replace("coin = 1", "coin = 4");
-        assert_eq!(
-            servants(&more, Overrides::default()),
-            allotted(&[("coin", 4)])
-        );
+        assert_eq!(servants(&more), allotted(&[("coin", 4)]));
         // A strategy that fills is checked like any other.
         assert_eq!(
-            unsettled(
-                &file("count = 5\n").replace("\"dice\"", "\"wild\""),
-                Overrides::default()
-            ),
+            unsettled(&file("count = 5\n").replace("\"dice\"", "\"wild\"")),
             "the Servant is allotted wild, which is not a strategy"
         );
     }
@@ -1053,21 +970,11 @@ dice = 1
     fn a_strategies_table_s_seats_are_the_role_s_count_and_a_count_that_disagrees_is_an_error() {
         let file = format!("{STRATEGIES}[roles.minion.strategies]\ndice = 1\ncoin = 1\n");
         let agreeing = format!("{file}[roles.minion]\ncount = 2\n");
-        let given = |minions| {
-            counting(RoleCounts {
-                minions: Some(minions),
-                ..RoleCounts::default()
-            })
-        };
-        assert_eq!(settle(&agreeing, given(2)).table.minions, 2);
+        assert_eq!(settle(&agreeing).table.minions, 2);
         let disagreeing = format!("{file}[roles.minion]\ncount = 1\n");
         assert_eq!(
-            unsettled(&disagreeing, Overrides::default()),
+            unsettled(&disagreeing),
             "[roles.minion] count is 1, but [roles.minion.strategies] allots 2"
-        );
-        assert_eq!(
-            unsettled(&agreeing, given(3)),
-            "--minions is 3, but [roles.minion.strategies] allots 2"
         );
     }
 
@@ -1079,7 +986,7 @@ dice = 1
         ];
         for (roles, role) in files {
             assert_eq!(
-                unsettled(&format!("{STRATEGIES}{roles}"), Overrides::default()),
+                unsettled(&format!("{STRATEGIES}{roles}")),
                 format!("the {role} is allotted wild, which is not a strategy")
             );
         }
@@ -1092,13 +999,10 @@ dice = 1
             file.push_str(&format!("[roles.{}]\nstrategy = \"dice\"\n", key(role)));
         }
         assert_eq!(
-            unsettled(&file, Overrides::default()),
+            unsettled(&file),
             "the file's strategy is cautous, which is not a strategy"
         );
-        settle(
-            &format!("strategy = \"{RANDOM}\"\n{STRATEGIES}"),
-            Overrides::default(),
-        );
+        settle(&format!("strategy = \"{RANDOM}\"\n{STRATEGIES}"));
     }
 
     #[test]
@@ -1116,16 +1020,15 @@ dice = 1
                 true => format!("{STRATEGIES}{roles}"),
                 false => format!("{roles}{STRATEGIES}"),
             };
-            let settings = settle(&file, Overrides::default());
+            let settings = settle(&file);
             assert_eq!(settings.allotments[&role]["plain"], 1, "{role}");
             let in_play: Vec<&str> = settings.models_in_play().into_keys().collect();
             assert_eq!(in_play, ["qwen"], "{role}");
         }
         // Allotted no seat, a prompted strategy puts no model in play.
-        let settings = settle(
-            &format!("{STRATEGIES}[roles.percival]\nstrategy = \"plain\"\n"),
-            Overrides::default(),
-        );
+        let settings = settle(&format!(
+            "{STRATEGIES}[roles.percival]\nstrategy = \"plain\"\n"
+        ));
         assert!(settings.models_in_play().is_empty());
     }
 
@@ -1151,9 +1054,9 @@ count = 1
 ";
 
     #[test]
-    fn the_role_counts_fall_back_from_the_command_line_to_the_file_to_the_code() {
+    fn the_role_counts_fall_back_from_the_file_to_the_code() {
         // The code alone.
-        assert_eq!(settle("", Overrides::default()).table, Table::default());
+        assert_eq!(settle("").table, Table::default());
         // The file over the code.
         let ten = Table {
             merlin: 1,
@@ -1165,45 +1068,7 @@ count = 1
             oberon: 1,
             minions: 1,
         };
-        assert_eq!(settle(COUNTED, Overrides::default()).table, ten);
-        // The command line over the file, for every count.
-        let counts = RoleCounts {
-            merlin: Some(0),
-            percival: Some(0),
-            servants: Some(2),
-            assassin: Some(0),
-            morgana: Some(0),
-            mordred: Some(0),
-            oberon: Some(0),
-            minions: Some(3),
-        };
-        assert_eq!(
-            settle(COUNTED, counting(counts)).table,
-            Table {
-                merlin: 0,
-                percival: 0,
-                servants: 2,
-                assassin: 0,
-                morgana: 0,
-                mordred: 0,
-                oberon: 0,
-                minions: 3,
-            }
-        );
-        // A count the command line does not give still comes from the file.
-        let counts = RoleCounts {
-            servants: Some(1),
-            minions: Some(0),
-            ..RoleCounts::default()
-        };
-        assert_eq!(
-            settle(COUNTED, counting(counts)).table,
-            Table {
-                servants: 1,
-                minions: 0,
-                ..ten
-            }
-        );
+        assert_eq!(settle(COUNTED).table, ten);
     }
 
     #[test]
@@ -1228,20 +1093,13 @@ count = 1
             ),
         ];
         for (file, error) in refused {
-            let shown = unsettled(file, Overrides::default());
+            let shown = unsettled(file);
             assert!(shown.contains(error), "{shown}");
         }
-        // From the command line too.
-        let counts = RoleCounts {
-            servants: Some(0),
-            ..RoleCounts::default()
-        };
-        let shown = unsettled("", counting(counts));
-        assert!(shown.contains("this table seats 3"), "{shown}");
     }
 
     #[test]
-    fn the_phase_limits_fall_back_from_the_command_line_to_the_file_to_the_code() {
+    fn the_phase_limits_fall_back_from_the_file_to_the_code() {
         let file = "[phases]
 propose_limit = \"1m 30s\"
 vote_limit = \"2m\"
@@ -1258,32 +1116,10 @@ assassinate_limit = \"4m\"
             .map(|limit| limit.as_secs())
         };
         // The file over the code.
-        assert_eq!(
-            secs(&settle(file, Overrides::default()).rules),
-            [90, 120, 180, 240]
-        );
-        // The command line over the file, for every limit.
-        let limits = |propose: Option<u64>,
-                      vote: Option<u64>,
-                      quest: Option<u64>,
-                      assassinate: Option<u64>| Overrides {
-            limits: PhaseLimits {
-                propose_limit: propose.map(Duration::from_secs),
-                vote_limit: vote.map(Duration::from_secs),
-                quest_limit: quest.map(Duration::from_secs),
-                assassinate_limit: assassinate.map(Duration::from_secs),
-            },
-            ..Overrides::default()
-        };
-        assert_eq!(
-            secs(&settle(file, limits(Some(1), Some(2), Some(3), Some(4))).rules),
-            [1, 2, 3, 4]
-        );
-        // A limit the command line does not give still comes from the file.
-        assert_eq!(
-            secs(&settle(file, limits(Some(1), None, Some(3), None)).rules),
-            [1, 120, 3, 240]
-        );
+        assert_eq!(secs(&settle(file).rules), [90, 120, 180, 240]);
+        // The code without the file.
+        let code = Rules::default();
+        assert_eq!(secs(&settle("").rules), secs(&code));
     }
 
     /// A table of one Merlin, dice, and two Servants, one random and one
@@ -1298,7 +1134,7 @@ random = 1
 coin = 1
 "
         );
-        settle(&file, Overrides::default())
+        settle(&file)
     }
 
     #[test]
@@ -1370,16 +1206,8 @@ count = 1
 
     #[test]
     fn the_configuration_carries_the_settings_as_they_took_effect() {
-        // The propose limit from the command line, everything else from
-        // the file or the code.
-        let overrides = Overrides {
-            limits: PhaseLimits {
-                propose_limit: Some(Duration::from_secs(5)),
-                ..PhaseLimits::default()
-            },
-            ..Overrides::default()
-        };
-        let settings = settle(&configured(), overrides);
+        // Each setting from the file or the code.
+        let settings = settle(&configured());
         let configuration = settings
             .configuration(&settings.deal(), &[], Models::new())
             .unwrap();
@@ -1388,7 +1216,7 @@ count = 1
             configuration,
             Configuration {
                 role_counts: Table::default().counts().into_iter().collect(),
-                propose_limit: Duration::from_secs(5),
+                propose_limit: Duration::from_secs(30),
                 vote_limit: Duration::from_secs(90),
                 quest_limit: Duration::from_secs(10),
                 assassinate_limit: Duration::from_secs(5),
@@ -1424,7 +1252,7 @@ count = 1
     #[test]
     fn the_configuration_entry_writes_durations_as_humantime_does_and_survives_a_trip_through_json()
     {
-        let settings = settle(&configured(), Overrides::default());
+        let settings = settle(&configured());
         let configuration = settings
             .configuration(&settings.deal(), &[], Models::new())
             .unwrap();
@@ -1448,11 +1276,12 @@ count = 1
     }
 
     #[tokio::test(start_paused = true)]
-    async fn the_configuration_is_logged_right_after_the_deal_with_no_file_and_with_the_example() {
-        let none = Config::default();
+    async fn the_configuration_is_logged_right_after_the_deal_with_an_empty_file_and_with_the_random_config()
+     {
+        let none = Config::parse("").unwrap();
         let example = Config::load(Path::new(&example("random.toml"))).unwrap();
         for config in [none, example] {
-            let settings = config.settle(Overrides::default()).unwrap();
+            let settings = config.settle().unwrap();
             let deal = settings.deal();
             let configuration = settings.configuration(&deal, &[], Models::new()).unwrap();
             let (winner, won) = oneshot::channel();
@@ -1511,7 +1340,7 @@ system = "{{ name }}, {{ role }}"
             "{PLAIN}[strategies.bold]\npolicy = \"prompted\"\nsystem = \"Bold {{{{ name }}}}.\"\n\
              [roles.assassin]\nstrategy = \"bold\"\n[roles.servant]\nstrategy = \"random\"\n"
         );
-        let prompts = settle(&file, Overrides::default()).prompts().unwrap();
+        let prompts = settle(&file).prompts().unwrap();
         let rendered: Vec<(&str, Role, &str)> = prompts
             .iter()
             .map(|prompt| (prompt.seat.as_str(), prompt.role, prompt.strategy.as_str()))
@@ -1545,7 +1374,7 @@ system = "{{ name }}, {{ role }}"
         for role in ["morgana", "mordred", "oberon"] {
             file.push_str(&format!("[roles.{role}]\ncount = 1\n"));
         }
-        let settings = settle(&file, Overrides::default());
+        let settings = settle(&file);
         let prompts = settings.prompts().unwrap();
         for (role, told) in [
             (Role::Merlin, "Merlin, on the good side"),
@@ -1568,20 +1397,20 @@ system = "{{ name }}, {{ role }}"
     fn every_text_block_is_a_variable_and_a_persona_is_not() {
         let file = PLAIN.replace("{{ name }}, {{ role }}", "{{ rules }} {{ merlin }}");
         let file = format!("{file}[text]\nrules = \"The rules.\"\nmerlin = \"Hide.\"\n");
-        let prompts = settle(&file, Overrides::default()).prompts().unwrap();
+        let prompts = settle(&file).prompts().unwrap();
         assert_eq!(
             prompt(&prompts, "Player 1", Role::Servant, "plain"),
             "The rules. Hide."
         );
         let file = PLAIN.replace("{{ role }}", "{{ role }}[{{ persona }}]");
-        let error = settle(&file, Overrides::default()).prompts().unwrap_err();
+        let error = settle(&file).prompts().unwrap_err();
         assert!(format!("{error:#}").contains("persona"), "{error:#}");
     }
 
     #[test]
     fn a_template_that_does_not_render_is_an_error_naming_the_strategy_the_seat_and_the_role() {
         let file = PLAIN.replace("{{ name }}, {{ role }}", "{{ rulez }}");
-        let error = settle(&file, Overrides::default()).prompts().unwrap_err();
+        let error = settle(&file).prompts().unwrap_err();
         let shown = format!("{error:#}");
         assert!(
             shown.starts_with("rendering the prompt of strategy plain for Player 1 as the Merlin"),
@@ -1593,7 +1422,7 @@ system = "{{ name }}, {{ role }}"
     #[test]
     fn a_template_that_does_not_compile_is_an_error_naming_the_strategy() {
         let file = PLAIN.replace("{{ name }}, {{ role }}", "{% if %}");
-        let error = settle(&file, Overrides::default()).prompts().unwrap_err();
+        let error = settle(&file).prompts().unwrap_err();
         let shown = format!("{error:#}");
         assert!(
             shown.starts_with("compiling the prompt template of strategy plain"),
@@ -1602,12 +1431,7 @@ system = "{{ name }}, {{ role }}"
         assert!(shown.contains("syntax"), "{shown}");
         // A strategy at no seat of the table is not compiled.
         let file = file.replace("strategy = \"plain\"\n[models", "[models");
-        assert!(
-            settle(&file, Overrides::default())
-                .prompts()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(settle(&file).prompts().unwrap().is_empty());
     }
 
     /// A file of two models, `qwen` and `claude`, and a strategy asking
@@ -1633,13 +1457,10 @@ system = \"Smart {{{{ name }}}}.\"
 
     #[test]
     fn a_model_is_in_play_when_a_strategy_at_the_table_asks_it() {
-        let settings = settle(&two_models(""), Overrides::default());
+        let settings = settle(&two_models(""));
         let in_play: Vec<&str> = settings.models_in_play().into_keys().collect();
         assert_eq!(in_play, ["qwen"]);
-        let both = settle(
-            &two_models("[roles.minion]\nstrategy = \"smart\"\n"),
-            Overrides::default(),
-        );
+        let both = settle(&two_models("[roles.minion]\nstrategy = \"smart\"\n"));
         let in_play: Vec<&str> = both.models_in_play().into_keys().collect();
         assert_eq!(in_play, ["claude", "qwen"]);
     }
@@ -1662,7 +1483,7 @@ system = \"Smart {{{{ name }}}}.\"
     async fn every_model_in_play_is_set_up_once_with_its_own_tool_choice_and_window() {
         let claude_url = canned::refusing_required(&["claude-sonnet-4-5"]);
         let (qwen_url, asked) = canned::recording(&["qwen2.5-7b-instruct"]);
-        let settings = settle(&two_served(&claude_url, &qwen_url), Overrides::default());
+        let settings = settle(&two_served(&claude_url, &qwen_url));
         let prompts = settings.prompts().unwrap();
         let (models, handles) = settings.set_up(&prompts).await.unwrap();
         assert_eq!(
@@ -1722,7 +1543,7 @@ system = \"Smart {{{{ name }}}}.\"
     async fn a_model_that_cannot_be_set_up_is_an_error_naming_it() {
         let claude_url = playing(&["claude-sonnet-4-5"]);
         let qwen_url = canned::refusing(&["qwen2.5-7b-instruct"]);
-        let settings = settle(&two_served(&claude_url, &qwen_url), Overrides::default());
+        let settings = settle(&two_served(&claude_url, &qwen_url));
         let error = settings
             .set_up(&settings.prompts().unwrap())
             .await
@@ -1737,17 +1558,14 @@ system = \"Smart {{{{ name }}}}.\"
         );
         // A table of random players sets up nothing.
         let file = two_models("").replace("strategy = \"plain\"", "strategy = \"random\"");
-        let settings = settle(&file, Overrides::default());
+        let settings = settle(&file);
         let (models, handles) = settings.set_up(&[]).await.unwrap();
         assert!(models.is_empty() && handles.is_empty());
     }
 
     #[test]
     fn each_model_s_window_is_checked_against_the_strategies_asking_it_alone() {
-        let settings = settle(
-            &two_models("[roles.minion]\nstrategy = \"smart\"\n"),
-            Overrides::default(),
-        );
+        let settings = settle(&two_models("[roles.minion]\nstrategy = \"smart\"\n"));
         // A long prompt for every seat as the Minion, playing `smart`.
         let mut prompts = settings.prompts().unwrap();
         for prompt in &mut prompts {
@@ -1782,13 +1600,13 @@ system = \"Smart {{{{ name }}}}.\"
     #[test]
     fn the_request_before_its_story_is_sized_for_the_largest_table_and_the_longest_limit() {
         let file = |rest: &str| format!("{PLAIN}{rest}");
-        let five = settle(&file(""), Overrides::default());
-        let ten = settle(&file("[roles.servant]\ncount = 7\n"), Overrides::default());
+        let five = settle(&file(""));
+        let ten = settle(&file("[roles.servant]\ncount = 7\n"));
         let mut phases = "[phases]\n".to_string();
         for phase in ["propose", "vote", "quest", "assassinate"] {
             phases.push_str(&format!("{phase}_limit = \"1h 59m 59s\"\n"));
         }
-        let slow = settle(&file(&phases), Overrides::default());
+        let slow = settle(&file(&phases));
         let needed = |settings: &Settings| settings.unstoried("qwen", &settings.prompts().unwrap());
         assert!(needed(&ten) > needed(&five));
         assert!(needed(&slow) > needed(&five));
@@ -1831,7 +1649,7 @@ system = \"Smart {{{{ name }}}}.\"
         let file = format!(
             "{PLAIN}[roles.assassin]\nstrategy = \"random\"\n[roles.minion]\nstrategy = \"random\"\n"
         );
-        settle(&file, Overrides::default())
+        settle(&file)
     }
 
     #[test]

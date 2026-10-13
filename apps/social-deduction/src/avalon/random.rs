@@ -116,18 +116,16 @@ fn choose(me: &PlayerId, view: &View) -> Option<Choice> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::avalon::config::{Config, Overrides};
+    use crate::avalon::config::{Config, Roles};
     use crate::avalon::report::Narrator;
     use crate::avalon::tests::{
         Script, configured, dealt, five, logged, mute, observed_by, outcomes, play, quick, run,
         utterance, view_of,
     };
-    use crate::avalon::{
-        PROPOSALS, Role, RoleCounts, Rules, Table, game, sabotages_needed, team_size,
-    };
+    use crate::avalon::{PROPOSALS, Role, Rules, Table, game, sabotages_needed, team_size};
     use crate::model::spec::Models;
     use crate::seat::{ENVIRONMENT, to_the_environment};
-    use crate::strategy::RANDOM;
+    use crate::strategy::{RANDOM, RoleConfig};
     use free_agent::ActorId;
     use std::collections::{HashMap, HashSet};
     use std::num::NonZero;
@@ -437,21 +435,25 @@ mod tests {
     /// How many of `games` all-random games at `table` good wins, played
     /// one after another without logging.
     async fn good_wins(table: &Table, games: usize) -> usize {
-        let roles = RoleCounts {
-            merlin: Some(table.merlin),
-            percival: Some(table.percival),
-            servants: Some(table.servants),
-            assassin: Some(table.assassin),
-            morgana: Some(table.morgana),
-            mordred: Some(table.mordred),
-            oberon: Some(table.oberon),
-            minions: Some(table.minions),
+        let count = |count| RoleConfig {
+            count: Some(count),
+            ..RoleConfig::default()
         };
-        let overrides = Overrides {
+        let roles = Roles {
+            merlin: count(table.merlin),
+            percival: count(table.percival),
+            servant: count(table.servants),
+            assassin: count(table.assassin),
+            morgana: count(table.morgana),
+            mordred: count(table.mordred),
+            oberon: count(table.oberon),
+            minion: count(table.minions),
+        };
+        let config = Config {
             roles,
-            ..Overrides::default()
+            ..Config::parse("").unwrap()
         };
-        let settings = Config::default().settle(overrides).unwrap();
+        let settings = config.settle().unwrap();
         let configuration = settings
             .configuration(&settings.deal(), &[], Models::new())
             .unwrap();

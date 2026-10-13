@@ -41,7 +41,6 @@ use crate::seat::{
     ENVIRONMENT, PlayerId, seats, to_everyone_but, to_the_environment, to_the_players_but,
 };
 use async_trait::async_trait;
-use clap::Args;
 use free_agent::{ActorId, ActorInit, Behavior, Builder, Context, Episode, Logger, ThinkBuilder};
 use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
@@ -229,72 +228,6 @@ impl Role {
             Role::Villager | Role::Doctor | Role::Seer => Team::Villagers,
         }
     }
-}
-
-/// How many of each role sit at the table, for a game to flatten into its
-/// command line arguments. A count left unset has no `clap` default, so
-/// that the game can tell it apart from a count that was given, and fill
-/// it in from the configuration file or [`Table::default`].
-#[derive(Args, Debug, Default, PartialEq, Eq)]
-pub struct RoleCounts {
-    /// How many werewolves.
-    #[arg(long, help = how_many("werewolves", Table::default().werewolves))]
-    pub werewolves: Option<usize>,
-    /// How many plain villagers.
-    #[arg(long, help = how_many("plain villagers", Table::default().villagers))]
-    pub villagers: Option<usize>,
-    /// How many doctors.
-    #[arg(long, help = how_many("doctors", Table::default().doctors))]
-    pub doctors: Option<usize>,
-    /// How many seers.
-    #[arg(long, help = how_many("seers", Table::default().seers))]
-    pub seers: Option<usize>,
-}
-
-impl RoleCounts {
-    /// How many of `role` were given, if any.
-    pub fn get(&self, role: Role) -> Option<usize> {
-        match role {
-            Role::Werewolf => self.werewolves,
-            Role::Villager => self.villagers,
-            Role::Doctor => self.doctors,
-            Role::Seer => self.seers,
-        }
-    }
-
-    /// The flag that gives how many of `role`, such as `--werewolves`.
-    pub fn flag(role: Role) -> String {
-        format!("--{}", role.plural())
-    }
-}
-
-/// The help for a count of `what`, naming the `default` the code fills in
-/// when the count is left unset.
-fn how_many(what: &str, default: usize) -> String {
-    format!("How many {what} [default: {default}]")
-}
-
-/// How long each phase waits for the players, for a game to flatten into
-/// its command line arguments. A limit left unset has no `clap` default, so
-/// that the game can tell it apart from a limit that was given, and fill it
-/// in from the configuration file or [`Rules::default`].
-#[derive(Args, Debug, Default, PartialEq, Eq)]
-pub struct PhaseLimits {
-    /// How long the night waits for a player.
-    #[arg(long, value_parser = humantime::parse_duration, help = how_long("night", Rules::default().night_limit))]
-    pub night_limit: Option<Duration>,
-    /// How long the day waits for a player.
-    #[arg(long, value_parser = humantime::parse_duration, help = how_long("day", Rules::default().day_limit))]
-    pub day_limit: Option<Duration>,
-}
-
-/// The help for the limit of `phase`, naming the `default` the code fills
-/// in when the limit is left unset.
-fn how_long(phase: &str, default: Duration) -> String {
-    format!(
-        "How long the {phase} waits for a player [default: {}]",
-        humantime::format_duration(default)
-    )
 }
 
 /// How many of each role sit at the table.
@@ -1083,27 +1016,6 @@ pub(crate) mod tests {
         };
         let seats: Vec<_> = table.seats().collect();
         assert_eq!(seats, ["Player 1", "Player 2", "Player 3", "Player 4"]);
-    }
-
-    #[test]
-    fn role_counts_give_each_roles_count_under_the_flag_clap_derives() {
-        let counts = RoleCounts {
-            werewolves: Some(1),
-            villagers: None,
-            doctors: Some(2),
-            seers: None,
-        };
-        let got = Table::default().counts().map(|(role, _)| counts.get(role));
-        assert_eq!(got, [Some(1), None, Some(2), None]);
-        let flags: Vec<String> = RoleCounts::augment_args(clap::Command::new("werewolf"))
-            .get_arguments()
-            .filter_map(|arg| arg.get_long().map(|long| format!("--{long}")))
-            .collect();
-        let named = Table::default()
-            .counts()
-            .map(|(role, _)| RoleCounts::flag(role));
-        assert_eq!(flags, named);
-        assert_eq!(named[0], "--werewolves");
     }
 
     #[test]

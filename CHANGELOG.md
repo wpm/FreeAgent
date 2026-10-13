@@ -9,6 +9,8 @@ workflow takes a version's notes from here.
 
 ### Added
 
+- The release archives hold the example configurations in `configs/`,
+  beside the binary.
 - The `free-agent` library: episodes of actors that talk to each other by
   sending messages on the Tokio runtime.
 - The `social-deduction` application, which plays Werewolf with the roles
@@ -139,6 +141,17 @@ workflow takes a version's notes from here.
 
 ### Changed
 
+- **Breaking:** A game is played from a configuration file, which is
+  required: `social-deduction werewolf CONFIG` and
+  `social-deduction avalon CONFIG`, each with `--log` or `--no-log`. The
+  role-count flags (`--werewolves`, `--villagers`, `--doctors`, `--seers`,
+  `--merlin`, `--percival`, `--servants`, `--assassin`, `--morgana`,
+  `--mordred`, `--oberon`, `--minions`) and the phase-limit flags
+  (`--night-limit`, `--day-limit`, `--ratify-limit`, `--propose-limit`,
+  `--vote-limit`, `--quest-limit`, `--assassinate-limit`) are gone: each
+  setting is written under `[roles.<role>] count` or `[phases]` in the
+  file, and a setting comes from the file, otherwise from the code. The
+  example configurations moved from `examples/` to `configs/`.
 - Seats are named `Player 1` onward, capitalized with a space before the
   number. Players are told in seat order: alphabetically by name, whatever
   its case, then by number, so `Player 2` comes before `Player 10`.

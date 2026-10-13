@@ -1,7 +1,8 @@
-# Every role played by the random strategy, which is always defined: the
-# same game as no file at all, with no models. Run it with
+# Every role played by the random strategy, which is always defined: a
+# table of random players with no models. Run it from the root of a
+# release archive, or from apps/social-deduction in a checkout, with
 #
-#     social-deduction avalon random.toml
+#     social-deduction avalon configs/avalon/random.toml
 
 [roles.merlin]
 strategy = "random"
