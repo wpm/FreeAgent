@@ -1,98 +1,22 @@
-//! The random policy: a player who answers each announcement of a phase it
-//! is awake in at once with a selection made at random, and sleeps through
-//! the rest. A player logs an [`Entry::Observation`] for each message it receives, in
-//! the latest phase it was announced, and an [`Entry::Action`] for each
-//! selection it sends, numbering its selections from 1; no model made them,
-//! so `seen` is `None`.
+//! The random policy in Werewolf: a player who answers each announcement
+//! of a phase it is [awake](super::awake) in at once with a selection of
+//! one of its [candidates](super::candidates) made at random, and sleeps
+//! through the rest. Its selection goes to the
+//! [receivers](super::receivers) of a selection: by night the environment,
+//! by day the environment and every other living player, since the votes
+//! are public.
 
-use super::{
-    Actor, Entry, Message, PlayerId, Seat, View, act, awake, candidates, observe, receivers,
-};
-use async_trait::async_trait;
-use free_agent::{Behavior, Builder, Context};
-use rand::seq::IteratorRandom;
+use super::Werewolf;
 
-/// A player who answers each announcement of a phase it is [`awake`] in at
-/// once, selecting one of its [`candidates`] uniformly at random, and does
-/// nothing about one it sleeps through. Its selection goes to the
-/// [`receivers`] of a selection: by night the environment, by day the
-/// environment and every other living player, since the votes are public.
-/// It has no think loop.
-pub struct Player {
-    context: Context<Message, Entry>,
-    /// The number of the last selection it sent.
-    n: u64,
-    /// The number of the latest phase it was announced, and 0 before any.
-    seq: u64,
-}
-
-impl Player {
-    /// Builds a player once the episode has made its context. It has no
-    /// think loop.
-    pub fn init() -> Seat {
-        let behavior: Builder<Actor> = Box::new(|context| {
-            Actor::Random(Player {
-                context,
-                n: 0,
-                seq: 0,
-            })
-        });
-        (behavior, None)
-    }
-}
-
-#[async_trait]
-impl Behavior for Player {
-    type Message = Message;
-    type Log = Entry;
-
-    fn context(&self) -> &Context<Message, Entry> {
-        &self.context
-    }
-
-    /// Log a message from another actor, which is any numbered one, as
-    /// observed in the latest phase announced. Announced a phase, and awake
-    /// in it, select someone at once; asleep, or with nobody to select, say
-    /// nothing. Anything else, another player's utterance, selection or
-    /// retraction or the environment's tentative decision, is observed and
-    /// nothing more, whatever phase it is tagged with: the player keeps
-    /// nothing it could put it in.
-    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        let Some(n) = message.number() else {
-            return Ok(());
-        };
-        if let Message::Announce { seq, .. } = message {
-            self.seq = *seq;
-        }
-        observe(&self.context, message.sender(), n, self.seq);
-        let me = &self.context.id;
-        if let Message::Announce { seq, view, .. } = message
-            && awake(me, view)
-            && let Some(target) = choose(me, view)
-        {
-            self.n += 1;
-            let selection = Message::Select {
-                seq: *seq,
-                from: me.clone(),
-                n: self.n,
-                target,
-            };
-            let to = receivers(&selection, me, view);
-            act(&self.context, selection, to, None, None)?;
-        }
-        Ok(())
-    }
-}
-
-/// One of the [`candidates`] `me` sees in `view`, chosen
-/// uniformly at random. None when there are no candidates.
-fn choose(me: &PlayerId, view: &View) -> Option<PlayerId> {
-    candidates(me, view).into_iter().choose(&mut rand::rng())
-}
+/// A player who selects at random.
+pub type Player = crate::random::Player<Werewolf>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::Game;
+    use crate::game::Narrate;
+    use crate::game::game;
     use crate::strategy::RANDOM;
     use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{
@@ -101,7 +25,8 @@ mod tests {
         selection, selections, tentative, utterance, village,
     };
     use crate::werewolf::{
-        ENVIRONMENT, Phase, Role, Rules, Team, game, to_everyone_but, to_the_environment,
+        Actor, ENVIRONMENT, Entry, Message, Move, Outcome, Phase, PlayerId, Role, Rules, Team,
+        View, candidates, to_everyone_but, to_the_environment,
     };
     use free_agent::ActorId;
     use std::collections::{HashMap, HashSet};
@@ -114,7 +39,7 @@ mod tests {
         logged
             .iter()
             .find_map(|entry| match entry {
-                Entry::End { took, .. } => Some(*took),
+                Entry::Event(Outcome::End { took, .. }) => Some(*took),
                 _ => None,
             })
             .unwrap()
@@ -125,7 +50,7 @@ mod tests {
         logged
             .iter()
             .find_map(|entry| match entry {
-                Entry::End { survivors, .. } => Some(survivors.clone()),
+                Entry::Event(Outcome::End { survivors, .. }) => Some(survivors.clone()),
                 _ => None,
             })
             .unwrap()
@@ -187,12 +112,12 @@ mod tests {
                 n,
                 to,
                 message:
-                    Message::Select {
+                    Message::Move(Move::Select {
                         seq,
                         from: said,
                         target,
                         ..
-                    },
+                    }),
                 seen,
                 forgot,
             } = entry
@@ -223,7 +148,7 @@ mod tests {
                 observations.entry((from, *n)).or_default().push(by);
                 observed += 1;
             }
-            if let Entry::Hunted { seq, hunt } = entry {
+            if let Entry::Event(Outcome::Hunted { seq, hunt }) = entry {
                 assert!(*seq >= 1, "{seq}");
                 assert!(roles.contains_key(&hunt.victim), "{hunt:?}");
                 let protectors: HashSet<&PlayerId> = hunt.protectors.iter().collect();
@@ -335,7 +260,7 @@ mod tests {
             let selected = selections(&logged)
                 .into_iter()
                 .filter(|message| {
-                    matches!(message, Message::Select { seq: 2, from, .. } if from == player)
+                    matches!(message, Message::Move(Move::Select { seq: 2, from, .. }) if from == player)
                 })
                 .count();
             assert_eq!(selected, 1, "{player}");
@@ -365,7 +290,7 @@ mod tests {
                 Entry::Action {
                     from,
                     to,
-                    message: Message::Select { .. },
+                    message: Message::Move(Move::Select { .. }),
                     ..
                 } => {
                     let view = views[from];
@@ -579,14 +504,17 @@ mod tests {
         assert_eq!(allowed.len(), 2);
 
         for _ in 0..50 {
-            let chosen = choose(&me, &view).unwrap();
-            assert!(allowed.contains(&chosen), "{chosen}");
+            let chosen = Werewolf::pick(&me, &view, 1, 1);
+            assert!(
+                matches!(&chosen, Some(Move::Select { target, .. }) if allowed.contains(target)),
+                "{chosen:?}"
+            );
         }
     }
 
     #[test]
     fn a_player_without_candidates_chooses_no_one() {
         let view = seen(&["ann"], &[("ann", Role::Villager)]);
-        assert_eq!(choose(&"ann".to_string(), &view), None);
+        assert_eq!(Werewolf::pick(&"ann".to_string(), &view, 1, 1), None);
     }
 }

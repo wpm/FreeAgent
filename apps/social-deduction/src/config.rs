@@ -14,18 +14,20 @@
 //! could call for, so that a broken template stops the program before any
 //! game begins.
 
-use crate::model::spec::{Handles, Models, Spec};
-use crate::model::{Model, ToolChoice};
-use crate::seat::{Dealt, PlayerId, Seat, seats};
+use crate::game;
+use crate::model::Provider;
+use crate::model::spec::{self, Handles, Models, Spec};
+use crate::model::window::{self, ContextWindow};
+use crate::seat::{Dealt, PlayerId, seats};
 use crate::strategy::{RANDOM, Random, RoleConfig, Strategy};
 use crate::{avalon, werewolf};
+use crate::{prompted, random};
 use anyhow::{Context as _, anyhow, bail};
-use free_agent::Behavior;
 use minijinja::value::merge_maps;
 use minijinja::{Environment, UndefinedBehavior, Value, context};
 use rand::seq::SliceRandom;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, btree_map};
 use std::fmt;
 use std::hash::Hash;
@@ -427,34 +429,131 @@ impl<R: Copy + Ord + Hash + fmt::Display> Lineup<R> {
         }
         Ok(told)
     }
+
+    /// The most a request to the model `name` takes of the context window
+    /// before its story, by estimate, for any of `prompts` whose strategy
+    /// asks it, as the game `G` estimates one at this table under `limits`,
+    /// the model as `models` defines it.
+    pub fn needs<G: game::Game<Role = R>>(
+        &self,
+        models: &BTreeMap<String, Spec>,
+        limits: &G::Limits,
+        name: &str,
+        prompts: &[SystemPrompt<R>],
+    ) -> anyhow::Result<u64> {
+        let seats: Vec<PlayerId> = self.seats().collect();
+        let id = &models[name].id;
+        self.unstoried(name, prompts, |prompt| {
+            let (text, seat, role) = (&prompt.text, &prompt.seat, prompt.role);
+            G::unstoried(id, text, seat, role, &seats, limits)
+        })
+    }
+
+    /// The context window of the model `name`, settled as
+    /// [`window::settle`] settles it, against what a request takes before
+    /// its story, as [`Lineup::needs`] estimates it.
+    pub fn context_window<G: game::Game<Role = R>>(
+        &self,
+        models: &BTreeMap<String, Spec>,
+        limits: &G::Limits,
+        name: &str,
+        reported: Option<u64>,
+        prompts: &[SystemPrompt<R>],
+    ) -> anyhow::Result<ContextWindow> {
+        let needed = self.needs::<G>(models, limits, name, prompts)?;
+        window::settle(name, &models[name], reported, needed)
+    }
+
+    /// Set up each model in play, as `models` defines it, as
+    /// [`spec::set_up`] sets it up, settling its context window for
+    /// `prompts` under `limits` and asking it to play as the game `G`
+    /// probes it, which settles the tool choice. A model the file defines
+    /// and no strategy at the table asks is not contacted.
+    pub async fn set_up<G: game::Game<Role = R>>(
+        &self,
+        models: &BTreeMap<String, Spec>,
+        limits: &G::Limits,
+        prompts: &[SystemPrompt<R>],
+    ) -> anyhow::Result<(Models, Handles)> {
+        let needed = |name: &str| self.needs::<G>(models, limits, name, prompts);
+        let probe = async |provider: &Provider, id: &str| G::check_plays(provider, id).await;
+        spec::set_up(self.models_in_play(models), needed, probe).await
+    }
+
+    /// The configuration a game of `deal` runs under, as the log records
+    /// it right after the deal: how many of each role, `limits`, every
+    /// strategy and the allotments, `models`, the models in play as
+    /// [`Lineup::set_up`] set them up, each prompted player's system prompt
+    /// from `prompts` as [`Lineup::told`] tells it, and `text`, the text
+    /// blocks as written.
+    pub fn configuration<G: game::Game<Role = R>>(
+        &self,
+        limits: G::Limits,
+        models: Models,
+        deal: &HashMap<PlayerId, Dealt<R>>,
+        prompts: &[SystemPrompt<R>],
+        text: &BTreeMap<String, String>,
+    ) -> anyhow::Result<Configuration<G>> {
+        Ok(Configuration {
+            role_counts: self
+                .allotments
+                .iter()
+                .map(|(role, allotted)| (*role, allotted.values().sum()))
+                .collect(),
+            limits,
+            strategies: self.strategies.clone(),
+            allotments: self.allotments.clone(),
+            models,
+            prompts: self.told(deal, prompts)?,
+            text: text.clone(),
+        })
+    }
 }
 
-/// Each seat's player, as `deal` dealt it a strategy of `strategies`: the
-/// one `random` builds, or, for a prompted strategy, the one `prompted`
-/// builds, given the seat, its system prompt from `prompts`, and the id,
-/// tool choice and context window of its strategy's model in `models`,
-/// and that model's handle in `handles`.
-pub fn players<R, A, RandomSeat, PromptedSeat>(
-    strategies: &BTreeMap<String, Strategy>,
-    models: &Models,
-    prompts: &BTreeMap<PlayerId, String>,
-    deal: &HashMap<PlayerId, Dealt<R>>,
+/// The configuration a game ran under, as it took effect once the file
+/// and the defaults were combined, so that the log says by itself what was
+/// played and under which prompts. Each duration is written as `humantime`
+/// writes it, such as `"60s"`, and each map in key order. The API key is
+/// never recorded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct Configuration<G: game::Game> {
+    /// How many of each role were dealt.
+    pub role_counts: BTreeMap<G::Role, usize>,
+    /// How long each phase waited for the players.
+    #[serde(flatten)]
+    pub limits: G::Limits,
+    /// Every strategy, by name, [`RANDOM`] included, each prompted one
+    /// naming the model it asks.
+    pub strategies: BTreeMap<String, Strategy>,
+    /// How many seats of each role played each strategy.
+    pub allotments: Allotments<G::Role>,
+    /// The models in play, by name.
+    pub models: Models,
+    /// Each prompted player's rendered system prompt.
+    pub prompts: BTreeMap<PlayerId, String>,
+    /// The `[text]` blocks as written.
+    pub text: BTreeMap<String, String>,
+}
+
+/// Each seat's player, as `deal` dealt it a strategy and `configuration`
+/// sets the strategy up: a random player, or a prompted player told its
+/// system prompt and its game's limits, asking its strategy's model by
+/// the model's id, under its tool choice and within its context window,
+/// through that model's handle in `handles`.
+pub fn players<G: game::Game>(
+    configuration: &Configuration<G>,
+    deal: &HashMap<PlayerId, Dealt<G::Role>>,
     handles: &Handles,
-    random: RandomSeat,
-    prompted: PromptedSeat,
-) -> impl FnMut(&PlayerId) -> Seat<A> + use<R, A, RandomSeat, PromptedSeat>
-where
-    A: Behavior,
-    RandomSeat: Fn() -> Seat<A>,
-    PromptedSeat: Fn(PlayerId, String, String, ToolChoice, u64, Arc<dyn Model>) -> Seat<A>,
-{
+) -> impl FnMut(&PlayerId) -> game::Seat<G> + use<G> {
+    let limits = configuration.limits.clone();
     let mut asking = HashMap::new();
     for (seat, Dealt { strategy, .. }) in deal {
-        if let Strategy::Prompted(strategy) = &strategies[strategy] {
+        if let Strategy::Prompted(strategy) = &configuration.strategies[strategy] {
             let name = &strategy.model;
-            let model = &models[name];
+            let model = &configuration.models[name];
             let player = (
-                prompts[seat].clone(),
+                configuration.prompts[seat].clone(),
                 model.id.clone(),
                 model.tool_choice,
                 model.context_window.tokens,
@@ -464,15 +563,16 @@ where
         }
     }
     move |id: &PlayerId| match asking.remove(id) {
-        Some((prompt, model_id, tool_choice, context_window, model)) => prompted(
+        Some((prompt, model_id, tool_choice, context_window, model)) => prompted::Player::init(
             id.clone(),
             prompt,
             model_id,
             tool_choice,
             context_window,
             model,
+            limits.clone(),
         ),
-        None => random(),
+        None => random::Player::init(),
     }
 }
 

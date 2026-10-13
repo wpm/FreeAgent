@@ -9,9 +9,9 @@
 //! selection and end once everyone awake has selected or at the limit,
 //! whichever comes first. A day with a ratify limit takes each player's
 //! latest selection as its vote, unless the player has retracted it since
-//! with a [`Message::Retract`] and is undecided again, and keeps the votes:
+//! with a [`Move::Retract`] and is undecided again, and keeps the votes:
 //! whenever they change the tentative decision, the player they select or
-//! nobody, every living player is sent a [`Message::Tentative`], and
+//! nobody, every living player is sent a [`Move::Tentative`], and
 //! whenever they change it to a player the ratify timer starts again. The
 //! day ends when the timer fires, and the selected player is voted out, or
 //! at the day limit, whatever is standing, and nobody is.
@@ -20,14 +20,15 @@
 //! an [`Entry::Action`] for each announcement and tentative decision it
 //! sends, numbered in one series from 1; an [`Entry::Observation`] for each
 //! selection and retraction it receives, stale or not, with the phase it
-//! was in when it arrived; each night's hunt as [`Entry::Hunted`]; each day's
-//! vote as [`Entry::Voted`]; and the result. The reminders it sends itself
+//! was in when it arrived; each night's hunt as [`Outcome::Hunted`]; each day's
+//! vote as [`Outcome::Voted`]; and the result. The reminders it sends itself
 //! are not logged.
 
 use super::{
-    Choices, Dealt, Ending, Entry, Hunt, Message, Phase, PlayerId, Role, Rules, State, Team, act,
-    observe,
+    Choices, Dealt, Ending, Entry, Hunt, Message, Move, Outcome, Phase, PlayerId, Role, Rules,
+    State, Team,
 };
+use crate::game::{act, observe};
 use crate::report::in_order;
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Context, Think};
@@ -54,7 +55,7 @@ where
     A: Behavior<Message = Message, Log = Entry>,
 {
     let players: HashSet<PlayerId> = deal.keys().cloned().collect();
-    let opening = Box::new([rules.start(&deal), configuration]);
+    let opening = Box::new([Entry::start(&deal, &rules), configuration]);
     let roles = deal
         .into_iter()
         .map(|(id, dealt)| (id, dealt.role))
@@ -242,18 +243,18 @@ impl Game {
         }
         underway.changes += 1;
         self.n += 1;
-        let message = Message::Tentative {
+        let message = Message::Move(Move::Tentative {
             seq: self.seq,
             n: self.n,
             target: selected.clone(),
             ratify,
-        };
+        });
         let tentative = Some((message, self.state.alive.clone()));
         let ratify = selected.is_some().then(|| {
-            let reminder = Message::Ratify {
+            let reminder = Message::Move(Move::Ratify {
                 seq: self.seq,
                 change: underway.changes,
-            };
+            });
             (ratify, reminder)
         });
         underway.tentative = selected;
@@ -300,11 +301,11 @@ impl Game {
     /// on.
     fn conclude(&mut self, ballots: &Choices, by: Ending) -> Ended {
         let outcome = match self.state.phase {
-            Phase::Night => Outcome::Night(
+            Phase::Night => Resolved::Night(
                 self.state
                     .resolve_night(ballots, self.rules.night_vote.as_ref()),
             ),
-            Phase::Day => Outcome::Day {
+            Phase::Day => Resolved::Day {
                 out: self
                     .state
                     .resolve_day(ballots, self.rules.day_vote.as_ref()),
@@ -321,24 +322,24 @@ impl Game {
 
 /// How a phase ended: what it came to, and who won the game if anyone.
 struct Ended {
-    outcome: Outcome,
+    outcome: Resolved,
     winner: Option<Team>,
 }
 
 /// What a phase came to: by night the hunt, if the werewolves elected
 /// anyone; by day who was voted out, if anyone, and how the day ended.
 #[derive(Debug, PartialEq)]
-enum Outcome {
+enum Resolved {
     Night(Option<Hunt>),
     Day { out: Option<PlayerId>, by: Ending },
 }
 
-impl Outcome {
+impl Resolved {
     /// Who died in the phase, if anyone.
     fn dead(&self) -> Option<&PlayerId> {
         match self {
-            Outcome::Night(hunt) => hunt.as_ref().and_then(Hunt::dead),
-            Outcome::Day { out, .. } => out.as_ref(),
+            Resolved::Night(hunt) => hunt.as_ref().and_then(Hunt::dead),
+            Resolved::Day { out, .. } => out.as_ref(),
         }
     }
 
@@ -346,8 +347,8 @@ impl Outcome {
     /// night's hunt, if the werewolves elected anyone, or a day's vote.
     fn entry(self, seq: u64) -> Option<Entry> {
         match self {
-            Outcome::Night(hunt) => hunt.map(|hunt| Entry::Hunted { seq, hunt }),
-            Outcome::Day { out, by } => Some(Entry::Voted { seq, out, by }),
+            Resolved::Night(hunt) => hunt.map(|hunt| Entry::Event(Outcome::Hunted { seq, hunt })),
+            Resolved::Day { out, by } => Some(Entry::Event(Outcome::Voted { seq, out, by })),
         }
     }
 }
@@ -432,12 +433,12 @@ impl Environment {
         for player in &survivors {
             self.context.stop(player)?;
         }
-        self.context.log(Entry::End {
+        self.context.log(Entry::Event(Outcome::End {
             winner,
             days,
             survivors,
             took,
-        });
+        }));
         if let Some(report) = report {
             // The owner of the episode may have stopped listening.
             let _ = report.send(winner);
@@ -465,13 +466,15 @@ impl Behavior for Environment {
         let (current, from, n, counted) = {
             let mut game = self.game();
             match message {
-                Message::Select {
+                Message::Move(Move::Select {
                     seq,
                     from,
                     n,
                     target,
-                } => (game.seq, from, n, game.select(*seq, from, target)),
-                Message::Retract { seq, from, n } => (game.seq, from, n, game.retract(*seq, from)),
+                }) => (game.seq, from, n, game.select(*seq, from, target)),
+                Message::Move(Move::Retract { seq, from, n }) => {
+                    (game.seq, from, n, game.retract(*seq, from))
+                }
                 _ => return Ok(()),
             }
         };
@@ -518,7 +521,7 @@ impl Think for Environment {
             let ended = self.game().end(*seq);
             self.end_phase(*seq, ended)?;
         }
-        if let Message::Ratify { seq, change } = message {
+        if let Message::Move(Move::Ratify { seq, change }) = message {
             let ended = self.game().ratify(*seq, *change);
             self.end_phase(*seq, ended)?;
         }
@@ -697,7 +700,7 @@ mod tests {
             victim: id("ann"),
             protectors: HashSet::new(),
         };
-        assert_eq!(night.outcome, Outcome::Night(Some(hunt)));
+        assert_eq!(night.outcome, Resolved::Night(Some(hunt)));
         assert_eq!(night.outcome.dead(), Some(&id("ann")));
         assert_eq!(night.winner, None);
         // The game goes on, so the next phase is the day.
@@ -709,7 +712,7 @@ mod tests {
         let tied = game.end(day.seq).unwrap();
         assert_eq!(
             tied.outcome,
-            Outcome::Day {
+            Resolved::Day {
                 out: None,
                 by: Ending::DayLimit
             }
@@ -735,21 +738,21 @@ mod tests {
         let ended = game.end(day).unwrap();
         assert_eq!(
             ended.outcome,
-            Outcome::Day {
+            Resolved::Day {
                 out: Some(id("ann")),
                 by: Ending::AllSelected
             }
         );
         // A night's hunt is recorded only when the werewolves elected
         // someone; a day's vote always.
-        assert_eq!(Outcome::Night(None).entry(1), None);
+        assert_eq!(Resolved::Night(None).entry(1), None);
         assert_eq!(
             ended.outcome.entry(day),
-            Some(Entry::Voted {
+            Some(Entry::Event(Outcome::Voted {
                 seq: day,
                 out: Some(id("ann")),
                 by: Ending::AllSelected
-            })
+            }))
         );
     }
 
@@ -815,7 +818,7 @@ mod tests {
     /// The ratify timer set at the `change`th change of the tentative
     /// decision of the day numbered `seq`.
     fn timer(seq: u64, change: u64) -> Option<(Duration, Message)> {
-        Some((RATIFY, Message::Ratify { seq, change }))
+        Some((RATIFY, Message::Move(Move::Ratify { seq, change })))
     }
 
     #[test]
@@ -856,7 +859,7 @@ mod tests {
         let ended = game.ratify(day, 1).unwrap();
         assert_eq!(
             ended.outcome,
-            Outcome::Day {
+            Resolved::Day {
                 out: Some(id("wolf")),
                 by: Ending::Ratified
             }
@@ -953,7 +956,7 @@ mod tests {
         let ended = game.ratify(day, 2).unwrap();
         assert_eq!(
             ended.outcome,
-            Outcome::Day {
+            Resolved::Day {
                 out: Some(id("wolf")),
                 by: Ending::Ratified
             }
@@ -971,7 +974,7 @@ mod tests {
         let ended = game.end(day).unwrap();
         assert_eq!(
             ended.outcome,
-            Outcome::Day {
+            Resolved::Day {
                 out: None,
                 by: Ending::DayLimit
             }
@@ -1024,7 +1027,7 @@ mod tests {
         let ended = game.ratify(day, 1).unwrap();
         assert_eq!(
             ended.outcome,
-            Outcome::Day {
+            Resolved::Day {
                 out: Some(id("wolf")),
                 by: Ending::Ratified
             }
@@ -1145,7 +1148,7 @@ mod tests {
         logged
             .iter()
             .filter_map(|entry| match entry {
-                Entry::Voted { seq, out, by } => Some((*seq, out.as_deref(), *by)),
+                Entry::Event(Outcome::Voted { seq, out, by }) => Some((*seq, out.as_deref(), *by)),
                 _ => None,
             })
             .collect()
@@ -1160,7 +1163,7 @@ mod tests {
                 Entry::Action {
                     from,
                     to,
-                    message: Message::Tentative { target, ratify, .. },
+                    message: Message::Move(Move::Tentative { target, ratify, .. }),
                     seen: None,
                     ..
                 } => {

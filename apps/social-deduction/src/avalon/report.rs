@@ -9,9 +9,11 @@
 
 use super::prompted::Memory;
 use super::{
-    Ballot, Choice, Deed, Entry, Message, PROPOSALS, Phase, QuestResult, Role, Seen, Tally,
-    Victory, View,
+    Avalon, Ballot, Choice, Deed, Entry, Message, Outcome, PROPOSALS, Phase, QuestResult, Role,
+    Rules, Seen, Tally, Victory, View,
 };
+use crate::game::Narrate;
+use crate::prompted::Account;
 use crate::report::{Seat, configured, in_order, in_prose, late, told_within, whole_seconds};
 use crate::seat::PlayerId;
 use free_agent::Event;
@@ -53,27 +55,19 @@ struct Told {
     began: SystemTime,
 }
 
-impl Narrator {
+impl Narrate<Avalon> for Narrator {
     /// The lines the log's `event` adds to the account, often none.
-    pub fn narrate(&mut self, event: &Event<Entry>) -> Vec<String> {
+    fn narrate(&mut self, event: &Event<Entry>) -> Vec<String> {
         let time = event.time;
         match &event.payload {
             Entry::Start {
                 roles,
                 strategies,
-                propose_limit,
-                vote_limit,
-                quest_limit,
-                assassinate_limit,
+                limits,
             } => {
                 self.roles = roles.clone();
                 self.strategies = strategies.clone();
-                self.table([
-                    *propose_limit,
-                    *vote_limit,
-                    *quest_limit,
-                    *assassinate_limit,
-                ])
+                self.table(limits)
             }
             Entry::Configuration(configuration) => configured(&configuration.models),
             Entry::Action {
@@ -99,7 +93,7 @@ impl Narrator {
                     None => format!("{player} fails to play: {error}"),
                 }]
             }
-            Entry::Proposed { seq, team } => {
+            Entry::Event(Outcome::Proposed { seq, team }) => {
                 let leader = match self.announced.get(seq) {
                     Some(view) => self.seat(&view.leader).to_string(),
                     None => "The leader".to_string(),
@@ -109,9 +103,9 @@ impl Narrator {
                     None => format!("{leader} proposes nobody in time."),
                 }]
             }
-            Entry::Tallied { tally, .. } => self.tallied(tally),
-            Entry::Quested { result, .. } => vec![quested(result)],
-            Entry::Assassinated { target, merlin, .. } => vec![match target {
+            Entry::Event(Outcome::Tallied { tally, .. }) => self.tallied(tally),
+            Entry::Event(Outcome::Quested { result, .. }) => vec![quested(result)],
+            Entry::Event(Outcome::Assassinated { target, merlin, .. }) => vec![match target {
                 Some(target) => format!(
                     "The Assassin names {}, who is {}Merlin.",
                     self.seat(target),
@@ -119,14 +113,22 @@ impl Narrator {
                 ),
                 None => "The Assassin names nobody in time.".to_string(),
             }],
-            Entry::End { by, took, .. } => self.end(*by, *took, time),
+            Entry::Event(Outcome::End { by, took, .. }) => self.end(*by, *took, time),
             _ => vec![],
         }
     }
+}
 
+impl Narrator {
     /// The deal: how many players, then each with its role and its
     /// strategy on a line of its own, then how long each phase waits.
-    fn table(&self, [propose, vote, quest, assassinate]: [Duration; 4]) -> Vec<String> {
+    fn table(&self, rules: &Rules) -> Vec<String> {
+        let Rules {
+            propose_limit: propose,
+            vote_limit: vote,
+            quest_limit: quest,
+            assassinate_limit: assassinate,
+        } = *rules;
         let heading = format!("{} players:", self.roles.len());
         let seats = in_order(self.roles.keys()).into_iter().map(|player| {
             format!(
@@ -359,40 +361,9 @@ impl Story {
         }
     }
 
-    /// Add what `event` adds to the account: an announcement begins a
-    /// phase, a choice the player made is told as made, and an utterance
-    /// it made or heard as said. Nothing else adds anything.
-    pub fn recall(&mut self, event: &Event<Memory>) {
-        let (lines, line) = match &event.payload {
-            Memory::Observed {
-                message: Message::Announce { view, .. },
-            } => (self.shown(view), Line::Kept),
-            Memory::Acted {
-                message: Message::Say { from, text, .. },
-            }
-            | Memory::Observed {
-                message: Message::Say { from, text, .. },
-            } => (vec![self.said(from, text)], Line::Talk),
-            Memory::Acted { message } => {
-                let chose = message.choice().map(|(_, _, choice)| self.chose(&choice));
-                (chose.into_iter().collect(), Line::Kept)
-            }
-            Memory::Observed { .. } => (vec![], Line::Kept),
-        };
-        self.account
-            .extend(lines.into_iter().map(|text| (text, line)));
-    }
-
     /// The lines told, in order.
     pub fn lines(&self) -> Vec<&str> {
         self.account.iter().map(|(text, _)| text.as_str()).collect()
-    }
-
-    /// The lines told within `budget` tokens by estimate, the oldest talk
-    /// forgotten first to fit, and how many lines of talk were left out.
-    /// The story itself keeps every line.
-    pub fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
-        told_within(&self.account, |line| *line == Line::Talk, budget)
     }
 
     /// What being shown `view` adds: who the player is, the first time;
@@ -507,6 +478,36 @@ impl Story {
     }
 }
 
+impl Account<Avalon> for Story {
+    /// Add what `event` adds to the account: an announcement begins a
+    /// phase, a choice the player made is told as made, and an utterance
+    /// it made or heard as said. Nothing else adds anything.
+    fn recall(&mut self, event: &Event<Memory>) {
+        let (lines, line) = match &event.payload {
+            Memory::Observed {
+                message: Message::Announce { view, .. },
+            } => (self.shown(view), Line::Kept),
+            Memory::Acted {
+                message: Message::Say { from, text, .. },
+            }
+            | Memory::Observed {
+                message: Message::Say { from, text, .. },
+            } => (vec![self.said(from, text)], Line::Talk),
+            Memory::Acted {
+                message: Message::Move(made),
+            } => (vec![self.chose(&made.choice().2)], Line::Kept),
+            Memory::Acted { .. } => (vec![], Line::Kept),
+            Memory::Observed { .. } => (vec![], Line::Kept),
+        };
+        self.account
+            .extend(lines.into_iter().map(|text| (text, line)));
+    }
+
+    fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
+        told_within(&self.account, |line| *line == Line::Talk, budget)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,7 +531,10 @@ mod tests {
     /// A narrator that has been told the deal of the default table.
     fn dealt_five() -> Narrator {
         let mut narrator = Narrator::default();
-        narrator.narrate(&logged(Rules::default().start(&dealt(&five(), RANDOM))));
+        narrator.narrate(&logged(Entry::start(
+            &dealt(&five(), RANDOM),
+            &Rules::default(),
+        )));
         narrator
     }
 
@@ -574,7 +578,7 @@ mod tests {
             vote_limit: Duration::from_secs(90),
             ..Rules::default()
         };
-        let told = narrator.narrate(&logged(rules.start(&dealt(&five(), RANDOM))));
+        let told = narrator.narrate(&logged(Entry::start(&dealt(&five(), RANDOM), &rules)));
         assert_eq!(
             told,
             [
@@ -625,11 +629,11 @@ mod tests {
         assert_eq!(
             narrator.narrate(&at(
                 70,
-                Entry::End {
+                Entry::Event(Outcome::End {
                     winner: crate::avalon::Team::Good,
                     by: Victory::Quests,
                     took: Duration::from_millis(70_400),
-                }
+                })
             )),
             [
                 "The assassination took 1m 4s.",
@@ -662,26 +666,26 @@ mod tests {
     fn a_proposal_names_its_team_or_nobody_in_time() {
         let mut narrator = dealt_five();
         narrator.narrate(&opens(0, 1, Phase::Propose, &[]));
-        let proposed = Entry::Proposed {
+        let proposed = Entry::Event(Outcome::Proposed {
             seq: 1,
             team: Some(team(&["Player 1", "Player 4", "Player 5"])),
-        };
+        });
         assert_eq!(
             narrator.narrate(&logged(proposed)),
             [
                 "Player 1 (Merlin) proposes Player 1 (Merlin), Player 4 (Servant) and Player 5 (Minion)."
             ]
         );
-        let lapsed = Entry::Proposed { seq: 1, team: None };
+        let lapsed = Entry::Event(Outcome::Proposed { seq: 1, team: None });
         assert_eq!(
             narrator.narrate(&logged(lapsed)),
             ["Player 1 (Merlin) proposes nobody in time."]
         );
         // A proposal never announced names no leader.
-        let unknown = Entry::Proposed {
+        let unknown = Entry::Event(Outcome::Proposed {
             seq: 9,
             team: Some(team(&["Player 2"])),
-        };
+        });
         assert_eq!(
             narrator.narrate(&logged(unknown)),
             ["The leader proposes Player 2 (Assassin)."]
@@ -719,10 +723,10 @@ mod tests {
             .into();
         let mut narrator = dealt_five();
         assert_eq!(
-            narrator.narrate(&logged(Entry::Tallied {
+            narrator.narrate(&logged(Entry::Event(Outcome::Tallied {
                 seq: 2,
                 tally: Tally::of(ballots, 5),
-            })),
+            }))),
             [
                 "Player 1 (Merlin), Player 3 (Servant) and Player 4 (Servant) approve.",
                 "Player 2 (Assassin) and Player 5 (Minion) reject.",
@@ -740,14 +744,14 @@ mod tests {
     fn a_quest_tells_whether_it_succeeds_and_how_many_sabotaged_it() {
         let mut narrator = dealt_five();
         let quested = |sabotages, succeeded| {
-            logged(Entry::Quested {
+            logged(Entry::Event(Outcome::Quested {
                 seq: 3,
                 result: QuestResult {
                     team: team(&["Player 1", "Player 2"]),
                     sabotages,
                     succeeded,
                 },
-            })
+            }))
         };
         assert_eq!(
             narrator.narrate(&quested(0, true)),
@@ -767,11 +771,11 @@ mod tests {
     fn the_assassination_tells_whom_the_assassin_named_and_whether_it_was_merlin() {
         let mut narrator = dealt_five();
         let named = |target: Option<&str>, merlin| {
-            logged(Entry::Assassinated {
+            logged(Entry::Event(Outcome::Assassinated {
                 seq: 10,
                 target: target.map(id),
                 merlin,
-            })
+            }))
         };
         assert_eq!(
             narrator.narrate(&named(Some("Player 1"), true)),
@@ -799,11 +803,11 @@ mod tests {
         ];
         for (by, told) in ends {
             let mut narrator = dealt_five();
-            let end = Entry::End {
+            let end = Entry::Event(Outcome::End {
                 winner: crate::avalon::Team::Evil,
                 by,
                 took: Duration::from_secs(40),
-            };
+            });
             assert_eq!(
                 narrator.narrate(&logged(end)),
                 ["", told, "The game took 40s."]

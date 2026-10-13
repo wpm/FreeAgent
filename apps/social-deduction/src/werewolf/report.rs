@@ -9,7 +9,12 @@
 //! messages themselves, and its account reads them.
 
 use super::prompted::Memory;
-use super::{Ending, Entry, Hunt, Message, Phase, Role, Team, View, awake, ratified};
+use super::{
+    Ending, Entry, Hunt, Limits, Message, Move, Outcome, Phase, Role, Team, View, Werewolf, awake,
+    ratified,
+};
+use crate::game::Narrate;
+use crate::prompted::Account;
 use crate::report::{
     Seat, configured, in_order, in_prose, late, seat_order, told_within, whole_seconds,
 };
@@ -147,31 +152,18 @@ struct Told {
     began: SystemTime,
 }
 
-impl Narrator {
-    /// The account `me` would give of its own game. Feed it `me`'s
-    /// memories through [`Narrator::recall`]: each announcement `me`
-    /// heard, and each selection it made. It opens with who `me` is, names
-    /// the roles `me` knows and nobody else's, and tells `me`'s deeds as
-    /// "You ...", in a game whose day's vote is `ratified` or not.
-    pub fn for_player(me: PlayerId, ratified: bool) -> Self {
-        Self {
-            voice: Voice::Player(me),
-            ratified,
-            ..Self::default()
-        }
-    }
-
+impl Narrate<Werewolf> for Narrator {
     /// The lines the log's `event` adds to the account, often none. The
     /// omniscient account is told from the log; a player's reads only the
     /// end of the game from it.
-    pub fn narrate(&mut self, event: &Event<Entry>) -> Vec<String> {
+    fn narrate(&mut self, event: &Event<Entry>) -> Vec<String> {
         let time = event.time;
-        if let Entry::End {
+        if let Entry::Event(Outcome::End {
             winner,
             days,
             survivors,
             took,
-        } = &event.payload
+        }) = &event.payload
         {
             return self.end(*winner, *days, survivors, *took, time);
         }
@@ -182,15 +174,13 @@ impl Narrator {
             Entry::Start {
                 roles,
                 strategies,
-                night_limit,
-                day_limit,
-                ratify_limit,
+                limits,
             } => {
                 self.roles = roles.clone();
                 self.strategies = strategies.clone();
                 self.alive = roles.keys().cloned().collect();
-                self.ratified = ratified(*ratify_limit);
-                self.table(*night_limit, *day_limit, *ratify_limit)
+                self.ratified = ratified(limits.ratify_limit);
+                self.table(limits)
             }
             Entry::Action {
                 message: Message::Announce { seq, view, .. },
@@ -199,7 +189,7 @@ impl Narrator {
             Entry::Action {
                 from,
                 n,
-                message: Message::Select { seq, target, .. },
+                message: Message::Move(Move::Select { seq, target, .. }),
                 ..
             } => {
                 self.ballots
@@ -209,7 +199,7 @@ impl Narrator {
             Entry::Action {
                 from,
                 n,
-                message: Message::Retract { seq, .. },
+                message: Message::Move(Move::Retract { seq, .. }),
                 ..
             } => {
                 self.ballots
@@ -217,7 +207,7 @@ impl Narrator {
                 vec![]
             }
             Entry::Action {
-                message: Message::Tentative { target, ratify, .. },
+                message: Message::Move(Move::Tentative { target, ratify, .. }),
                 ..
             } => vec![self.tentative(target.as_ref(), *ratify)],
             Entry::Action {
@@ -238,11 +228,11 @@ impl Narrator {
                     _ => vec![],
                 }
             }
-            Entry::Hunted { hunt, .. } => {
+            Entry::Event(Outcome::Hunted { hunt, .. }) => {
                 self.resolution = Some(self.hunt(hunt));
                 vec![]
             }
-            Entry::Voted { by, .. } => {
+            Entry::Event(Outcome::Voted { by, .. }) => {
                 self.resolution = match by {
                     Ending::Ratified => Some("The votes stand.".to_string()),
                     Ending::DayLimit => Some("The day runs out.".to_string()),
@@ -266,6 +256,21 @@ impl Narrator {
                 }]
             }
             _ => vec![],
+        }
+    }
+}
+
+impl Narrator {
+    /// The account `me` would give of its own game. Feed it `me`'s
+    /// memories through [`Narrator::recall`]: each announcement `me`
+    /// heard, and each selection it made. It opens with who `me` is, names
+    /// the roles `me` knows and nobody else's, and tells `me`'s deeds as
+    /// "You ...", in a game whose day's vote is `ratified` or not.
+    pub fn for_player(me: PlayerId, ratified: bool) -> Self {
+        Self {
+            voice: Voice::Player(me),
+            ratified,
+            ..Self::default()
         }
     }
 
@@ -337,19 +342,19 @@ impl Narrator {
                 message: Message::Announce { seq, view, .. },
             } => self.announce(*seq, view, event.time),
             Memory::Observed {
-                message: Message::Tentative { target, ratify, .. },
+                message: Message::Move(Move::Tentative { target, ratify, .. }),
             } => vec![self.tentative(target.as_ref(), *ratify)],
             Memory::Acted {
-                message: Message::Select { from, target, .. },
+                message: Message::Move(Move::Select { from, target, .. }),
             }
             | Memory::Observed {
-                message: Message::Select { from, target, .. },
+                message: Message::Move(Move::Select { from, target, .. }),
             } => self.did(from, target),
             Memory::Acted {
-                message: Message::Retract { from, .. },
+                message: Message::Move(Move::Retract { from, .. }),
             }
             | Memory::Observed {
-                message: Message::Retract { from, .. },
+                message: Message::Move(Move::Retract { from, .. }),
             } => self.withdrew(from),
             Memory::Acted {
                 message: Message::Say { from, text, .. },
@@ -369,11 +374,12 @@ impl Narrator {
             && matches!(
                 memory,
                 Memory::Acted {
-                    message: Message::Select { .. } | Message::Retract { .. }
+                    message: Message::Move(Move::Select { .. })
+                        | Message::Move(Move::Retract { .. })
                 } | Memory::Observed {
-                    message: Message::Select { .. }
-                        | Message::Retract { .. }
-                        | Message::Tentative { .. }
+                    message: Message::Move(Move::Select { .. })
+                        | Message::Move(Move::Retract { .. })
+                        | Message::Move(Move::Tentative { .. })
                 }
             )
     }
@@ -403,12 +409,12 @@ impl Narrator {
     /// strategy on a line of its own, then how long a night and a day wait
     /// for them, and how long a vote must stand if the day's vote is
     /// ratified, which it is when the ratify limit is above zero.
-    fn table(
-        &self,
-        night_limit: Duration,
-        day_limit: Duration,
-        ratify_limit: Duration,
-    ) -> Vec<String> {
+    fn table(&self, limits: &Limits) -> Vec<String> {
+        let Limits {
+            night_limit,
+            day_limit,
+            ratify_limit,
+        } = *limits;
         let heading = format!("{} players:", self.roles.len());
         let seats = in_order(self.roles.keys()).into_iter().map(|player| {
             format!(
@@ -718,20 +724,18 @@ impl Story {
         }
     }
 
-    /// Add what `event` adds to the account.
-    pub fn recall(&mut self, event: &Event<Memory>) {
-        self.narrator.recall(event);
-    }
-
     /// The lines told, in order.
     pub fn lines(&self) -> Vec<&str> {
         self.narrator.account()
     }
+}
 
-    /// The lines told within `budget` tokens by estimate, the oldest talk
-    /// forgotten first to fit, and how many lines of talk were left out.
-    /// The story itself keeps every line.
-    pub fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
+impl Account<Werewolf> for Story {
+    fn recall(&mut self, event: &Event<Memory>) {
+        self.narrator.recall(event);
+    }
+
+    fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
         told_within(&self.narrator.account, |line| *line == Line::Talk, budget)
     }
 }
@@ -785,11 +789,12 @@ mod tests {
     use crate::report::tests::in_play;
     use crate::seat::id;
 
+    use crate::prompted::tests::received;
     use crate::seat::to_the_environment;
     use crate::strategy::{RANDOM, Random, Strategy};
     use crate::werewolf::config::Configuration;
     use crate::werewolf::tests::{
-        announcement, logged, received, retraction, selection, tentative, utterance,
+        announcement, logged, retraction, selection, tentative, utterance,
     };
     use crate::werewolf::{Dealt, Rules};
     use std::collections::BTreeMap;
@@ -968,13 +973,13 @@ mod tests {
     /// The werewolves elected `victim` the first night, whom `protectors`
     /// protected.
     fn hunted(victim: &str, protectors: &[&str]) -> Event<Entry> {
-        logged(Entry::Hunted {
+        logged(Entry::Event(Outcome::Hunted {
             seq: 1,
             hunt: Hunt {
                 victim: id(victim),
                 protectors: protectors.iter().map(|name| id(name)).collect(),
             },
-        })
+        }))
     }
 
     /// The game ended at once, so far as its log says.
@@ -984,12 +989,12 @@ mod tests {
 
     /// The game ended, having `took` as long as it did.
     fn ended_after(winner: Team, days: u8, survivors: &[&str], took: Duration) -> Event<Entry> {
-        logged(Entry::End {
+        logged(Entry::Event(Outcome::End {
             winner,
             days,
             survivors: survivors.iter().map(|name| id(name)).collect(),
             took,
-        })
+        }))
     }
 
     /// The deal of `roles`, the werewolves playing the strategy `bold` and
@@ -1015,7 +1020,7 @@ mod tests {
                 (player, dealt)
             })
             .collect();
-        logged(rules.start(&deal))
+        logged(Entry::start(&deal, &rules))
     }
 
     /// The deal of `roles`, with a night waiting a minute and a day two.
@@ -1072,11 +1077,11 @@ mod tests {
 
     /// The day numbered `seq` ended `by`, voting `out`.
     fn voted(seq: u64, out: Option<&str>, by: Ending) -> Event<Entry> {
-        logged(Entry::Voted {
+        logged(Entry::Event(Outcome::Voted {
             seq,
             out: out.map(id),
             by,
-        })
+        }))
     }
 
     #[test]
@@ -2728,9 +2733,11 @@ mod tests {
         let models = in_play(models);
         logged(Entry::Configuration(Box::new(Configuration {
             role_counts: BTreeMap::from([(Role::Werewolf, 1), (Role::Villager, 2)]),
-            night_limit: Duration::from_secs(30),
-            day_limit: Duration::from_secs(60),
-            ratify_limit: Duration::from_secs(20),
+            limits: Limits {
+                night_limit: Duration::from_secs(30),
+                day_limit: Duration::from_secs(60),
+                ratify_limit: Duration::from_secs(20),
+            },
             strategies: BTreeMap::from([(RANDOM.to_string(), Strategy::Random(Random {}))]),
             allotments: BTreeMap::new(),
             models,

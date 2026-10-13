@@ -20,19 +20,18 @@
 //! The log records the [`Configuration`] a game ran under right after the
 //! deal, and [`players`] builds each seat's player from it.
 
-use super::prompted;
-use super::{Dealt, Role, Rules, Seat, Table, random, ratified};
+use super::{Dealt, Limits, Role, Rules, Table, Werewolf};
 use crate::config::Lineup;
-use crate::model::Provider;
-use crate::model::spec::{self, Handles, Models, Spec};
-use crate::model::window::{self, ContextWindow};
+pub use crate::config::players;
+use crate::model::spec::{Handles, Models, Spec};
+use crate::model::window::ContextWindow;
 use crate::seat::PlayerId;
-use crate::strategy::{RoleConfig, Strategy};
+use crate::strategy::RoleConfig;
 use anyhow::bail;
 use humantime::format_duration;
 use minijinja::context;
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use serde::Deserialize;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 /// The variables every template has besides the text blocks.
@@ -110,12 +109,8 @@ pub struct Settings {
     pub config: Config,
     /// How many of each role sit at the table.
     pub table: Table,
-    /// How long the night waits for a player.
-    pub night_limit: Duration,
-    /// How long the day waits for a player.
-    pub day_limit: Duration,
-    /// How long a day's votes must stand to be ratified.
-    pub ratify_limit: Duration,
+    /// How long each phase waits, and how long a day's votes must stand.
+    pub limits: Limits,
     /// Every strategy, and how many seats of each role play each.
     pub lineup: Lineup<Role>,
 }
@@ -146,9 +141,11 @@ impl Config {
                 doctors: seats(Role::Doctor),
                 seers: seats(Role::Seer),
             },
-            night_limit: self.phases.night_limit.unwrap_or(rules.night_limit),
-            day_limit,
-            ratify_limit,
+            limits: Limits {
+                night_limit: self.phases.night_limit.unwrap_or(rules.night_limit),
+                day_limit,
+                ratify_limit,
+            },
             lineup,
             config: self,
         })
@@ -170,155 +167,74 @@ impl Settings {
         self.lineup.prompts(&self.config.text, variables)
     }
 
-    /// The context window of the model `name`, settled as
-    /// [`window::settle`] settles it, against what a request takes before
-    /// its story, by estimate, for the largest of `prompts` whose strategy
-    /// asks the model.
+    /// The context window of the model `name`, as [`Lineup::context_window`]
+    /// settles it for `prompts`.
     pub fn context_window(
         &self,
         name: &str,
         reported: Option<u64>,
         prompts: &[SystemPrompt],
     ) -> anyhow::Result<ContextWindow> {
-        let needed = self.unstoried(name, prompts)?;
-        window::settle(name, &self.config.models[name], reported, needed)
+        let models = &self.config.models;
+        let limits = &self.limits;
+        (self.lineup).context_window::<Werewolf>(models, limits, name, reported, prompts)
     }
 
     /// The most a request to the model `name` takes of the context window
-    /// before its story, by estimate, for any of `prompts` whose strategy
-    /// asks it.
+    /// before its story, as [`Lineup::needs`] estimates it for `prompts`.
+    #[cfg(test)]
     fn unstoried(&self, name: &str, prompts: &[SystemPrompt]) -> anyhow::Result<u64> {
-        let alive: HashSet<PlayerId> = self.table.seats().collect();
-        let id = &self.config.models[name].id;
-        let (day_limit, ratified) = (self.day_limit, ratified(self.ratify_limit));
-        self.lineup.unstoried(name, prompts, |prompt| {
-            let (text, seat, role) = (&prompt.text, &prompt.seat, prompt.role);
-            prompted::unstoried(id, text, seat, role, &alive, day_limit, ratified)
-        })
+        (self.lineup).needs::<Werewolf>(&self.config.models, &self.limits, name, prompts)
     }
 
-    /// Set up each model in play as [`spec::set_up`] sets it up, settling
-    /// its context window for `prompts` and asking it to play as by night
-    /// and as by day, which settles the tool choice. A model the file
-    /// defines and no strategy at the table asks is not contacted.
+    /// Set up each model in play as [`Lineup::set_up`] sets it up for
+    /// `prompts`, asking it to play as by night and as by day.
     pub async fn set_up(&self, prompts: &[SystemPrompt]) -> anyhow::Result<(Models, Handles)> {
-        let needed = |name: &str| self.unstoried(name, prompts);
-        let probe = async |provider: &Provider, id: &str| prompted::check_plays(provider, id).await;
-        spec::set_up(self.models_in_play(), needed, probe).await
+        (self.lineup)
+            .set_up::<Werewolf>(&self.config.models, &self.limits, prompts)
+            .await
     }
 
-    /// The configuration a game of `deal` runs under, as the log records
-    /// it right after the deal: every setting as it took effect, every
-    /// strategy and the allotments, `models`, the models in play as
-    /// [`Settings::set_up`] set them up, each prompted player's system
-    /// prompt from `prompts`, which [`Settings::prompts`] rendered, as
-    /// [`Lineup::told`] tells it, and the text blocks as written.
+    /// The configuration a game of `deal` runs under, as
+    /// [`Lineup::configuration`] makes it from these settings, `models`
+    /// and `prompts`.
     pub fn configuration(
         &self,
         deal: &HashMap<PlayerId, Dealt>,
         prompts: &[SystemPrompt],
         models: Models,
     ) -> anyhow::Result<Configuration> {
-        Ok(Configuration {
-            role_counts: self.table.counts().into_iter().collect(),
-            night_limit: self.night_limit,
-            day_limit: self.day_limit,
-            ratify_limit: self.ratify_limit,
-            strategies: self.lineup.strategies.clone(),
-            allotments: self.lineup.allotments.clone(),
-            models,
-            prompts: self.lineup.told(deal, prompts)?,
-            text: self.config.text.clone(),
-        })
+        let (limits, text) = (self.limits.clone(), &self.config.text);
+        (self.lineup).configuration(limits, models, deal, prompts, text)
     }
 
     /// The rules a game is played under: the default rules, with the
     /// limits that took effect.
     pub fn rules(&self) -> Rules {
-        Rules {
-            night_limit: self.night_limit,
-            day_limit: self.day_limit,
-            ratify_limit: self.ratify_limit,
-            ..Rules::default()
-        }
+        self.limits.rules()
     }
 }
 
-/// The configuration a game ran under, as it took effect once the command
-/// line, the file and the defaults were combined, so that the log says by
-/// itself what was played and under which prompts. Each duration is
-/// written as `humantime` writes it, such as `"60s"`, and each map in key
-/// order. The API key is never recorded.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Configuration {
-    /// How many of each role were dealt.
-    pub role_counts: BTreeMap<Role, usize>,
-    /// How long the night waited for a player.
-    #[serde(with = "humantime_serde")]
-    pub night_limit: Duration,
-    /// How long the day waited for a player.
-    #[serde(with = "humantime_serde")]
-    pub day_limit: Duration,
-    /// How long a day's votes had to stand to be ratified.
-    #[serde(with = "humantime_serde")]
-    pub ratify_limit: Duration,
-    /// Every strategy, by name, [`RANDOM`](crate::strategy::RANDOM)
-    /// included, each prompted one naming the model it asks.
-    pub strategies: BTreeMap<String, Strategy>,
-    /// How many seats of each role played each strategy.
-    pub allotments: Allotments,
-    /// The models in play, by name.
-    pub models: Models,
-    /// Each prompted player's rendered system prompt.
-    pub prompts: BTreeMap<PlayerId, String>,
-    /// The `[text]` blocks as written.
-    pub text: BTreeMap<String, String>,
-}
-
-/// Each seat's player, as `deal` dealt it a strategy and `configuration`
-/// sets the strategy up, as [`crate::config::players`] builds it: a random
-/// player, or a prompted player in a day that is ratified if the
-/// configuration's ratify limit is above zero.
-pub fn players(
-    configuration: &Configuration,
-    deal: &HashMap<PlayerId, Dealt>,
-    handles: &Handles,
-) -> impl FnMut(&PlayerId) -> Seat + use<> {
-    let ratified = ratified(configuration.ratify_limit);
-    crate::config::players(
-        &configuration.strategies,
-        &configuration.models,
-        &configuration.prompts,
-        deal,
-        handles,
-        random::Player::init,
-        move |me, prompt, model_id, tool_choice, context_window, model| {
-            prompted::Player::init(
-                me,
-                prompt,
-                model_id,
-                tool_choice,
-                context_window,
-                model,
-                ratified,
-            )
-        },
-    )
-}
+/// The configuration a game ran under.
+pub type Configuration = crate::config::Configuration<Werewolf>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::Narrate;
+    use crate::game::game;
     use crate::model::canned::{self, playing};
     use crate::model::fake::{FakeModel, choosing_first};
     use crate::model::spec::ModelInPlay;
     use crate::model::window::Source;
     use crate::model::{self, CONTEXT_WINDOW, REQUEST_TIMEOUT, ToolChoice};
+    use crate::strategy::Strategy;
     use crate::strategy::{Prompted, RANDOM, Random};
     use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{between_the_deal_and_the_end, logged, run};
-    use crate::werewolf::{Entry, Message, game};
+    use crate::werewolf::{Entry, Message, Move, Outcome};
     use serde_json::json;
+    use std::collections::HashSet;
     use std::sync::Arc;
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::sync::oneshot;
@@ -382,7 +298,7 @@ system = "{{ name }} the {{ role }}"
             // withdraw their vote.
             if let Some(rules) = settings.config.text.get("rules") {
                 assert!(!prompts.is_empty(), "{name}");
-                let ratify = format_duration(settings.ratify_limit).to_string();
+                let ratify = format_duration(settings.limits.ratify_limit).to_string();
                 assert!(rules.contains(&ratify), "{name}: {rules}");
                 assert!(rules.contains("speak"), "{name}: {rules}");
                 assert!(rules.contains("vote, or wait"), "{name}: {rules}");
@@ -420,9 +336,9 @@ system = "{{ name }} the {{ role }}"
             BTreeMap::from([(RANDOM.to_string(), Strategy::Random(Random {}))])
         );
         let rules = Rules::default();
-        assert_eq!(settings.night_limit, rules.night_limit);
-        assert_eq!(settings.day_limit, rules.day_limit);
-        assert_eq!(settings.ratify_limit, Duration::ZERO);
+        assert_eq!(settings.limits.night_limit, rules.night_limit);
+        assert_eq!(settings.limits.day_limit, rules.day_limit);
+        assert_eq!(settings.limits.ratify_limit, Duration::ZERO);
     }
 
     #[test]
@@ -506,19 +422,22 @@ count = 8
         let file = "[phases]\nnight_limit = \"1m 30s\"\nday_limit = \"2m\"\n";
         // The file over the code.
         let settings = settle(file);
-        assert_eq!(settings.night_limit, Duration::from_secs(90));
-        assert_eq!(settings.day_limit, Duration::from_secs(120));
+        assert_eq!(settings.limits.night_limit, Duration::from_secs(90));
+        assert_eq!(settings.limits.day_limit, Duration::from_secs(120));
         // The code without the file.
         let settings = settle("");
-        assert_eq!(settings.night_limit, Rules::default().night_limit);
-        assert_eq!(settings.day_limit, Rules::default().day_limit);
+        assert_eq!(settings.limits.night_limit, Rules::default().night_limit);
+        assert_eq!(settings.limits.day_limit, Rules::default().day_limit);
     }
 
     #[test]
     fn the_ratify_limit_falls_back_from_the_file_to_the_code() {
         let file = "[phases]\nratify_limit = \"15s\"\n";
-        assert_eq!(settle(file).ratify_limit, Duration::from_secs(15));
-        assert_eq!(settle("").ratify_limit, Rules::default().ratify_limit);
+        assert_eq!(settle(file).limits.ratify_limit, Duration::from_secs(15));
+        assert_eq!(
+            settle("").limits.ratify_limit,
+            Rules::default().ratify_limit
+        );
     }
 
     #[test]
@@ -540,7 +459,7 @@ count = 8
         );
         // One as long as the day is allowed.
         let file = "[phases]\nday_limit = \"20s\"\nratify_limit = \"20s\"\n";
-        assert_eq!(settle(file).ratify_limit, Duration::from_secs(20));
+        assert_eq!(settle(file).limits.ratify_limit, Duration::from_secs(20));
     }
 
     #[test]
@@ -778,7 +697,7 @@ strategy = \"smart\"
     /// one prompt of the strategy `bold`, which is longer still.
     fn prompts_of_length(settings: &Settings, length: usize, longest: usize) -> Vec<SystemPrompt> {
         let mut prompts: Vec<SystemPrompt> = settings
-            .table
+            .lineup
             .seats()
             .map(|seat| SystemPrompt {
                 seat,
@@ -944,9 +863,11 @@ count = 1
                     (Role::Doctor, 0),
                     (Role::Seer, 1),
                 ]),
-                night_limit: Duration::from_secs(30),
-                day_limit: Duration::from_secs(90),
-                ratify_limit: Duration::from_secs(10),
+                limits: Limits {
+                    night_limit: Duration::from_secs(30),
+                    day_limit: Duration::from_secs(90),
+                    ratify_limit: Duration::from_secs(10)
+                },
                 strategies: BTreeMap::from([
                     ("bold".to_string(), prompted("Bold {{ name }}.")),
                     ("dice".to_string(), Strategy::Random(Random {})),
@@ -1224,7 +1145,7 @@ count = 0
         for entry in &entries {
             if let Entry::Action {
                 from,
-                message: Message::Select { .. },
+                message: Message::Move(Move::Select { .. }),
                 seen,
                 ..
             } = entry
@@ -1232,7 +1153,7 @@ count = 0
                 assert_eq!(seen.is_some(), prompted.contains(from), "{from}");
                 selected.insert(from);
             }
-            if let Entry::Hunted { seq: 1, hunt } = entry {
+            if let Entry::Event(Outcome::Hunted { seq: 1, hunt }) = entry {
                 first_victim = hunt.dead();
             }
         }

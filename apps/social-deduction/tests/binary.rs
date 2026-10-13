@@ -12,7 +12,7 @@ use social_deduction::model::canned::{
 use social_deduction::model::window::{ContextWindow, Source};
 use social_deduction::seat::PlayerId;
 use social_deduction::werewolf::config::Configuration;
-use social_deduction::werewolf::{Ending, Entry, Message, Role};
+use social_deduction::werewolf::{Ending, Entry, Limits, Message, Move, Outcome, Role};
 use std::collections::{HashMap, HashSet};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -97,7 +97,8 @@ fn assert_plays_the_default_table(args: &[&str], notes: &[&str]) -> (Vec<Event<E
     // The default table seats seven.
     assert_eq!(roles.len(), 7);
     assert_eq!(strategies.len(), 7);
-    let Some(Entry::End { winner, .. }) = events.last().map(|event| &event.payload) else {
+    let Some(Entry::Event(Outcome::End { winner, .. })) = events.last().map(|event| &event.payload)
+    else {
         panic!("{events:?}");
     };
     // The account opens with the table, a player to a line with its role
@@ -203,15 +204,14 @@ fn werewolf_takes_the_limits_from_the_file() {
         "game = \"werewolf\"\n[phases]\nnight_limit = \"5s\"\nday_limit = \"1m\"\n",
     );
     let (events, _) = played(&[&config]);
-    let Some(Entry::Start {
+    let Some(Entry::Start { limits, .. }) = events.first().map(|event| &event.payload) else {
+        panic!("{events:?}");
+    };
+    let Limits {
         night_limit,
         day_limit,
         ratify_limit,
-        ..
-    }) = events.first().map(|event| &event.payload)
-    else {
-        panic!("{events:?}");
-    };
+    } = limits;
     assert_eq!(*night_limit, Duration::from_secs(5));
     assert_eq!(*day_limit, Duration::from_secs(60));
     // The day is not ratified unless something says so.
@@ -378,7 +378,7 @@ fn endings(events: &[Event<Entry>]) -> Vec<Ending> {
     let endings: Vec<Ending> = events
         .iter()
         .filter_map(|event| match &event.payload {
-            Entry::Voted { by, .. } => Some(*by),
+            Entry::Event(Outcome::Voted { by, .. }) => Some(*by),
             _ => None,
         })
         .collect();
@@ -499,17 +499,17 @@ fn a_game_of_model_players_is_logged_from_the_configuration_to_the_result() {
     let (events, printed) = assert_plays_the_default_table(&args, &[DEFAULT_WINDOW]);
     let (roles, strategies) = start(&events);
     assert!(strategies.values().all(|strategy| strategy == "everyone"));
-    let Entry::Start { ratify_limit, .. } = &events[0].payload else {
+    let Entry::Start { limits, .. } = &events[0].payload else {
         panic!("{events:?}");
     };
-    assert_eq!(*ratify_limit, Duration::from_secs(1));
+    assert_eq!(limits.ratify_limit, Duration::from_secs(1));
     let configuration = configuration(&events);
     let model = &configuration.models["qwen"];
     assert_eq!(model.base_url, base_url);
     assert_eq!(model.id, EXAMPLE_MODEL);
     assert_eq!(model.tool_choice, ToolChoice::Required);
-    assert_eq!(configuration.night_limit, Duration::from_secs(1));
-    assert_eq!(configuration.ratify_limit, Duration::from_secs(1));
+    assert_eq!(configuration.limits.night_limit, Duration::from_secs(1));
+    assert_eq!(configuration.limits.ratify_limit, Duration::from_secs(1));
     // Everyone votes at once, so each day's votes stand after the ratify
     // limit and the selected player is voted out.
     let endings = endings(&events);
@@ -672,7 +672,7 @@ fn a_model_player_retracts_its_vote_and_everyone_hears_it() {
                 from,
                 n,
                 to,
-                message: Message::Retract { .. },
+                message: Message::Move(Move::Retract { .. }),
                 ..
             } => Some((from, *n, to)),
             _ => None,
@@ -750,8 +750,8 @@ fn werewolf_takes_the_role_counts_and_the_limits_from_the_file() {
     let configuration = configuration(&events);
     assert_eq!(configuration.role_counts[&Role::Werewolf], 1);
     assert_eq!(configuration.role_counts[&Role::Villager], 3);
-    assert_eq!(configuration.day_limit, Duration::from_secs(2));
-    assert_eq!(configuration.ratify_limit, Duration::from_secs(1));
+    assert_eq!(configuration.limits.day_limit, Duration::from_secs(2));
+    assert_eq!(configuration.limits.ratify_limit, Duration::from_secs(1));
 }
 
 #[test]
@@ -761,11 +761,11 @@ fn a_file_without_a_ratify_limit_plays_days_that_are_not_ratified() {
     rephased(&config, &["night_limit = \"1s\"", "day_limit = \"2s\""]);
     let args = [config.as_str()];
     let (events, printed) = assert_plays_the_default_table(&args, &[DEFAULT_WINDOW]);
-    let Entry::Start { ratify_limit, .. } = &events[0].payload else {
+    let Entry::Start { limits, .. } = &events[0].payload else {
         panic!("{events:?}");
     };
-    assert_eq!(*ratify_limit, Duration::ZERO);
-    assert_eq!(configuration(&events).ratify_limit, Duration::ZERO);
+    assert_eq!(limits.ratify_limit, Duration::ZERO);
+    assert_eq!(configuration(&events).limits.ratify_limit, Duration::ZERO);
     let endings = endings(&events);
     assert!(
         endings.iter().all(|by| *by == Ending::AllSelected),
@@ -1104,7 +1104,9 @@ fn avalon_plays_the_default_table_to_the_end_and_tells_it() {
         avalon_roles(&events),
         [Merlin, Servant, Servant, Assassin, Minion]
     );
-    let Some(avalon::Entry::End { winner, .. }) = events.last().map(|event| &event.payload) else {
+    let Some(avalon::Entry::Event(avalon::Outcome::End { winner, .. })) =
+        events.last().map(|event| &event.payload)
+    else {
         panic!("{events:?}");
     };
     // The account opens with the table, a player to a line, then the
@@ -1215,7 +1217,7 @@ fn avalon_logs_the_configuration_of_the_random_config_s_players() {
     assert!(
         matches!(
             events.last().map(|event| &event.payload),
-            Some(avalon::Entry::End { .. })
+            Some(avalon::Entry::Event(avalon::Outcome::End { .. }))
         ),
         "{events:?}"
     );
@@ -1240,8 +1242,8 @@ fn avalon_takes_the_role_counts_and_the_limits_from_the_file() {
     let configuration = avalon_configuration(&events);
     assert_eq!(configuration.role_counts[&avalon::Role::Servant], 3);
     assert_eq!(configuration.role_counts[&avalon::Role::Minion], 2);
-    assert_eq!(configuration.vote_limit, Duration::from_secs(120));
-    assert_eq!(configuration.quest_limit, Duration::from_secs(180));
+    assert_eq!(configuration.limits.vote_limit, Duration::from_secs(120));
+    assert_eq!(configuration.limits.quest_limit, Duration::from_secs(180));
     assert!(printed.starts_with("7 players:\n"), "{printed}");
     assert!(
         printed.contains("A proposal waits 1m, a vote 2m, a quest 3m"),
@@ -1311,9 +1313,10 @@ fn avalon_plays_a_table_of_random_evil_and_prompted_good_to_the_end() {
     // A player stopped in the middle of a step may log after the end, so
     // the end is somewhere in the log rather than last.
     assert!(
-        events
-            .iter()
-            .any(|event| matches!(event.payload, avalon::Entry::End { .. })),
+        events.iter().any(|event| matches!(
+            event.payload,
+            avalon::Entry::Event(avalon::Outcome::End { .. })
+        )),
         "{events:?}"
     );
     // The prompted players talk, and the account tells it.

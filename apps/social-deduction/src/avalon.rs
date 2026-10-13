@@ -1,5 +1,5 @@
-//! Avalon: the rules, the types they are written in, the one kind of
-//! actor every game holds, and the function that builds every game.
+//! Avalon: the rules, the types they are written in, and the [`Game`] that
+//! names them.
 //!
 //! A game is an episode of [free agents](free_agent): the rules in one
 //! actor, the environment, and a player in each of the others. The
@@ -13,22 +13,15 @@
 //! Each quest is led by a leader, who proposes a team; every player votes
 //! on it; if it is approved, its members go on the quest, and each one
 //! supports or sabotages it. Play goes on until one [`Team`] has won. The
-//! log is written by every actor, an [`Entry`] at a time, in the language
-//! of reinforcement learning: each message an actor sends to others is an
-//! action of its sender, which the sender logs whole, once, and an
-//! observation of each receiver, which the receiver logs as a receipt
-//! naming the message by its sender and number. The environment logs the
-//! deal, its announcements, the choices it receives, how each phase came
-//! out, and the result; every player logs what it receives and the
-//! choices it sends.
+//! environment numbers its announcements, each player its choices and
+//! utterances together. The environment logs the deal, its announcements,
+//! the choices it receives, how each phase came out, and the result; every
+//! player logs what it receives and the choices it sends.
 //!
 //! The environment is [`announced`]'s, and each of an episode's players
 //! follows the policy of the strategy it is dealt with its role: the
 //! [`random`] policy, or the [`prompted`] one, whose choices a language
 //! model makes. The [`config`] says which strategies are dealt.
-//! An episode holds one kind of actor, [`Actor`], which is the environment
-//! or a player, and [`game`] builds every episode, with each seat's player
-//! built for it.
 
 pub mod announced;
 pub mod config;
@@ -36,13 +29,13 @@ pub mod prompted;
 pub mod random;
 pub mod report;
 
+use crate::game::{Game, Tagged};
+use crate::model::Model;
+use crate::model::spec::Probed;
 use crate::report::in_order;
-use crate::seat::{
-    ENVIRONMENT, PlayerId, seats, to_everyone_but, to_the_environment, to_the_players_but,
-};
+use crate::seat::{PlayerId, to_the_environment, to_the_players_but};
 use anyhow::ensure;
-use async_trait::async_trait;
-use free_agent::{ActorId, ActorInit, Behavior, Context, Episode, Logger};
+use free_agent::{ActorId, ActorInit};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -50,95 +43,105 @@ use std::num::NonZero;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
+/// The game of Avalon, as the shared code names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Avalon;
+
+/// What the environment and the players say to one another.
+pub type Message = crate::game::Message<Avalon>;
+
+/// What the log holds.
+pub type Entry = crate::game::Entry<Avalon>;
+
+/// The one kind of actor a game of Avalon holds.
+pub type Actor = crate::game::Actor<Avalon>;
+
 /// How a seat is built: its player's behavior, and its think loop if it
 /// has one.
-pub type Seat = crate::seat::Seat<Actor>;
+pub type Seat = crate::game::Seat<Avalon>;
 
 /// What a seat is dealt: a role, and the strategy its player plays.
 pub type Dealt = crate::seat::Dealt<Role>;
 
-/// An episode of a game of `deal` under `rules`: the announcing
-/// environment, which may reach and stop every player, logs
-/// `configuration` right after the deal, and sends the winning team on
-/// `winner` when the game ends; and in each seat the player `player`
-/// builds for it. Everyone holds `logger`. A player may send to the
-/// environment and to every other player, and stops nobody.
-pub fn game(
-    deal: HashMap<PlayerId, Dealt>,
-    rules: Rules,
-    configuration: config::Configuration,
-    winner: oneshot::Sender<Team>,
-    mut player: impl FnMut(&PlayerId) -> Seat,
-    logger: Logger<Entry>,
-) -> Episode<Actor> {
-    let players: Vec<PlayerId> = deal.keys().cloned().collect();
-    let configuration = Entry::Configuration(Box::new(configuration));
-    let environment = announced::init(deal, rules, configuration, winner, Actor::Environment);
-    let mut init = HashMap::from([(ENVIRONMENT.to_string(), environment)]);
-    for id in &players {
-        let (behavior, think) = player(id);
-        init.insert(
-            id.clone(),
-            ActorInit {
-                behavior,
-                think,
-                can_send_to: to_everyone_but(id, &players),
-                can_shut_down: HashSet::new(),
-                has_logger: true,
-            },
-        );
-    }
-    Episode::new(init, logger)
-}
-
-/// What an actor in a game of Avalon does: run it, or play in it. An
-/// episode holds one kind of actor, so every side meets here and each
-/// method goes to whichever side this is.
-pub enum Actor {
-    /// The side that holds the game.
-    Environment(announced::Environment),
-    /// A player who chooses at random.
-    Random(random::Player),
-    /// A player whose choices a language model makes.
-    Prompted(prompted::Player),
-    /// A player who says whatever its script says.
+impl Game for Avalon {
+    type Role = Role;
+    type Team = Team;
+    type Rules = Rules;
+    type Limits = Rules;
+    type View = View;
+    type Move = Move;
+    type Event = Outcome;
+    type Story = report::Story;
+    type Narrator = report::Narrator;
+    type Environment = announced::Environment;
     #[cfg(test)]
-    Puppet(tests::Puppet),
-}
+    type Puppet = tests::Puppet;
 
-#[async_trait]
-impl Behavior for Actor {
-    type Message = Message;
-    type Log = Entry;
-
-    fn context(&self) -> &Context<Message, Entry> {
-        match self {
-            Actor::Environment(environment) => environment.context(),
-            Actor::Random(player) => player.context(),
-            Actor::Prompted(player) => player.context(),
-            #[cfg(test)]
-            Actor::Puppet(puppet) => puppet.context(),
-        }
+    fn limits(rules: &Rules) -> Rules {
+        rules.clone()
     }
 
-    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        match self {
-            Actor::Environment(environment) => environment.receive(message).await,
-            Actor::Random(player) => player.receive(message).await,
-            Actor::Prompted(player) => player.receive(message).await,
-            #[cfg(test)]
-            Actor::Puppet(puppet) => puppet.receive(message).await,
-        }
+    fn environment(
+        deal: HashMap<PlayerId, Dealt>,
+        rules: Rules,
+        configuration: Entry,
+        winner: oneshot::Sender<Team>,
+    ) -> ActorInit<Actor> {
+        announced::init(deal, rules, configuration, winner, Actor::Environment)
     }
 
-    async fn start(&mut self) -> anyhow::Result<()> {
-        match self {
-            Actor::Environment(environment) => environment.start().await,
-            Actor::Random(player) => player.start().await,
-            Actor::Prompted(player) => player.start().await,
-            #[cfg(test)]
-            Actor::Puppet(puppet) => puppet.start().await,
-        }
+    /// Whether the phase [awaits](awaited) `me`.
+    fn acts(me: &PlayerId, view: &View) -> bool {
+        awaited(me, view)
+    }
+
+    /// A choice drawn uniformly from the legal ones in the phase `view`
+    /// shows.
+    fn pick(me: &PlayerId, view: &View, seq: u64, n: u64) -> Option<Move> {
+        random::choose(me, view).map(|choice| choice.made(seq, me.clone(), n))
+    }
+
+    fn receivers(message: &Message, me: &PlayerId, view: &View) -> HashSet<ActorId> {
+        receivers(message, me, view)
+    }
+
+    fn story(me: PlayerId, _: &Rules) -> report::Story {
+        report::Story::of(me)
+    }
+
+    /// A player may talk in every phase, so everything it remembers wakes
+    /// it.
+    fn wakes(_: &PlayerId, _: &Message, _: &View) -> bool {
+        true
+    }
+
+    fn play(
+        player: &prompted::Player,
+        seq: u64,
+        view: &View,
+        limit: Duration,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send {
+        prompted::play(player, seq, view, limit)
+    }
+
+    fn unstoried(
+        model_id: &str,
+        prompt: &str,
+        seat: &PlayerId,
+        role: Role,
+        seats: &[PlayerId],
+        rules: &Rules,
+    ) -> anyhow::Result<u64> {
+        Ok(prompted::unstoried(
+            model_id, prompt, seat, role, seats, rules,
+        ))
+    }
+
+    fn check_plays(
+        model: &dyn Model,
+        model_id: &str,
+    ) -> impl Future<Output = anyhow::Result<Probed>> {
+        prompted::check_plays(model, model_id)
     }
 }
 
@@ -189,25 +192,31 @@ impl Choice {
         }
     }
 
-    /// This choice as the message `from` sends in the phase numbered
-    /// `seq`, its `n`th.
-    pub fn message(self, seq: u64, from: PlayerId, n: u64) -> Message {
+    /// This choice as the move `from` makes in the phase numbered `seq`,
+    /// its `n`th.
+    pub fn made(self, seq: u64, from: PlayerId, n: u64) -> Move {
         match self {
-            Choice::Team(team) => Message::Propose { seq, from, n, team },
-            Choice::Ballot(ballot) => Message::Vote {
+            Choice::Team(team) => Move::Propose { seq, from, n, team },
+            Choice::Ballot(ballot) => Move::Vote {
                 seq,
                 from,
                 n,
                 ballot,
             },
-            Choice::Deed(deed) => Message::Perform { seq, from, n, deed },
-            Choice::Target(target) => Message::Select {
+            Choice::Deed(deed) => Move::Perform { seq, from, n, deed },
+            Choice::Target(target) => Move::Select {
                 seq,
                 from,
                 n,
                 target,
             },
         }
+    }
+
+    /// This choice as the message `from` sends in the phase numbered
+    /// `seq`, its `n`th.
+    pub fn message(self, seq: u64, from: PlayerId, n: u64) -> Message {
+        Message::Move(self.made(seq, from, n))
     }
 }
 
@@ -427,11 +436,6 @@ impl Table {
             self.assassin
         );
         Ok(())
-    }
-
-    /// The seats, named `Player 1` onward, one per player.
-    pub fn seats(&self) -> impl Iterator<Item = PlayerId> {
-        seats(self.players())
     }
 }
 
@@ -710,7 +714,7 @@ impl State {
                     self.failed += 1;
                 }
                 self.team.clone_from(&team);
-                Entry::Proposed { seq, team }
+                Entry::Event(Outcome::Proposed { seq, team })
             }
             Phase::Vote => {
                 let ballots = choices
@@ -722,7 +726,7 @@ impl State {
                     self.failed += 1;
                 }
                 self.tally = Some(tally.clone());
-                Entry::Tallied { seq, tally }
+                Entry::Event(Outcome::Tallied { seq, tally })
             }
             Phase::Quest => {
                 let team = self.team.clone().unwrap_or_default();
@@ -737,7 +741,7 @@ impl State {
                 };
                 self.record.push(result.clone());
                 self.failed = 0;
-                Entry::Quested { seq, result }
+                Entry::Event(Outcome::Quested { seq, result })
             }
             Phase::Assassinate => {
                 let target = choices.values().find_map(Choice::target).cloned();
@@ -745,11 +749,11 @@ impl State {
                     .as_ref()
                     .is_some_and(|target| self.roles[target] == Role::Merlin);
                 self.named = Some(merlin);
-                Entry::Assassinated {
+                Entry::Event(Outcome::Assassinated {
                     seq,
                     target,
                     merlin,
-                }
+                })
             }
         }
     }
@@ -814,16 +818,21 @@ impl State {
 }
 
 /// How a game is played: how long each phase waits for the players. A
-/// choice that comes later is ignored.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// choice that comes later is ignored. The log records each limit as
+/// `humantime` writes it, such as `"60s"`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rules {
     /// How long a proposal waits for its leader.
+    #[serde(with = "humantime_serde")]
     pub propose_limit: Duration,
     /// How long a vote waits for the players.
+    #[serde(with = "humantime_serde")]
     pub vote_limit: Duration,
     /// How long a quest waits for its team.
+    #[serde(with = "humantime_serde")]
     pub quest_limit: Duration,
     /// How long the assassination waits for the Assassin.
+    #[serde(with = "humantime_serde")]
     pub assassinate_limit: Duration,
 }
 
@@ -835,28 +844,6 @@ impl Rules {
             Phase::Vote => self.vote_limit,
             Phase::Quest => self.quest_limit,
             Phase::Assassinate => self.assassinate_limit,
-        }
-    }
-
-    /// The entry that opens a game of `deal` under these rules: every
-    /// player's role and strategy, and the limits.
-    pub fn start(&self, deal: &HashMap<PlayerId, Dealt>) -> Entry {
-        let (roles, strategies) = deal
-            .iter()
-            .map(|(id, dealt)| {
-                (
-                    (id.clone(), dealt.role),
-                    (id.clone(), dealt.strategy.clone()),
-                )
-            })
-            .unzip();
-        Entry::Start {
-            roles,
-            strategies,
-            propose_limit: self.propose_limit,
-            vote_limit: self.vote_limit,
-            quest_limit: self.quest_limit,
-            assassinate_limit: self.assassinate_limit,
         }
     }
 }
@@ -874,33 +861,12 @@ impl Default for Rules {
     }
 }
 
-/// What the environment and the players say to one another. Every message
-/// an actor sends to others is numbered by its sender, from 1, so that the
-/// pair of sender and number names a message in an episode: the
-/// environment numbers its announcements, each player its choices and
-/// utterances together. Each announcement is a message of its own, since
-/// each player is shown a different view. A reminder an actor sends itself
-/// is not numbered.
+/// The messages only Avalon has: the players' choices, each to the
+/// environment alone, since every choice is secret, and each numbered by
+/// its player.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Message {
-    /// The environment opens a phase for one player, awaited in it or not.
-    /// Phases are numbered from 1 for the first proposal, one up for each
-    /// phase.
-    Announce {
-        /// The number of the phase.
-        seq: u64,
-        /// The environment's number for this message.
-        n: u64,
-        /// What the player may see of it.
-        view: View,
-        /// How long the phase lasts, written as `humantime` writes it. A
-        /// player holds no state but its history, and can see when its
-        /// messages arrived, so the limit is all it needs to know the time.
-        #[serde(with = "humantime_serde")]
-        limit: Duration,
-    },
-    /// The leader's team for the proposal numbered `seq`, to the
-    /// environment alone.
+pub enum Move {
+    /// The leader's team for the proposal numbered `seq`.
     Propose {
         /// The number of the phase.
         seq: u64,
@@ -911,8 +877,7 @@ pub enum Message {
         /// The team.
         team: Vec<PlayerId>,
     },
-    /// A player's secret vote in the phase numbered `seq`, to the
-    /// environment alone.
+    /// A player's secret vote in the phase numbered `seq`.
     Vote {
         /// The number of the phase.
         seq: u64,
@@ -923,8 +888,7 @@ pub enum Message {
         /// The vote.
         ballot: Ballot,
     },
-    /// A member's secret deed on the quest numbered `seq`, to the
-    /// environment alone.
+    /// A member's secret deed on the quest numbered `seq`.
     Perform {
         /// The number of the phase.
         seq: u64,
@@ -935,8 +899,7 @@ pub enum Message {
         /// The deed.
         deed: Deed,
     },
-    /// The Assassin's naming of Merlin in the phase numbered `seq`, to the
-    /// environment alone.
+    /// The Assassin's naming of Merlin in the phase numbered `seq`.
     Select {
         /// The number of the phase.
         seq: u64,
@@ -947,96 +910,47 @@ pub enum Message {
         /// Whom they named.
         target: PlayerId,
     },
-    /// A player's utterance in the phase numbered `seq`, as the speaker
-    /// knew it: the latest phase the speaker was announced. It goes to
-    /// every other player, and never to the environment, which does
-    /// nothing with speech.
-    Say {
-        /// The number of the phase.
-        seq: u64,
-        /// Who spoke, since a message does not carry its sender.
-        from: PlayerId,
-        /// The player's number for this message.
-        n: u64,
-        /// What they said.
-        text: String,
-    },
-    /// The environment's own message to itself that the phase numbered
-    /// `seq` is over.
-    EndPhase {
-        /// The number of the phase.
-        seq: u64,
-    },
-    /// A model player's own message to its think loop to call the model.
-    Wake,
-    /// A model player's own reminder, the `count`th it set, to be woken in
-    /// the phase numbered `seq`. A timer cannot be canceled, so one whose
-    /// `count` is not the latest set, or whose phase has ended, is ignored.
-    Remind {
-        /// The number of the phase.
-        seq: u64,
-        /// Which reminder of the player's this is.
-        count: u64,
-    },
 }
-impl free_agent::Message for Message {}
 
-impl Message {
-    /// The sender's number for this message, which a reminder to itself
-    /// does not have.
-    pub fn number(&self) -> Option<u64> {
+impl Move {
+    /// The choice this move makes, with the phase it is for and its
+    /// sender's number for it.
+    pub fn choice(&self) -> (u64, u64, Choice) {
         match self {
-            Message::Announce { n, .. }
-            | Message::Propose { n, .. }
-            | Message::Vote { n, .. }
-            | Message::Perform { n, .. }
-            | Message::Select { n, .. }
-            | Message::Say { n, .. } => Some(*n),
-            Message::EndPhase { .. } | Message::Wake | Message::Remind { .. } => None,
+            Move::Propose { seq, n, team, .. } => (*seq, *n, Choice::Team(team.clone())),
+            Move::Vote { seq, n, ballot, .. } => (*seq, *n, Choice::Ballot(*ballot)),
+            Move::Perform { seq, n, deed, .. } => (*seq, *n, Choice::Deed(*deed)),
+            Move::Select { seq, n, target, .. } => (*seq, *n, Choice::Target(target.clone())),
+        }
+    }
+}
+
+impl Tagged for Move {
+    fn number(&self) -> Option<u64> {
+        match self {
+            Move::Propose { n, .. }
+            | Move::Vote { n, .. }
+            | Move::Perform { n, .. }
+            | Move::Select { n, .. } => Some(*n),
         }
     }
 
-    /// The phase this message is tagged with: for a message to others, the
-    /// phase its sender was in; for a reminder, the phase it is for. A
-    /// wake-up names none.
-    pub fn seq(&self) -> Option<u64> {
+    fn seq(&self) -> u64 {
         match self {
-            Message::Announce { seq, .. }
-            | Message::Propose { seq, .. }
-            | Message::Vote { seq, .. }
-            | Message::Perform { seq, .. }
-            | Message::Select { seq, .. }
-            | Message::Say { seq, .. }
-            | Message::EndPhase { seq }
-            | Message::Remind { seq, .. } => Some(*seq),
-            Message::Wake => None,
+            Move::Propose { seq, .. }
+            | Move::Vote { seq, .. }
+            | Move::Perform { seq, .. }
+            | Move::Select { seq, .. } => *seq,
         }
     }
 
-    /// Who sent this message: the environment, unless it is a player's
-    /// choice or utterance, which carries its sender.
-    pub fn sender(&self) -> ActorId {
+    /// The player who chose.
+    fn sender(&self) -> ActorId {
         match self {
-            Message::Propose { from, .. }
-            | Message::Vote { from, .. }
-            | Message::Perform { from, .. }
-            | Message::Select { from, .. }
-            | Message::Say { from, .. } => from.clone(),
-            _ => ENVIRONMENT.to_string(),
-        }
-    }
-
-    /// The choice this message makes, with the phase it is for and its
-    /// sender's number for it, if it is a choice.
-    pub fn choice(&self) -> Option<(u64, u64, Choice)> {
-        match self {
-            Message::Propose { seq, n, team, .. } => Some((*seq, *n, Choice::Team(team.clone()))),
-            Message::Vote { seq, n, ballot, .. } => Some((*seq, *n, Choice::Ballot(*ballot))),
-            Message::Perform { seq, n, deed, .. } => Some((*seq, *n, Choice::Deed(*deed))),
-            Message::Select { seq, n, target, .. } => {
-                Some((*seq, *n, Choice::Target(target.clone())))
-            }
-            _ => None,
+            Move::Propose { from, .. }
+            | Move::Vote { from, .. }
+            | Move::Perform { from, .. }
+            | Move::Select { from, .. } => from.clone(),
         }
     }
 }
@@ -1052,156 +966,12 @@ pub fn receivers(message: &Message, me: &PlayerId, view: &View) -> HashSet<Actor
     }
 }
 
-/// Send `message` from the actor of `context` to everyone in `to`, logging
-/// it first as the actor's action if it is numbered. `seen` is how many
-/// history entries a model was shown when it made the call that produced
-/// the message, and `forgot` how many lines of talk the call left out, each
-/// `None` for a message no model made.
-pub fn act(
-    context: &Context<Message, Entry>,
-    message: Message,
-    to: HashSet<ActorId>,
-    seen: Option<usize>,
-    forgot: Option<usize>,
-) -> anyhow::Result<()> {
-    if let Some(n) = message.number() {
-        context.log(Entry::Action {
-            from: context.id.clone(),
-            n,
-            to: to.clone(),
-            message: message.clone(),
-            seen,
-            forgot,
-        });
-    }
-    context.send(message, to)
-}
-
-/// Log that the actor of `context`, in the phase numbered `seq`, received
-/// the message `from` numbered `n`: its observation.
-pub fn observe(context: &Context<Message, Entry>, from: ActorId, n: u64, seq: u64) {
-    context.log(Entry::Observation {
-        by: context.id.clone(),
-        from,
-        n,
-        seq,
-    });
-}
-
-/// What the log holds: the deal, the configuration, every message sent as
-/// the action of its sender and the observation of its receiver, the usage
-/// the provider reported for each model call, each message a model player
-/// withheld because its phase had ended, each failure of a model player to
-/// act, how each phase came out, and the result. Every actor logs its own
-/// actions and observations: the environment logs the deal, the
-/// configuration, how each phase came out, and the result besides, and a
-/// player its usages, what it withholds and its failures. Every phase ends with exactly one of
-/// [`Entry::Proposed`], [`Entry::Tallied`], [`Entry::Quested`] and
-/// [`Entry::Assassinated`]. Every entry made during a phase names the
-/// phase in a field, so nothing about phases depends on the order entries
-/// reach the log or on their times.
+/// The log entries only Avalon has: how each phase came out, and the
+/// result. Every phase ends with exactly one of [`Outcome::Proposed`],
+/// [`Outcome::Tallied`], [`Outcome::Quested`] and
+/// [`Outcome::Assassinated`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Entry {
-    /// The game begins: who plays what, with which strategy, and how long
-    /// each phase waits for the players. The limits are written as
-    /// `humantime` writes them, such as `"60s"`.
-    Start {
-        /// Every player's role.
-        roles: HashMap<PlayerId, Role>,
-        /// The name of every player's strategy.
-        strategies: HashMap<PlayerId, String>,
-        /// How long a proposal waits for its leader.
-        #[serde(with = "humantime_serde")]
-        propose_limit: Duration,
-        /// How long a vote waits for the players.
-        #[serde(with = "humantime_serde")]
-        vote_limit: Duration,
-        /// How long a quest waits for its team.
-        #[serde(with = "humantime_serde")]
-        quest_limit: Duration,
-        /// How long the assassination waits for the Assassin.
-        #[serde(with = "humantime_serde")]
-        assassinate_limit: Duration,
-    },
-    /// The configuration the game ran under, logged right after the deal.
-    Configuration(Box<config::Configuration>),
-    /// `from` sent `message`, which it numbered `n`, to everyone in `to`.
-    /// Logged by the sender.
-    Action {
-        /// Who sent it.
-        from: ActorId,
-        /// The sender's number for it.
-        n: u64,
-        /// Everyone it was sent to.
-        to: HashSet<ActorId>,
-        /// What was sent.
-        message: Message,
-        /// How many history entries the model was shown when it made the
-        /// call that produced the message, and `None` for a message no
-        /// model made: the environment's, or a random player's.
-        seen: Option<usize>,
-        /// How many lines of talk the call that produced the message left
-        /// out to fit the context window, `None` when it left out none.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        forgot: Option<usize>,
-    },
-    /// `by` received the message `from` numbered `n` while in the phase
-    /// numbered `seq`. Logged by the receiver, and naming the message
-    /// without repeating it: the sender's `Action` holds it.
-    Observation {
-        /// Who received it.
-        by: ActorId,
-        /// Who sent it.
-        from: ActorId,
-        /// The sender's number for it.
-        n: u64,
-        /// The phase the receiver was in when it arrived: for the
-        /// environment, the phase it is in; for a player, the latest phase
-        /// it was announced. Set beside the `seq` of the message named, it
-        /// shows a message that arrived in a later phase than it was sent
-        /// in.
-        seq: u64,
-    },
-    /// `from` did not send `message`, which a model made from `seen`
-    /// history entries, having forgotten `forgot` lines of talk, because
-    /// the phase it was made in had ended before the model answered. It was
-    /// never sent, so it has no number: its `n` is 0, and the player does
-    /// not remember it.
-    Withheld {
-        /// Who would have sent it.
-        from: PlayerId,
-        /// What it would have sent.
-        message: Message,
-        /// How many history entries the model was shown when it made the
-        /// call that produced the message.
-        seen: Option<usize>,
-        /// How many lines of talk the call that produced the message left
-        /// out to fit the context window, `None` when it left out none.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        forgot: Option<usize>,
-    },
-    /// `player` failed to act in the phase numbered `seq`: the model was
-    /// not reached, or answered with something that is not a well-formed
-    /// response.
-    Failed {
-        /// Who failed.
-        player: PlayerId,
-        /// The phase it was in.
-        seq: u64,
-        /// What went wrong, as the error says it, causes included.
-        error: String,
-    },
-    /// The model answered a call `player` made in the phase numbered `seq`,
-    /// and its provider reported `usage` for it, as sent. Logged by the
-    /// player.
-    Usage {
-        /// Who made the call.
-        player: PlayerId,
-        /// The phase the call was made in.
-        seq: u64,
-        /// What the provider reported, as sent.
-        usage: serde_json::Value,
-    },
+pub enum Outcome {
     /// The proposal numbered `seq` ended: the leader's team, or none when
     /// the leader ran out of time.
     Proposed {
@@ -1313,14 +1083,18 @@ pub fn awaited(me: &PlayerId, view: &View) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::seat::id;
+    use crate::game::tests::Fixture;
+    pub(crate) use crate::game::tests::{
+        announcement, dealt, logged, observed_by, run, sorted, utterance,
+    };
+    use crate::game::{act, observe};
+    use crate::seat::{ENVIRONMENT, id};
     use crate::strategy::{RANDOM, Random, Strategy};
+    use async_trait::async_trait;
     use config::Configuration;
-    use free_agent::{Builder, Event};
+    use free_agent::{Behavior, Builder, Context};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
-    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
-    use tokio::time::Instant;
 
     /// The default table, seated `Player 1` to `Player 5`: Merlin in the
     /// first seat, the Assassin in the second, the Servants in the third
@@ -1532,7 +1306,7 @@ pub(crate) mod tests {
             propose_limit: Duration::from_secs(90),
             ..Rules::default()
         };
-        let start = rules.start(&dealt(&five(), RANDOM));
+        let start = Entry::start(&dealt(&five(), RANDOM), &rules);
         let json = serde_json::to_value(&start).unwrap();
         assert_eq!(json["Start"]["roles"]["Player 1"], "Merlin");
         assert_eq!(json["Start"]["strategies"]["Player 1"], "random");
@@ -1585,12 +1359,12 @@ pub(crate) mod tests {
                 seq: 3,
                 error: "connection refused".to_string(),
             },
-            Entry::Proposed { seq: 1, team: None },
-            Entry::Proposed {
+            Entry::Event(Outcome::Proposed { seq: 1, team: None }),
+            Entry::Event(Outcome::Proposed {
                 seq: 2,
                 team: Some(vec![id("Player 2"), id("Player 3")]),
-            },
-            Entry::Tallied {
+            }),
+            Entry::Event(Outcome::Tallied {
                 seq: 3,
                 tally: Tally::of(
                     HashMap::from([
@@ -1599,41 +1373,41 @@ pub(crate) mod tests {
                     ]),
                     5,
                 ),
-            },
-            Entry::Quested {
+            }),
+            Entry::Event(Outcome::Quested {
                 seq: 4,
                 result: QuestResult {
                     team: vec![id("Player 2"), id("Player 3")],
                     sabotages: 1,
                     succeeded: false,
                 },
-            },
-            Entry::Assassinated {
+            }),
+            Entry::Event(Outcome::Assassinated {
                 seq: 20,
                 target: Some(id("Player 1")),
                 merlin: true,
-            },
-            Entry::Assassinated {
+            }),
+            Entry::Event(Outcome::Assassinated {
                 seq: 20,
                 target: None,
                 merlin: false,
-            },
-            Entry::End {
+            }),
+            Entry::Event(Outcome::End {
                 winner: Team::Evil,
                 by: Victory::Assassination,
                 took: Duration::from_secs(65),
-            },
+            }),
         ];
         for entry in entries {
             let json = serde_json::to_string(&entry).unwrap();
             let back: Entry = serde_json::from_str(&json).unwrap();
             assert_eq!(back, entry);
         }
-        let json = serde_json::to_value(Entry::End {
+        let json = serde_json::to_value(Entry::Event(Outcome::End {
             winner: Team::Good,
             by: Victory::Quests,
             took: Duration::from_secs(65),
-        })
+        }))
         .unwrap();
         assert_eq!(json["End"]["took"], "1m 5s");
     }
@@ -1667,7 +1441,7 @@ pub(crate) mod tests {
     #[test]
     fn a_message_to_others_is_numbered_and_names_its_phase_and_a_reminder_is_not() {
         let view = State::new(five()).view(&id("Player 1"));
-        let announced = announcement(2, view);
+        let announced = announcement::<Avalon>(2, view);
         assert_eq!(announced.number(), Some(2));
         assert_eq!(announced.seq(), Some(2));
         assert_eq!(announced.sender(), ENVIRONMENT);
@@ -1686,7 +1460,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_choice_is_the_message_that_makes_it_and_nothing_else_is_one() {
+    fn a_choice_is_the_move_that_makes_it() {
         let choices = [
             Choice::Team(vec![id("bob")]),
             Choice::Ballot(Ballot::Reject),
@@ -1694,11 +1468,10 @@ pub(crate) mod tests {
             Choice::Target(id("bob")),
         ];
         for choice in choices {
-            let message = choice.clone().message(3, id("ann"), 5);
-            assert_eq!(message.choice(), Some((3, 5, choice)));
+            let made = choice.clone().made(3, id("ann"), 5);
+            assert_eq!(made.choice(), (3, 5, choice.clone()));
+            assert_eq!(choice.message(3, id("ann"), 5), Message::Move(made));
         }
-        assert_eq!(utterance(3, "ann", 5, "Hello.").choice(), None);
-        assert_eq!(Message::Wake.choice(), None);
     }
 
     #[test]
@@ -1795,10 +1568,10 @@ pub(crate) mod tests {
         );
         assert_eq!(
             proposed,
-            Entry::Proposed {
+            Entry::Event(Outcome::Proposed {
                 seq: 1,
                 team: Some(team(&["Player 1", "Player 3"]))
-            }
+            })
         );
         assert_eq!(state.phase, Phase::Vote);
         let view = state.view(&id("Player 4"));
@@ -1812,7 +1585,7 @@ pub(crate) mod tests {
         let mut state = State::new(five());
         assert_eq!(
             resolve(&mut state, &Choices::new()),
-            Entry::Proposed { seq: 1, team: None }
+            Entry::Event(Outcome::Proposed { seq: 1, team: None })
         );
         assert_eq!(state.phase, Phase::Propose);
         let view = state.view(&id("Player 4"));
@@ -1895,10 +1668,10 @@ pub(crate) mod tests {
         };
         assert_eq!(
             tallied,
-            Entry::Tallied {
+            Entry::Event(Outcome::Tallied {
                 seq: 1,
                 tally: tally.clone()
-            }
+            })
         );
         // The tally is shown in the next proposal, and no team.
         assert_eq!(state.phase, Phase::Propose);
@@ -1940,27 +1713,27 @@ pub(crate) mod tests {
         let quested = go_on(&mut state, &["Player 2", "Player 3"], &["Player 2"]);
         assert_eq!(
             quested,
-            Entry::Quested {
+            Entry::Event(Outcome::Quested {
                 seq: 1,
                 result: QuestResult {
                     team: team(&["Player 2", "Player 3"]),
                     sabotages: 1,
                     succeeded: false,
                 }
-            }
+            })
         );
         // Nobody acts: the quest succeeds.
         let quested = go_on(&mut state, &["Player 2", "Player 3", "Player 4"], &[]);
         assert_eq!(
             quested,
-            Entry::Quested {
+            Entry::Event(Outcome::Quested {
                 seq: 1,
                 result: QuestResult {
                     team: team(&["Player 2", "Player 3", "Player 4"]),
                     sabotages: 0,
                     succeeded: true,
                 }
-            }
+            })
         );
         // The next proposal is the third quest's, the record shows both,
         // and nobody sees who sabotaged.
@@ -2000,14 +1773,14 @@ pub(crate) mod tests {
         );
         assert!(matches!(
             one,
-            Entry::Quested {
+            Entry::Event(Outcome::Quested {
                 result: QuestResult {
                     succeeded: true,
                     sabotages: 1,
                     ..
                 },
                 ..
-            }
+            })
         ));
         assert_eq!(state.phase, Phase::Assassinate);
         // Two would have failed it.
@@ -2020,14 +1793,14 @@ pub(crate) mod tests {
         );
         assert!(matches!(
             two,
-            Entry::Quested {
+            Entry::Event(Outcome::Quested {
                 result: QuestResult {
                     succeeded: false,
                     sabotages: 2,
                     ..
                 },
                 ..
-            }
+            })
         ));
     }
 
@@ -2064,11 +1837,11 @@ pub(crate) mod tests {
         );
         assert_eq!(
             named,
-            Entry::Assassinated {
+            Entry::Event(Outcome::Assassinated {
                 seq: 1,
                 target: Some(id("Player 1")),
                 merlin: true
-            }
+            })
         );
         assert_eq!(state.winner(), Some((Team::Evil, Victory::Assassination)));
     }
@@ -2090,17 +1863,20 @@ pub(crate) mod tests {
             &mut state,
             &choices(&[("Player 2", Choice::Target(id("Player 3")))]),
         );
-        assert!(matches!(named, Entry::Assassinated { merlin: false, .. }));
+        assert!(matches!(
+            named,
+            Entry::Event(Outcome::Assassinated { merlin: false, .. })
+        ));
         assert_eq!(state.winner(), Some((Team::Good, Victory::Quests)));
         let mut state = at_the_assassination();
         let named = resolve(&mut state, &Choices::new());
         assert_eq!(
             named,
-            Entry::Assassinated {
+            Entry::Event(Outcome::Assassinated {
                 seq: 1,
                 target: None,
                 merlin: false
-            }
+            })
         );
         assert_eq!(state.winner(), Some((Team::Good, Victory::Quests)));
     }
@@ -2223,29 +1999,15 @@ pub(crate) mod tests {
         assert_eq!(candidates(&me, &view), ["Player 1", "Player 3", "Player 4"]);
     }
 
-    /// `players` in name order.
-    pub(crate) fn sorted(players: HashSet<PlayerId>) -> Vec<PlayerId> {
-        let mut players: Vec<_> = players.into_iter().collect();
-        players.sort();
-        players
+    impl Fixture for Avalon {
+        fn configured(roles: &HashMap<PlayerId, Role>, rules: &Rules) -> Configuration {
+            configured(roles, rules)
+        }
     }
 
-    /// `roles`, each dealt with the strategy `strategy`.
-    pub(crate) fn dealt(
-        roles: &HashMap<PlayerId, Role>,
-        strategy: &str,
-    ) -> HashMap<PlayerId, Dealt> {
-        roles
-            .iter()
-            .map(|(id, role)| {
-                let dealt = Dealt {
-                    role: *role,
-                    strategy: strategy.to_string(),
-                };
-                (id.clone(), dealt)
-            })
-            .collect()
-    }
+    /// What a game reports: the winner, everything logged, and how long
+    /// the game took.
+    pub(crate) type Played = crate::game::tests::Played<Avalon>;
 
     /// The configuration of a game of `roles` under `rules` with every
     /// player random.
@@ -2253,10 +2015,7 @@ pub(crate) mod tests {
         let count = |role| roles.values().filter(|r| **r == role).count();
         Configuration {
             role_counts: EVERYONE.map(|role| (role, count(role))).into(),
-            propose_limit: rules.propose_limit,
-            vote_limit: rules.vote_limit,
-            quest_limit: rules.quest_limit,
-            assassinate_limit: rules.assassinate_limit,
+            limits: rules.clone(),
             strategies: BTreeMap::from([(RANDOM.to_string(), Strategy::Random(Random {}))]),
             allotments: EVERYONE
                 .map(|role| (role, BTreeMap::from([(RANDOM.to_string(), count(role))])))
@@ -2265,27 +2024,6 @@ pub(crate) mod tests {
             prompts: BTreeMap::new(),
             text: BTreeMap::new(),
         }
-    }
-
-    /// What a game reports: the winner, everything logged, and how long
-    /// the game took.
-    pub(crate) type Played = (Team, Vec<Entry>, Duration);
-
-    /// Run `episode`, whose winner comes on `won` and whose log on `log`.
-    pub(crate) async fn run(
-        episode: Episode<Actor>,
-        won: oneshot::Receiver<Team>,
-        mut log: UnboundedReceiver<Event<Entry>>,
-    ) -> anyhow::Result<Played> {
-        let started = Instant::now();
-        episode.run(Duration::from_secs(60 * 60)).await?;
-        let took = started.elapsed();
-
-        let mut logged = Vec::new();
-        while let Some(event) = log.recv().await {
-            logged.push(event.payload);
-        }
-        Ok((won.await?, logged, took))
     }
 
     /// What a puppet says on being announced a phase, given its own name,
@@ -2374,25 +2112,9 @@ pub(crate) mod tests {
     pub(crate) async fn play(
         roles: HashMap<PlayerId, Role>,
         rules: Rules,
-        mut puppets: HashMap<&str, Seat>,
+        puppets: HashMap<&str, Seat>,
     ) -> anyhow::Result<Played> {
-        let (winner, won) = oneshot::channel();
-        let (logger, log) = unbounded_channel();
-        let player = |id: &PlayerId| {
-            puppets
-                .remove(id.as_str())
-                .unwrap_or_else(random::Player::init)
-        };
-        let configuration = configured(&roles, &rules);
-        let episode = game(
-            dealt(&roles, RANDOM),
-            rules,
-            configuration,
-            winner,
-            player,
-            logger,
-        );
-        run(episode, won, log).await
+        crate::game::tests::play(roles, rules, puppets).await
     }
 
     /// Short limits, each its own, so a phase that waits one out is told
@@ -2406,38 +2128,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// `payload` as an event logged when the game began, in no episode in
-    /// particular.
-    pub(crate) fn logged<L>(payload: L) -> Event<L> {
-        Event {
-            time: std::time::UNIX_EPOCH,
-            episode: Default::default(),
-            payload,
-        }
-    }
-
-    /// The environment's announcement of the phase numbered `seq`, showing
-    /// `view`, lasting a minute. The number is the phase's.
-    pub(crate) fn announcement(seq: u64, view: View) -> Message {
-        Message::Announce {
-            seq,
-            n: seq,
-            view,
-            limit: Duration::from_secs(60),
-        }
-    }
-
-    /// `from`'s utterance of `text` in the phase numbered `seq`, the `n`th
-    /// message `from` sent.
-    pub(crate) fn utterance(seq: u64, from: &str, n: u64, text: &str) -> Message {
-        Message::Say {
-            seq,
-            from: from.to_string(),
-            n,
-            text: text.to_string(),
-        }
-    }
-
     /// What the player in `seat` of the default table sees at the start of
     /// the game, moved to `phase` with `team` on the table.
     pub(crate) fn view_of(seat: &str, phase: Phase, team: &[&str]) -> View {
@@ -2447,24 +2137,6 @@ pub(crate) mod tests {
         state.view(&id(seat))
     }
 
-    /// The messages `by` logged as its observations, each as who sent it,
-    /// the sender's number for it, and the phase `by` was in when it
-    /// arrived, in the log's order.
-    pub(crate) fn observed_by<'a>(logged: &'a [Entry], by: &str) -> Vec<(&'a str, u64, u64)> {
-        logged
-            .iter()
-            .filter_map(|entry| match entry {
-                Entry::Observation {
-                    by: observer,
-                    from,
-                    n,
-                    seq,
-                } if observer == by => Some((from.as_str(), *n, *seq)),
-                _ => None,
-            })
-            .collect()
-    }
-
     /// The outcome entries in the log, in order.
     pub(crate) fn outcomes(logged: &[Entry]) -> Vec<&Entry> {
         logged
@@ -2472,10 +2144,10 @@ pub(crate) mod tests {
             .filter(|entry| {
                 matches!(
                     entry,
-                    Entry::Proposed { .. }
-                        | Entry::Tallied { .. }
-                        | Entry::Quested { .. }
-                        | Entry::Assassinated { .. }
+                    Entry::Event(Outcome::Proposed { .. })
+                        | Entry::Event(Outcome::Tallied { .. })
+                        | Entry::Event(Outcome::Quested { .. })
+                        | Entry::Event(Outcome::Assassinated { .. })
                 )
             })
             .collect()
@@ -2486,7 +2158,7 @@ pub(crate) mod tests {
         logged
             .iter()
             .find_map(|entry| match entry {
-                Entry::End { winner, by, .. } => Some((*winner, *by)),
+                Entry::Event(Outcome::End { winner, by, .. }) => Some((*winner, *by)),
                 _ => None,
             })
             .unwrap()

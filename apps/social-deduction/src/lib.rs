@@ -5,8 +5,10 @@
 
 pub mod avalon;
 pub mod config;
+pub mod game;
 pub mod model;
 pub mod prompted;
+pub mod random;
 pub mod report;
 pub mod seat;
 pub mod strategy;
