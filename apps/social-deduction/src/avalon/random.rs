@@ -116,7 +116,7 @@ fn choose(me: &PlayerId, view: &View) -> Option<Choice> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::avalon::config::{Config, Roles};
+    use crate::avalon::config::{self, Roles};
     use crate::avalon::report::Narrator;
     use crate::avalon::tests::{
         Script, configured, dealt, five, logged, mute, observed_by, outcomes, play, quick, run,
@@ -446,18 +446,18 @@ mod tests {
             oberon: count(table.oberon),
             minion: count(table.minions),
         };
-        let mut config = Config::parse("").unwrap();
+        let mut config = config::parse("").unwrap();
         config.roles = roles;
         let settings = config.settle().unwrap();
         let configuration = settings
-            .configuration(&settings.deal(), &[], Models::new())
+            .configuration(&settings.lineup.deal(), &[], Models::new())
             .unwrap();
         let mut won = 0;
         for _ in 0..games {
             let (winner, result) = oneshot::channel();
             let (logger, _) = unbounded_channel();
             let episode = game(
-                settings.deal(),
+                settings.lineup.deal(),
                 settings.rules.clone(),
                 configuration.clone(),
                 winner,

@@ -12,12 +12,11 @@ use super::{
     Ballot, Choice, Deed, Entry, Message, PROPOSALS, Phase, QuestResult, Role, Seen, Tally,
     Victory, View,
 };
-use crate::report::{configured, in_order, in_prose, late, told_within, whole_seconds};
+use crate::report::{Seat, configured, in_order, in_prose, late, told_within, whole_seconds};
 use crate::seat::PlayerId;
 use free_agent::Event;
 use humantime::format_duration;
 use std::collections::{BTreeMap, HashMap};
-use std::fmt;
 use std::time::{Duration, SystemTime};
 
 /// Turns the events of a game, one at a time, into lines of prose. It
@@ -149,11 +148,8 @@ impl Narrator {
     }
 
     /// `player` as this account names it: with its role when known.
-    fn seat<'a>(&self, player: &'a PlayerId) -> Seat<'a> {
-        Seat {
-            player,
-            role: self.roles.get(player).copied(),
-        }
+    fn seat<'a>(&self, player: &'a PlayerId) -> Seat<'a, Role> {
+        Seat::named(player, &self.roles)
     }
 
     /// `players`, as this account names them, as a list in prose, in the
@@ -507,23 +503,6 @@ impl Story {
             ("You".to_string(), "")
         } else {
             (player.clone(), "s")
-        }
-    }
-}
-
-/// A player as an account names it: `player (role)` when the role is
-/// known, the name alone when it is not.
-#[derive(Debug, Clone, Copy)]
-struct Seat<'a> {
-    player: &'a PlayerId,
-    role: Option<Role>,
-}
-
-impl fmt::Display for Seat<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.role {
-            Some(role) => write!(f, "{} ({role})", self.player),
-            None => f.write_str(self.player),
         }
     }
 }
