@@ -67,21 +67,19 @@ enum Voice {
 /// narrator tells the time between, to the nearest second, after who died.
 /// The omniscient narrator tells a selection or retraction when the
 /// environment logs observing it, joined to its own action by the player
-/// and its number for the message: it is a deed of the phase it was for,
-/// unless the environment observed it in a later phase, and then it is told
-/// as too late to count, for the phase it was for. The other players'
+/// and its number for the message, as a deed of the phase it was for, when
+/// the environment observed it in that phase. The other players'
 /// observations of a public vote add nothing. A player's failure to act is
 /// told by the omniscient narrator as it happens, with what went wrong, as
 /// a failure to select by night and to play by day, and for the phase it
 /// was for if that phase has ended; a player's narrator leaves it out,
 /// since the player is not told of it. Talk is told as it comes: the
 /// omniscient narrator tells each utterance from its speaker's action, in
-/// order with the day's votes, or as too late to say if its phase has
-/// ended, and a player's narrator tells each it made or heard. A message a
-/// player withheld because its phase had ended is told by the omniscient
-/// narrator as too late to say, or too late to count. A player's memory
-/// holds only the phases it lived through, in order, so nothing in it is
-/// late.
+/// order with the day's votes, while its phase lasts, and a player's
+/// narrator tells each it made or heard. A message that comes after its
+/// phase has ended, whether withheld or observed late, stays in the log
+/// and out of the account. A player's memory holds only the phases it
+/// lived through, in order, so nothing in it is late.
 #[derive(Debug, Default)]
 pub struct Narrator {
     /// Whose account this is.
@@ -227,33 +225,17 @@ impl Narrator {
                     seq, from, text, ..
                 },
                 ..
-            } => vec![match self.late(*seq) {
-                true => self.unsaid(from, *seq, text),
-                false => self.said(from, text),
-            }],
-            Entry::Withheld {
-                from,
-                message: Message::Say { seq, text, .. },
-                ..
-            } => vec![self.unsaid(from, *seq, text)],
-            Entry::Withheld {
-                from,
-                message: Message::Select { seq, target, .. },
-                ..
-            } => vec![self.lateness(from, &Ballot::Vote(target.clone()), *seq)],
-            Entry::Withheld {
-                from,
-                message: Message::Retract { seq, .. },
-                ..
-            } => vec![self.lateness(from, &Ballot::Retract, *seq)],
+            } => (!self.late(*seq))
+                .then(|| self.said(from, text))
+                .into_iter()
+                .collect(),
             Entry::Observation { by, from, n, seq } if by == ENVIRONMENT => {
                 match self.ballots.remove(&(from.clone(), *n)) {
-                    Some((sent_in, ballot)) if sent_in != *seq => {
-                        vec![self.lateness(from, &ballot, sent_in)]
+                    Some((sent_in, Ballot::Vote(chosen))) if sent_in == *seq => {
+                        self.did(from, &chosen)
                     }
-                    Some((_, Ballot::Vote(chosen))) => self.did(from, &chosen),
-                    Some((_, Ballot::Retract)) => self.withdrew(from),
-                    None => vec![],
+                    Some((sent_in, Ballot::Retract)) if sent_in == *seq => self.withdrew(from),
+                    _ => vec![],
                 }
             }
             Entry::Hunted { hunt, .. } => {
@@ -699,18 +681,6 @@ impl Narrator {
         format!("{subject} say{s}, \"{text}\"")
     }
 
-    /// `player` was too late to say `text` in the phase numbered `seq`,
-    /// which had ended: when its model answered, so it withheld it, or
-    /// before the utterance reached the log. The phase is named when it was
-    /// announced.
-    fn unsaid(&self, player: &PlayerId, seq: u64, text: &str) -> String {
-        let seat = self.seat(player);
-        match self.phase_name(seq) {
-            Some(phase) => format!("{seat} is too late to say, for {phase}: \"{text}\""),
-            None => format!("{seat} is too late to say: \"{text}\""),
-        }
-    }
-
     /// The phase numbered `seq` as prose names it mid-sentence, "day 2",
     /// if it has been announced.
     fn phase_name(&self, seq: u64) -> Option<String> {
@@ -746,24 +716,6 @@ impl Narrator {
     /// phase being told.
     fn late(&self, seq: u64) -> bool {
         self.announced.range(seq + 1..).next().is_some()
-    }
-
-    /// What `player`'s `ballot` for the phase numbered `seq` came to once a
-    /// later phase had begun, whether the player withheld it or the
-    /// environment observed it late: nothing. The phase is named when it is
-    /// known, as it is unless the ballot was for a phase never announced.
-    fn lateness(&self, player: &PlayerId, ballot: &Ballot, seq: u64) -> String {
-        let when = self
-            .phase_name(seq)
-            .map_or(String::new(), |phase| format!(" for {phase}"));
-        let (subject, s) = self.subject(player);
-        match ballot {
-            Ballot::Vote(chosen) => {
-                let chosen = self.seat(chosen);
-                format!("{subject} choose{s} {chosen}{when} too late to count.")
-            }
-            Ballot::Retract => format!("{subject} withdraw{s} their vote{when} too late to count."),
-        }
     }
 }
 
@@ -1301,13 +1253,10 @@ mod tests {
             narrator.narrate(&decided(2, 6, None, &everyone)),
             ["Nobody is about to be voted out."]
         );
-        // A retraction the environment observed in a later phase is too
-        // late to count.
+        // A retraction the environment observed in a later phase goes
+        // untold.
         narrator.narrate(&shown("wolf", 2, Phase::Night, &everyone));
-        assert_eq!(
-            retracted_in(&mut narrator, "seer", 2, 4, 3),
-            ["seer (seer) withdraws their vote for day 1 too late to count."]
-        );
+        assert!(retracted_in(&mut narrator, "seer", 2, 4, 3).is_empty());
     }
 
     #[test]
@@ -1380,29 +1329,19 @@ mod tests {
     }
 
     #[test]
-    fn a_withheld_message_is_told_as_too_late_to_say_or_too_late_to_count() {
+    fn a_withheld_message_goes_untold() {
         let mut narrator = Narrator::default();
         narrator.narrate(&ratified());
         let everyone = ["wolf", "seer", "doctor", "ann"];
         narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
         narrator.narrate(&shown("wolf", 2, Phase::Night, &everyone));
-        assert_eq!(
-            narrator.narrate(&withheld("wolf", utterance(2, "wolf", 0, "Wait!"))),
-            ["wolf (werewolf) is too late to say, for day 1: \"Wait!\""]
-        );
-        assert_eq!(
-            narrator.narrate(&withheld("wolf", selection(2, "wolf", 0, "ann"))),
-            ["wolf (werewolf) chooses ann (villager) for day 1 too late to count."]
-        );
-        assert_eq!(
-            narrator.narrate(&withheld("wolf", retraction(2, "wolf", 0))),
-            ["wolf (werewolf) withdraws their vote for day 1 too late to count."]
-        );
-        // For a phase never announced, the phase goes unnamed.
-        assert_eq!(
-            narrator.narrate(&withheld("wolf", utterance(9, "wolf", 0, "Wait!"))),
-            ["wolf (werewolf) is too late to say: \"Wait!\""]
-        );
+        for message in [
+            utterance(2, "wolf", 0, "Wait!"),
+            selection(2, "wolf", 0, "ann"),
+            retraction(2, "wolf", 0),
+        ] {
+            assert!(narrator.narrate(&withheld("wolf", message)).is_empty());
+        }
     }
 
     #[test]
@@ -1422,15 +1361,16 @@ mod tests {
     }
 
     #[test]
-    fn an_utterance_from_a_phase_that_has_ended_is_told_as_too_late_to_say() {
+    fn an_utterance_from_a_phase_that_has_ended_goes_untold() {
         let mut narrator = Narrator::default();
         narrator.narrate(&ratified());
         let everyone = ["wolf", "seer", "doctor", "ann"];
         narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
         narrator.narrate(&shown("wolf", 2, Phase::Night, &everyone));
-        assert_eq!(
-            narrator.narrate(&spoke("seer", 2, 1, "Wait!", &["wolf", "doctor", "ann"])),
-            ["seer (seer) is too late to say, for day 1: \"Wait!\""]
+        assert!(
+            narrator
+                .narrate(&spoke("seer", 2, 1, "Wait!", &["wolf", "doctor", "ann"]))
+                .is_empty()
         );
     }
 
@@ -2355,7 +2295,7 @@ mod tests {
     }
 
     #[test]
-    fn a_selection_the_environment_observed_in_a_later_phase_is_told_as_too_late() {
+    fn a_selection_the_environment_observed_in_a_later_phase_goes_untold() {
         let mut narrator = Narrator::default();
         narrator.narrate(&start());
         let everyone = ["wolf", "seer", "doctor", "ann"];
@@ -2369,24 +2309,9 @@ mod tests {
             Phase::Day,
             &["wolf", "seer", "doctor"],
         ));
-        assert_eq!(
-            selected_in(&mut narrator, "seer", 1, "wolf", 2),
-            ["seer (seer) chooses wolf (werewolf) for night 1 too late to count."]
-        );
+        assert!(selected_in(&mut narrator, "seer", 1, "wolf", 2).is_empty());
         // A selection in time is held for the end of its phase.
         assert!(selected(&mut narrator, "seer", 2, "wolf").is_empty());
-    }
-
-    #[test]
-    fn a_selection_for_a_phase_never_announced_is_told_as_too_late_without_naming_one() {
-        let mut narrator = Narrator::default();
-        narrator.narrate(&start());
-        let everyone = ["wolf", "seer", "doctor", "ann"];
-        narrator.narrate(&announced("wolf", 1, 1, Phase::Night, &everyone));
-        assert_eq!(
-            selected_in(&mut narrator, "wolf", 0, "ann", 1),
-            ["wolf (werewolf) chooses ann (villager) too late to count."]
-        );
     }
 
     #[test]

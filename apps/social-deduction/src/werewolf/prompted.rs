@@ -3080,12 +3080,11 @@ mod tests {
         );
         assert_eq!(asked_of(&model, "sam").len(), 3);
         let told = narrated(entries);
-        for line in [
-            format!("sam (seer) is too late to say, for day 1: \"{SAID}\""),
-            "sam (seer) chooses bob (villager) for day 1 too late to count.".to_string(),
-        ] {
-            assert!(told.contains(&line), "{told:?}");
-        }
+        assert!(!told.iter().any(|line| line.contains(SAID)), "{told:?}");
+        assert!(
+            !told.iter().any(|line| line.starts_with("sam (seer) votes")),
+            "{told:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -3371,8 +3370,13 @@ mod tests {
         assert_eq!(withheld[0].0, &selection(1, "sam", 0, "ann"));
         assert!(withheld[0].1.is_some());
         assert!(sent_by(&entries, "sam").is_empty(), "{entries:?}");
-        let line = "sam (seer) chooses ann (villager) for night 1 too late to count.".to_string();
-        assert!(narrated(entries).contains(&line));
+        let told = narrated(entries);
+        assert!(
+            !told
+                .iter()
+                .any(|line| line.starts_with("sam (seer) learns")),
+            "{told:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

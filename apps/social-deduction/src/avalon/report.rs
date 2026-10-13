@@ -30,10 +30,10 @@ use std::time::{Duration, SystemTime};
 /// long it took, then who won, how, and how long the whole game took. It
 /// names a player with its role in parentheses, and lists players in seat
 /// order. A blank line sets each phase off from what came before it, and
-/// another the winner from the last. Talk is told as it comes, or as too
-/// late to say if its phase has ended; a message a player withheld because
-/// its phase had ended is told as too late, and a player's failure to act
-/// as it happens, with what went wrong.
+/// another the winner from the last. Talk is told as it comes, while its
+/// phase lasts; a message that comes after its phase has ended, whether
+/// withheld or said late, stays in the log and out of the account. A
+/// player's failure to act is told as it happens, with what went wrong.
 #[derive(Debug, Default)]
 pub struct Narrator {
     /// Every role, from the deal.
@@ -99,18 +99,8 @@ impl Narrator {
                     seq, from, text, ..
                 },
                 ..
-            } => vec![match self.late(*seq) {
-                true => self.unsaid(from, *seq, text),
-                false => self.said(from, text),
-            }],
-            Entry::Withheld {
-                from,
-                message: Message::Say { seq, text, .. },
-                ..
-            } => vec![self.unsaid(from, *seq, text)],
-            Entry::Withheld { from, message, .. } => message
-                .choice()
-                .map(|(seq, _, choice)| self.too_late(from, &choice, seq))
+            } => (!self.late(*seq))
+                .then(|| self.said(from, text))
                 .into_iter()
                 .collect(),
             Entry::Failed { player, seq, error } => {
@@ -258,36 +248,6 @@ impl Narrator {
     /// `player` says `text`.
     fn said(&self, player: &PlayerId, text: &str) -> String {
         format!("{} says, \"{text}\"", self.seat(player))
-    }
-
-    /// `player` was too late to say `text` in the phase numbered `seq`,
-    /// which had ended: when its model answered, so it withheld it, or
-    /// before the utterance reached the log. The phase is named when it was
-    /// announced.
-    fn unsaid(&self, player: &PlayerId, seq: u64, text: &str) -> String {
-        let seat = self.seat(player);
-        match self.phase_name(seq) {
-            Some(phase) => format!("{seat} is too late to say, for {phase}: \"{text}\""),
-            None => format!("{seat} is too late to say: \"{text}\""),
-        }
-    }
-
-    /// `player` was too late to make `choice` in the phase numbered `seq`,
-    /// which had ended when its model answered. The phase is named when it
-    /// was announced.
-    fn too_late(&self, player: &PlayerId, choice: &Choice, seq: u64) -> String {
-        let what = match choice {
-            Choice::Team(team) => format!("propose {}", self.listed(team)),
-            Choice::Ballot(Ballot::Approve) => "approve the team".to_string(),
-            Choice::Ballot(Ballot::Reject) => "reject the team".to_string(),
-            Choice::Deed(Deed::Support) => "support the quest".to_string(),
-            Choice::Deed(Deed::Sabotage) => "sabotage the quest".to_string(),
-            Choice::Target(target) => format!("name {} as Merlin", self.seat(target)),
-        };
-        let when = self
-            .phase_name(seq)
-            .map_or(String::new(), |phase| format!(" for {phase}"));
-        format!("{} is too late to {what}{when}.", self.seat(player))
     }
 
     /// The phase numbered `seq` as prose names it mid-sentence, "quest 2",
@@ -946,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn talk_is_told_as_it_is_said_or_as_too_late_to_say() {
+    fn talk_is_told_as_it_is_said_unless_its_phase_has_ended() {
         let mut narrator = dealt_five();
         narrator.narrate(&opens(0, 1, Phase::Propose, &[]));
         let spoke = |seq, text| {
@@ -964,10 +924,7 @@ mod tests {
             ["player3 (Servant) says, \"Take me.\""]
         );
         narrator.narrate(&opens(1, 2, Phase::Vote, &["player1", "player3"]));
-        assert_eq!(
-            narrator.narrate(&spoke(1, "Take me.")),
-            ["player3 (Servant) is too late to say, for proposal 1 of quest 1: \"Take me.\""]
-        );
+        assert!(narrator.narrate(&spoke(1, "Take me.")).is_empty());
         let withheld = |message| {
             logged(Entry::Withheld {
                 from: id("player3"),
@@ -976,79 +933,30 @@ mod tests {
                 forgot: None,
             })
         };
-        assert_eq!(
-            narrator.narrate(&withheld(utterance(2, "player3", 0, "Yes."))),
-            [
-                "player3 (Servant) is too late to say, for the vote on proposal 1 of quest 1: \"Yes.\""
-            ]
-        );
-        assert_eq!(
-            narrator.narrate(&withheld(utterance(0, "player3", 0, "Hm."))),
-            ["player3 (Servant) is too late to say: \"Hm.\""]
+        assert!(
+            narrator
+                .narrate(&withheld(utterance(2, "player3", 0, "Yes.")))
+                .is_empty()
         );
     }
 
     #[test]
-    fn a_choice_withheld_is_told_as_too_late() {
+    fn a_choice_withheld_goes_untold() {
         let mut narrator = dealt_five();
         narrator.narrate(&opens(0, 1, Phase::Propose, &[]));
-        narrator.narrate(&opens(0, 3, Phase::Quest, &["player1", "player2"]));
-        narrator.narrate(&opens(0, 4, Phase::Assassinate, &[]));
-        let withheld = |seq, choice: Choice| {
-            logged(Entry::Withheld {
+        narrator.narrate(&opens(0, 2, Phase::Vote, &["player1", "player2"]));
+        for message in [
+            Choice::Ballot(Ballot::Approve).message(1, id("player2"), 0),
+            Message::Wake,
+        ] {
+            let withheld = Entry::Withheld {
                 from: id("player2"),
-                message: choice.message(seq, id("player2"), 0),
+                message,
                 seen: Some(4),
                 forgot: None,
-            })
-        };
-        let cases = [
-            (
-                1,
-                Choice::Team(team(&["player2", "player5"])),
-                "player2 (Assassin) is too late to propose player2 (Assassin) and player5 (Minion) for proposal 1 of quest 1.",
-            ),
-            (
-                2,
-                Choice::Ballot(Ballot::Approve),
-                "player2 (Assassin) is too late to approve the team.",
-            ),
-            (
-                2,
-                Choice::Ballot(Ballot::Reject),
-                "player2 (Assassin) is too late to reject the team.",
-            ),
-            (
-                3,
-                Choice::Deed(Deed::Support),
-                "player2 (Assassin) is too late to support the quest for quest 1.",
-            ),
-            (
-                3,
-                Choice::Deed(Deed::Sabotage),
-                "player2 (Assassin) is too late to sabotage the quest for quest 1.",
-            ),
-            (
-                4,
-                Choice::Target(id("player1")),
-                "player2 (Assassin) is too late to name player1 (Merlin) as Merlin for the assassination.",
-            ),
-        ];
-        for (seq, choice, told) in cases {
-            assert_eq!(narrator.narrate(&withheld(seq, choice)), [told]);
+            };
+            assert!(narrator.narrate(&logged(withheld)).is_empty());
         }
-        // Nothing else a player would send is a choice.
-        assert!(narrator.narrate(&withheld_wake()).is_empty());
-    }
-
-    /// A wake-up withheld, which no player withholds.
-    fn withheld_wake() -> Event<Entry> {
-        logged(Entry::Withheld {
-            from: id("player2"),
-            message: Message::Wake,
-            seen: None,
-            forgot: None,
-        })
     }
 
     #[test]
@@ -1071,6 +979,22 @@ mod tests {
             narrator.narrate(&failed(1)),
             ["player4 (Servant) fails to play for proposal 1 of quest 1: connection refused"]
         );
+        narrator.narrate(&opens(0, 3, Phase::Quest, &["player1", "player2"]));
+        narrator.narrate(&opens(0, 4, Phase::Assassinate, &[]));
+        narrator.narrate(&opens(0, 5, Phase::Propose, &[]));
+        let cases = [
+            (2, "the vote on proposal 1 of quest 1"),
+            (3, "quest 1"),
+            (4, "the assassination"),
+        ];
+        for (seq, phase) in cases {
+            assert_eq!(
+                narrator.narrate(&failed(seq)),
+                [format!(
+                    "player4 (Servant) fails to play for {phase}: connection refused"
+                )]
+            );
+        }
     }
 
     #[test]

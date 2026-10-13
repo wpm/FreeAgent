@@ -94,9 +94,8 @@ workflow takes a version's notes from here.
   withheld and logged as `Withheld`. A player ignores talk, votes and
   tentative decisions from a phase it is not in: it logs the receipt and
   neither remembers the message nor wakes for it. The log has `Say`
-  messages, the narration tells what each player says as they say it, or
-  as too late to say if its phase has ended, and a player's story tells it
-  what others said. A day's failure is narrated as a failure to play. The
+  messages, the narration tells what each player says while its phase
+  lasts, and a player's story tells it what others said. A day's failure is narrated as a failure to play. The
   night plays as before.
 - A Werewolf game may play several models, so a stronger model can play a
   weaker one: each model in play is set up and probed before the game, one
@@ -164,9 +163,9 @@ workflow takes a version's notes from here.
 - By day a player may vote against anyone living but itself, whatever it
   knows them to be, so a seer can vote out a werewolf it has found. By
   night it still chooses among those whose roles it does not know.
-- A selection that arrives after the next phase has been announced is told
-  as too late to count, for the phase it was for, instead of as a deed of
-  the phase that followed.
+- A message that arrives after its phase has ended, in Werewolf or Avalon,
+  stays in the log and out of the narration, instead of being told as a
+  deed of the phase that followed.
 - Every living player is announced every phase, awake in it or not, in
   name order, so a player knows when the day has ended. A model player
   announced a phase it sleeps through remembers the announcement and makes
