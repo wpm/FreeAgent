@@ -1319,6 +1319,7 @@ pub fn awaited(me: &PlayerId, view: &View) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::seat::id;
     use crate::strategy::{RANDOM, Random, Strategy};
     use config::Configuration;
     use free_agent::Event;
@@ -1326,10 +1327,6 @@ pub(crate) mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
     use tokio::time::Instant;
-
-    fn id(name: &str) -> PlayerId {
-        name.to_string()
-    }
 
     /// The default table, seated `Player 1` to `Player 5`: Merlin in the
     /// first seat, the Assassin in the second, the Servants in the third

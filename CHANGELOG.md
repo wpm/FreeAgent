@@ -141,6 +141,9 @@ workflow takes a version's notes from here.
 
 ### Changed
 
+- Werewolf lists three or more players as Avalon does, "a, b and c": a
+  pack of werewolves, the doctors protecting one player, the dead, and the
+  table, `2 werewolves, 3 villagers, 1 doctor and 1 seer`.
 - **Breaking:** `social-deduction play CONFIG` replaces
   `social-deduction werewolf CONFIG` and `social-deduction avalon CONFIG`,
   and every configuration file names its game with `game = "werewolf"` or

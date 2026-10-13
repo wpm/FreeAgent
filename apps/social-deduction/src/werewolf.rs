@@ -36,7 +36,7 @@ pub mod prompted;
 pub mod random;
 pub mod report;
 
-use crate::report::seat_order;
+use crate::report::{in_prose, seat_order};
 use crate::seat::{
     ENVIRONMENT, PlayerId, seats, to_everyone_but, to_the_environment, to_the_players_but,
 };
@@ -274,13 +274,13 @@ impl Table {
 
 impl fmt::Display for Table {
     /// The counts in the order the roles are dealt, each in its number:
-    /// `2 werewolves, 3 villagers, 1 doctor, 1 seer`.
+    /// `2 werewolves, 3 villagers, 1 doctor and 1 seer`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let counted = self.counts().map(|(role, count)| match count {
             1 => format!("1 {role}"),
             _ => format!("{count} {}", role.plural()),
         });
-        f.write_str(&counted.join(", "))
+        f.write_str(&in_prose(counted))
     }
 }
 
@@ -1034,7 +1034,7 @@ pub(crate) mod tests {
     fn a_table_is_told_role_by_role_in_the_singular_or_the_plural() {
         assert_eq!(
             Table::default().to_string(),
-            "2 werewolves, 3 villagers, 1 doctor, 1 seer"
+            "2 werewolves, 3 villagers, 1 doctor and 1 seer"
         );
         let table = Table {
             werewolves: 1,
@@ -1044,7 +1044,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             table.to_string(),
-            "1 werewolf, 0 villagers, 2 doctors, 2 seers"
+            "1 werewolf, 0 villagers, 2 doctors and 2 seers"
         );
     }
 

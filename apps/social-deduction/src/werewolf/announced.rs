@@ -529,16 +529,13 @@ impl Think for Environment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seat::id;
     use crate::werewolf::candidates;
     use crate::werewolf::tests::{
         self, Script, at_once, mute, observed_by_the_environment, one_wolf_against, play, quick,
         retraction, selection, village,
     };
     use crate::werewolf::{Actor, Seat};
-
-    fn id(name: &str) -> PlayerId {
-        name.to_string()
-    }
 
     /// The selections that count in the phase underway.
     fn selections(game: &Game) -> &Choices {

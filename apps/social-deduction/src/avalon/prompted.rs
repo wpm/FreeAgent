@@ -53,20 +53,24 @@
 //! request asks it to call one, and an answer in prose is a failure like
 //! any other.
 
-use super::report::{Story, in_prose, sabotages_fail};
+use super::report::{Story, sabotages_fail};
 use super::{
     Actor, Ballot, Choice, Deed, Entry, Message, PROPOSALS, Phase, Role, Rules, Seat, Team, View,
     act, awaited, candidates, observe, receivers, team_size,
 };
 use crate::model::spec::Probed;
 use crate::model::{self, Request, Response, Tool, ToolChoice};
+use crate::prompted::{
+    PROBE_PROMPT, SPEAK, WAIT, arguments, first_answered, probed, request, said, speak, wait,
+    waited,
+};
+use crate::report::in_prose;
 use crate::seat::{PlayerId, seats};
-use anyhow::{Context as _, anyhow, bail};
+use anyhow::{Context as _, bail};
 use async_trait::async_trait;
 use free_agent::{ActorId, Behavior, Builder, Context, Event, Think, ThinkBuilder};
 use humantime::format_duration;
 use serde::Deserialize;
-use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
@@ -637,10 +641,7 @@ fn situation(view: &View, limit: Duration, duty: Option<&Duty>) -> String {
         sabotages_fail(view.sabotages_needed)
     );
     if let Some(team) = &view.team {
-        said.push_str(&format!(
-            " The team proposed is {}.",
-            in_prose(team.iter().cloned())
-        ));
+        said.push_str(&format!(" The team proposed is {}.", in_prose(team)));
     }
     let asked = duty.map_or("You may speak or wait.".to_string(), Duty::asked);
     said.push_str(&format!(
@@ -649,28 +650,6 @@ fn situation(view: &View, limit: Duration, duty: Option<&Duty>) -> String {
         format_duration(limit)
     ));
     said
-}
-
-/// A request of a player's shape to `model_id` under `tool_choice`:
-/// `prompt` as the system message, `asked` and then [`ANSWER`] as the user
-/// message, and `tools` to answer with. This is the one way a player
-/// builds a request and the one way the probe does, so they agree on what
-/// is asked.
-fn request(
-    model_id: &str,
-    tool_choice: ToolChoice,
-    prompt: &str,
-    mut asked: String,
-    tools: Vec<Tool>,
-) -> Request {
-    asked.push(' ');
-    asked.push_str(ANSWER);
-    Request::offering(
-        model_id,
-        vec![model::Message::system(prompt), model::Message::user(asked)],
-        tools,
-        tool_choice,
-    )
 }
 
 /// The most a request to the model `model_id` from `me`, dealt `role` and
@@ -724,14 +703,10 @@ pub(crate) fn unstoried(
     most
 }
 
-/// What every request ends with, under either tool choice: that a tool
-/// call is the one answer that counts.
-const ANSWER: &str = "Answer by calling one of the tools.";
-
 /// The tools a player is offered in a phase that lasts `limit`: [`speak`],
 /// the tool its `duty` chooses with if it has one, and [`wait`].
 fn tools(duty: Option<&Duty>, limit: Duration) -> Vec<Tool> {
-    std::iter::once(speak())
+    std::iter::once(speak("Say something to every other player."))
         .chain(duty.map(Duty::tool))
         .chain([wait(limit)])
         .collect()
@@ -813,19 +788,8 @@ pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Re
         asked(&response, Some(duty), PROBE_LIMIT).map(drop)
     };
     let [(first, leading), rest @ ..] = probes();
-    let (tool_choice, answered) = match ask(&leading, ToolChoice::Required).await {
-        Err(required) if model::refused(&required) => {
-            let answered = ask(&leading, ToolChoice::Auto).await.map_err(|auto| {
-                if model::concerns_the_model(&auto) {
-                    anyhow!("made to call a tool: {required:#}\nasked to call one: {auto:#}")
-                } else {
-                    auto
-                }
-            });
-            (ToolChoice::Auto, answered)
-        }
-        answered => (ToolChoice::Required, answered),
-    };
+    let (tool_choice, answered) =
+        first_answered(async |tool_choice| ask(&leading, tool_choice).await).await;
     let mut failed = answered.err().map(|error| (first, error));
     for (who, duty) in &rest {
         if failed.is_some() {
@@ -836,20 +800,12 @@ pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Re
             .err()
             .map(|error| (*who, error));
     }
-    match failed {
-        None => Ok(Probed::Played(tool_choice)),
-        Some((who, error)) if model::concerns_the_model(&error) => Ok(Probed::DidNotPlay(
-            error.context(format!("{model_id} did not answer as {who}")),
-        )),
-        Some((_, error)) => Err(error.context(format!("{model_id} could not be asked to play"))),
-    }
+    probed(
+        model_id,
+        tool_choice,
+        failed.map(|(who, error)| (format!("as {who}"), error)),
+    )
 }
-
-/// The system prompt the probe tells the model.
-const PROBE_PROMPT: &str = "You are a player in a game, about to be asked to play.";
-
-/// The name of the tool a player speaks with.
-const SPEAK: &str = "speak";
 
 /// The name of the tool the leader proposes a team with.
 const PROPOSE: &str = "propose";
@@ -862,9 +818,6 @@ const PERFORM: &str = "perform";
 
 /// The name of the tool the Assassin names Merlin with.
 const SELECT: &str = "select";
-
-/// The name of the tool a player waits with.
-const WAIT: &str = "wait";
 
 /// The tool the leader proposes with: `propose`, taking a `team` of `size`
 /// distinct players, each one of `seats`.
@@ -933,36 +886,6 @@ fn select(targets: &[PlayerId]) -> Tool {
     )
 }
 
-/// The tool a player speaks with: `speak`, taking `text`, which is not
-/// empty, nor blank once trimmed.
-fn speak() -> Tool {
-    Tool::new(
-        SPEAK,
-        "Say something to every other player.",
-        json!({
-            "type": "object",
-            "properties": {"text": {"type": "string", "minLength": 1}},
-            "required": ["text"],
-            "additionalProperties": false,
-        }),
-    )
-}
-
-/// The tool a player waits with: `wait`, taking `seconds`, a whole number
-/// from 1 to the phase's `limit` in whole seconds.
-fn wait(limit: Duration) -> Tool {
-    Tool::new(
-        WAIT,
-        "Say nothing now, and be woken after this many seconds unless something wakes you sooner.",
-        json!({
-            "type": "object",
-            "properties": {"seconds": {"type": "integer", "minimum": 1, "maximum": limit.as_secs()}},
-            "required": ["seconds"],
-            "additionalProperties": false,
-        }),
-    )
-}
-
 /// The arguments of a [`propose`] call.
 #[derive(Deserialize)]
 struct Proposal {
@@ -987,18 +910,6 @@ struct Selection {
     target: PlayerId,
 }
 
-/// The arguments of a [`speak`] call.
-#[derive(Deserialize)]
-struct Speech {
-    text: String,
-}
-
-/// The arguments of a [`wait`] call.
-#[derive(Deserialize)]
-struct Waiting {
-    seconds: u64,
-}
-
 /// What a response asks for: the messages to send, in the order the model
 /// made the calls, and how long to wait, if it asked to. Of several waits,
 /// the last counts.
@@ -1021,13 +932,7 @@ impl Asked {
         limit: Duration,
     ) -> anyhow::Result<()> {
         match (call.name.as_str(), duty) {
-            (SPEAK, _) => {
-                let Speech { text } = arguments(call)?;
-                if text.trim().is_empty() {
-                    bail!("the model's {SPEAK} call says nothing");
-                }
-                self.sends.push(Sending::Say(text));
-            }
+            (SPEAK, _) => self.sends.push(Sending::Say(said(call)?)),
             (PROPOSE, Some(Duty::Propose { size, seats })) => {
                 let Proposal { team } = arguments(call)?;
                 proposed(&team, *size, seats)?;
@@ -1056,16 +961,7 @@ impl Asked {
                 }
                 self.sends.push(Sending::Choose(Choice::Target(target)));
             }
-            (WAIT, _) => {
-                let Waiting { seconds } = arguments(call)?;
-                if !(1..=limit.as_secs()).contains(&seconds) {
-                    bail!(
-                        "the model asked to wait {seconds}s, which is not between 1s and {}",
-                        format_duration(limit)
-                    );
-                }
-                self.wait = Some(Duration::from_secs(seconds));
-            }
+            (WAIT, _) => self.wait = Some(waited(call, limit)?),
             (other, _) => bail!("the model called {other}, which is not a tool it was offered"),
         }
         Ok(())
@@ -1133,26 +1029,10 @@ fn asked(response: &Response, duty: Option<&Duty>, limit: Duration) -> anyhow::R
     Ok(asked)
 }
 
-/// The arguments of `call`, parsed. A provider may send no arguments as no
-/// text at all, which parses as `{}`. Arguments that do not parse are an
-/// error naming the tool and showing them.
-fn arguments<T: DeserializeOwned>(call: &model::Call) -> anyhow::Result<T> {
-    let text = match call.arguments.trim() {
-        "" => "{}",
-        _ => &call.arguments,
-    };
-    serde_json::from_str(text).with_context(|| {
-        format!(
-            "the arguments of the model's {} call: {}",
-            call.name, call.arguments
-        )
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::avalon::report::{FORGOTTEN, Narrator};
+    use crate::avalon::report::Narrator;
     use crate::avalon::tests::{
         Played, Script, configured, dealt, five, logged, mute, observed_by, quick, run, utterance,
         view_of,
@@ -1161,50 +1041,17 @@ mod tests {
     use crate::model::canned;
     use crate::model::fake::{FakeModel, SAID, canned_calls, choosing_first};
     use crate::model::{CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT};
+    use crate::prompted::ANSWER;
+    use crate::prompted::tests::{
+        MODEL_ID, Made, PROMPTED, answering, asked_of, reporting, situated, speaking, story, told,
+        waiting,
+    };
+    use crate::report::FORGOTTEN;
+    use crate::seat::id;
     use crate::seat::{ENVIRONMENT, to_the_environment, to_the_players_but};
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::sync::oneshot;
-
-    /// The id of the model every test's players ask for.
-    const MODEL_ID: &str = "qwen2.5-7b-instruct";
-
-    /// The name of the strategy every test's model players play.
-    const PROMPTED: &str = "prompted";
-
-    fn id(name: &str) -> PlayerId {
-        name.to_string()
-    }
-
-    /// The prompt the player `name` is told, which names it, so that a
-    /// request says whose it is.
-    fn told(name: &str) -> String {
-        format!("You are {name}.")
-    }
-
-    /// What the player `name` asked `model`, in order: the user message of
-    /// each request carrying its prompt.
-    fn asked_of(model: &FakeModel, name: &str) -> Vec<String> {
-        let prompt = model::Message::system(told(name));
-        model
-            .requests()
-            .iter()
-            .filter(|request| request.messages[0] == prompt)
-            .map(|request| request.messages[1].content.clone())
-            .collect()
-    }
-
-    /// The story a request's user message tells, before the situation.
-    fn story(asked: &str) -> &str {
-        asked.rsplit_once("\n\n").unwrap().0
-    }
-
-    /// The situation a request's user message ends with, before what
-    /// every request ends with.
-    fn situated(asked: &str) -> &str {
-        let ending = asked.rsplit_once("\n\n").unwrap().1;
-        ending.strip_suffix(&format!(" {ANSWER}")).unwrap()
-    }
 
     /// Run a game of `roles` under `rules`, every player a model player
     /// told its prompt and asking `model` under `tool_choice` within
@@ -1267,21 +1114,6 @@ mod tests {
             .collect()
     }
 
-    /// A model answering every request with `answer` of it.
-    fn answering(
-        answer: impl Fn(&Request) -> anyhow::Result<Response> + Send + Sync + 'static,
-    ) -> Arc<FakeModel> {
-        Arc::new(FakeModel::answering(answer))
-    }
-
-    /// A tool call as a model makes it: the tool's name and its arguments.
-    type Made = (String, serde_json::Value);
-
-    /// A call to `speak` saying `text`.
-    fn speaking(text: &str) -> Made {
-        (SPEAK.to_string(), json!({"text": text}))
-    }
-
     /// A call to `propose` naming `team`.
     fn proposing(team: &[&str]) -> Made {
         (PROPOSE.to_string(), json!({"team": team}))
@@ -1300,11 +1132,6 @@ mod tests {
     /// A call to `select` naming `target`.
     fn selecting(target: &str) -> Made {
         (SELECT.to_string(), json!({"target": target}))
-    }
-
-    /// A call to `wait` for `seconds`.
-    fn waiting(seconds: u64) -> Made {
-        (WAIT.to_string(), json!({"seconds": seconds}))
     }
 
     /// Whether `request` offers the tool `name`.
@@ -2035,21 +1862,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn arguments_sent_as_no_text_are_no_arguments() {
-        let call = |arguments: &str| model::Call {
-            name: SPEAK.to_string(),
-            arguments: arguments.to_string(),
-        };
-        for bare in ["", " \n"] {
-            let error = arguments::<Speech>(&call(bare)).err().unwrap();
-            assert!(
-                format!("{error:#}").contains("missing field `text`"),
-                "{error:#}"
-            );
-        }
-    }
-
     #[tokio::test(start_paused = true)]
     async fn a_response_that_comes_after_the_phase_ended_is_withheld_and_logged_as_such() {
         // The leader's model takes fifteen seconds, and each proposal lapses
@@ -2196,17 +2008,6 @@ mod tests {
                 .iter()
                 .all(|request| request.tool_choice == ToolChoice::Auto)
         );
-    }
-
-    /// `answer`, its provider reporting a usage naming whose request it
-    /// answered.
-    fn reporting(
-        answer: impl Fn(&Request) -> anyhow::Result<Response> + Send + Sync + 'static,
-    ) -> Arc<FakeModel> {
-        answering(move |request| {
-            let usage = json!({"asked": request.messages[0].content});
-            answer(request).map(|response| response.reporting(usage))
-        })
     }
 
     /// The usages the players logged, each with where it is in the log,

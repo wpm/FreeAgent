@@ -6,6 +6,7 @@
 pub mod avalon;
 pub mod config;
 pub mod model;
+pub mod prompted;
 pub mod report;
 pub mod seat;
 pub mod strategy;

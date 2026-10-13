@@ -61,13 +61,16 @@ use super::{
 };
 use crate::model::spec::Probed;
 use crate::model::{self, Request, Response, Tool, ToolChoice};
+use crate::prompted::{
+    PROBE_PROMPT, SPEAK, WAIT, arguments, first_answered, probed, request, said, speak, wait,
+    waited,
+};
 use crate::seat::{PlayerId, seats};
 use anyhow::{Context as _, anyhow, bail};
 use async_trait::async_trait;
 use free_agent::{ActorId, Behavior, Builder, Context, Event, Think, ThinkBuilder};
 use humantime::format_duration;
 use serde::Deserialize;
-use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
@@ -643,28 +646,6 @@ fn situation(
     ))
 }
 
-/// A request of a player's shape to `model_id` under `tool_choice`:
-/// `prompt` as the system message, `asked` and then [`ANSWER`] as the user
-/// message, and `tools` to answer with. This is the one way a player
-/// builds a request and the one way the probe does, so they agree on what
-/// is asked.
-fn request(
-    model_id: &str,
-    tool_choice: ToolChoice,
-    prompt: &str,
-    mut asked: String,
-    tools: Vec<Tool>,
-) -> Request {
-    asked.push(' ');
-    asked.push_str(ANSWER);
-    Request::offering(
-        model_id,
-        vec![model::Message::system(prompt), model::Message::user(asked)],
-        tools,
-        tool_choice,
-    )
-}
-
 /// The most a request to the model `model_id` from `me`, dealt `role` and
 /// told `prompt`, takes of the context window before its story, by
 /// estimate, at a table of `alive` whose day lasts `day_limit` and whose
@@ -692,10 +673,6 @@ pub(crate) fn unstoried(
     let request = request(model_id, ToolChoice::Required, prompt, asked, tools);
     Ok(model::estimated(&request))
 }
-
-/// What every request ends with, under either tool choice: that a tool
-/// call is the one answer that counts.
-const ANSWER: &str = "Answer by calling one of the tools.";
 
 /// The tools a player is offered by night: [`select`] over `candidates`.
 fn night_tools(candidates: &[PlayerId]) -> Vec<Tool> {
@@ -735,7 +712,7 @@ fn day_tools(candidates: &[PlayerId], limit: Duration, voting: Voting) -> Vec<To
         Voting::Once => vec![vote(candidates, false)],
         Voting::Voted => vec![],
     };
-    std::iter::once(speak())
+    std::iter::once(speak("Say something to every other living player."))
         .chain(voting)
         .chain([wait(limit)])
         .collect()
@@ -806,46 +783,23 @@ pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Re
         let response = model.complete(&day).await?;
         asked(&response, &candidates, PROBE_DAY, Voting::Ratified).map(drop)
     };
-    let (tool_choice, night) = match by_night(ToolChoice::Required).await {
-        Err(required) if model::refused(&required) => {
-            let night = by_night(ToolChoice::Auto).await.map_err(|auto| {
-                if model::concerns_the_model(&auto) {
-                    anyhow!("made to call a tool: {required:#}\nasked to call one: {auto:#}")
-                } else {
-                    auto
-                }
-            });
-            (ToolChoice::Auto, night)
-        }
-        night => (ToolChoice::Required, night),
-    };
+    let (tool_choice, night) = first_answered(by_night).await;
     let failed = match night {
         Err(error) => Some(("night", error)),
         Ok(()) => by_day(tool_choice).await.err().map(|error| ("day", error)),
     };
-    match failed {
-        None => Ok(Probed::Played(tool_choice)),
-        Some((phase, error)) if model::concerns_the_model(&error) => Ok(Probed::DidNotPlay(
-            error.context(format!("{model_id} did not answer a {phase}'s request")),
-        )),
-        Some((_, error)) => Err(error.context(format!("{model_id} could not be asked to play"))),
-    }
+    probed(
+        model_id,
+        tool_choice,
+        failed.map(|(phase, error)| (format!("a {phase}'s request"), error)),
+    )
 }
-
-/// The system prompt the probe tells the model.
-const PROBE_PROMPT: &str = "You are a player in a game, about to be asked to play.";
 
 /// The name of the tool a player selects with, by night and by day.
 const SELECT: &str = "select";
 
-/// The name of the tool a player speaks with, by day.
-const SPEAK: &str = "speak";
-
 /// The name of the tool a player retracts its vote with, by day.
 const RETRACT: &str = "retract";
-
-/// The name of the tool a player waits with, by day.
-const WAIT: &str = "wait";
 
 /// The tool a player selects with by night: `select`, taking a `target`
 /// that is one of `candidates`.
@@ -882,21 +836,6 @@ fn selecting(description: &str, candidates: &[PlayerId]) -> Tool {
     )
 }
 
-/// The tool a player speaks with by day: `speak`, taking `text`, which is
-/// not empty, nor blank once trimmed.
-fn speak() -> Tool {
-    Tool::new(
-        SPEAK,
-        "Say something to every other living player.",
-        json!({
-            "type": "object",
-            "properties": {"text": {"type": "string", "minLength": 1}},
-            "required": ["text"],
-            "additionalProperties": false,
-        }),
-    )
-}
-
 /// The tool a player retracts its vote with by day: `retract`, taking no
 /// arguments.
 fn retract() -> Tool {
@@ -911,43 +850,16 @@ fn retract() -> Tool {
     )
 }
 
-/// The tool a player waits with by day: `wait`, taking `seconds`, a whole
-/// number from 1 to the day's `limit` in whole seconds.
-fn wait(limit: Duration) -> Tool {
-    Tool::new(
-        WAIT,
-        "Say nothing now, and be woken after this many seconds unless something wakes you sooner.",
-        json!({
-            "type": "object",
-            "properties": {"seconds": {"type": "integer", "minimum": 1, "maximum": limit.as_secs()}},
-            "required": ["seconds"],
-            "additionalProperties": false,
-        }),
-    )
-}
-
 /// The arguments of a [`select`] call.
 #[derive(Deserialize)]
 struct Selection {
     target: PlayerId,
 }
 
-/// The arguments of a [`speak`] call.
-#[derive(Deserialize)]
-struct Speech {
-    text: String,
-}
-
 /// The arguments of a [`retract`] call: none.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Retraction {}
-
-/// The arguments of a [`wait`] call.
-#[derive(Deserialize)]
-struct Waiting {
-    seconds: u64,
-}
 
 /// What a day's response asks for: the messages to send, in the order the
 /// model made the calls, and how long to wait, if it asked to. Of several
@@ -971,13 +883,7 @@ impl Asked {
         voting: Voting,
     ) -> anyhow::Result<()> {
         match call.name.as_str() {
-            SPEAK => {
-                let Speech { text } = arguments(call)?;
-                if text.trim().is_empty() {
-                    bail!("the model's {SPEAK} call says nothing");
-                }
-                self.sends.push(Sending::Say(text));
-            }
+            SPEAK => self.sends.push(Sending::Say(said(call)?)),
             SELECT if voting != Voting::Voted => {
                 self.sends.push(Sending::Select(target(call, candidates)?));
             }
@@ -985,16 +891,7 @@ impl Asked {
                 let Retraction {} = arguments(call)?;
                 self.sends.push(Sending::Retract);
             }
-            WAIT => {
-                let Waiting { seconds } = arguments(call)?;
-                if !(1..=limit.as_secs()).contains(&seconds) {
-                    bail!(
-                        "the model asked to wait {seconds}s, which is not between 1s and {}",
-                        format_duration(limit)
-                    );
-                }
-                self.wait = Some(Duration::from_secs(seconds));
-            }
+            WAIT => self.wait = Some(waited(call, limit)?),
             other => bail!("the model called {other}, which is not a tool it was offered"),
         }
         Ok(())
@@ -1074,22 +971,6 @@ fn asked(
     Ok(asked)
 }
 
-/// The arguments of `call`, parsed. A provider may send no arguments as no
-/// text at all, which parses as `{}`. Arguments that do not parse are an
-/// error naming the tool and showing them.
-fn arguments<T: DeserializeOwned>(call: &model::Call) -> anyhow::Result<T> {
-    let text = match call.arguments.trim() {
-        "" => "{}",
-        _ => &call.arguments,
-    };
-    serde_json::from_str(text).with_context(|| {
-        format!(
-            "the arguments of the model's {} call: {}",
-            call.name, call.arguments
-        )
-    })
-}
-
 /// Whom `call`, a call to [`select`], selects from `candidates`. Arguments
 /// that do not parse, or a target who is not a candidate, is an error.
 fn target(call: &model::Call, candidates: &[PlayerId]) -> anyhow::Result<PlayerId> {
@@ -1108,9 +989,15 @@ mod tests {
     use crate::model::spec::{Handles, ModelInPlay};
     use crate::model::window::{ContextWindow, Source};
     use crate::model::{CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT};
+    use crate::prompted::ANSWER;
+    use crate::prompted::tests::{
+        MODEL_ID, Made, PROMPTED, answering, asked_of, reporting, situated, speaking, story, told,
+        waiting,
+    };
+    use crate::report::FORGOTTEN;
     use crate::strategy::{Prompted, Strategy};
     use crate::werewolf::config::{Configuration, players};
-    use crate::werewolf::report::{FORGOTTEN, Narrator};
+    use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{
         Played, announcement, at_once, between_the_deal_and_the_end, dealt, logged, mute,
         observed_by, observed_by_the_environment, one_wolf_against, received, retraction, run,
@@ -1124,52 +1011,8 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::sync::oneshot;
 
-    /// The id of the model every test's players ask for.
-    const MODEL_ID: &str = "qwen2.5-7b-instruct";
-
-    /// A model answering every request with `answer` of it, held so that
-    /// the test can read what it was asked while the players ask it.
-    fn answering(
-        answer: impl Fn(&Request) -> anyhow::Result<Response> + Send + Sync + 'static,
-    ) -> Arc<FakeModel> {
-        Arc::new(FakeModel::answering(answer))
-    }
-
-    /// The prompt the player `name` is told, which names it, so that a
-    /// request says whose it is.
-    fn told(name: &str) -> String {
-        format!("You are {name}.")
-    }
-
-    /// What the player `name` asked `model`, in order: the user message of
-    /// each request carrying its prompt.
-    fn asked_of(model: &FakeModel, name: &str) -> Vec<String> {
-        let prompt = model::Message::system(told(name));
-        model
-            .requests()
-            .iter()
-            .filter(|request| request.messages[0] == prompt)
-            .map(|request| request.messages[1].content.clone())
-            .collect()
-    }
-
-    /// The story a request's user message tells, before the situation.
-    fn story(asked: &str) -> &str {
-        asked.rsplit_once("\n\n").unwrap().0
-    }
-
-    /// The situation a request's user message ends with, before what
-    /// every request ends with.
-    fn asked(asked: &str) -> &str {
-        let ending = asked.rsplit_once("\n\n").unwrap().1;
-        ending.strip_suffix(&format!(" {ANSWER}")).unwrap()
-    }
-
     /// The name of the model every test's players ask.
     const MODEL: &str = "qwen";
-
-    /// The name of the strategy every test's model players play.
-    const PROMPTED: &str = "prompted";
 
     /// The configuration of a game of `roles` under the default rules,
     /// every player playing [`PROMPTED`], told its prompt and asking
@@ -1334,14 +1177,6 @@ mod tests {
         })
     }
 
-    /// A tool call as a model makes it: the tool's name and its arguments.
-    type Made = (String, serde_json::Value);
-
-    /// A call to `speak` saying `text`.
-    fn speaking(text: &str) -> Made {
-        (SPEAK.to_string(), json!({"text": text}))
-    }
-
     /// A call to `select` voting against `target`.
     fn voting(target: &str) -> Made {
         (SELECT.to_string(), json!({"target": target}))
@@ -1350,11 +1185,6 @@ mod tests {
     /// A call to `retract`.
     fn retracting() -> Made {
         (RETRACT.to_string(), json!({}))
-    }
-
-    /// A call to `wait` for `seconds`.
-    fn waiting(seconds: u64) -> Made {
-        (WAIT.to_string(), json!({"seconds": seconds}))
     }
 
     /// The answer that waits out a day of `seconds`.
@@ -1957,7 +1787,7 @@ mod tests {
         let situations: HashSet<String> = model
             .requests()
             .iter()
-            .map(|request| asked(&request.messages[1].content).to_string())
+            .map(|request| situated(&request.messages[1].content).to_string())
             .collect();
         assert_eq!(
             situations,
@@ -2189,7 +2019,7 @@ mod tests {
             .collect();
         let again = &bob[1];
         assert!(again.tools.iter().all(|tool| tool.name != SELECT));
-        assert!(asked(&again.messages[1].content).ends_with("You may speak or wait."));
+        assert!(situated(&again.messages[1].content).ends_with("You may speak or wait."));
         // The others remember bob's first vote, and only that one.
         for other in ["wolf", "cat", "dan"] {
             let asked = asked_of(&model, other);
@@ -2206,17 +2036,6 @@ mod tests {
                 "{other}: {asked:?}"
             );
         }
-    }
-
-    /// `answer`, its provider reporting a usage naming whose request it
-    /// answered.
-    fn reporting(
-        answer: impl Fn(&Request) -> anyhow::Result<Response> + Send + Sync + 'static,
-    ) -> Arc<FakeModel> {
-        answering(move |request| {
-            let usage = json!({"asked": request.messages[0].content});
-            answer(request).map(|response| response.reporting(usage))
-        })
     }
 
     /// The usages the players logged, each with where it is in the log,
@@ -3152,7 +2971,6 @@ mod tests {
         };
         for bare in ["", " \n"] {
             let Retraction {} = arguments(&call(bare)).unwrap();
-            assert!(arguments::<Speech>(&call(bare)).is_err());
         }
         let Retraction {} = arguments(&call("{}")).unwrap();
     }

@@ -89,6 +89,12 @@ pub fn to_everyone_but<'a>(
     to
 }
 
+/// The player named `name`, as a test names it.
+#[cfg(test)]
+pub(crate) fn id(name: &str) -> PlayerId {
+    name.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
