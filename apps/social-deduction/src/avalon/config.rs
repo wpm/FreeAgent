@@ -20,15 +20,15 @@
 //! The log records the [`Configuration`] a game ran under right after the
 //! deal, and [`players`] builds each seat's player from it.
 
-use super::{Dealt, Role, Rules, Seat, Table, prompted, random};
+use super::{Avalon, Dealt, Role, Rules, Table};
 use crate::config::Lineup;
-use crate::model::Provider;
-use crate::model::spec::{self, Handles, Models, Spec};
-use crate::model::window::{self, ContextWindow};
+pub use crate::config::players;
+use crate::model::spec::{Handles, Models, Spec};
+use crate::model::window::ContextWindow;
 use crate::seat::PlayerId;
-use crate::strategy::{RoleConfig, Strategy};
+use crate::strategy::RoleConfig;
 use minijinja::context;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
@@ -183,140 +183,64 @@ impl Settings {
         self.lineup.prompts(&self.config.text, variables)
     }
 
-    /// The context window of the model `name`, settled as
-    /// [`window::settle`] settles it, against what a request takes before
-    /// its story, by estimate, for the largest of `prompts` whose strategy
-    /// asks the model.
+    /// The context window of the model `name`, as [`Lineup::context_window`]
+    /// settles it for `prompts`.
     pub fn context_window(
         &self,
         name: &str,
         reported: Option<u64>,
         prompts: &[SystemPrompt],
     ) -> anyhow::Result<ContextWindow> {
-        let needed = self.unstoried(name, prompts)?;
-        window::settle(name, &self.config.models[name], reported, needed)
+        let (models, rules) = (&self.config.models, &self.rules);
+        (self.lineup).context_window::<Avalon>(models, rules, name, reported, prompts)
     }
 
     /// The most a request to the model `name` takes of the context window
-    /// before its story, by estimate, for any of `prompts` whose strategy
-    /// asks it.
+    /// before its story, as [`Lineup::needs`] estimates it for `prompts`.
+    #[cfg(test)]
     fn unstoried(&self, name: &str, prompts: &[SystemPrompt]) -> anyhow::Result<u64> {
-        let seats: Vec<PlayerId> = self.table.seats().collect();
-        let id = &self.config.models[name].id;
-        self.lineup.unstoried(name, prompts, |prompt| {
-            let (text, seat, role) = (&prompt.text, &prompt.seat, prompt.role);
-            Ok(prompted::unstoried(
-                id,
-                text,
-                seat,
-                role,
-                &seats,
-                &self.rules,
-            ))
-        })
+        (self.lineup).needs::<Avalon>(&self.config.models, &self.rules, name, prompts)
     }
 
-    /// Set up each model in play as [`spec::set_up`] sets it up, settling
-    /// its context window for `prompts` and asking it to play as the player
-    /// each phase waits on, which settles the tool choice. A model the file
-    /// defines and no strategy at the table asks is not contacted.
+    /// Set up each model in play as [`Lineup::set_up`] sets it up for
+    /// `prompts`, asking it to play as the player each phase waits on.
     pub async fn set_up(&self, prompts: &[SystemPrompt]) -> anyhow::Result<(Models, Handles)> {
-        let needed = |name: &str| self.unstoried(name, prompts);
-        let probe = async |provider: &Provider, id: &str| prompted::check_plays(provider, id).await;
-        spec::set_up(self.models_in_play(), needed, probe).await
+        (self.lineup)
+            .set_up::<Avalon>(&self.config.models, &self.rules, prompts)
+            .await
     }
 
-    /// The configuration a game of `deal` runs under, as the log records
-    /// it right after the deal: every setting as it took effect, every
-    /// strategy and the allotments, `models`, the models in play as
-    /// [`Settings::set_up`] set them up, each prompted player's system
-    /// prompt from `prompts`, which [`Settings::prompts`] rendered, as
-    /// [`Lineup::told`] tells it, and the text blocks as written.
+    /// The configuration a game of `deal` runs under, as
+    /// [`Lineup::configuration`] makes it from these settings, `models`
+    /// and `prompts`.
     pub fn configuration(
         &self,
         deal: &HashMap<PlayerId, Dealt>,
         prompts: &[SystemPrompt],
         models: Models,
     ) -> anyhow::Result<Configuration> {
-        Ok(Configuration {
-            role_counts: self.table.counts().into_iter().collect(),
-            propose_limit: self.rules.propose_limit,
-            vote_limit: self.rules.vote_limit,
-            quest_limit: self.rules.quest_limit,
-            assassinate_limit: self.rules.assassinate_limit,
-            strategies: self.lineup.strategies.clone(),
-            allotments: self.lineup.allotments.clone(),
-            models,
-            prompts: self.lineup.told(deal, prompts)?,
-            text: self.config.text.clone(),
-        })
+        let (rules, text) = (self.rules.clone(), &self.config.text);
+        (self.lineup).configuration(rules, models, deal, prompts, text)
     }
 }
 
-/// The configuration a game ran under, as it took effect once the command
-/// line, the file and the defaults were combined, so that the log says by
-/// itself what was played and under which prompts. Each duration is
-/// written as `humantime` writes it, such as `"60s"`, and each map in key
-/// order. The API key is never recorded.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Configuration {
-    /// How many of each role were dealt.
-    pub role_counts: BTreeMap<Role, usize>,
-    /// How long a proposal waited for its leader.
-    #[serde(with = "humantime_serde")]
-    pub propose_limit: Duration,
-    /// How long a vote waited for the players.
-    #[serde(with = "humantime_serde")]
-    pub vote_limit: Duration,
-    /// How long a quest waited for its team.
-    #[serde(with = "humantime_serde")]
-    pub quest_limit: Duration,
-    /// How long the assassination waited for the Assassin.
-    #[serde(with = "humantime_serde")]
-    pub assassinate_limit: Duration,
-    /// Every strategy, by name, [`RANDOM`](crate::strategy::RANDOM)
-    /// included, each prompted one naming the model it asks.
-    pub strategies: BTreeMap<String, Strategy>,
-    /// How many seats of each role played each strategy.
-    pub allotments: Allotments,
-    /// The models in play, by name.
-    pub models: Models,
-    /// Each prompted player's rendered system prompt.
-    pub prompts: BTreeMap<PlayerId, String>,
-    /// The `[text]` blocks as written.
-    pub text: BTreeMap<String, String>,
-}
-
-/// Each seat's player, as `deal` dealt it a strategy and `configuration`
-/// sets the strategy up, as [`crate::config::players`] builds it: a random
-/// player, or a prompted player.
-pub fn players(
-    configuration: &Configuration,
-    deal: &HashMap<PlayerId, Dealt>,
-    handles: &Handles,
-) -> impl FnMut(&PlayerId) -> Seat + use<> {
-    crate::config::players(
-        &configuration.strategies,
-        &configuration.models,
-        &configuration.prompts,
-        deal,
-        handles,
-        random::Player::init,
-        prompted::Player::init,
-    )
-}
+/// The configuration a game ran under.
+pub type Configuration = crate::config::Configuration<Avalon>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::avalon::report::Narrator;
     use crate::avalon::tests::{logged, run};
-    use crate::avalon::{Entry, Message, Team, game};
+    use crate::avalon::{Entry, Message, Outcome, Team, random};
+    use crate::game::Narrate;
+    use crate::game::game;
     use crate::model::canned::{self, playing};
     use crate::model::fake::{FakeModel, choosing_first};
     use crate::model::spec::ModelInPlay;
     use crate::model::window::Source;
     use crate::model::{self, CONTEXT_WINDOW, REQUEST_TIMEOUT, ToolChoice};
+    use crate::strategy::Strategy;
     use crate::strategy::{Prompted, RANDOM, Random};
     use serde_json::json;
     use std::collections::HashSet;
@@ -650,10 +574,12 @@ count = 1
             configuration,
             Configuration {
                 role_counts: Table::default().counts().into_iter().collect(),
-                propose_limit: Duration::from_secs(30),
-                vote_limit: Duration::from_secs(90),
-                quest_limit: Duration::from_secs(10),
-                assassinate_limit: Duration::from_secs(5),
+                limits: Rules {
+                    propose_limit: Duration::from_secs(30),
+                    vote_limit: Duration::from_secs(90),
+                    quest_limit: Duration::from_secs(10),
+                    assassinate_limit: Duration::from_secs(5)
+                },
                 strategies: BTreeMap::from([
                     ("coin".to_string(), random()),
                     ("dice".to_string(), random()),
@@ -737,7 +663,7 @@ count = 1
             );
             assert_eq!(entries[1], Entry::Configuration(Box::new(configuration)));
             assert!(
-                matches!(entries.last(), Some(Entry::End { .. })),
+                matches!(entries.last(), Some(Entry::Event(Outcome::End { .. }))),
                 "{entries:?}"
             );
         }
@@ -1067,7 +993,7 @@ system = \"Smart {{{{ name }}}}.\"
         let (winner, entries, _) = run(episode, won, log).await.unwrap();
         assert!(matches!(winner, Team::Good | Team::Evil));
         assert!(
-            matches!(entries.last(), Some(Entry::End { .. })),
+            matches!(entries.last(), Some(Entry::Event(Outcome::End { .. }))),
             "{entries:?}"
         );
         // Each choice is made as its player's policy makes it: a random

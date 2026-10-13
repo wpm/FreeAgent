@@ -1,5 +1,5 @@
-//! Werewolf: the rules, the types they are written in, the one kind of
-//! actor every game holds, and the function that builds every game.
+//! Werewolf: the rules, the types they are written in, and the [`Game`]
+//! that names them.
 //!
 //! A game is an episode of [free agents](free_agent): the rules in one
 //! actor, the environment, and a player in each of the others. The
@@ -13,22 +13,17 @@
 //! talk.
 //!
 //! Play alternates between night and day, starting with night, until one
-//! [`Team`] has won. The log is written by every actor, an [`Entry`] at a
-//! time, in the language of reinforcement learning: each message an actor
-//! sends to others is an action of its sender, which the sender logs
-//! whole, once, and an observation of each receiver, which the receiver
-//! logs as a receipt naming the message by its sender and number. The
-//! environment logs the deal, its announcements, the selections it
-//! receives, each night's hunt, and the result; every player logs what it
-//! receives and the selections and utterances it sends.
+//! [`Team`] has won. The environment numbers its announcements and
+//! tentative decisions, each player its selections and utterances
+//! together. The environment logs the deal, its announcements, the
+//! selections it receives, each night's hunt, and the result; every player
+//! logs what it receives and the selections and utterances it sends.
 //!
 //! The environment is [`announced`]'s, and each of an episode's players
 //! follows the policy of the strategy it is dealt with its role: a
 //! [`random`] player selects at random, and a [`prompted`] player asks a
 //! language model. The [`config`] says which strategies are dealt, and how
-//! each is played. An episode holds one kind of actor, [`Actor`], which is
-//! the environment or a player of either policy, and [`game`] builds every
-//! episode, with each seat's player built for it.
+//! each is played.
 
 pub mod announced;
 pub mod config;
@@ -36,12 +31,12 @@ pub mod prompted;
 pub mod random;
 pub mod report;
 
+use crate::game::{Game, Tagged};
+use crate::model::Model;
+use crate::model::spec::Probed;
 use crate::report::{in_prose, seat_order};
-use crate::seat::{
-    ENVIRONMENT, PlayerId, seats, to_everyone_but, to_the_environment, to_the_players_but,
-};
-use async_trait::async_trait;
-use free_agent::{ActorId, ActorInit, Behavior, Context, Episode, Logger};
+use crate::seat::{ENVIRONMENT, PlayerId, to_everyone_but, to_the_environment, to_the_players_but};
+use free_agent::{ActorId, ActorInit};
 use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -50,95 +45,133 @@ use std::num::NonZero;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
+/// The game of Werewolf, as the shared code names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Werewolf;
+
+/// What the environment and the players say to one another.
+pub type Message = crate::game::Message<Werewolf>;
+
+/// What the log holds.
+pub type Entry = crate::game::Entry<Werewolf>;
+
+/// The one kind of actor a game of Werewolf holds.
+pub type Actor = crate::game::Actor<Werewolf>;
+
 /// How a seat is built: its player's behavior, and its think loop if it
 /// has one.
-pub type Seat = crate::seat::Seat<Actor>;
+pub type Seat = crate::game::Seat<Werewolf>;
 
 /// What a seat is dealt: a role, and the strategy its player plays.
 pub type Dealt = crate::seat::Dealt<Role>;
 
-/// An episode of a game of `deal` under `rules`: the announcing
-/// environment, which may reach and stop every player, logs
-/// `configuration` right after the deal, and sends the winning team on
-/// `winner` when the game ends; and in each seat the player `player`
-/// builds for it. Everyone holds `logger`. A player may send to the
-/// environment and to every other player, and stops nobody.
-pub fn game(
-    deal: HashMap<PlayerId, Dealt>,
-    rules: Rules,
-    configuration: config::Configuration,
-    winner: oneshot::Sender<Team>,
-    mut player: impl FnMut(&PlayerId) -> Seat,
-    logger: Logger<Entry>,
-) -> Episode<Actor> {
-    let players: Vec<PlayerId> = deal.keys().cloned().collect();
-    let configuration = Entry::Configuration(Box::new(configuration));
-    let environment = announced::init(deal, rules, configuration, winner, Actor::Environment);
-    let mut init = HashMap::from([(ENVIRONMENT.to_string(), environment)]);
-    for id in &players {
-        let (behavior, think) = player(id);
-        init.insert(
-            id.clone(),
-            ActorInit {
-                behavior,
-                think,
-                can_send_to: to_everyone_but(id, &players),
-                can_shut_down: HashSet::new(),
-                has_logger: true,
-            },
-        );
-    }
-    Episode::new(init, logger)
-}
-
-/// What an actor in a game of Werewolf does: run it, or play in it by
-/// one of the policies. An episode holds one kind of actor, so every side
-/// meets here and each method goes to whichever side this is.
-pub enum Actor {
-    /// The side that holds the game.
-    Environment(announced::Environment),
-    /// A player who selects at random.
-    Random(random::Player),
-    /// A player whose decisions a language model makes.
-    Prompted(prompted::Player),
-    /// A player who says whatever its script says.
+impl Game for Werewolf {
+    type Role = Role;
+    type Team = Team;
+    type Rules = Rules;
+    type Limits = Limits;
+    type View = View;
+    type Move = Move;
+    type Event = Outcome;
+    type Story = report::Story;
+    type Narrator = report::Narrator;
+    /// Whether the day's vote is ratified.
+    type Briefing = bool;
+    type Environment = announced::Environment;
     #[cfg(test)]
-    Puppet(tests::Puppet),
-}
+    type Puppet = tests::Puppet;
 
-#[async_trait]
-impl Behavior for Actor {
-    type Message = Message;
-    type Log = Entry;
-
-    fn context(&self) -> &Context<Message, Entry> {
-        match self {
-            Actor::Environment(environment) => environment.context(),
-            Actor::Random(player) => player.context(),
-            Actor::Prompted(player) => player.context(),
-            #[cfg(test)]
-            Actor::Puppet(puppet) => puppet.context(),
+    fn limits(rules: &Rules) -> Limits {
+        Limits {
+            night_limit: rules.night_limit,
+            day_limit: rules.day_limit,
+            ratify_limit: rules.ratify_limit,
         }
     }
 
-    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        match self {
-            Actor::Environment(environment) => environment.receive(message).await,
-            Actor::Random(player) => player.receive(message).await,
-            Actor::Prompted(player) => player.receive(message).await,
-            #[cfg(test)]
-            Actor::Puppet(puppet) => puppet.receive(message).await,
+    fn environment(
+        deal: HashMap<PlayerId, Dealt>,
+        rules: Rules,
+        configuration: Entry,
+        winner: oneshot::Sender<Team>,
+    ) -> ActorInit<Actor> {
+        announced::init(deal, rules, configuration, winner, Actor::Environment)
+    }
+
+    /// Whether `me` is [`awake`].
+    fn acts(me: &PlayerId, view: &View) -> bool {
+        awake(me, view)
+    }
+
+    /// A selection of one of the [`candidates`] `me` sees in `view`, chosen
+    /// uniformly at random. None when there are no candidates.
+    fn pick(me: &PlayerId, view: &View, seq: u64, n: u64) -> Option<Move> {
+        let target = candidates(me, view).choose(&mut rand::rng())?.clone();
+        Some(Move::Select {
+            seq,
+            from: me.clone(),
+            n,
+            target,
+        })
+    }
+
+    fn receivers(message: &Message, me: &PlayerId, view: &View) -> HashSet<ActorId> {
+        receivers(message, me, view)
+    }
+
+    /// Whether the day's vote is ratified, as the ratify limit says.
+    fn briefing(limits: &Limits) -> bool {
+        ratified(limits.ratify_limit)
+    }
+
+    fn story(me: PlayerId, ratified: &bool) -> report::Story {
+        report::Story::of(me, *ratified)
+    }
+
+    /// An announcement wakes a player awake in the phase; by day, so does
+    /// everything else, and by night nothing else does.
+    fn wakes(me: &PlayerId, message: &Message, view: &View) -> bool {
+        match message {
+            Message::Announce { .. } => awake(me, view),
+            _ => view.phase == Phase::Day,
         }
     }
 
-    async fn start(&mut self) -> anyhow::Result<()> {
-        match self {
-            Actor::Environment(environment) => environment.start().await,
-            Actor::Random(player) => player.start().await,
-            Actor::Prompted(player) => player.start().await,
-            #[cfg(test)]
-            Actor::Puppet(puppet) => puppet.start().await,
-        }
+    fn play(
+        player: &prompted::Player,
+        seq: u64,
+        view: &View,
+        limit: Duration,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send {
+        prompted::play(player, seq, view, limit)
+    }
+
+    fn unstoried(
+        model_id: &str,
+        prompt: &str,
+        seat: &PlayerId,
+        role: Role,
+        seats: &[PlayerId],
+        limits: &Limits,
+    ) -> anyhow::Result<u64> {
+        let alive = seats.iter().cloned().collect();
+        let ratified = ratified(limits.ratify_limit);
+        prompted::unstoried(
+            model_id,
+            prompt,
+            seat,
+            role,
+            &alive,
+            limits.day_limit,
+            ratified,
+        )
+    }
+
+    fn check_plays(
+        model: &dyn Model,
+        model_id: &str,
+    ) -> impl Future<Output = anyhow::Result<Probed>> {
+        prompted::check_plays(model, model_id)
     }
 }
 
@@ -258,11 +291,6 @@ impl Table {
             (Role::Doctor, self.doctors),
             (Role::Seer, self.seers),
         ]
-    }
-
-    /// The seats, named `Player 1` onward, one per player.
-    pub fn seats(&self) -> impl Iterator<Item = PlayerId> {
-        seats(self.counts().iter().map(|(_, count)| count).sum())
     }
 }
 
@@ -499,27 +527,6 @@ impl Rules {
     pub fn ratified(&self) -> bool {
         ratified(self.ratify_limit)
     }
-
-    /// The entry that opens a game of `deal` under these rules: every
-    /// player's role and strategy, and the limits.
-    pub fn start(&self, deal: &HashMap<PlayerId, Dealt>) -> Entry {
-        let (roles, strategies) = deal
-            .iter()
-            .map(|(id, dealt)| {
-                (
-                    (id.clone(), dealt.role),
-                    (id.clone(), dealt.strategy.clone()),
-                )
-            })
-            .unzip();
-        Entry::Start {
-            roles,
-            strategies,
-            night_limit: self.night_limit,
-            day_limit: self.day_limit,
-            ratify_limit: self.ratify_limit,
-        }
-    }
 }
 
 /// Whether a day with `ratify_limit` is ratified: whether the limit is
@@ -542,32 +549,42 @@ impl Default for Rules {
     }
 }
 
-/// What the environment and the players say to one another. Every message
-/// an actor sends to others is numbered by its sender, from 1, so that the
-/// pair of sender and number names a message in an episode: the
-/// environment numbers its announcements and tentative decisions, each
-/// player its selections and utterances together. A message to several
-/// actors has one number, but each announcement is a message of its own,
-/// since each player is shown a different view. A reminder an actor sends
-/// itself is not numbered.
+/// How long each phase waits for the players, and how long a day's votes
+/// must stand, as the log records them, each written as `humantime` writes
+/// it, such as `"60s"`: the [`Rules`] but the votes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Limits {
+    /// How long a night waits for the players.
+    #[serde(with = "humantime_serde")]
+    pub night_limit: Duration,
+    /// How long a day waits for the players.
+    #[serde(with = "humantime_serde")]
+    pub day_limit: Duration,
+    /// How long a day's votes must stand to be ratified, `"0s"` when they
+    /// are not.
+    #[serde(with = "humantime_serde")]
+    pub ratify_limit: Duration,
+}
+
+impl Limits {
+    /// The rules a game is played under: the default rules, with these
+    /// limits.
+    pub fn rules(&self) -> Rules {
+        Rules {
+            night_limit: self.night_limit,
+            day_limit: self.day_limit,
+            ratify_limit: self.ratify_limit,
+            ..Rules::default()
+        }
+    }
+}
+
+/// The messages only Werewolf has: the players' selections and
+/// retractions, and the environment's tentative decisions and ratify
+/// timers. A selection, retraction or tentative decision is numbered by
+/// its sender; a ratify timer, which the environment sends itself, is not.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Message {
-    /// The environment opens a phase for one living player, awake in it
-    /// or not. Phases are numbered from 1 for the first night, one up for
-    /// each phase.
-    Announce {
-        /// The number of the phase.
-        seq: u64,
-        /// The environment's number for this message.
-        n: u64,
-        /// What the player may see of it.
-        view: View,
-        /// How long the phase lasts, written as `humantime` writes it. A
-        /// player holds no state but its history, and can see when its
-        /// messages arrived, so the limit is all it needs to know the time.
-        #[serde(with = "humantime_serde")]
-        limit: Duration,
-    },
+pub enum Move {
     /// A player's selection for the phase numbered `seq`. By night it goes
     /// to the environment alone; by day to every other living player as
     /// well, since the votes are public.
@@ -607,26 +624,6 @@ pub enum Message {
         #[serde(with = "humantime_serde")]
         ratify: Duration,
     },
-    /// A player's utterance in the phase numbered `seq`, as the speaker knew
-    /// it: the latest phase the speaker was announced. By day it goes to
-    /// every other living player, and never to the environment, which does
-    /// nothing with speech.
-    Say {
-        /// The number of the phase.
-        seq: u64,
-        /// Who spoke, since a message does not carry its sender.
-        from: PlayerId,
-        /// The player's number for this message.
-        n: u64,
-        /// What they said.
-        text: String,
-    },
-    /// The environment's own message to itself that the phase numbered
-    /// `seq` is over.
-    EndPhase {
-        /// The number of the phase.
-        seq: u64,
-    },
     /// The environment's own message to itself that the ratify timer set at
     /// the `change`th change of the tentative decision of the day numbered
     /// `seq` has run out. A timer cannot be canceled, so one whose `change`
@@ -637,62 +634,33 @@ pub enum Message {
         /// Which change of the day's tentative decision set the timer.
         change: u64,
     },
-    /// A model player's own message to its think loop to call the model.
-    Wake,
-    /// A model player's own reminder, the `count`th it set, to be woken in
-    /// the phase numbered `seq`. A timer cannot be canceled, so one whose
-    /// `count` is not the latest set, or whose phase has ended, is ignored.
-    Remind {
-        /// The number of the phase.
-        seq: u64,
-        /// Which reminder of the player's this is.
-        count: u64,
-    },
 }
-impl free_agent::Message for Message {}
 
-impl Message {
-    /// The sender's number for this message, which a reminder to itself
-    /// does not have.
-    pub fn number(&self) -> Option<u64> {
+impl Tagged for Move {
+    fn number(&self) -> Option<u64> {
         match self {
-            Message::Announce { n, .. }
-            | Message::Select { n, .. }
-            | Message::Retract { n, .. }
-            | Message::Tentative { n, .. }
-            | Message::Say { n, .. } => Some(*n),
-            Message::EndPhase { .. }
-            | Message::Ratify { .. }
-            | Message::Wake
-            | Message::Remind { .. } => None,
+            Move::Select { n, .. } | Move::Retract { n, .. } | Move::Tentative { n, .. } => {
+                Some(*n)
+            }
+            Move::Ratify { .. } => None,
         }
     }
 
-    /// The phase this message is tagged with: for a message to others, the
-    /// phase its sender was in; for a reminder, the phase it is for. A
-    /// wake-up names none.
-    pub fn seq(&self) -> Option<u64> {
+    fn seq(&self) -> u64 {
         match self {
-            Message::Announce { seq, .. }
-            | Message::Select { seq, .. }
-            | Message::Retract { seq, .. }
-            | Message::Tentative { seq, .. }
-            | Message::Say { seq, .. }
-            | Message::EndPhase { seq }
-            | Message::Ratify { seq, .. }
-            | Message::Remind { seq, .. } => Some(*seq),
-            Message::Wake => None,
+            Move::Select { seq, .. }
+            | Move::Retract { seq, .. }
+            | Move::Tentative { seq, .. }
+            | Move::Ratify { seq, .. } => *seq,
         }
     }
 
-    /// Who sent this message: the environment, unless it is a player's
-    /// selection, retraction or utterance, which carries its sender.
-    pub fn sender(&self) -> ActorId {
+    /// The player, for a selection or retraction, and otherwise the
+    /// environment.
+    fn sender(&self) -> ActorId {
         match self {
-            Message::Select { from, .. }
-            | Message::Retract { from, .. }
-            | Message::Say { from, .. } => from.clone(),
-            _ => ENVIRONMENT.to_string(),
+            Move::Select { from, .. } | Move::Retract { from, .. } => from.clone(),
+            Move::Tentative { .. } | Move::Ratify { .. } => ENVIRONMENT.to_string(),
         }
     }
 }
@@ -705,162 +673,18 @@ impl Message {
 pub fn receivers(message: &Message, me: &PlayerId, view: &View) -> HashSet<ActorId> {
     match (message, &view.phase) {
         (Message::Say { .. }, _) => to_the_players_but(me, &view.alive),
-        (Message::Select { .. } | Message::Retract { .. }, Phase::Day) => {
+        (Message::Move(Move::Select { .. } | Move::Retract { .. }), Phase::Day) => {
             to_everyone_but(me, &view.alive)
         }
         _ => to_the_environment(),
     }
 }
 
-/// Send `message` from the actor of `context` to everyone in `to`, logging
-/// it first as the actor's action if it is numbered. `seen` is how many
-/// history entries a model was shown when it made the call that produced
-/// the message, and `forgot` how many lines of talk the call left out, each
-/// `None` for a message no model made.
-pub fn act(
-    context: &Context<Message, Entry>,
-    message: Message,
-    to: HashSet<ActorId>,
-    seen: Option<usize>,
-    forgot: Option<usize>,
-) -> anyhow::Result<()> {
-    if let Some(n) = message.number() {
-        context.log(Entry::Action {
-            from: context.id.clone(),
-            n,
-            to: to.clone(),
-            message: message.clone(),
-            seen,
-            forgot,
-        });
-    }
-    context.send(message, to)
-}
-
-/// Log that the actor of `context`, in the phase numbered `seq`, received
-/// the message `from` numbered `n`: its observation.
-pub fn observe(context: &Context<Message, Entry>, from: ActorId, n: u64, seq: u64) {
-    context.log(Entry::Observation {
-        by: context.id.clone(),
-        from,
-        n,
-        seq,
-    });
-}
-
-/// What the log holds: the deal, the configuration of a model-played game,
-/// every message sent as the action of its sender and the observation of
-/// its receiver, the usage the provider reported for each model call, each
-/// message a model player withheld because its phase had ended, each
-/// failure of a model player to act, each night's hunt, each day's vote, and
-/// the result. Every actor logs its own actions and observations: the
-/// environment logs the deal, the configuration, the hunts, the votes and
-/// the result besides, and a player its usages, what it withholds and its
-/// failures. Only the result summarizes anything; the rest is kept
-/// whole for whatever reads the log later. Every entry made during a phase
-/// names the phase in a field, so nothing about phases depends on the order
-/// entries reach the log or on their times.
+/// The log entries only Werewolf has: each night's hunt, each day's vote,
+/// and the result. A night in which the werewolves elected nobody logs no
+/// hunt; every day logs its vote.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Entry {
-    /// The game begins: who plays what, with which strategy, how long
-    /// each phase waits for the players, and how long a day's votes must
-    /// stand, zero when they are not ratified. The limits are written as
-    /// `humantime` writes them, such as `"60s"`.
-    Start {
-        /// Every player's role.
-        roles: HashMap<PlayerId, Role>,
-        /// The name of every player's strategy.
-        strategies: HashMap<PlayerId, String>,
-        /// How long a night waits for the players.
-        #[serde(with = "humantime_serde")]
-        night_limit: Duration,
-        /// How long a day waits for the players.
-        #[serde(with = "humantime_serde")]
-        day_limit: Duration,
-        /// How long a day's votes must stand to be ratified, `"0s"` when
-        /// they are not.
-        #[serde(with = "humantime_serde")]
-        ratify_limit: Duration,
-    },
-    /// The configuration the game ran under, logged right after the deal.
-    Configuration(Box<config::Configuration>),
-    /// `from` sent `message`, which it numbered `n`, to everyone in `to`.
-    /// Logged by the sender.
-    Action {
-        /// Who sent it.
-        from: ActorId,
-        /// The sender's number for it.
-        n: u64,
-        /// Everyone it was sent to.
-        to: HashSet<ActorId>,
-        /// What was sent.
-        message: Message,
-        /// How many history entries the model was shown when it made the
-        /// call that produced the message, and `None` for a message no
-        /// model made: the environment's, or a random player's.
-        seen: Option<usize>,
-        /// How many lines of talk the call that produced the message left
-        /// out to fit the context window, `None` when it left out none.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        forgot: Option<usize>,
-    },
-    /// `by` received the message `from` numbered `n` while in the phase
-    /// numbered `seq`. Logged by the receiver, and naming the message
-    /// without repeating it: the sender's `Action` holds it.
-    Observation {
-        /// Who received it.
-        by: ActorId,
-        /// Who sent it.
-        from: ActorId,
-        /// The sender's number for it.
-        n: u64,
-        /// The phase the receiver was in when it arrived: for the
-        /// environment, the phase it is in; for a player, the latest phase
-        /// it was announced. Set beside the `seq` of the message named, it
-        /// shows a message that arrived in a later phase than it was sent
-        /// in.
-        seq: u64,
-    },
-    /// `from` did not send `message`, which a model made from `seen`
-    /// history entries, having forgotten `forgot` lines of talk, because
-    /// the phase it was made in had ended before the model answered. It was
-    /// never sent, so it has no number: its `n` is 0, and the player does
-    /// not remember it.
-    Withheld {
-        /// Who would have sent it.
-        from: PlayerId,
-        /// What it would have sent.
-        message: Message,
-        /// How many history entries the model was shown when it made the
-        /// call that produced the message.
-        seen: Option<usize>,
-        /// How many lines of talk the call that produced the message left
-        /// out to fit the context window, `None` when it left out none.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        forgot: Option<usize>,
-    },
-    /// `player` failed to act in the phase numbered `seq`: the model was
-    /// not reached, or answered with something that is not a selection or
-    /// a well-formed day's response.
-    Failed {
-        /// Who failed.
-        player: PlayerId,
-        /// The phase it was selecting in.
-        seq: u64,
-        /// What went wrong, as the error says it, causes included.
-        error: String,
-    },
-    /// The model answered a call `player` made in the phase numbered `seq`,
-    /// and its provider reported `usage` for it, as sent. Logged by the
-    /// player.
-    Usage {
-        /// Who made the call.
-        player: PlayerId,
-        /// The phase the call was made in.
-        seq: u64,
-        /// What the provider reported, as sent.
-        usage: serde_json::Value,
-    },
+pub enum Outcome {
     /// The night numbered `seq` was resolved: whom the werewolves elected,
     /// and which doctors protected them. A night in which the werewolves
     /// elected nobody logs nothing.
@@ -1003,26 +827,17 @@ pub fn awake(me: &PlayerId, view: &View) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::config::Configuration;
-    use super::prompted::Memory;
     use super::*;
+    use crate::game::tests::Fixture;
+    pub(crate) use crate::game::tests::{
+        announcement, dealt, logged, observed_by, run, sorted, utterance,
+    };
+    use crate::game::{act, observe};
     use crate::strategy::{RANDOM, Random, Strategy};
-    use free_agent::{Builder, Event, Think, ThinkBuilder};
+    use async_trait::async_trait;
+    use free_agent::{Behavior, Builder, Context, Think, ThinkBuilder};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
-    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
-    use tokio::time::Instant;
-
-    #[test]
-    fn the_seats_are_numbered_from_one_up_to_the_number_of_players() {
-        let table = Table {
-            werewolves: 1,
-            villagers: 2,
-            doctors: 0,
-            seers: 1,
-        };
-        let seats: Vec<_> = table.seats().collect();
-        assert_eq!(seats, ["Player 1", "Player 2", "Player 3", "Player 4"]);
-    }
 
     #[test]
     fn a_table_is_told_role_by_role_in_the_singular_or_the_plural() {
@@ -1061,7 +876,7 @@ pub(crate) mod tests {
             day_limit: Duration::from_secs(40),
             ..Rules::default()
         };
-        let start = rules.start(&dealt(&village().roles, "random"));
+        let start = Entry::start(&dealt(&village().roles, "random"), &rules);
         let json = serde_json::to_value(&start).unwrap();
         // Each player's strategy beside its role.
         assert_eq!(json["Start"]["roles"]["wolf1"], "Werewolf");
@@ -1080,7 +895,7 @@ pub(crate) mod tests {
             ratify_limit: Duration::from_secs(20),
             ..Rules::default()
         };
-        let start = rules.start(&dealt(&village().roles, "random"));
+        let start = Entry::start(&dealt(&village().roles, "random"), &rules);
         let json = serde_json::to_value(&start).unwrap();
         assert_eq!(json["Start"]["ratify_limit"], "20s");
         let back: Entry = serde_json::from_value(json).unwrap();
@@ -1118,28 +933,28 @@ pub(crate) mod tests {
                 n: 1,
                 seq: 2,
             },
-            Entry::Hunted {
+            Entry::Event(Outcome::Hunted {
                 seq: 1,
                 hunt: Hunt {
                     victim: "villager".to_string(),
                     protectors: HashSet::new(),
                 },
-            },
-            Entry::Voted {
+            }),
+            Entry::Event(Outcome::Voted {
                 seq: 2,
                 out: Some("wolf1".to_string()),
                 by: Ending::Ratified,
-            },
-            Entry::Voted {
+            }),
+            Entry::Event(Outcome::Voted {
                 seq: 4,
                 out: None,
                 by: Ending::DayLimit,
-            },
-            Entry::Voted {
+            }),
+            Entry::Event(Outcome::Voted {
                 seq: 6,
                 out: None,
                 by: Ending::AllSelected,
-            },
+            }),
             Entry::Action {
                 from: ENVIRONMENT.to_string(),
                 n: 5,
@@ -1254,13 +1069,19 @@ pub(crate) mod tests {
     #[test]
     fn a_message_to_others_is_numbered_and_a_reminder_is_not() {
         let view = seen(&["wolf"], &[("wolf", Role::Werewolf)]);
-        assert_eq!(announcement(2, view).number(), Some(2));
+        assert_eq!(announcement::<Werewolf>(2, view).number(), Some(2));
         assert_eq!(selection(1, "wolf", 3, "ann").number(), Some(3));
         assert_eq!(tentative(2, 4, None).number(), Some(4));
-        assert_eq!(utterance(2, "wolf", 5, "Hello.").number(), Some(5));
+        assert_eq!(
+            utterance::<Werewolf>(2, "wolf", 5, "Hello.").number(),
+            Some(5)
+        );
         assert_eq!(retraction(2, "wolf", 6).number(), Some(6));
         assert_eq!(Message::EndPhase { seq: 1 }.number(), None);
-        assert_eq!(Message::Ratify { seq: 2, change: 3 }.number(), None);
+        assert_eq!(
+            Message::Move(Move::Ratify { seq: 2, change: 3 }).number(),
+            None
+        );
         assert_eq!(Message::Wake.number(), None);
         assert_eq!(Message::Remind { seq: 2, count: 1 }.number(), None);
     }
@@ -1268,13 +1089,16 @@ pub(crate) mod tests {
     #[test]
     fn every_message_but_a_wake_up_names_its_phase() {
         let view = seen(&["wolf"], &[("wolf", Role::Werewolf)]);
-        assert_eq!(announcement(2, view).seq(), Some(2));
+        assert_eq!(announcement::<Werewolf>(2, view).seq(), Some(2));
         assert_eq!(selection(1, "wolf", 3, "ann").seq(), Some(1));
         assert_eq!(tentative(2, 4, None).seq(), Some(2));
-        assert_eq!(utterance(3, "wolf", 5, "Hello.").seq(), Some(3));
+        assert_eq!(utterance::<Werewolf>(3, "wolf", 5, "Hello.").seq(), Some(3));
         assert_eq!(retraction(4, "wolf", 6).seq(), Some(4));
         assert_eq!(Message::EndPhase { seq: 1 }.seq(), Some(1));
-        assert_eq!(Message::Ratify { seq: 2, change: 3 }.seq(), Some(2));
+        assert_eq!(
+            Message::Move(Move::Ratify { seq: 2, change: 3 }).seq(),
+            Some(2)
+        );
         assert_eq!(Message::Remind { seq: 4, count: 1 }.seq(), Some(4));
         assert_eq!(Message::Wake.seq(), None);
     }
@@ -1324,8 +1148,8 @@ pub(crate) mod tests {
         let view = seen(&["wolf"], &[("wolf", Role::Werewolf)]);
         assert_eq!(selection(1, "wolf", 3, "ann").sender(), "wolf");
         assert_eq!(retraction(2, "bob", 2).sender(), "bob");
-        assert_eq!(utterance(2, "ann", 1, "Hello.").sender(), "ann");
-        assert_eq!(announcement(2, view).sender(), ENVIRONMENT);
+        assert_eq!(utterance::<Werewolf>(2, "ann", 1, "Hello.").sender(), "ann");
+        assert_eq!(announcement::<Werewolf>(2, view).sender(), ENVIRONMENT);
         assert_eq!(tentative(2, 4, None).sender(), ENVIRONMENT);
     }
 
@@ -1364,11 +1188,8 @@ pub(crate) mod tests {
         assert!(
             matches!(
                 first,
-                Some(Entry::Start { roles: dealt, night_limit, day_limit, ratify_limit, .. })
-                    if dealt == roles
-                        && *night_limit == rules.night_limit
-                        && *day_limit == rules.day_limit
-                        && *ratify_limit == rules.ratify_limit
+                Some(Entry::Start { roles: dealt, limits, .. })
+                    if dealt == roles && *limits == Werewolf::limits(rules)
             ),
             "{first:?}"
         );
@@ -1381,7 +1202,7 @@ pub(crate) mod tests {
         assert!(
             matches!(
                 last,
-                Some(Entry::End { winner: won, survivors, .. })
+                Some(Entry::Event(Outcome::End { winner: won, survivors, .. }))
                     if *won == winner
                         && !survivors.is_empty()
                         && survivors.iter().all(|player| roles.contains_key(player))
@@ -1391,22 +1212,15 @@ pub(crate) mod tests {
         &logged[2..logged.len() - 1]
     }
 
-    /// `roles`, each dealt with the strategy `strategy`.
-    pub(crate) fn dealt(
-        roles: &HashMap<PlayerId, Role>,
-        strategy: &str,
-    ) -> HashMap<PlayerId, Dealt> {
-        roles
-            .iter()
-            .map(|(id, role)| {
-                let dealt = Dealt {
-                    role: *role,
-                    strategy: strategy.to_string(),
-                };
-                (id.clone(), dealt)
-            })
-            .collect()
+    impl Fixture for Werewolf {
+        fn configured(roles: &HashMap<PlayerId, Role>, rules: &Rules) -> Configuration {
+            configured(roles, rules)
+        }
     }
+
+    /// What a game reports: the winner, everything logged, and how long
+    /// the game took.
+    pub(crate) type Played = crate::game::tests::Played<Werewolf>;
 
     /// The configuration of a game of `roles` under `rules` with every
     /// player random.
@@ -1415,9 +1229,7 @@ pub(crate) mod tests {
         let roles = [Role::Werewolf, Role::Villager, Role::Doctor, Role::Seer];
         Configuration {
             role_counts: roles.into_iter().map(|role| (role, count(role))).collect(),
-            night_limit: rules.night_limit,
-            day_limit: rules.day_limit,
-            ratify_limit: rules.ratify_limit,
+            limits: Werewolf::limits(rules),
             strategies: BTreeMap::from([(RANDOM.to_string(), Strategy::Random(Random {}))]),
             allotments: roles
                 .into_iter()
@@ -1427,27 +1239,6 @@ pub(crate) mod tests {
             prompts: BTreeMap::new(),
             text: BTreeMap::new(),
         }
-    }
-
-    /// What a game reports: the winner, everything the environment
-    /// logged, and how long the game took.
-    pub(super) type Played = (Team, Vec<Entry>, Duration);
-
-    /// Run `episode`, whose winner comes on `won` and whose log on `log`.
-    pub(super) async fn run<A: Behavior<Message = Message, Log = Entry> + 'static>(
-        episode: Episode<A>,
-        won: oneshot::Receiver<Team>,
-        mut log: UnboundedReceiver<Event<Entry>>,
-    ) -> anyhow::Result<Played> {
-        let started = Instant::now();
-        episode.run(Duration::from_secs(60 * 60)).await?;
-        let took = started.elapsed();
-
-        let mut logged = Vec::new();
-        while let Some(event) = log.recv().await {
-            logged.push(event.payload);
-        }
-        Ok((won.await?, logged, took))
     }
 
     /// What a puppet says to the environment on being announced a phase,
@@ -1541,12 +1332,13 @@ pub(crate) mod tests {
             .expect("a puppet speaks only once announced");
         let me = &context.id;
         let to = match (&message, &view.phase) {
-            (Message::Say { .. } | Message::Tentative { .. }, _) => {
+            (Message::Say { .. } | Message::Move(Move::Tentative { .. }), _) => {
                 to_the_players_but(me, &view.alive)
             }
-            (Message::Select { .. } | Message::Retract { .. }, Phase::Day) => {
-                to_everyone_but(me, &view.alive)
-            }
+            (
+                Message::Move(Move::Select { .. }) | Message::Move(Move::Retract { .. }),
+                Phase::Day,
+            ) => to_everyone_but(me, &view.alive),
             _ => to_the_environment(),
         };
         act(context, message, to, None, None)
@@ -1600,25 +1392,9 @@ pub(crate) mod tests {
     pub(super) async fn play(
         roles: HashMap<PlayerId, Role>,
         rules: Rules,
-        mut puppets: HashMap<&str, Seat>,
+        puppets: HashMap<&str, Seat>,
     ) -> anyhow::Result<Played> {
-        let (winner, won) = oneshot::channel();
-        let (logger, log) = unbounded_channel();
-        let player = |id: &PlayerId| {
-            puppets
-                .remove(id.as_str())
-                .unwrap_or_else(random::Player::init)
-        };
-        let configuration = configured(&roles, &rules);
-        let episode = game(
-            dealt(&roles, RANDOM),
-            rules,
-            configuration,
-            winner,
-            player,
-            logger,
-        );
-        run(episode, won, log).await
+        crate::game::tests::play(roles, rules, puppets).await
     }
 
     /// Short limits, so a phase that waits them out is told apart from
@@ -1631,28 +1407,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// `payload`, an entry or a memory, as an event logged or remembered
-    /// when the game began, in no episode in particular.
-    pub(super) fn logged<L>(payload: L) -> Event<L> {
-        Event {
-            time: std::time::UNIX_EPOCH,
-            episode: Default::default(),
-            payload,
-        }
-    }
-
-    /// The environment's announcement of the phase numbered `seq`, showing
-    /// `view`, lasting a minute. The accounts do not read the number, so
-    /// it is the phase's.
-    pub(super) fn announcement(seq: u64, view: View) -> Message {
-        Message::Announce {
-            seq,
-            n: seq,
-            view,
-            limit: Duration::from_secs(60),
-        }
-    }
-
     /// The selections the players logged as their actions, each with
     /// everyone it was sent to, in the log's order.
     pub(super) fn selections_sent(logged: &[Entry]) -> Vec<(&Message, &HashSet<ActorId>)> {
@@ -1660,7 +1414,7 @@ pub(crate) mod tests {
             .iter()
             .filter_map(|entry| match entry {
                 Entry::Action {
-                    message: message @ Message::Select { .. },
+                    message: message @ Message::Move(Move::Select { .. }),
                     to,
                     ..
                 } => Some((message, to)),
@@ -1678,78 +1432,43 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// The messages `by` logged as its observations, each as who sent it,
-    /// the sender's number for it, and the phase `by` was in when it
-    /// arrived, in the log's order.
-    pub(super) fn observed_by<'a>(logged: &'a [Entry], by: &str) -> Vec<(&'a str, u64, u64)> {
-        logged
-            .iter()
-            .filter_map(|entry| match entry {
-                Entry::Observation {
-                    by: observer,
-                    from,
-                    n,
-                    seq,
-                } if observer == by => Some((from.as_str(), *n, *seq)),
-                _ => None,
-            })
-            .collect()
-    }
-
     /// The selections the environment logged as its observations, as
     /// [`observed_by`] has them.
     pub(super) fn observed_by_the_environment(logged: &[Entry]) -> Vec<(&str, u64, u64)> {
         observed_by(logged, ENVIRONMENT)
     }
 
-    /// A player's memory of receiving `message`, in no episode in
-    /// particular.
-    pub(super) fn received(message: Message) -> Event<Memory> {
-        logged(Memory::Observed { message })
-    }
-
     /// A selection of `target` by `from` in the phase numbered `seq`, the
     /// `n`th message `from` sent.
     pub(super) fn selection(seq: u64, from: &str, n: u64, target: &str) -> Message {
-        Message::Select {
+        Message::Move(Move::Select {
             seq,
             from: from.to_string(),
             n,
             target: target.to_string(),
-        }
+        })
     }
 
     /// `from`'s retraction of its vote in the phase numbered `seq`, the
     /// `n`th message `from` sent.
     pub(super) fn retraction(seq: u64, from: &str, n: u64) -> Message {
-        Message::Retract {
+        Message::Move(Move::Retract {
             seq,
             from: from.to_string(),
             n,
-        }
-    }
-
-    /// `from`'s utterance of `text` in the phase numbered `seq`, the `n`th
-    /// message `from` sent.
-    pub(super) fn utterance(seq: u64, from: &str, n: u64, text: &str) -> Message {
-        Message::Say {
-            seq,
-            from: from.to_string(),
-            n,
-            text: text.to_string(),
-        }
+        })
     }
 
     /// The environment's tentative decision for the day numbered `seq`,
     /// the `n`th message it sent: `target`, or nobody, to be ratified
     /// after twenty seconds.
     pub(super) fn tentative(seq: u64, n: u64, target: Option<&str>) -> Message {
-        Message::Tentative {
+        Message::Move(Move::Tentative {
             seq,
             n,
             target: target.map(str::to_string),
             ratify: Duration::from_secs(20),
-        }
+        })
     }
 
     /// One werewolf against `villagers`.
@@ -1822,13 +1541,6 @@ pub(crate) mod tests {
         let view = state.view("villager".to_string()).unwrap();
         assert_eq!(view.round, state.round);
         assert_eq!(view.alive, state.alive);
-    }
-
-    /// `players` in name order.
-    pub(super) fn sorted(players: HashSet<PlayerId>) -> Vec<PlayerId> {
-        let mut players: Vec<_> = players.into_iter().collect();
-        players.sort();
-        players
     }
 
     #[test]

@@ -19,13 +19,14 @@
 //! announcement it sends, numbered in one series from 1; an
 //! [`Entry::Observation`] for each choice it receives, counted or not,
 //! with the phase it was in when it arrived; how each phase came out, as
-//! [`Entry::Proposed`], [`Entry::Tallied`], [`Entry::Quested`] or
-//! [`Entry::Assassinated`]; and the result. The reminders it sends itself
+//! [`Outcome::Proposed`], [`Outcome::Tallied`], [`Outcome::Quested`] or
+//! [`Outcome::Assassinated`]; and the result. The reminders it sends itself
 //! are not logged.
 
 use super::{
-    Choice, Choices, Dealt, Entry, Message, PlayerId, Rules, State, Team, Victory, act, observe,
+    Choice, Choices, Dealt, Entry, Message, Outcome, PlayerId, Rules, State, Team, Victory,
 };
+use crate::game::{act, observe};
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Context, Think};
 use std::collections::{HashMap, HashSet};
@@ -51,7 +52,7 @@ where
     A: Behavior<Message = Message, Log = Entry>,
 {
     let players: HashSet<PlayerId> = deal.keys().cloned().collect();
-    let opening = Box::new([rules.start(&deal), configuration]);
+    let opening = Box::new([Entry::start(&deal, &rules), configuration]);
     let roles = deal
         .into_iter()
         .map(|(id, dealt)| (id, dealt.role))
@@ -282,7 +283,8 @@ impl Environment {
         for player in &players {
             self.context.stop(player)?;
         }
-        self.context.log(Entry::End { winner, by, took });
+        self.context
+            .log(Entry::Event(Outcome::End { winner, by, took }));
         if let Some(report) = report {
             // The owner of the episode may have stopped listening.
             let _ = report.send(winner);
@@ -305,9 +307,10 @@ impl Behavior for Environment {
     /// record it if it counts. The last choice a phase is waiting for ends
     /// it. Anything else is ignored.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        let Some((seq, n, choice)) = message.choice() else {
+        let Message::Move(made) = message else {
             return Ok(());
         };
+        let (seq, n, choice) = made.choice();
         let from = message.sender();
         let (current, counted) = {
             let mut game = self.game();
@@ -541,15 +544,17 @@ mod tests {
             let seq = i as u64 + 1;
             let ok = match i {
                 9 => {
-                    matches!(outcome, Entry::Assassinated { seq: s, target: Some(t), merlin: true } if *s == seq && t == "Player 1")
+                    matches!(outcome, Entry::Event(Outcome::Assassinated { seq: s, target: Some(t), merlin: true }) if *s == seq && t == "Player 1")
                 }
                 _ => match i % 3 {
-                    0 => matches!(outcome, Entry::Proposed { seq: s, team: Some(_) } if *s == seq),
+                    0 => {
+                        matches!(outcome, Entry::Event(Outcome::Proposed { seq: s, team: Some(_) }) if *s == seq)
+                    }
                     1 => {
-                        matches!(outcome, Entry::Tallied { seq: s, tally: Tally { approved: true, .. } } if *s == seq)
+                        matches!(outcome, Entry::Event(Outcome::Tallied { seq: s, tally: Tally { approved: true, .. } }) if *s == seq)
                     }
                     _ => {
-                        matches!(outcome, Entry::Quested { seq: s, result: QuestResult { succeeded: true, .. } } if *s == seq)
+                        matches!(outcome, Entry::Event(Outcome::Quested { seq: s, result: QuestResult { succeeded: true, .. } }) if *s == seq)
                     }
                 },
             };
@@ -579,7 +584,7 @@ mod tests {
         let quests: Vec<&QuestResult> = outcomes(&logged)
             .into_iter()
             .filter_map(|entry| match entry {
-                Entry::Quested { result, .. } => Some(result),
+                Entry::Event(Outcome::Quested { result, .. }) => Some(result),
                 _ => None,
             })
             .collect();
@@ -603,7 +608,7 @@ mod tests {
         assert!(
             outcomes
                 .iter()
-                .all(|entry| matches!(entry, Entry::Proposed { team: None, .. })),
+                .all(|entry| matches!(entry, Entry::Event(Outcome::Proposed { team: None, .. }))),
             "{outcomes:?}"
         );
     }
@@ -618,7 +623,7 @@ mod tests {
         let tally = logged
             .iter()
             .find_map(|entry| match entry {
-                Entry::Tallied { tally, .. } => Some(tally),
+                Entry::Event(Outcome::Tallied { tally, .. }) => Some(tally),
                 _ => None,
             })
             .unwrap();
@@ -684,19 +689,19 @@ mod tests {
         }
         let outcomes = outcomes(&logged);
         assert!(
-            matches!(outcomes[0], Entry::Proposed { team: Some(team), .. } if team == &["Player 1", "Player 2"]),
+            matches!(outcomes[0], Entry::Event(Outcome::Proposed { team: Some(team), .. }) if team == &["Player 1", "Player 2"]),
             "{outcomes:?}"
         );
         assert!(
-            matches!(outcomes[1], Entry::Tallied { tally, .. } if tally.ballots[&id("Player 3")] == Ballot::Approve),
+            matches!(outcomes[1], Entry::Event(Outcome::Tallied { tally, .. }) if tally.ballots[&id("Player 3")] == Ballot::Approve),
             "{outcomes:?}"
         );
         assert!(
-            matches!(outcomes[2], Entry::Quested { result, .. } if result.sabotages == 0),
+            matches!(outcomes[2], Entry::Event(Outcome::Quested { result, .. }) if result.sabotages == 0),
             "{outcomes:?}"
         );
         assert!(
-            matches!(outcomes[9], Entry::Assassinated { target: Some(target), merlin: false, .. } if target == "Player 3"),
+            matches!(outcomes[9], Entry::Event(Outcome::Assassinated { target: Some(target), merlin: false, .. }) if target == "Player 3"),
             "{outcomes:?}"
         );
     }
@@ -736,7 +741,7 @@ mod tests {
         assert!(
             !logged
                 .iter()
-                .any(|entry| matches!(entry, Entry::Assassinated { .. }))
+                .any(|entry| matches!(entry, Entry::Event(Outcome::Assassinated { .. })))
         );
     }
 
@@ -755,11 +760,11 @@ mod tests {
         assert_eq!(took, quick().assassinate_limit);
         assert!(logged.iter().any(|entry| matches!(
             entry,
-            Entry::Assassinated {
+            Entry::Event(Outcome::Assassinated {
                 target: None,
                 merlin: false,
                 ..
-            }
+            })
         )));
     }
 }

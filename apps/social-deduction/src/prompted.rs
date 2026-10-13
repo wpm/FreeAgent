@@ -1,14 +1,61 @@
-//! What every game's prompted player shares: the shape of a request, the
-//! `speak` and `wait` tools every request offers and how their calls are
-//! read, and how the probe settles the tool choice a model is asked under.
+//! The prompted policy, of any game: a player whose decisions a language
+//! model makes. Every game's prompted player shares the shape of a
+//! request, the `speak` and `wait` tools every request offers and how
+//! their calls are read, how the probe settles the tool choice a model is
+//! asked under, and the [`Player`] itself, all but what it does when it is
+//! woken, which is its game's [`play`](Game::play).
+//!
+//! A player remembers what it is shown, what it hears and what it does, as
+//! a [`Memory`] of each message stamped when it was received or sent, and
+//! keeps with the history the story that tells it from its own point of
+//! view: each memory adds its lines to the story as it is remembered, so
+//! the story is never told over. Every player is announced every phase, so
+//! a player knows which phase it is in, and it ignores a message tagged
+//! with any other: it logs the receipt, as it does every message's, and
+//! neither remembers the message nor wakes for it. A message of its own
+//! phase wakes it as its game [says](Game::wakes). Each time it is woken,
+//! it tells the model the story so far and where the game stands, with how
+//! long the phase lasts, and carries out what the model answers. The
+//! request fits the context window by estimate: when the story would not,
+//! the oldest talk is forgotten for that request. The call is made in the
+//! player's think loop, so the player keeps perceiving while the model
+//! works.
+//!
+//! Wake-ups are debounced: the perceive loop remembers each message and
+//! wakes the think loop only when no wake-up is already waiting, and the
+//! think loop takes the history as it stands when it is woken, so a player
+//! has at most one call in progress and one waiting, however fast the talk
+//! comes. A reminder is numbered so that only the latest set counts, and
+//! one for a phase that has ended is ignored. The calls are carried out in
+//! the order the model made them. Before carrying out anything a response
+//! asks for, the player checks that the phase the call began in is still
+//! the one it was last announced; if not, it sends nothing and logs each
+//! message it would have sent as [`Entry::Withheld`].
+//!
+//! A model that is not reached, or an answer that is not well formed, is a
+//! failure: the player logs it as [`Entry::Failed`], carries nothing out,
+//! and the game goes on. The player logs an [`Entry::Observation`] for each
+//! message it receives and an [`Entry::Action`] for each message it sends,
+//! numbered together from 1, with how many memories the model was shown
+//! when it made the call that produced the message and how many lines of
+//! talk that call forgot. Every request makes the model call a tool, unless
+//! the probe finds the model refuses that, and then every request asks it
+//! to call one, and an answer in prose is a failure like any other.
 
+use crate::game::{Actor, Entry, Game, Message, Seat, act, observe};
 use crate::model::spec::Probed;
-use crate::model::{self, Request, Tool, ToolChoice};
+use crate::model::{self, Request, Response, Tool, ToolChoice};
+use crate::seat::PlayerId;
 use anyhow::{Context as _, anyhow, bail};
+use async_trait::async_trait;
+use free_agent::{ActorId, Behavior, Builder, Context, Event, Think, ThinkBuilder};
 use humantime::format_duration;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// What every request ends with, under either tool choice: that a tool
@@ -171,11 +218,474 @@ pub(crate) fn probed(
     }
 }
 
+/// What a player remembers: a message it received from another actor in
+/// the phase it was in, or one it sent. Reminders to itself, messages from
+/// another phase, and what it withheld, are not remembered.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Memory<G: Game> {
+    /// The player received `message`, whose [`Message::sender`] sent it.
+    Observed {
+        /// What was sent.
+        message: Message<G>,
+    },
+    /// The player sent `message`.
+    Acted {
+        /// What it sent.
+        message: Message<G>,
+    },
+}
+
+/// A player's account of its own game, told a memory at a time.
+pub trait Account<G: Game> {
+    /// Add what `event` adds to the account.
+    fn recall(&mut self, event: &Event<Memory<G>>);
+
+    /// The lines told within `budget` tokens by estimate, the oldest talk
+    /// forgotten first to fit, and how many lines of talk were left out.
+    /// The account itself keeps every line.
+    fn told_within(&self, budget: u64) -> (Vec<&str>, usize);
+}
+
+/// What a call has a player send, as the message it makes.
+pub(crate) trait Sending<G: Game> {
+    /// The message `from` sends for this in the phase numbered `seq`,
+    /// numbered `n`.
+    fn message(self, seq: u64, from: &PlayerId, n: u64) -> Message<G>;
+}
+
+/// What a player's two loops share: what it has been shown and what it has
+/// done, with the story that tells it, the phase it is in, whether a
+/// wake-up is waiting, how many reminders it has set, what it is told, and
+/// whom it asks.
+pub(crate) struct Mind<G: Game> {
+    /// The history and the story told from it. Never locked across an
+    /// await.
+    pub(crate) remembered: Mutex<Remembered<G>>,
+    /// The number of the last message the player sent to others.
+    n: AtomicU64,
+    /// The latest phase the player was announced: the phase it is in, so far
+    /// as it knows. Never locked across an await.
+    announced: Mutex<Option<Announced<G>>>,
+    /// Whether a [`Message::Wake`] is waiting for the think loop. The
+    /// perceive loop hands the think loop one only when none is waiting,
+    /// and the think loop clears this before it takes the history, so
+    /// however fast messages come the player has at most one call in
+    /// progress and one waiting, and nothing it heard is left out of both.
+    waking: AtomicBool,
+    /// How many reminders the player has set, which numbers them so that
+    /// only the latest counts.
+    reminders: AtomicU64,
+    /// Its system prompt, rendered for its seat and role.
+    prompt: String,
+    /// The model's id, as each request names it.
+    model_id: String,
+    /// Whether each request makes the model call a tool.
+    tool_choice: ToolChoice,
+    /// The model's context window, in tokens, which each request fits.
+    context_window: u64,
+    /// The model asked each time the player is woken.
+    model: Arc<dyn model::Model>,
+    /// What it is told of the rules besides its prompt.
+    pub(crate) briefing: G::Briefing,
+}
+
+/// A player's history and the story that tells it, kept together so that
+/// the story is always the narration of exactly the history, and a request
+/// joins the story's lines instead of narrating every memory again.
+pub(crate) struct Remembered<G: Game> {
+    /// The history, in order: each message received and each message sent,
+    /// stamped when the player remembered it.
+    pub(crate) history: Vec<Event<Memory<G>>>,
+    /// The story told from the history.
+    pub(crate) story: G::Story,
+}
+
+/// What the model was shown for a call: how many memories the story was
+/// told from, and how many lines of talk it forgot to fit the context
+/// window, if any.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Shown {
+    pub(crate) seen: usize,
+    pub(crate) forgot: Option<usize>,
+}
+
+/// A phase as a player was announced it: its number, what the player may
+/// see of it, and how long it lasts.
+#[derive(Clone)]
+struct Announced<G: Game> {
+    seq: u64,
+    view: G::View,
+    limit: Duration,
+}
+
+impl<G: Game> Mind<G> {
+    /// The mind of `me` with nothing in its history yet, told `prompt` and
+    /// `briefing`, asking `model` as the model `model_id` under
+    /// `tool_choice`, within `context_window` tokens.
+    pub(crate) fn new(
+        me: PlayerId,
+        prompt: String,
+        model_id: String,
+        tool_choice: ToolChoice,
+        context_window: u64,
+        model: Arc<dyn model::Model>,
+        briefing: G::Briefing,
+    ) -> Self {
+        Self {
+            remembered: Mutex::new(Remembered {
+                history: Vec::new(),
+                story: G::story(me, &briefing),
+            }),
+            n: AtomicU64::new(0),
+            announced: Mutex::new(None),
+            waking: AtomicBool::new(false),
+            reminders: AtomicU64::new(0),
+            prompt,
+            model_id,
+            tool_choice,
+            context_window,
+            model,
+            briefing,
+        }
+    }
+
+    /// Add `event` to the end of the history, and what it adds to the
+    /// account to the end of the story, together. A message is remembered
+    /// when it is received or sent, so a message sent in the moment
+    /// between the check that its phase is still on and the send comes
+    /// after the next phase's announcement, and is told in that phase.
+    pub(crate) fn remember(&self, event: Event<Memory<G>>) {
+        let mut remembered = self.remembered.lock().unwrap();
+        remembered.story.recall(&event);
+        remembered.history.push(event);
+    }
+
+    /// The story so far within `budget` tokens, its lines joined, and
+    /// what it was told from: how many memories, and how many lines of talk
+    /// it forgot to fit.
+    pub(crate) fn story(&self, budget: u64) -> (String, Shown) {
+        let remembered = self.remembered.lock().unwrap();
+        let (lines, forgot) = remembered.story.told_within(budget);
+        let shown = Shown {
+            seen: remembered.history.len(),
+            forgot: (forgot > 0).then_some(forgot),
+        };
+        (lines.join("\n"), shown)
+    }
+
+    /// Whether the player has sent a message that `sent` holds of.
+    pub(crate) fn acted(&self, sent: impl Fn(&Message<G>) -> bool) -> bool {
+        let remembered = self.remembered.lock().unwrap();
+        remembered.history.iter().any(|event| match &event.payload {
+            Memory::Acted { message } => sent(message),
+            Memory::Observed { .. } => false,
+        })
+    }
+
+    /// The next number for a message to others: one up from the last.
+    fn number(&self) -> u64 {
+        self.n.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Take in the announcement of the phase numbered `seq`, showing `view`
+    /// and lasting `limit`: the phase the player is in from now on.
+    fn announce(&self, seq: u64, view: &G::View, limit: Duration) {
+        *self.announced.lock().unwrap() = Some(Announced {
+            seq,
+            view: view.clone(),
+            limit,
+        });
+    }
+
+    /// The latest phase the player was announced, if any.
+    fn announced(&self) -> Option<Announced<G>> {
+        self.announced.lock().unwrap().clone()
+    }
+
+    /// The number of the latest phase the player was announced, and 0
+    /// before any.
+    fn seq(&self) -> u64 {
+        self.announced
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, |announced| announced.seq)
+    }
+
+    /// Mark a wake-up waiting, and say whether none was before: whether
+    /// the think loop has to be handed one.
+    fn waking(&self) -> bool {
+        !self.waking.swap(true, Ordering::Relaxed)
+    }
+
+    /// Take the wake-up waiting, so that the next message heard sets
+    /// another.
+    fn woken(&self) {
+        self.waking.store(false, Ordering::Relaxed);
+    }
+
+    /// The number of a new reminder: one up from the last, which no longer
+    /// counts.
+    fn remind(&self) -> u64 {
+        self.reminders.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Whether the phase numbered `seq` is the one the player is in: the
+    /// latest it was announced.
+    fn in_phase(&self, seq: u64) -> bool {
+        seq == self.seq()
+    }
+
+    /// Whether the reminder numbered `count` for the phase numbered `seq`
+    /// counts: it is the latest set, and the phase is the one the player is
+    /// in.
+    fn reminder_counts(&self, seq: u64, count: u64) -> bool {
+        count == self.reminders.load(Ordering::Relaxed) && self.in_phase(seq)
+    }
+}
+
+/// A player whose decisions are made by a language model. Its perceive
+/// loop and its think loop are each a `Player` with a context of its own
+/// over one shared mind: the perceive loop remembers each message it is
+/// sent and wakes the think loop, which tells the model the history as a
+/// story and carries out what the model answers.
+/// [`Actor::Prompted`] holds the perceive loop's, built by
+/// [`Player::init`].
+pub struct Player<G: Game> {
+    pub(crate) context: Context<Message<G>, Entry<G>>,
+    pub(crate) mind: Arc<Mind<G>>,
+}
+
+impl<G: Game> Player<G> {
+    /// Builds a player's two loops once the episode has made their
+    /// contexts: the perceive loop as the actor, and the think loop. The
+    /// player `me` is told `prompt` and `briefing`, and asks `model` as the
+    /// model `model_id` under `tool_choice`, within `context_window`
+    /// tokens.
+    pub fn init(
+        me: PlayerId,
+        prompt: String,
+        model_id: String,
+        tool_choice: ToolChoice,
+        context_window: u64,
+        model: Arc<dyn model::Model>,
+        briefing: G::Briefing,
+    ) -> Seat<G> {
+        let mind = Arc::new(Mind::new(
+            me,
+            prompt,
+            model_id,
+            tool_choice,
+            context_window,
+            model,
+            briefing,
+        ));
+        let shared = Arc::clone(&mind);
+        let behavior: Builder<Actor<G>> =
+            Box::new(move |context| Actor::Prompted(Player { context, mind }));
+        let think: ThinkBuilder<Message<G>, Entry<G>> = Box::new(move |context| {
+            Box::new(Player {
+                context,
+                mind: shared,
+            })
+        });
+        (behavior, Some(think))
+    }
+
+    /// Add `memory` to the history, stamped now, and what it tells to the
+    /// story.
+    fn remember(&self, memory: Memory<G>) {
+        self.mind.remember(Event::now(self.context.episode, memory));
+    }
+
+    /// Wake the think loop, unless a wake-up is already waiting for it.
+    fn wake(&self) -> anyhow::Result<()> {
+        if self.mind.waking() {
+            self.context.think(Message::Wake)?;
+        }
+        Ok(())
+    }
+
+    /// The request for a decision where the game stands as `situation`
+    /// says, with `tools` to answer with: the system prompt, then the story
+    /// so far, a blank line, and the situation. The story fits what is left
+    /// of the context window once the reply, the system prompt, the tools
+    /// and the situation are counted, by estimate, forgetting talk if it
+    /// has to. With the request, what the story was told from.
+    pub(crate) fn request(&self, situation: &str, tools: Vec<Tool>) -> (Request, Shown) {
+        let situation = format!("\n\n{situation}");
+        let mind = &self.mind;
+        let asking = |asked: String, tools| {
+            request(&mind.model_id, mind.tool_choice, &mind.prompt, asked, tools)
+        };
+        let taken = model::estimated(&asking(situation.clone(), tools.clone()));
+        let (story, shown) = mind.story(mind.context_window.saturating_sub(taken));
+        (asking(story + &situation, tools), shown)
+    }
+
+    /// Woken, decide: take the wake-up, and play the phase the player is
+    /// in as its game plays it. If that fails, log the failure with the
+    /// phase and what went wrong, causes included, which is all there is to
+    /// do about it: the player has not acted, and the game goes on. The
+    /// failure is not remembered, so the model is never told of it. Being
+    /// woken before any phase was announced is an error.
+    async fn decide(&self) -> anyhow::Result<()> {
+        self.mind.woken();
+        let Announced { seq, view, limit } = self
+            .mind
+            .announced()
+            .context("woken before any phase was announced")?;
+        if let Err(error) = G::play(self, seq, &view, limit).await {
+            self.context.log(Entry::Failed {
+                player: self.context.id.clone(),
+                seq,
+                error: format!("{error:#}"),
+            });
+        }
+        Ok(())
+    }
+
+    /// Ask the model `request` in the phase numbered `seq`, and log the
+    /// usage its provider reports for the answer, if it reports one, before
+    /// the answer is judged.
+    pub(crate) async fn complete(&self, seq: u64, request: &Request) -> anyhow::Result<Response> {
+        let mut response = self.mind.model.complete(request).await?;
+        if let Some(usage) = response.usage.take() {
+            self.context.log(Entry::Usage {
+                player: self.context.id.clone(),
+                seq,
+                usage,
+            });
+        }
+        Ok(response)
+    }
+
+    /// Carry out `sends` and `wait`, what a response made from what it was
+    /// `shown` asked for in the phase numbered `seq`, which `view` shows, if
+    /// that is still the phase the player was last announced: send each in
+    /// order, numbered, to whom the rules of the game send it, and then set
+    /// a reminder to be woken after `wait`. A call may begin in one phase
+    /// and end in the next, and then nothing is sent, each message is
+    /// logged as withheld, unnumbered, and no reminder is set.
+    pub(crate) fn carry_out(
+        &self,
+        seq: u64,
+        view: &G::View,
+        sends: Vec<impl Sending<G>>,
+        wait: Option<Duration>,
+        shown: Shown,
+    ) -> anyhow::Result<()> {
+        let me = &self.context.id;
+        let still_on = self.mind.in_phase(seq);
+        for sending in sends {
+            if still_on {
+                let message = sending.message(seq, me, self.mind.number());
+                let to = G::receivers(&message, me, view);
+                self.send(message, to, shown)?;
+            } else {
+                self.context.log(Entry::Withheld {
+                    from: me.clone(),
+                    message: sending.message(seq, me, 0),
+                    seen: Some(shown.seen),
+                    forgot: shown.forgot,
+                });
+            }
+        }
+        match wait {
+            Some(after) if still_on => self.remind(seq, after),
+            _ => Ok(()),
+        }
+    }
+
+    /// Remember sending `message` and send it to everyone in `to`, logged
+    /// as the player's action with what the model was `shown` when it made
+    /// the call that produced it.
+    fn send(&self, message: Message<G>, to: HashSet<ActorId>, shown: Shown) -> anyhow::Result<()> {
+        self.remember(Memory::Acted {
+            message: message.clone(),
+        });
+        act(&self.context, message, to, Some(shown.seen), shown.forgot)
+    }
+
+    /// Set a reminder to be woken `after` from now in the phase numbered
+    /// `seq`, numbered so that any reminder set before it no longer counts.
+    fn remind(&self, seq: u64, after: Duration) -> anyhow::Result<()> {
+        let count = self.mind.remind();
+        self.context
+            .think_after(after, Message::Remind { seq, count })
+    }
+}
+
+#[async_trait]
+impl<G: Game> Behavior for Player<G> {
+    type Message = Message<G>;
+    type Log = Entry<G>;
+
+    fn context(&self) -> &Context<Message<G>, Entry<G>> {
+        &self.context
+    }
+
+    /// Log a message from another actor, which is any numbered one, as
+    /// observed in the latest phase announced. An announcement is of a new
+    /// phase. It, and anything else tagged with the phase it announced, is
+    /// remembered, and wakes the think loop if the game says it
+    /// [wakes](Game::wakes) the player. One tagged with another phase is
+    /// observed and nothing more, neither remembered nor woken for: the
+    /// player keeps to the phase it is in, as the environment does when it
+    /// drops a late move, and the observation's `seq` beside the message's
+    /// shows it came late. A reminder to itself is ignored.
+    async fn receive(&mut self, message: &Message<G>) -> anyhow::Result<()> {
+        let Some(n) = message.number() else {
+            return Ok(());
+        };
+        if let Message::Announce {
+            seq, view, limit, ..
+        } = message
+        {
+            self.mind.announce(*seq, view, *limit);
+        }
+        let counts = message.seq().is_some_and(|seq| self.mind.in_phase(seq));
+        observe(&self.context, message.sender(), n, self.mind.seq());
+        if counts && let Some(Announced { view, .. }) = self.mind.announced() {
+            self.remember(Memory::Observed {
+                message: message.clone(),
+            });
+            if G::wakes(&self.context.id, message, &view) {
+                self.wake()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<G: Game> Think for Player<G> {
+    type Message = Message<G>;
+
+    /// Woken, decide what to do in the phase the player is in. Reminded,
+    /// wake if the reminder still counts: it is the latest set and its
+    /// phase has not ended. Nothing else is thought about. The think loop
+    /// drops an error a thought returns, so the log is the one place a
+    /// failure shows, whether the model's or the player's own.
+    async fn think(&mut self, message: &Message<G>) -> anyhow::Result<()> {
+        match message {
+            Message::Wake => self.decide().await,
+            Message::Remind { seq, count } if self.mind.reminder_counts(*seq, *count) => {
+                self.wake()
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::game::Narrate;
+    use crate::game::tests::logged;
     use crate::model::Response;
     use crate::model::fake::FakeModel;
+    use crate::seat::ENVIRONMENT;
     use std::sync::Arc;
 
     /// The id of the model every test's players ask for.
@@ -244,6 +754,143 @@ pub(crate) mod tests {
     /// A call to `wait` for `seconds`.
     pub(crate) fn waiting(seconds: u64) -> Made {
         (WAIT.to_string(), json!({"seconds": seconds}))
+    }
+
+    /// A player's memory of sending `message`, in no episode in particular.
+    pub(crate) fn sent<G: Game>(message: Message<G>) -> Event<Memory<G>> {
+        logged(Memory::Acted { message })
+    }
+
+    /// A player's memory of receiving `message`, in no episode in
+    /// particular.
+    pub(crate) fn received<G: Game>(message: Message<G>) -> Event<Memory<G>> {
+        logged(Memory::Observed { message })
+    }
+
+    /// The omniscient account of `entries`, line by line.
+    pub(crate) fn narrated<G: Game>(entries: Vec<Entry<G>>) -> Vec<String> {
+        let mut narrator = G::Narrator::default();
+        entries
+            .into_iter()
+            .flat_map(|entry| narrator.narrate(&logged(entry)))
+            .collect()
+    }
+
+    /// The failures the players logged, each as who failed, in which
+    /// phase, and what went wrong, in the log's order.
+    pub(crate) fn failed<G: Game>(logged: &[Entry<G>]) -> Vec<(&str, u64, &str)> {
+        logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Failed { player, seq, error } => {
+                    Some((player.as_str(), *seq, error.as_str()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The usages the players logged, each with where it is in the log,
+    /// who logged it, and in which phase, in the log's order.
+    pub(crate) fn usages<G: Game>(
+        logged: &[Entry<G>],
+    ) -> Vec<(usize, &str, u64, &serde_json::Value)> {
+        logged
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| match entry {
+                Entry::Usage { player, seq, usage } => Some((i, player.as_str(), *seq, usage)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The phases of what `player` logged sending, withholding or failing
+    /// after the entry at `i` in the log and before its next usage: what
+    /// came of the call whose usage is at `i`.
+    pub(crate) fn came_of<G: Game>(
+        logged: &[Entry<G>],
+        i: usize,
+        player: &str,
+    ) -> Vec<Option<u64>> {
+        logged[i + 1..]
+            .iter()
+            .take_while(|entry| !matches!(entry, Entry::Usage { player: by, .. } if by == player))
+            .filter_map(|entry| match entry {
+                Entry::Action { from, message, .. } | Entry::Withheld { from, message, .. }
+                    if from == player =>
+                {
+                    Some(message.seq())
+                }
+                Entry::Failed {
+                    player: by, seq, ..
+                } if by == player => Some(Some(*seq)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// How many lines of talk each of the players' actions says the model
+    /// forgot, in the log's order.
+    pub(crate) fn forgotten<G: Game>(logged: &[Entry<G>]) -> Vec<Option<usize>> {
+        logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Action { from, forgot, .. } if from != ENVIRONMENT => Some(*forgot),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Check what `logged`, a game whose players asked `model`, which
+    /// reported a usage naming whose request it answered, says of the
+    /// usages: one for each call, each naming the player and the phase of
+    /// what came of the call, and none in the narration.
+    pub(crate) fn every_call_logs_its_usage<G: Game>(model: &FakeModel, logged: Vec<Entry<G>>) {
+        let usages = usages(&logged);
+        assert_eq!(usages.len(), model.requests().len());
+        let mut came = 0;
+        for (i, player, seq, usage) in usages {
+            assert_eq!(*usage, json!({"asked": told(player)}));
+            let phases = came_of(&logged, i, player);
+            assert!(
+                phases.iter().all(|phase| *phase == Some(seq)),
+                "{player} in {seq}: {phases:?}"
+            );
+            came += phases.len();
+        }
+        assert!(came > 0);
+        // Narration leaves the usages out.
+        let without: Vec<Entry<G>> = logged
+            .iter()
+            .filter(|entry| !matches!(entry, Entry::Usage { .. }))
+            .cloned()
+            .collect();
+        assert_eq!(narrated(logged), narrated(without));
+    }
+
+    /// Check that `logged`, a game in which some response was not well
+    /// formed, logs each failure after the usage of the call that failed.
+    pub(crate) fn a_failure_logs_its_usage_first<G: Game>(logged: &[Entry<G>]) {
+        let usages = usages(logged);
+        let failures: Vec<(usize, &str, u64)> = logged
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| match entry {
+                Entry::Failed { player, seq, .. } => Some((i, player.as_str(), *seq)),
+                _ => None,
+            })
+            .collect();
+        assert!(!failures.is_empty());
+        for (failed, player, seq) in failures {
+            let (i, _, called, _) = usages
+                .iter()
+                .rev()
+                .find(|(i, by, _, _)| *i < failed && *by == player)
+                .unwrap();
+            assert_eq!(*called, seq, "{player}");
+            assert_eq!(came_of(logged, *i, player), [Some(seq)], "{player}");
+        }
     }
 
     #[test]

@@ -8,6 +8,7 @@ use free_agent::{Behavior, Episode, Event, Logger};
 use serde::Serialize;
 use social_deduction::avalon;
 use social_deduction::config::{self, Game};
+use social_deduction::game::{self, Narrate};
 use social_deduction::model::spec::Probed;
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
@@ -100,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
                     move |event| narrator.narrate(event),
                     |logger| {
                         let (winner, _) = oneshot::channel::<Team>();
-                        werewolf::game(deal, rules, configuration, winner, players, logger)
+                        game::game(deal, rules, configuration, winner, players, logger)
                     },
                 )
                 .await
@@ -120,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
                     move |event| narrator.narrate(event),
                     |logger| {
                         let (winner, _) = oneshot::channel();
-                        avalon::game(deal, rules, configuration, winner, players, logger)
+                        game::game(deal, rules, configuration, winner, players, logger)
                     },
                 )
                 .await
