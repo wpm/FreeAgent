@@ -12,9 +12,7 @@ use super::{
     Ballot, Choice, Deed, Entry, Message, PROPOSALS, Phase, QuestResult, Role, Seen, Tally,
     Victory, View,
 };
-use crate::model::window::{ContextWindow, Source};
-use crate::model::{ToolChoice, tokens};
-use crate::report::{in_order, whole_seconds};
+use crate::report::{configured, in_order, in_prose, late, told_within, whole_seconds};
 use crate::seat::PlayerId;
 use free_agent::Event;
 use humantime::format_duration;
@@ -78,18 +76,7 @@ impl Narrator {
                     *assassinate_limit,
                 ])
             }
-            Entry::Configuration(configuration) => {
-                let mut lines = Vec::new();
-                for (name, model) in &configuration.models {
-                    lines.push(context_window(name, model.context_window));
-                    if model.tool_choice == ToolChoice::Auto {
-                        lines.push(format!(
-                            "{name} does not accept a required tool call, so its players are asked to call one."
-                        ));
-                    }
-                }
-                lines
-            }
+            Entry::Configuration(configuration) => configured(&configuration.models),
             Entry::Action {
                 message: Message::Announce { seq, view, .. },
                 ..
@@ -99,18 +86,19 @@ impl Narrator {
                     seq, from, text, ..
                 },
                 ..
-            } => (!self.late(*seq))
+            } => (!late(&self.announced, *seq))
                 .then(|| self.said(from, text))
                 .into_iter()
                 .collect(),
             Entry::Failed { player, seq, error } => {
                 let player = self.seat(player);
-                vec![
-                    match self.late(*seq).then(|| self.phase_name(*seq)).flatten() {
-                        Some(phase) => format!("{player} fails to play for {phase}: {error}"),
-                        None => format!("{player} fails to play: {error}"),
-                    },
-                ]
+                vec![match late(&self.announced, *seq)
+                    .then(|| self.phase_name(*seq))
+                    .flatten()
+                {
+                    Some(phase) => format!("{player} fails to play for {phase}: {error}"),
+                    None => format!("{player} fails to play: {error}"),
+                }]
             }
             Entry::Proposed { seq, team } => {
                 let leader = match self.announced.get(seq) {
@@ -263,12 +251,6 @@ impl Narrator {
             Phase::Assassinate => "the assassination".to_string(),
         })
     }
-
-    /// Whether a later phase than the one numbered `seq` has been announced
-    /// since: a message for that phase comes late.
-    fn late(&self, seq: u64) -> bool {
-        self.announced.range(seq + 1..).next().is_some()
-    }
 }
 
 /// How a vote came out, told of `players` in seat order, each list of them
@@ -342,15 +324,6 @@ fn quested(result: &QuestResult) -> String {
     format!("The quest {comes}, with {sabotages}.")
 }
 
-/// `named` as a list in prose: "a", "a and b", "a, b and c".
-pub(super) fn in_prose(named: impl IntoIterator<Item = String>) -> String {
-    let named: Vec<String> = named.into_iter().collect();
-    match named.split_last() {
-        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-        _ => named.concat(),
-    }
-}
-
 /// What a line of a player's story is, which decides whether a story told
 /// within a budget may forget it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -379,9 +352,6 @@ pub struct Story {
     /// The lines told so far, in order, each with what it is.
     account: Vec<(String, Line)>,
 }
-
-/// The line that stands in place of the last line of talk a story forgets.
-pub const FORGOTTEN: &str = "You don't remember what was said before this.";
 
 impl Story {
     /// The story `me` tells of its own game, with nothing in it yet.
@@ -428,36 +398,7 @@ impl Story {
     /// and [`FORGOTTEN`] stands in place of the last line left out, counted
     /// with the rest. The story itself keeps every line.
     pub fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
-        let account = &self.account;
-        let chars = |line: &str| line.chars().count();
-        let talk: Vec<usize> = (0..account.len())
-            .filter(|&i| account[i].1 == Line::Talk)
-            .collect();
-        // The length of the lines, each with a newline after it, as each
-        // line of talk is left out. Joined, they have one newline fewer.
-        let mut length = account
-            .iter()
-            .map(|(line, _)| chars(line) + 1)
-            .sum::<usize>();
-        let mut forgot = 0;
-        while forgot < talk.len() && tokens(length.saturating_sub(1)) > budget {
-            length -= chars(&account[talk[forgot]].0) + 1;
-            if forgot == 0 {
-                length += chars(FORGOTTEN) + 1;
-            }
-            forgot += 1;
-        }
-        let forgotten = &talk[..forgot];
-        let lines = account
-            .iter()
-            .enumerate()
-            .filter_map(|(i, (line, _))| match forgotten.binary_search(&i) {
-                Ok(at) if at + 1 == forgot => Some(FORGOTTEN),
-                Ok(_) => None,
-                Err(_) => Some(line.as_str()),
-            })
-            .collect();
-        (lines, forgot)
+        told_within(&self.account, |line| *line == Line::Talk, budget)
     }
 
     /// What being shown `view` adds: who the player is, the first time;
@@ -589,27 +530,12 @@ impl fmt::Display for Seat<'_> {
     }
 }
 
-/// The context window of the model `name` and where it came from, in a
-/// line.
-fn context_window(name: &str, ContextWindow { tokens, source }: ContextWindow) -> String {
-    let source = match source {
-        Source::File => "as the configuration file says",
-        Source::Provider => "as the provider reports",
-        Source::ProviderDefault => "the provider's default",
-        Source::Default => "the default",
-    };
-    format!("{name}'s context window is {tokens} tokens, {source}.")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::avalon::config::Configuration;
-    use crate::avalon::tests::{
-        announcement, configured, dealt, five, logged, seated, utterance, view_of,
-    };
+    use crate::avalon::tests::{announcement, dealt, five, logged, seated, utterance, view_of};
     use crate::avalon::{Rules, State};
-    use crate::model::spec::ModelInPlay;
+    use crate::report::FORGOTTEN;
     use crate::seat::ENVIRONMENT;
     use crate::seat::id;
     use crate::strategy::RANDOM;
@@ -1023,74 +949,6 @@ mod tests {
         assert_eq!(narrator.listed(&[]), "");
     }
 
-    /// The configuration of a game whose requests to each of `models`, by
-    /// name, are made under its tool choice, within the default context
-    /// window, as the log records it.
-    fn configured_with(models: &[(&str, ToolChoice)]) -> Event<Entry> {
-        let models = models
-            .iter()
-            .map(|(name, tool_choice)| {
-                let model = ModelInPlay {
-                    base_url: "http://localhost:1234/v1".to_string(),
-                    id: format!("{name}-7b-instruct"),
-                    request_timeout: Duration::from_secs(10),
-                    api_key_env: None,
-                    tool_choice: *tool_choice,
-                    context_window: ContextWindow {
-                        tokens: 4096,
-                        source: Source::Default,
-                    },
-                };
-                (name.to_string(), model)
-            })
-            .collect();
-        logged(Entry::Configuration(Box::new(Configuration {
-            models,
-            ..configured(&five(), &Rules::default())
-        })))
-    }
-
-    #[test]
-    fn a_configuration_is_told_model_by_model_and_with_no_models_not_at_all() {
-        let configuration =
-            configured_with(&[("claude", ToolChoice::Auto), ("qwen", ToolChoice::Required)]);
-        assert_eq!(
-            Narrator::default().narrate(&configuration),
-            [
-                "claude's context window is 4096 tokens, the default.",
-                "claude does not accept a required tool call, \
-                 so its players are asked to call one.",
-                "qwen's context window is 4096 tokens, the default.",
-            ]
-        );
-        assert!(
-            Narrator::default()
-                .narrate(&configured_with(&[]))
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn the_context_window_is_told_with_where_it_came_from() {
-        let told = |tokens, source| context_window("qwen", ContextWindow { tokens, source });
-        assert_eq!(
-            told(4096, Source::Default),
-            "qwen's context window is 4096 tokens, the default."
-        );
-        assert_eq!(
-            told(32768, Source::Provider),
-            "qwen's context window is 32768 tokens, as the provider reports."
-        );
-        assert_eq!(
-            told(128000, Source::ProviderDefault),
-            "qwen's context window is 128000 tokens, the provider's default."
-        );
-        assert_eq!(
-            told(8192, Source::File),
-            "qwen's context window is 8192 tokens, as the configuration file says."
-        );
-    }
-
     /// A player's memory of receiving `message`.
     fn heard(message: Message) -> Event<Memory> {
         logged(Memory::Observed { message })
@@ -1301,15 +1159,6 @@ mod tests {
     /// The tokens `lines` take, joined by newlines, by estimate.
     fn estimated(lines: &[&str]) -> u64 {
         crate::model::estimate(&lines.join("\n"))
-    }
-
-    #[test]
-    fn a_story_within_its_budget_is_told_whole() {
-        let story = two_phases_of_talk();
-        let lines = story.lines();
-        let budget = estimated(&lines);
-        assert_eq!(story.told_within(budget), (lines.clone(), 0));
-        assert_eq!(story.told_within(u64::MAX), (lines, 0));
     }
 
     #[test]

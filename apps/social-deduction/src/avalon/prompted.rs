@@ -53,7 +53,7 @@
 //! request asks it to call one, and an answer in prose is a failure like
 //! any other.
 
-use super::report::{Story, in_prose, sabotages_fail};
+use super::report::{Story, sabotages_fail};
 use super::{
     Actor, Ballot, Choice, Deed, Entry, Message, PROPOSALS, Phase, Role, Rules, Seat, Team, View,
     act, awaited, candidates, observe, receivers, team_size,
@@ -64,6 +64,7 @@ use crate::prompted::{
     PROBE_PROMPT, SPEAK, WAIT, arguments, first_answered, probed, request, said, speak, wait,
     waited,
 };
+use crate::report::in_prose;
 use crate::seat::{PlayerId, seats};
 use anyhow::{Context as _, bail};
 use async_trait::async_trait;
@@ -1034,7 +1035,7 @@ fn asked(response: &Response, duty: Option<&Duty>, limit: Duration) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::avalon::report::{FORGOTTEN, Narrator};
+    use crate::avalon::report::Narrator;
     use crate::avalon::tests::{
         Played, Script, configured, dealt, five, logged, mute, observed_by, quick, run, utterance,
         view_of,
@@ -1048,6 +1049,7 @@ mod tests {
         MODEL_ID, Made, PROMPTED, answering, asked_of, reporting, situated, speaking, story, told,
         waiting,
     };
+    use crate::report::FORGOTTEN;
     use crate::seat::id;
     use crate::seat::{ENVIRONMENT, to_the_environment, to_the_players_but};
     use std::sync::atomic::AtomicUsize;

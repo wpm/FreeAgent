@@ -10,9 +10,7 @@
 
 use super::prompted::Memory;
 use super::{Ending, Entry, Hunt, Message, Phase, Role, Team, View, awake, ratified};
-use crate::model::window::{ContextWindow, Source};
-use crate::model::{ToolChoice, tokens};
-use crate::report::{in_order, seat_order, whole_seconds};
+use crate::report::{configured, in_order, in_prose, late, seat_order, told_within, whole_seconds};
 use crate::seat::{ENVIRONMENT, PlayerId};
 use free_agent::{ActorId, Event};
 use humantime::format_duration;
@@ -225,7 +223,7 @@ impl Narrator {
                     seq, from, text, ..
                 },
                 ..
-            } => (!self.late(*seq))
+            } => (!late(&self.announced, *seq))
                 .then(|| self.said(from, text))
                 .into_iter()
                 .collect(),
@@ -250,30 +248,20 @@ impl Narrator {
                 };
                 vec![]
             }
-            Entry::Configuration(configuration) => {
-                let mut lines = Vec::new();
-                for (name, model) in &configuration.models {
-                    lines.push(context_window(name, model.context_window));
-                    if model.tool_choice == ToolChoice::Auto {
-                        lines.push(format!(
-                            "{name} does not accept a required tool call, so its players are asked to call one."
-                        ));
-                    }
-                }
-                lines
-            }
+            Entry::Configuration(configuration) => configured(&configuration.models),
             Entry::Failed { player, seq, error } => {
                 let player = self.seat(player);
                 let verb = match self.announced.get(seq) {
                     Some((_, Phase::Day)) => "play",
                     _ => "select",
                 };
-                vec![
-                    match self.late(*seq).then(|| self.phase_name(*seq)).flatten() {
-                        Some(phase) => format!("{player} fails to {verb} for {phase}: {error}"),
-                        None => format!("{player} fails to {verb}: {error}"),
-                    },
-                ]
+                vec![match late(&self.announced, *seq)
+                    .then(|| self.phase_name(*seq))
+                    .flatten()
+                {
+                    Some(phase) => format!("{player} fails to {verb} for {phase}: {error}"),
+                    None => format!("{player} fails to {verb}: {error}"),
+                }]
             }
             _ => vec![],
         }
@@ -529,7 +517,7 @@ impl Narrator {
             return lines;
         };
         let dead = in_order(self.alive.difference(alive_after));
-        let listed = listed(dead.iter().map(|player| Seat::named(player)));
+        let listed = in_prose(dead.iter().map(|player| player.to_string()));
         let line = match (slept, dead.len()) {
             (true, 0) => "Nobody died.".to_string(),
             (true, _) => format!("{listed} died."),
@@ -644,7 +632,11 @@ impl Narrator {
     fn hunt(&self, hunt: &Hunt) -> String {
         let victim = self.seat(&hunt.victim);
         let protectors = in_order(&hunt.protectors);
-        let listed = listed(protectors.iter().map(|doctor| self.seat(doctor)));
+        let listed = in_prose(
+            protectors
+                .iter()
+                .map(|doctor| self.seat(doctor).to_string()),
+        );
         match protectors.len() {
             0 => format!("The werewolves choose {victim}."),
             1 => format!("The werewolves choose {victim}, whom {listed} protects."),
@@ -710,13 +702,6 @@ impl Narrator {
             _ => format!("{subject} vote{s} against {chosen}."),
         }
     }
-
-    /// Whether a later phase than the one numbered `seq` has been announced
-    /// since: a message for that phase comes late, and is no deed of the
-    /// phase being told.
-    fn late(&self, seq: u64) -> bool {
-        self.announced.range(seq + 1..).next().is_some()
-    }
 }
 
 /// A player's account of its own game, told a memory at a time: the
@@ -728,9 +713,6 @@ pub struct Story {
     /// the account.
     narrator: Narrator,
 }
-
-/// The line that stands in place of the last line of talk a story forgets.
-pub const FORGOTTEN: &str = "You don't remember what was said before this.";
 
 impl Story {
     /// The story `me` tells of its own game, whose day's vote is
@@ -757,36 +739,7 @@ impl Story {
     /// and [`FORGOTTEN`] stands in place of the last line left out, counted
     /// with the rest. The story itself keeps every line.
     pub fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
-        let account = &self.narrator.account;
-        let chars = |line: &str| line.chars().count();
-        let talk: Vec<usize> = (0..account.len())
-            .filter(|&i| account[i].1 == Line::Talk)
-            .collect();
-        // The length of the lines, each with a newline after it, as each
-        // line of talk is left out. Joined, they have one newline fewer.
-        let mut length = account
-            .iter()
-            .map(|(line, _)| chars(line) + 1)
-            .sum::<usize>();
-        let mut forgot = 0;
-        while forgot < talk.len() && tokens(length.saturating_sub(1)) > budget {
-            length -= chars(&account[talk[forgot]].0) + 1;
-            if forgot == 0 {
-                length += chars(FORGOTTEN) + 1;
-            }
-            forgot += 1;
-        }
-        let forgotten = &talk[..forgot];
-        let lines = account
-            .iter()
-            .enumerate()
-            .filter_map(|(i, (line, _))| match forgotten.binary_search(&i) {
-                Ok(at) if at + 1 == forgot => Some(FORGOTTEN),
-                Ok(_) => None,
-                Err(_) => Some(line.as_str()),
-            })
-            .collect();
-        (lines, forgot)
+        told_within(&self.narrator.account, |line| *line == Line::Talk, budget)
     }
 }
 
@@ -796,13 +749,6 @@ impl Story {
 struct Seat<'a> {
     player: &'a PlayerId,
     role: Option<Role>,
-}
-
-impl<'a> Seat<'a> {
-    /// `player` by name alone.
-    fn named(player: &'a PlayerId) -> Self {
-        Seat { player, role: None }
-    }
 }
 
 impl fmt::Display for Seat<'_> {
@@ -827,7 +773,7 @@ fn identity(me: &PlayerId, roles: &HashMap<PlayerId, Role>) -> String {
                 [_] => format!("You are {me}, the only werewolf."),
                 pack => format!(
                     "You are {me}, a werewolf. The werewolves are {}.",
-                    listed(pack.iter().map(|player| Seat::named(player)))
+                    in_prose(pack.iter().map(|player| player.to_string()))
                 ),
             }
         }
@@ -835,18 +781,6 @@ fn identity(me: &PlayerId, roles: &HashMap<PlayerId, Role>) -> String {
         Some(role) => format!("You are {me}, the {role}."),
         None => format!("You are {me}."),
     }
-}
-
-/// The context window of the model `name` and where it came from, in a
-/// line.
-fn context_window(name: &str, ContextWindow { tokens, source }: ContextWindow) -> String {
-    let source = match source {
-        Source::File => "as the configuration file says",
-        Source::Provider => "as the provider reports",
-        Source::ProviderDefault => "the provider's default",
-        Source::Default => "the default",
-    };
-    format!("{name}'s context window is {tokens} tokens, {source}.")
 }
 
 /// A phase by its name: `Night 1`, `Day 1`.
@@ -867,18 +801,14 @@ fn ordinal((round, phase): &(NonZero<u8>, Phase)) -> u16 {
     u16::from(round.get()) * 2 + half
 }
 
-/// Seats as a list in prose, in the order given.
-fn listed<'a>(seats: impl IntoIterator<Item = Seat<'a>>) -> String {
-    let seats: Vec<String> = seats.into_iter().map(|seat| seat.to_string()).collect();
-    seats.join(" and ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ToolChoice;
+    use crate::model::window::{ContextWindow, Source};
+    use crate::report::FORGOTTEN;
     use crate::seat::id;
 
-    use crate::model::estimate;
     use crate::model::spec::ModelInPlay;
     use crate::seat::to_the_environment;
     use crate::strategy::{RANDOM, Random, Strategy};
@@ -1904,91 +1834,6 @@ mod tests {
         story
     }
 
-    /// The estimate of `lines`, joined as a request joins them.
-    fn estimated(lines: &[&str]) -> u64 {
-        estimate(&lines.join("\n"))
-    }
-
-    #[test]
-    fn a_story_within_its_budget_is_told_whole() {
-        let story = two_days_of_talk();
-        let whole = story.lines();
-        assert_eq!(
-            whole,
-            [
-                "You are doctor, the doctor.",
-                "",
-                "Day 1.",
-                &format!("ann says, \"{ACCUSED}\""),
-                &format!("wolf says, \"{DENIED}\""),
-                "ann votes against wolf.",
-                "You do not vote.",
-                "seer does not vote.",
-                "wolf does not vote.",
-                "wolf dies.",
-                "",
-                "Night 2.",
-                "seer dies.",
-                "",
-                "Day 2.",
-                &format!("ann says, \"{STILL}\""),
-            ]
-        );
-        assert_eq!(story.told_within(estimated(&whole)), (whole.clone(), 0));
-        assert_eq!(story.told_within(u64::MAX), (whole, 0));
-    }
-
-    #[test]
-    fn a_story_over_its_budget_forgets_talk_oldest_first_in_its_place() {
-        let story = two_days_of_talk();
-        let whole = story.lines();
-        let forgetting = |forgot: usize| -> Vec<&str> {
-            let talk = [3, 4, 15];
-            whole
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !talk[..forgot].contains(i) || *i == talk[forgot - 1])
-                .map(|(i, line)| {
-                    if talk[..forgot].contains(&i) {
-                        FORGOTTEN
-                    } else {
-                        line
-                    }
-                })
-                .collect()
-        };
-        assert_eq!(
-            forgetting(2),
-            [
-                "You are doctor, the doctor.",
-                "",
-                "Day 1.",
-                "You don't remember what was said before this.",
-                "ann votes against wolf.",
-                "You do not vote.",
-                "seer does not vote.",
-                "wolf does not vote.",
-                "wolf dies.",
-                "",
-                "Night 2.",
-                "seer dies.",
-                "",
-                "Day 2.",
-                &format!("ann says, \"{STILL}\""),
-            ]
-        );
-        // The past day's talk is forgotten first, and only as much as has
-        // to be.
-        for forgot in 1..=2 {
-            let budget = estimated(&forgetting(forgot));
-            assert!(budget < estimated(&whole));
-            assert_eq!(story.told_within(budget), (forgetting(forgot), forgot));
-        }
-        // A token less, and the current day's talk goes too.
-        let budget = estimated(&forgetting(2)) - 1;
-        assert_eq!(story.told_within(budget), (forgetting(3), 3));
-    }
-
     #[test]
     fn a_story_over_its_budget_with_no_talk_left_is_told_with_none() {
         let story = two_days_of_talk();
@@ -2109,15 +1954,17 @@ mod tests {
             (id("wolf"), Role::Werewolf),
             (id("doc1"), Role::Doctor),
             (id("doc2"), Role::Doctor),
+            (id("doc3"), Role::Doctor),
             (id("ann"), Role::Villager),
         ])));
-        let everyone = ["wolf", "doc1", "doc2", "ann"];
+        let everyone = ["wolf", "doc1", "doc2", "doc3", "ann"];
         narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone));
-        narrator.narrate(&hunted("ann", &["doc2", "doc1"]));
+        narrator.narrate(&hunted("ann", &["doc2", "doc3", "doc1"]));
         assert_eq!(
             narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone)),
             [
-                "The werewolves choose ann (villager), whom doc1 (doctor) and doc2 (doctor) protect.",
+                "The werewolves choose ann (villager), \
+                 whom doc1 (doctor), doc2 (doctor) and doc3 (doctor) protect.",
                 "Nobody dies.",
                 "Night 1 took 0s.",
                 "",
@@ -2509,15 +2356,14 @@ mod tests {
             &["wolf", "seer", "doctor", "ann"],
         ));
         assert_eq!(
-            narrator.narrate(&ended(Team::Werewolves, 1, &["wolf", "ann"])),
+            narrator.narrate(&ended(Team::Werewolves, 1, &["wolf"])),
             [
-                "doctor and seer die.",
+                "ann, doctor and seer die.",
                 "Day 1 took 0s.",
                 "",
                 "The werewolves win after 1 day.",
                 "The game took 0s.",
                 "Survivors:",
-                "ann (villager)",
                 "wolf (werewolf)"
             ]
         );
@@ -2558,6 +2404,25 @@ mod tests {
         assert_eq!(
             narrator.recall(&chose("wolf", 2, "seer")),
             ["You vote against seer."]
+        );
+    }
+
+    #[test]
+    fn a_pack_of_three_is_listed_in_prose() {
+        let mut narrator = Narrator::for_player(id("wolf"), true);
+        let pack = [
+            ("wolf", Role::Werewolf),
+            ("bob", Role::Werewolf),
+            ("cat", Role::Werewolf),
+        ];
+        assert_eq!(
+            narrator.recall(&heard(
+                1,
+                Phase::Night,
+                &["wolf", "bob", "cat", "ann"],
+                &pack
+            ))[0],
+            "You are wolf, a werewolf. The werewolves are bob, cat and wolf."
         );
     }
 
@@ -2884,7 +2749,7 @@ mod tests {
     /// The configuration of a game whose requests to each of `models`, by
     /// name, are made under its tool choice, within the default context
     /// window, as the log records it.
-    fn configured(models: &[(&str, ToolChoice)]) -> Event<Entry> {
+    fn configured_with(models: &[(&str, ToolChoice)]) -> Event<Entry> {
         let models = models
             .iter()
             .map(|(name, tool_choice)| {
@@ -2918,7 +2783,7 @@ mod tests {
     #[test]
     fn a_configuration_requiring_a_tool_call_tells_only_the_context_window_and_only_in_the_omniscient_account()
      {
-        let configuration = configured(&[("qwen", ToolChoice::Required)]);
+        let configuration = configured_with(&[("qwen", ToolChoice::Required)]);
         assert_eq!(
             Narrator::default().narrate(&configuration),
             ["qwen's context window is 4096 tokens, the default."]
@@ -2931,29 +2796,8 @@ mod tests {
     }
 
     #[test]
-    fn the_context_window_is_told_with_where_it_came_from() {
-        let told = |tokens, source| context_window("qwen", ContextWindow { tokens, source });
-        assert_eq!(
-            told(4096, Source::Default),
-            "qwen's context window is 4096 tokens, the default."
-        );
-        assert_eq!(
-            told(32768, Source::Provider),
-            "qwen's context window is 32768 tokens, as the provider reports."
-        );
-        assert_eq!(
-            told(128000, Source::ProviderDefault),
-            "qwen's context window is 128000 tokens, the provider's default."
-        );
-        assert_eq!(
-            told(8192, Source::File),
-            "qwen's context window is 8192 tokens, as the configuration file says."
-        );
-    }
-
-    #[test]
     fn a_configuration_allowing_a_tool_call_is_told_in_the_omniscient_account_alone() {
-        let configuration = configured(&[("qwen", ToolChoice::Auto)]);
+        let configuration = configured_with(&[("qwen", ToolChoice::Auto)]);
         assert_eq!(
             Narrator::default().narrate(&configuration),
             [
@@ -2972,7 +2816,7 @@ mod tests {
     #[test]
     fn a_configuration_is_told_model_by_model_and_with_no_models_not_at_all() {
         let configuration =
-            configured(&[("claude", ToolChoice::Auto), ("qwen", ToolChoice::Required)]);
+            configured_with(&[("claude", ToolChoice::Auto), ("qwen", ToolChoice::Required)]);
         assert_eq!(
             Narrator::default().narrate(&configuration),
             [
@@ -2982,6 +2826,10 @@ mod tests {
                 "qwen's context window is 4096 tokens, the default.",
             ]
         );
-        assert!(Narrator::default().narrate(&configured(&[])).is_empty());
+        assert!(
+            Narrator::default()
+                .narrate(&configured_with(&[]))
+                .is_empty()
+        );
     }
 }

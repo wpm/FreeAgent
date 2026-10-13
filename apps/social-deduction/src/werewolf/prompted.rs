@@ -994,9 +994,10 @@ mod tests {
         MODEL_ID, Made, PROMPTED, answering, asked_of, reporting, situated, speaking, story, told,
         waiting,
     };
+    use crate::report::FORGOTTEN;
     use crate::strategy::{Prompted, Strategy};
     use crate::werewolf::config::{Configuration, players};
-    use crate::werewolf::report::{FORGOTTEN, Narrator};
+    use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{
         Played, announcement, at_once, between_the_deal_and_the_end, dealt, logged, mute,
         observed_by, observed_by_the_environment, one_wolf_against, received, retraction, run,
