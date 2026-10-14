@@ -1814,6 +1814,91 @@ mod tests {
         story
     }
 
+    /// The estimate of `lines`, joined as a request joins them.
+    fn estimated(lines: &[&str]) -> u64 {
+        crate::model::estimate(&lines.join("\n"))
+    }
+
+    #[test]
+    fn a_story_within_its_budget_is_told_whole() {
+        let story = two_days_of_talk();
+        let whole = story.lines();
+        assert_eq!(
+            whole,
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                &format!("ann says, \"{ACCUSED}\""),
+                &format!("wolf says, \"{DENIED}\""),
+                "ann votes against wolf.",
+                "You do not vote.",
+                "seer does not vote.",
+                "wolf does not vote.",
+                "wolf dies.",
+                "",
+                "Night 2.",
+                "seer dies.",
+                "",
+                "Day 2.",
+                &format!("ann says, \"{STILL}\""),
+            ]
+        );
+        assert_eq!(story.told_within(estimated(&whole)), (whole.clone(), 0));
+        assert_eq!(story.told_within(u64::MAX), (whole, 0));
+    }
+
+    #[test]
+    fn a_story_over_its_budget_forgets_talk_oldest_first_in_its_place() {
+        let story = two_days_of_talk();
+        let whole = story.lines();
+        let forgetting = |forgot: usize| -> Vec<&str> {
+            let talk = [3, 4, 15];
+            whole
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !talk[..forgot].contains(i) || *i == talk[forgot - 1])
+                .map(|(i, line)| {
+                    if talk[..forgot].contains(&i) {
+                        FORGOTTEN
+                    } else {
+                        line
+                    }
+                })
+                .collect()
+        };
+        assert_eq!(
+            forgetting(2),
+            [
+                "You are doctor, the doctor.",
+                "",
+                "Day 1.",
+                "You don't remember what was said before this.",
+                "ann votes against wolf.",
+                "You do not vote.",
+                "seer does not vote.",
+                "wolf does not vote.",
+                "wolf dies.",
+                "",
+                "Night 2.",
+                "seer dies.",
+                "",
+                "Day 2.",
+                &format!("ann says, \"{STILL}\""),
+            ]
+        );
+        // The past day's talk is forgotten first, and only as much as has
+        // to be.
+        for forgot in 1..=2 {
+            let budget = estimated(&forgetting(forgot));
+            assert!(budget < estimated(&whole));
+            assert_eq!(story.told_within(budget), (forgetting(forgot), forgot));
+        }
+        // A token less, and the current day's talk goes too.
+        let budget = estimated(&forgetting(2)) - 1;
+        assert_eq!(story.told_within(budget), (forgetting(3), 3));
+    }
+
     #[test]
     fn a_story_over_its_budget_with_no_talk_left_is_told_with_none() {
         let story = two_days_of_talk();

@@ -1143,6 +1143,15 @@ mod tests {
     }
 
     #[test]
+    fn a_story_within_its_budget_is_told_whole() {
+        let story = two_phases_of_talk();
+        let lines = story.lines();
+        let budget = estimated(&lines);
+        assert_eq!(story.told_within(budget), (lines.clone(), 0));
+        assert_eq!(story.told_within(u64::MAX), (lines, 0));
+    }
+
+    #[test]
     fn a_story_over_its_budget_forgets_talk_oldest_first_in_its_place() {
         let story = two_phases_of_talk();
         let lines = story.lines();
