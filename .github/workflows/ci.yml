@@ -88,11 +88,41 @@ jobs:
       - run: cargo check -p social-deduction-gui --target wasm32-unknown-unknown
       - run: apps/social-deduction-gui/build-page.sh
 
+  # The desktop shell needs each platform's webview, so the jobs above
+  # leave it out. One leg per platform, since the shell has code only one
+  # of them compiles: the macOS dev app bundle, and the Windows subsystem
+  # attribute.
+  desktop:
+    name: Desktop (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux, os: ubuntu-latest }
+          - { name: macOS, os: macos-latest }
+          - { name: Windows, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Only Linux needs system packages: macOS and Windows ship their
+      # webviews, and their credential stores need no library. The Secret
+      # Service is reached through D-Bus.
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf libdbus-1-dev
+      - run: cargo clippy -p social-deduction-desktop --all-targets -- -D warnings
+      - run: cargo test -p social-deduction-desktop
+
   # The one check a ruleset needs to require: it passes only if every job it
   # needs did, so jobs can come and go without the ruleset changing.
   required:
     name: Required
-    needs: [format, clippy, test, docs, viewer]
+    needs: [format, clippy, test, docs, viewer, desktop]
     # Without always() a failure above would skip this job, and a ruleset
     # counts a skipped check as passing.
     if: always()
@@ -121,8 +151,10 @@ jobs:
           tool: cargo-llvm-cov
       # Without --workspace the tests of the applications still run, but the
       # report leaves their source files out. The viewer's frontend is the
-      # browser's, and the Viewer job tests it.
-      - run: cargo llvm-cov --workspace --exclude social-deduction-gui --lcov --output-path lcov.info
+      # browser's, and the Viewer job tests it. The desktop shell is the
+      # Tauri glue around social_deduction::live, which is measured here,
+      # and needs a webview to build, so the Desktop jobs test it.
+      - run: cargo llvm-cov --workspace --exclude social-deduction-gui --exclude social-deduction-desktop --lcov --output-path lcov.info
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v7
         with:

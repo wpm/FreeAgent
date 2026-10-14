@@ -7,6 +7,7 @@ pub mod announced;
 pub mod avalon;
 pub mod config;
 pub mod game;
+pub mod live;
 pub mod model;
 pub mod prompted;
 pub mod random;

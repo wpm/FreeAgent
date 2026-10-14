@@ -13,6 +13,12 @@ workflow takes a version's notes from here.
   chat beside a live Avalon board, built with Leptos and Rich-Chat. Every
   push to `main` plays a random game of Avalon and deploys it to
   <https://wpm.github.io/FreeAgent/viewer/>.
+- The viewer as a desktop app, built with Tauri: pick a preset
+  configuration, press **Run**, and watch the game live, with **Stop**.
+  Each game's log is saved, and API keys come from the OS keychain, then
+  the environment.
+- `social_deduction::live`, which plays a prepared game in the background,
+  saving its log and folding it into cues as it happens.
 - `social_deduction::stage`, which folds a game's log into the viewer's
   cues, and the `stage` example, which folds a log file.
 - The release archives hold the example configurations in `configs/`,

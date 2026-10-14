@@ -11,7 +11,7 @@ trap 'rm -f "$log"' EXIT
 cargo build --release -p social-deduction --bin social-deduction --example stage
 for game in avalon werewolf; do
   cargo run --quiet --release -p social-deduction -- play "apps/social-deduction/configs/$game/random.toml" 2> "$log" > /dev/null
-  cargo run --quiet --release -p social-deduction --example stage < "$log" > "apps/social-deduction-gui/$game.json"
+  cargo run --quiet --release -p social-deduction --example stage < "$log" > "apps/social-deduction-gui/game/$game.json"
 done
 cd apps/social-deduction-gui
 trunk build --release --public-url /FreeAgent/viewer/
