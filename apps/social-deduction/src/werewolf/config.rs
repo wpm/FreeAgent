@@ -177,7 +177,8 @@ system = "{{ name }} the {{ role }}"
 
     /// The table `lineup` seats: how many of each role.
     fn table(lineup: &Lineup<Role>) -> Table {
-        let seats = |role| lineup.allotments[&role].values().sum();
+        let counts = lineup.role_counts();
+        let seats = |role| counts[&role];
         Table {
             werewolves: seats(Role::Werewolf),
             villagers: seats(Role::Villager),

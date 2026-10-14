@@ -301,6 +301,13 @@ impl<R: Copy + Ord + Hash + fmt::Display> Lineup<R> {
         seats(self.allotments.values().flat_map(BTreeMap::values).sum())
     }
 
+    /// How many seats of each role there are.
+    pub fn role_counts(&self) -> BTreeMap<R, usize> {
+        let seats =
+            |(role, allotted): (&R, &BTreeMap<String, usize>)| (*role, allotted.values().sum());
+        self.allotments.iter().map(seats).collect()
+    }
+
     /// Deal the (role, strategy) pairs the allotments make, one per seat,
     /// at random to the seats `Player 1` onward.
     pub fn deal(&self) -> HashMap<PlayerId, Dealt<R>> {
@@ -521,11 +528,7 @@ impl<G: game::Game> Settings<G> {
     ) -> anyhow::Result<Configuration<G>> {
         let lineup = &self.lineup;
         Ok(Configuration {
-            role_counts: lineup
-                .allotments
-                .iter()
-                .map(|(role, allotted)| (*role, allotted.values().sum()))
-                .collect(),
+            role_counts: lineup.role_counts(),
             limits: self.limits.clone(),
             strategies: lineup.strategies.clone(),
             allotments: lineup.allotments.clone(),

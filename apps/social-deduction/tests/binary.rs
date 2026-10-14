@@ -150,6 +150,14 @@ fn assert_plays_the_default_table(args: &[&str], notes: &[&str]) -> (Vec<Event<E
     (events, printed)
 }
 
+/// The limits the deal the log opens with gives each phase.
+fn started<G: Game>(events: &[Event<game::Entry<G>>]) -> &G::Limits {
+    match events.first().map(|event| &event.payload) {
+        Some(game::Entry::Start { limits, .. }) => limits,
+        first => panic!("{first:?}"),
+    }
+}
+
 /// The configuration the log of `events` has right after the deal.
 fn configuration<G: Game>(events: &[Event<game::Entry<G>>]) -> &Configuration<G> {
     match events.get(1).map(|event| &event.payload) {
@@ -486,10 +494,7 @@ fn a_game_of_model_players_is_logged_from_the_configuration_to_the_result() {
     let (events, printed) = assert_plays_the_default_table(&args, &[DEFAULT_WINDOW]);
     let (roles, strategies) = start(&events);
     assert!(strategies.values().all(|strategy| strategy == "everyone"));
-    let Entry::Start { limits, .. } = &events[0].payload else {
-        panic!("{events:?}");
-    };
-    assert_eq!(limits.ratify_limit, Duration::from_secs(1));
+    assert_eq!(started(&events).ratify_limit, Duration::from_secs(1));
     let configuration = configuration(&events);
     let model = &configuration.models["qwen"];
     assert_eq!(model.base_url, base_url);
@@ -707,10 +712,7 @@ fn a_file_without_a_ratify_limit_plays_days_that_are_not_ratified() {
     rephased(&config, &["night_limit = \"1s\"", "day_limit = \"2s\""]);
     let args = [config.as_str()];
     let (events, printed) = assert_plays_the_default_table(&args, &[DEFAULT_WINDOW]);
-    let Entry::Start { limits, .. } = &events[0].payload else {
-        panic!("{events:?}");
-    };
-    assert_eq!(limits.ratify_limit, Duration::ZERO);
+    assert_eq!(started(&events).ratify_limit, Duration::ZERO);
     assert_eq!(configuration(&events).limits.ratify_limit, Duration::ZERO);
     let endings = endings(&events);
     assert!(
@@ -1197,8 +1199,12 @@ fn assert_every_call_logs_its_usage_and_the_probe_none<G: Tested>() {
 }
 
 #[test]
-fn every_call_a_player_makes_logs_its_usage_and_the_probe_logs_none() {
+fn every_call_a_player_makes_logs_its_usage_and_the_probe_logs_none_in_werewolf() {
     assert_every_call_logs_its_usage_and_the_probe_none::<Werewolf>();
+}
+
+#[test]
+fn every_call_a_player_makes_logs_its_usage_and_the_probe_logs_none_in_avalon() {
     assert_every_call_logs_its_usage_and_the_probe_none::<Avalon>();
 }
 
@@ -1217,8 +1223,12 @@ fn assert_no_log_leaves_standard_error_empty<G: Tested>() {
 }
 
 #[test]
-fn no_log_leaves_standard_error_empty_and_the_game_is_still_told() {
+fn no_log_leaves_standard_error_empty_and_the_game_is_still_told_in_werewolf() {
     assert_no_log_leaves_standard_error_empty::<Werewolf>();
+}
+
+#[test]
+fn no_log_leaves_standard_error_empty_and_the_game_is_still_told_in_avalon() {
     assert_no_log_leaves_standard_error_empty::<Avalon>();
 }
 
@@ -1244,8 +1254,12 @@ fn assert_refuses_a_model_that_does_not_play<G: Tested>() {
 }
 
 #[test]
-fn a_model_that_does_not_play_when_asked_is_refused_in_the_provider_s_words() {
+fn a_model_that_does_not_play_when_asked_is_refused_in_the_provider_s_words_in_werewolf() {
     assert_refuses_a_model_that_does_not_play::<Werewolf>();
+}
+
+#[test]
+fn a_model_that_does_not_play_when_asked_is_refused_in_the_provider_s_words_in_avalon() {
     assert_refuses_a_model_that_does_not_play::<Avalon>();
 }
 
@@ -1269,13 +1283,7 @@ fn assert_takes_the_role_counts_and_the_limits_from_the_file<G: Tested>(
     }
     let seats: usize = counts.iter().map(|(_, count)| count).sum();
     assert_eq!(roles.len(), seats);
-    let Some(game::Entry::Start {
-        limits: started, ..
-    }) = events.first().map(|event| &event.payload)
-    else {
-        panic!("{events:?}");
-    };
-    assert_eq!(*started, limits);
+    assert_eq!(*started(&events), limits);
     let configuration = configuration(&events);
     assert_eq!(configuration.limits, limits);
     for (role, count) in counts {
@@ -1289,7 +1297,7 @@ fn assert_takes_the_role_counts_and_the_limits_from_the_file<G: Tested>(
 }
 
 #[test]
-fn each_game_takes_the_role_counts_and_the_limits_from_the_file() {
+fn werewolf_takes_the_role_counts_and_the_limits_from_the_file() {
     // The day is not ratified unless something says so.
     assert_takes_the_role_counts_and_the_limits_from_the_file::<Werewolf>(
         "[phases]\nnight_limit = \"5s\"\nday_limit = \"1m\"\n[roles.werewolf]\ncount = 1\n\
@@ -1307,6 +1315,10 @@ fn each_game_takes_the_role_counts_and_the_limits_from_the_file() {
         },
         "A night waits 5s and a day 1m.",
     );
+}
+
+#[test]
+fn avalon_takes_the_role_counts_and_the_limits_from_the_file() {
     use avalon::Role::{Assassin, Merlin, Minion, Servant};
     assert_takes_the_role_counts_and_the_limits_from_the_file::<Avalon>(
         "[phases]\nvote_limit = \"2m\"\nquest_limit = \"3m\"\n[roles.servant]\ncount = 3\n\

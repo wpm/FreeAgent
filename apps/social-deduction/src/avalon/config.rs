@@ -143,7 +143,8 @@ impl Config {
 
 /// The table `lineup` seats: how many of each role.
 fn table(lineup: &Lineup<Role>) -> Table {
-    let seats = |role| lineup.allotments[&role].values().sum();
+    let counts = lineup.role_counts();
+    let seats = |role| counts[&role];
     Table {
         merlin: seats(Role::Merlin),
         percival: seats(Role::Percival),
@@ -583,7 +584,7 @@ count = 1
             let (logger, log) = unbounded_channel();
             let episode = game(
                 deal.clone(),
-                settings.limits.clone(),
+                settings.rules(),
                 configuration.clone(),
                 winner,
                 |_| random::Player::init(),
@@ -919,7 +920,7 @@ system = \"Smart {{{{ name }}}}.\"
         let (logger, log) = unbounded_channel();
         let episode = game(
             deal.clone(),
-            settings.limits.clone(),
+            settings.rules(),
             configuration.clone(),
             winner,
             players,
