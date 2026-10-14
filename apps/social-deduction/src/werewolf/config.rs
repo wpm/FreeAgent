@@ -10,7 +10,8 @@
 //!
 //! A model is in play when a prompted strategy that names it is allotted a
 //! seat. [`Settings::set_up`] sets up each model in play before any actor
-//! is built: it reads the key, settles the [`ContextWindow`] and asks the
+//! is built: it reads the key, settles the
+//! [`ContextWindow`](crate::model::window::ContextWindow) and asks the
 //! model to play. The API key never appears in the file. The file names
 //! the environment variable that holds it, and
 //! [`Spec::api_key`](crate::model::spec::Spec::api_key) reads that

@@ -12,7 +12,8 @@
 //! defined. The [`Lineup`] the allotments make deals the (role, strategy)
 //! pairs to the seats at random, and renders every [`SystemPrompt`] a game
 //! could call for, so that a broken template stops the program before any
-//! game begins.
+//! game begins. A game's file settles into its [`Settings`], which set up
+//! the models in play and make the [`Configuration`] a game runs under.
 
 use crate::avalon::{self, Avalon};
 use crate::game;
