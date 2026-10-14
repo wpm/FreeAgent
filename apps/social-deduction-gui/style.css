@@ -546,3 +546,85 @@ body,
     border-top: 1px solid var(--rc-border);
   }
 }
+
+/* The desktop app's settings screen */
+
+.sd-settings-app {
+  grid-template-rows: auto 1fr;
+}
+
+.sd-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 0;
+  padding: 1rem;
+}
+
+.sd-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+
+.sd-field select {
+  font: inherit;
+  font-weight: normal;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.375rem;
+  background: var(--rc-bg);
+  color: var(--rc-fg);
+}
+
+.sd-config {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0.75rem;
+  overflow: auto;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.375rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+.sd-run button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font: inherit;
+  padding: 0.375rem 1.5rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 999px;
+  background: var(--rc-accent);
+  color: var(--rc-accent-fg);
+  cursor: pointer;
+}
+
+.sd-run button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.sd-spinner {
+  width: 0.9em;
+  height: 0.9em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: sd-spin 0.8s linear infinite;
+}
+
+@keyframes sd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sd-settings .sd-error {
+  margin: 0;
+  padding: 0;
+  white-space: pre-wrap;
+}

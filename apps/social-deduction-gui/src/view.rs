@@ -1,5 +1,7 @@
 //! The page: a header, the chat beside the board, and a footer naming the
-//! commit the page was built from. Every part draws the [`Screen`].
+//! commit the page was built from. Every part draws the [`Screen`]. In
+//! the browser the cues come from files; in the desktop app, from a game
+//! playing live.
 
 use std::time::Duration;
 
@@ -13,10 +15,12 @@ use social_deduction_stage::{
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
+use crate::desktop::Desktop;
 use crate::screen::{
     self, Board, Body, Landed, NARRATOR, Post, Screen, THINKING_DELAY, Thinker, Timer, dots_due,
     entry, role_key,
 };
+use crate::tauri;
 
 /// How often a replay shows the next cue.
 const STEP: Duration = Duration::from_millis(250);
@@ -30,25 +34,35 @@ const TICK: Duration = Duration::from_millis(100);
 /// The commit the page was built from, when the build names one.
 const COMMIT: Option<&str> = option_env!("GITHUB_SHA");
 
-/// The games the page shows, each by the name of its cues file and its
-/// URL hash.
+/// The games the page shows, each by the name of its cues file in `game/`
+/// and its URL hash. The cues are in a directory of their own so that the
+/// page builds without them, as the desktop app's does.
 const GAMES: [(&str, &str); 2] = [("avalon", "Avalon"), ("werewolf", "Werewolf")];
 
-/// The viewer: it fetches the cues of the game the URL hash names,
+/// The viewer: the desktop app's inside the desktop app, and the web
+/// page's in a browser.
+#[component]
+pub fn App() -> impl IntoView {
+    if tauri::in_tauri() {
+        view! { <Desktop /> }.into_any()
+    } else {
+        view! { <Web /> }.into_any()
+    }
+}
+
+/// The web page: it fetches the cues of the game the URL hash names,
 /// `#avalon` (the default) or `#werewolf`, from beside the page and shows
 /// the whole game at once. **Play** clears the screen and replays the
 /// cues, one every 250 ms.
 #[component]
-pub fn App() -> impl IntoView {
-    let screen = RwSignal::new(Screen::default());
+fn Web() -> impl IntoView {
+    let live = Live::default();
+    let screen = live.screen;
     let cues = StoredValue::new(Vec::<Cue>::new());
     let failure = RwSignal::new(None::<String>);
     let replayed = RwSignal::new(false);
     let replay = StoredValue::new(None::<IntervalHandle>);
     let game = RwSignal::new(hashed());
-    // The viewer's time, now and when the latest cue arrived.
-    let tick = RwSignal::new(elapsed());
-    let arrived = StoredValue::new(elapsed());
 
     let stop = move || {
         if let Some(handle) = replay.get_value() {
@@ -82,23 +96,6 @@ pub fn App() -> impl IntoView {
         });
     });
 
-    let _ = set_interval_with_handle(move || tick.set(elapsed()), TICK);
-    // A memo, so that a stopped clock redraws nothing as it ticks.
-    let now = Signal::from(Memo::new(move |_| {
-        let waited = tick.get() - arrived.get_value();
-        screen.with(|screen| screen.clock.now(waited))
-    }));
-
-    let theme = Memo::new(move |_| screen.with(Screen::theme));
-    Effect::new(move |_| {
-        if let Some(root) = document().document_element() {
-            let _ = match theme.get() {
-                Some(theme) => root.set_attribute("data-theme", theme),
-                None => root.remove_attribute("data-theme"),
-            };
-        }
-    });
-
     let play = move |_| {
         stop();
         screen.set(Screen::default());
@@ -114,26 +111,108 @@ pub fn App() -> impl IntoView {
                     return;
                 };
                 next.set_value(index + 1);
-                let at = elapsed();
-                let waited = at - arrived.get_value();
-                arrived.set_value(at);
-                let applied = screen.try_update(|screen| {
-                    screen.advance(waited);
-                    screen.apply(&cue, true)
-                });
-                if let Some(Some(number)) = applied {
-                    set_timeout(move || screen.update(|screen| screen.expire(number)), FLASH);
-                }
-                if let Some(due) = dots_due(&cue) {
-                    let rate = screen.with_untracked(|screen| screen.clock.rate);
-                    let delay = Duration::from_millis(THINKING_DELAY).div_f64(rate);
-                    set_timeout(move || screen.update(|screen| screen.reveal(due)), delay);
-                }
+                live.show(&cue);
             },
             STEP,
         );
         replay.set_value(handle.ok());
     };
+
+    view! {
+        <Viewer live=live failure=failure>
+            <nav class="sd-games">
+                {GAMES
+                    .map(|(name, title)| {
+                        let current = move || (game.get() == name).then_some("page");
+                        view! {
+                            <a href=format!("#{name}") aria-current=current>
+                                {title}
+                            </a>
+                        }
+                    })
+                    .collect_view()}
+            </nav>
+            <button on:click=play>
+                {move || if replayed.get() { "Replay" } else { "Play" }}
+            </button>
+        </Viewer>
+    }
+}
+
+/// The screen as cues arrive one at a time, and the viewer's time when the
+/// latest arrived.
+#[derive(Clone, Copy)]
+pub struct Live {
+    /// What the screen shows.
+    pub screen: RwSignal<Screen>,
+    /// The viewer's time when the latest cue arrived.
+    arrived: StoredValue<f64>,
+}
+
+impl Default for Live {
+    /// An empty screen.
+    fn default() -> Self {
+        Self {
+            screen: RwSignal::new(Screen::default()),
+            arrived: StoredValue::new(elapsed()),
+        }
+    }
+}
+
+impl Live {
+    /// Show `cue` as it arrives: the clocks run on to it, what it lands
+    /// flashes, and the dots of a call it sends out show once the call
+    /// has been out a while.
+    pub fn show(self, cue: &Cue) {
+        let screen = self.screen;
+        let at = elapsed();
+        let waited = at - self.arrived.get_value();
+        self.arrived.set_value(at);
+        let applied = screen.try_update(|screen| {
+            screen.advance(waited);
+            screen.apply(cue, true)
+        });
+        if let Some(Some(number)) = applied {
+            set_timeout(move || screen.update(|screen| screen.expire(number)), FLASH);
+        }
+        if let Some(due) = dots_due(cue) {
+            let rate = screen.with_untracked(|screen| screen.clock.rate);
+            let delay = Duration::from_millis(THINKING_DELAY).div_f64(rate);
+            set_timeout(move || screen.update(|screen| screen.reveal(due)), delay);
+        }
+    }
+}
+
+/// The game on `live`'s screen: a header with the game, its phase and
+/// clock, its outcome and the `children`, which control it, then the chat
+/// beside the board, and the footer. A `failure` shows above the chat,
+/// and a link goes to `on_link` when there is one.
+#[component]
+pub(crate) fn Viewer(
+    live: Live,
+    #[prop(optional, into)] failure: Signal<Option<String>>,
+    #[prop(optional)] on_link: Option<Callback<String>>,
+    children: Children,
+) -> impl IntoView {
+    let screen = live.screen;
+    // The viewer's time, now.
+    let tick = RwSignal::new(elapsed());
+    let _ = set_interval_with_handle(move || tick.set(elapsed()), TICK);
+    // A memo, so that a stopped clock redraws nothing as it ticks.
+    let now = Signal::from(Memo::new(move |_| {
+        let waited = tick.get() - live.arrived.get_value();
+        screen.with(|screen| screen.clock.now(waited))
+    }));
+
+    let theme = Memo::new(move |_| screen.with(Screen::theme));
+    Effect::new(move |_| {
+        if let Some(root) = document().document_element() {
+            let _ = match theme.get() {
+                Some(theme) => root.set_attribute("data-theme", theme),
+                None => root.remove_attribute("data-theme"),
+            };
+        }
+    });
 
     let options = RenderOptions {
         math: false,
@@ -170,26 +249,12 @@ pub fn App() -> impl IntoView {
                     {move || timer.get().map(|timer| view! { <PhaseClock timer=timer now=now /> })}
                 </p>
                 {move || screen.with(|screen| screen.outcome.clone()).map(outcome)}
-                <nav class="sd-games">
-                    {GAMES
-                        .map(|(name, title)| {
-                            let current = move || (game.get() == name).then_some("page");
-                            view! {
-                                <a href=format!("#{name}") aria-current=current>
-                                    {title}
-                                </a>
-                            }
-                        })
-                        .collect_view()}
-                </nav>
-                <button on:click=play>
-                    {move || if replayed.get() { "Replay" } else { "Play" }}
-                </button>
+                {children()}
             </header>
             <main class="sd-main">
                 <div class="sd-chat">
                     {move || failure.get().map(|error| view! { <p class="sd-error">{error}</p> })}
-                    <Transcript messages=messages show_names=true options=options />
+                    <Transcript messages=messages show_names=true options=options on_link=on_link />
                 </div>
                 <aside class="sd-board">
                     {move || board.get().map(|board| view! { <AvalonBoard board=board /> })}
@@ -220,9 +285,9 @@ fn elapsed() -> f64 {
         .map_or(0.0, |performance| performance.now())
 }
 
-/// The cues of the game `name`, in `name.json` beside the page.
+/// The cues of the game `name`, in `game/name.json` beside the page.
 async fn fetched(name: &str) -> Result<Vec<Cue>, String> {
-    let file = format!("{name}.json");
+    let file = format!("game/{name}.json");
     let failed = |error: JsValue| format!("{file}: {error:?}");
     let response: web_sys::Response = JsFuture::from(window().fetch_with_str(&file))
         .await

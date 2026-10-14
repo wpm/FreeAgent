@@ -1,0 +1,31 @@
+[package]
+name = "social-deduction-desktop"
+version.workspace = true
+edition.workspace = true
+description = "The viewer for social deduction games as a desktop app that plays a game live"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# The desktop app ships as installers, not as a crate.
+publish = false
+
+[package.metadata.dist]
+dist = false
+
+[lib]
+name = "social_deduction_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+secrecy.workspace = true
+serde.workspace = true
+social-deduction = { path = "../../social-deduction" }
+social-deduction-stage = { path = "../../social-deduction-stage" }
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tracing = "0.1"

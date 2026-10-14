@@ -8,6 +8,7 @@ use free_agent::{Behavior, Episode, Event, Logger};
 use serde::Serialize;
 use social_deduction::config::{self, Name};
 use social_deduction::game::{Game, Narrate};
+use social_deduction::live::PATIENCE;
 use social_deduction::model::spec::{Environment, Probed, required};
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, ToolChoice, key_variable, known_providers, served,
@@ -17,7 +18,6 @@ use social_deduction::run::{Prepared, Ready};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 
 /// The command line: a game to play, or a command that belongs to no game.
@@ -73,9 +73,6 @@ impl Logging {
         !self.no_log
     }
 }
-
-/// How long a game may take before it is abandoned.
-const PATIENCE: Duration = Duration::from_secs(60 * 60);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
