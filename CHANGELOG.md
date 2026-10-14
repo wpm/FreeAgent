@@ -138,6 +138,8 @@ workflow takes a version's notes from here.
   not answer each well stops the program, naming it.
   `examples/avalon/prompted.toml` plays a game of model players against a
   local model.
+- The `social-deduction-stage` crate: the cues a game's viewer is drawn
+  from, built natively and for `wasm32-unknown-unknown`.
 
 ### Changed
 
