@@ -2026,6 +2026,7 @@ pub(crate) mod tests {
     pub(crate) fn configured(roles: &HashMap<PlayerId, Role>, rules: &Rules) -> Configuration {
         let count = |role| roles.values().filter(|r| **r == role).count();
         Configuration {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             role_counts: EVERYONE.map(|role| (role, count(role))).into(),
             limits: rules.clone(),
             strategies: BTreeMap::from([(RANDOM.to_string(), Strategy::Random(Random {}))]),

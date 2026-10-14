@@ -553,6 +553,7 @@ mod tests {
             model: MODEL.to_string(),
         });
         Configuration {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             role_counts: all.into_iter().map(|role| (role, count(role))).collect(),
             limits: Limits {
                 night_limit: rules.night_limit,

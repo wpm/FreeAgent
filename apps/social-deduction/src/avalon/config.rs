@@ -509,6 +509,7 @@ count = 1
         assert_eq!(
             configuration,
             Configuration {
+                version: env!("CARGO_PKG_VERSION").to_string(),
                 role_counts: Table::default().counts().into_iter().collect(),
                 limits: Rules {
                     propose_limit: Duration::from_secs(30),
@@ -555,6 +556,7 @@ count = 1
         let entry = Entry::Configuration(Box::new(configuration));
         let json = serde_json::to_value(&entry).unwrap();
         let configuration = &json["Configuration"];
+        assert_eq!(configuration["version"], json!(env!("CARGO_PKG_VERSION")));
         assert_eq!(configuration["propose_limit"], json!("30s"));
         assert_eq!(configuration["vote_limit"], json!("1m 30s"));
         assert_eq!(configuration["quest_limit"], json!("10s"));
@@ -874,6 +876,7 @@ system = \"Smart {{{{ name }}}}.\"
         let configuration = settings
             .configuration(&mixed_deal(), &prompts, models.clone())
             .unwrap();
+        assert_eq!(configuration.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(configuration.models, models);
         assert_eq!(
             configuration.prompts,
