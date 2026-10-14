@@ -148,13 +148,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: actionlint
-      # The runner has shellcheck, which actionlint runs on each script step.
+      # actionlint's own installer, pinned. The runner has shellcheck, which
+      # actionlint runs on each script step.
       - run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
           shopt -s extglob
-          actionlint .github/workflows/!(release).yml
+          ./actionlint .github/workflows/!(release).yml
       - run: shellcheck .github/scripts/*.sh
       - run: .github/scripts/release-scripts-test.sh
 
