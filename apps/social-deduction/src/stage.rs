@@ -46,13 +46,6 @@ pub trait Board<G: Game>: Default + Send + 'static {
     fn fold(&mut self, event: &Event<Entry<G>>) -> Option<Panel>;
 }
 
-/// No board at all: every event leaves it as it is.
-impl<G: Game> Board<G> for () {
-    fn fold(&mut self, _: &Event<Entry<G>>) -> Option<Panel> {
-        None
-    }
-}
-
 /// Folds one game's log into cues, an event at a time.
 pub struct Stage<G: Staged> {
     /// The console's narrator, whose lines the cues carry.
@@ -174,6 +167,13 @@ fn read<G: Staged>(log: &str) -> serde_json::Result<Vec<Cue>> {
     Ok(cues)
 }
 
+/// Set `player`'s entry in `entries` to `value`.
+pub(crate) fn set<T>(entries: &mut [(PlayerId, T)], player: &PlayerId, value: T) {
+    if let Some((_, entry)) = entries.iter_mut().find(|(name, _)| name == player) {
+        *entry = value;
+    }
+}
+
 /// `time` in milliseconds since the Unix epoch.
 pub(crate) fn millis(time: SystemTime) -> Millis {
     millis_of(time.duration_since(UNIX_EPOCH).unwrap_or_default())
@@ -292,7 +292,7 @@ fn side(team: avalon::Team) -> Side {
 
 impl Staged for Werewolf {
     const GAME: GameName = GameName::Werewolf;
-    type Board = ();
+    type Board = werewolf::board::Board;
 
     fn role(role: werewolf::Role) -> Role {
         match role {
@@ -338,7 +338,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::game::tests::{Fixture, drained, episode, logged, seated};
     use crate::strategy::RANDOM;
-    use social_deduction_stage::AvalonPanel;
+    use social_deduction_stage::{AvalonPanel, WerewolfPanel};
 
     /// The log of a game of `roles` under `rules`, every player random.
     async fn random_game<G: Fixture>(
@@ -483,8 +483,48 @@ pub(crate) mod tests {
             })
             .unwrap();
         check_random_game(&events, &roles, team(winner));
+    }
+
+    #[tokio::test]
+    async fn each_werewolf_board_is_a_change_and_the_last_ones_dead_are_the_narrators() {
+        let roles = seated(&[
+            werewolf::Role::Werewolf,
+            werewolf::Role::Villager,
+            werewolf::Role::Doctor,
+            werewolf::Role::Werewolf,
+            werewolf::Role::Seer,
+            werewolf::Role::Villager,
+        ]);
+        let events = random_game::<Werewolf>(roles.clone(), werewolf::Rules::default()).await;
         let cues = folded(&events);
-        assert!(!cues.iter().any(|cue| matches!(cue.beat, Beat::Panel(_))));
+        let boards: Vec<&WerewolfPanel> = cues
+            .iter()
+            .filter_map(|cue| match &cue.beat {
+                Beat::Panel(Panel::Werewolf(board)) => Some(board),
+                _ => None,
+            })
+            .collect();
+        assert!(boards.len() > 1);
+        assert!(boards.windows(2).all(|pair| pair[0] != pair[1]));
+        let survivors = events
+            .iter()
+            .find_map(|event| match &event.payload {
+                Entry::Event(werewolf::Outcome::End { survivors, .. }) => Some(survivors),
+                _ => None,
+            })
+            .unwrap();
+        let dead: Vec<&PlayerId> = in_order(roles.keys())
+            .into_iter()
+            .filter(|player| !survivors.contains(*player))
+            .collect();
+        let last = boards.last().unwrap();
+        let shown_dead: Vec<&PlayerId> = last
+            .seats
+            .iter()
+            .filter(|seat| seat.died.is_some())
+            .map(|seat| &seat.name)
+            .collect();
+        assert_eq!(shown_dead, dead);
     }
 
     #[tokio::test]

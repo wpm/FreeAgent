@@ -112,6 +112,19 @@ body {
   font-family: var(--rc-font);
 }
 
+/* Night falls and day breaks over 600 ms. */
+
+body,
+.rc-chat,
+.rc-bubble,
+.sd-chip,
+.sd-swatch {
+  transition:
+    background-color 600ms ease,
+    color 600ms ease,
+    border-color 600ms ease;
+}
+
 .sd-app {
   display: grid;
   grid-template-rows: auto 1fr auto;
@@ -149,6 +162,45 @@ body {
 
 .sd-outcome.sd-evil {
   color: var(--sd-evil);
+}
+
+.sd-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-countdown {
+  display: inline-block;
+  width: 6rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--rc-border);
+  overflow: hidden;
+}
+
+.sd-countdown-left {
+  display: block;
+  height: 100%;
+  background: var(--rc-accent);
+  transition: width 100ms linear;
+}
+
+.sd-games {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.sd-games a {
+  color: var(--rc-muted);
+}
+
+.sd-games a[aria-current="page"] {
+  color: var(--rc-fg);
+  font-weight: 600;
+  text-decoration: none;
 }
 
 .sd-header button {
@@ -396,6 +448,47 @@ body {
   font-size: 0.85rem;
 }
 
+.sd-rows {
+  margin: 0 0 0.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.sd-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.1rem 0.25rem;
+  border-radius: var(--rc-radius);
+}
+
+.sd-decision {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem;
+  border-radius: var(--rc-radius);
+  font-weight: 600;
+}
+
+.sd-players li.sd-dead .sd-name {
+  text-decoration: line-through;
+}
+
+.sd-players li.sd-dead {
+  opacity: 0.55;
+}
+
+.sd-seer {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.25rem 0;
+  font-weight: 600;
+}
+
 .sd-assassination {
   margin-top: 1rem;
   padding: 0.5rem 0.75rem;
@@ -408,7 +501,7 @@ body {
 
 @keyframes sd-land {
   from {
-    background-color: var(--sd-chooser-bg);
+    background-color: var(--sd-chooser-bg, var(--rc-border));
   }
   to {
     background-color: transparent;
@@ -422,7 +515,7 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .sd-landed {
     animation: none;
-    outline: 2px solid var(--sd-chooser-fg);
+    outline: 2px solid var(--sd-chooser-fg, var(--rc-fg));
     outline-offset: -2px;
   }
 }

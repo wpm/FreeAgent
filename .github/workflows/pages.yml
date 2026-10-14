@@ -1,7 +1,8 @@
 name: Website
 
 # The site under site/ goes to GitHub Pages on every push to main, with the
-# viewer at viewer/ showing a game of random Avalon played for the push.
+# viewer at viewer/ showing a random game of Avalon and one of Werewolf,
+# played for the push.
 on:
   push:
     branches: [main]
