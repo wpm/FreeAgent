@@ -54,6 +54,10 @@ check "installers get their stable names" test "$listing" = \
   "Social-Deduction-setup.exe Social-Deduction.AppImage Social-Deduction.dmg Social-Deduction.msi social-deduction.deb social-deduction.rpm "
 check "a copy is the installer it names" test "$(cat "$scratch/stable/Social-Deduction.dmg")" = "Social Deduction_1.2.3_universal.dmg"
 
+# Lines that end in a carriage return, as jq writes them on Windows, match too.
+./stable-names.sh "$scratch/crlf" <<< "[\"$scratch/built/Social Deduction_1.2.3_x64_en-US.msi\r\"]" > /dev/null
+check "a carriage return is ignored" test -f "$scratch/crlf/Social-Deduction.msi"
+
 # No installer at all is a failed build.
 check "no installer fails" fails ./stable-names.sh "$scratch/none" <<< "[\"$scratch/built/Social Deduction.app\"]"
 

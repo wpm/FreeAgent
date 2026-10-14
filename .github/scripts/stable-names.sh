@@ -23,6 +23,8 @@ mkdir -p "$out"
 
 copied=0
 while IFS= read -r path; do
+  # jq on Windows ends its lines with a carriage return.
+  path=${path%$'\r'}
   case $path in
     *.dmg) name=Social-Deduction.dmg ;;
     *-setup.exe) name=Social-Deduction-setup.exe ;;
@@ -32,7 +34,7 @@ while IFS= read -r path; do
     *.rpm) name=social-deduction.rpm ;;
     *) continue ;;
   esac
-  # Windows runners hand over Windows paths, which Git Bash reads as Unix ones.
+  # Windows runners hand over Windows paths, which Git Bash wants as Unix ones.
   if command -v cygpath > /dev/null; then path=$(cygpath -u "$path"); fi
   cp "$path" "$out/$name"
   echo "$path -> $out/$name"
