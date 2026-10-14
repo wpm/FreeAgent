@@ -34,6 +34,7 @@ serde_json.workspace = true
 social-deduction-stage = { path = "../social-deduction-stage" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 toml.workspace = true
+toml_edit.workspace = true
 
 [dev-dependencies]
 # A paused clock lets a test wait out a day's time limit without waiting.

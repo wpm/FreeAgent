@@ -16,6 +16,7 @@
 
 #[doc(hidden)]
 pub mod canned;
+pub mod check;
 mod completion;
 #[doc(hidden)]
 pub mod fake;

@@ -14,7 +14,6 @@ use crate::view::{Live, Viewer};
 #[component]
 pub fn Desktop() -> impl IntoView {
     let presets = RwSignal::new(Vec::<Preset>::new());
-    let chosen = RwSignal::new(0usize);
     let pending = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
     let live = Live::default();
@@ -31,13 +30,6 @@ pub fn Desktop() -> impl IntoView {
     });
 
     let run = Callback::new(move |()| {
-        let Some(text) = presets.with(|presets| {
-            presets
-                .get(chosen.get_untracked())
-                .map(|preset| preset.text.clone())
-        }) else {
-            return;
-        };
         error.set(None);
         pending.set(true);
         screen.set(Screen::default());
@@ -46,7 +38,10 @@ pub fn Desktop() -> impl IntoView {
             live.show(&cue);
         });
         spawn_local(async move {
-            let started = tauri::play(&text, &channel).await;
+            let started = match tauri::document_text().await {
+                Ok(text) => tauri::play(&text, &channel).await,
+                Err(failure) => Err(failure),
+            };
             cues.set_value(Some(channel));
             pending.set(false);
             if let Err(failure) = started {
@@ -74,7 +69,7 @@ pub fn Desktop() -> impl IntoView {
             when=move || watching.get()
             fallback=move || {
                 view! {
-                    <Settings presets=presets chosen=chosen pending=pending error=error run=run />
+                    <Settings presets=presets pending=pending error=error run=run />
                 }
             }
         >

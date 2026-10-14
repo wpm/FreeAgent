@@ -2,6 +2,7 @@
 //! one, stopping it, and revealing its log.
 
 use crate::secret::Keychain;
+use crate::settings;
 use serde::Serialize;
 use social_deduction::live::{self, Playing, create_log};
 use social_deduction::run::prepare;
@@ -22,7 +23,7 @@ pub struct Preset {
 }
 
 /// The example configurations, in the order the frontend lists them.
-const PRESETS: [Preset; 4] = [
+pub const PRESETS: [Preset; 4] = [
     Preset {
         name: "werewolf/random",
         text: include_str!("../../../social-deduction/configs/werewolf/random.toml"),
@@ -67,9 +68,10 @@ pub fn presets() -> Vec<Preset> {
 }
 
 /// Play the game the configuration `text` describes, its cues sent down
-/// `cues`. The game is prepared first, with its keys from the keychain,
-/// and a game that cannot be prepared is an error and never starts. A game
-/// already playing refuses another.
+/// `cues`. The text is kept to open with next time. The game is prepared
+/// first, with its keys from the keychain, and a game that cannot be
+/// prepared is an error and never starts. A game already playing refuses
+/// another.
 #[tauri::command]
 pub async fn play(
     app: AppHandle,
@@ -80,6 +82,9 @@ pub async fn play(
     const PLAYING: &str = "A game is already playing.";
     if is_playing(&game.0.lock().unwrap()) {
         return Err(PLAYING.to_string());
+    }
+    if let Err(error) = settings::keep(&app, &text) {
+        tracing::warn!("{error}");
     }
     // Preparing probes models through closures whose futures the compiler
     // cannot prove Send, so it runs to the end on a thread of its own,

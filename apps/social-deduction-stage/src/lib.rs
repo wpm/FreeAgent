@@ -4,9 +4,12 @@
 //! beside a live board. Library code folds the game's log into a stream of
 //! [`Cue`]s, and the frontend draws each one as it arrives. These types are
 //! everything that crosses between the two, and they depend on serde alone,
-//! so the frontend builds them for `wasm32-unknown-unknown`.
+//! so the frontend builds them for `wasm32-unknown-unknown`. The desktop
+//! app's settings screen crosses the same way, as a [`form`].
 
 #![warn(missing_docs)]
+
+pub mod form;
 
 use std::fmt;
 
