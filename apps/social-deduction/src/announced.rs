@@ -61,17 +61,17 @@ pub trait Announced: Game<Environment = Environment<Self>> {
 /// and where the winner goes.
 pub struct Core<G: Announced> {
     /// The game.
-    pub state: G::State,
+    pub(crate) state: G::State,
     /// How it is played.
-    pub rules: G::Rules,
+    pub(crate) rules: G::Rules,
     /// The number of the current phase. The first is 1.
-    pub seq: u64,
+    pub(crate) seq: u64,
     /// The number of the last message the environment sent to a player.
     /// Each announcement is a message of its own.
-    pub n: u64,
+    pub(crate) n: u64,
     /// The phase underway, while one is: taken when it ends, so that
     /// nothing more counts until the next one opens.
-    pub underway: Option<G::Underway>,
+    pub(crate) underway: Option<G::Underway>,
     /// Where the winning team goes when the game ends. Taken when sent.
     winner: Option<oneshot::Sender<G::Team>>,
     /// When the game was made, which is as good as when it was dealt.
@@ -98,6 +98,16 @@ pub struct Counted<G: Game> {
     pub tell: Option<(Message<G>, HashSet<PlayerId>)>,
     /// A reminder for the environment to send itself after a while.
     pub remind: Option<(Duration, Message<G>)>,
+}
+
+impl<G: Game> Counted<G> {
+    /// A move that counted and was the last the phase waited for.
+    pub fn last() -> Self {
+        Self {
+            last: true,
+            ..Self::default()
+        }
+    }
 }
 
 impl<G: Game> Default for Counted<G> {
@@ -340,6 +350,13 @@ impl<G: Announced> Environment<G> {
         self.context.think_after(limit, Message::EndPhase { seq })
     }
 
+    /// The number of the current phase, and what the environment does
+    /// about `played` if it counts in it.
+    fn count(&self, played: &G::Move) -> (u64, Option<Counted<G>>) {
+        let mut core = self.core();
+        (core.seq, core.count(played))
+    }
+
     /// Carry out what a move that counted in the phase numbered `seq`
     /// calls for, if it counted: send the environment's message, set its
     /// reminder, and end the phase after the last move it waits for.
@@ -416,10 +433,7 @@ impl<G: Announced> Behavior for Environment<G> {
         let (Message::Move(played), Some(n)) = (message, message.number()) else {
             return Ok(());
         };
-        let (current, counted) = {
-            let mut core = self.core();
-            (core.seq, core.count(played))
-        };
+        let (current, counted) = self.count(played);
         observe(&self.context, played.sender(), n, current);
         self.carry_out(current, counted)
     }
@@ -447,10 +461,7 @@ impl<G: Announced> Think for Environment<G> {
             self.end_phase(ended)?;
         }
         if let Message::Move(reminder) = message {
-            let (current, counted) = {
-                let mut core = self.core();
-                (core.seq, core.count(reminder))
-            };
+            let (current, counted) = self.count(reminder);
             self.carry_out(current, counted)?;
         }
         Ok(())
@@ -470,10 +481,7 @@ pub(crate) mod tests {
 
     /// A move that counted and was the last the phase waited for.
     pub(crate) fn last<G: Game>() -> Option<Counted<G>> {
-        Some(Counted {
-            last: true,
-            ..Counted::default()
-        })
+        Some(Counted::last())
     }
 
     /// Open the first phase of a game of `roles` under `rules`, end it,

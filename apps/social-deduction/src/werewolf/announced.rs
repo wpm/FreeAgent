@@ -97,10 +97,7 @@ impl Announced for Werewolf {
             }
             (Move::Ratify { change, .. }, Some(_)) if *change == underway.changes => {
                 underway.ratified = true;
-                Some(Counted {
-                    last: true,
-                    ..Counted::default()
-                })
+                Some(Counted::last())
             }
             _ => None,
         }
