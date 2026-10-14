@@ -589,9 +589,10 @@ mod tests {
     use crate::model::fake::{FakeModel, SAID, canned_calls, choosing_first};
     use crate::model::{CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT};
     use crate::prompted::tests::{
-        MODEL_ID, Made, PROMPTED, a_failure_logs_its_usage_first, answering, asked_of,
-        every_call_logs_its_usage, failed, forgotten, narrated, received, reporting, sent,
-        situated, speaking, story, told, usages, waiting,
+        MODEL_ID, Made, PROMPTED, a_call_cut_off_logs_no_thought, a_failed_call_logs_its_error,
+        a_failure_logs_its_usage_first, answering, asked_of, every_call_logs_its_usage,
+        every_call_logs_thinking_then_thought, failed, forgotten, narrated, received, reporting,
+        sent, situated, speaking, story, told, usages, waiting,
     };
     use crate::prompted::{ANSWER, Account, Mind, Shown};
     use crate::report::FORGOTTEN;
@@ -1581,6 +1582,33 @@ mod tests {
             assert!(!model.requests().is_empty());
             assert!(usages(&logged).is_empty(), "{logged:?}");
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn every_model_call_logs_thinking_then_thought_then_its_usage_then_what_came_of_it() {
+        let model = reporting(choosing_first);
+        let (_, logged, _) = play_with(Rules::default(), Arc::clone(&model), HashMap::new())
+            .await
+            .unwrap();
+        every_call_logs_thinking_then_thought(&model, logged);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_model_call_that_fails_logs_its_thought_failed_with_the_error() {
+        let model = Arc::new(FakeModel::failing("the model is down"));
+        let (_, logged, _) = play_with(quick(), Arc::clone(&model), HashMap::new())
+            .await
+            .unwrap();
+        a_failed_call_logs_its_error(&model, &logged, "the model is down");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_player_stopped_at_the_end_with_its_call_out_logs_thinking_and_no_thought() {
+        let model = Arc::new(FakeModel::answering(choosing_first).taking(Duration::MAX));
+        let (_, logged, _) = play_with(quick(), Arc::clone(&model), HashMap::new())
+            .await
+            .unwrap();
+        a_call_cut_off_logs_no_thought(&model, &logged);
     }
 
     #[tokio::test(start_paused = true)]
