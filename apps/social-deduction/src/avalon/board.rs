@@ -9,7 +9,7 @@ use super::{
 use crate::game::Tagged;
 use crate::report::in_order;
 use crate::seat::PlayerId;
-use crate::stage::{self, millis, millis_of};
+use crate::stage::{self, millis, millis_of, set};
 use free_agent::Event;
 use social_deduction_stage as cue;
 use social_deduction_stage::{AvalonPanel, AvalonSeat, Millis, Panel, ProposalRow, QuestToken};
@@ -230,13 +230,6 @@ fn proposed(panel: &mut AvalonPanel, team: Option<Vec<PlayerId>>) {
     }
     if let (Some(row), Some(team)) = (current(panel), team) {
         row.team = Some(team);
-    }
-}
-
-/// Set `player`'s entry in `entries` to `value`.
-fn set<T>(entries: &mut [(PlayerId, Option<T>)], player: &PlayerId, value: Option<T>) {
-    if let Some((_, entry)) = entries.iter_mut().find(|(name, _)| name == player) {
-        *entry = value;
     }
 }
 

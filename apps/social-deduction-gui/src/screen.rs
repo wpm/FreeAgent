@@ -1,12 +1,14 @@
 //! What the screen shows, as a pure function of the cues so far.
 //!
 //! [`Screen::apply`] folds one cue at a time into the chat, the names
-//! table, the header and the board. The view draws a `Screen` and holds
-//! no state of its own, so the whole viewer is tested here, natively.
+//! table, the header, the clock and the board. The view draws a `Screen`
+//! and holds no state of its own, so the whole viewer is tested here,
+//! natively.
 
 use leptos_rich_chat::{Look, Names, Position};
 use social_deduction_stage::{
-    AvalonPanel, Beat, Cue, GameName, Millis, Outcome, Panel, PlayerId, Role, Seat, Side,
+    AvalonPanel, Beat, Cue, Death, GameName, Learned, Millis, NightDeed, NightOutcome, Outcome,
+    Panel, PlayerId, Role, Seat, Side, WerewolfPanel, WerewolfPhase,
 };
 
 /// The name narration is posted under, centered between the sides.
@@ -66,6 +68,78 @@ pub enum Landed {
     Deed(PlayerId),
     /// The Assassin's target.
     Target,
+    /// A Werewolf player's vote, or its retraction.
+    Vote(PlayerId),
+    /// A Werewolf night role's deed.
+    Night(PlayerId),
+    /// The day's tentative decision.
+    Ratify,
+    /// A Werewolf player's death.
+    Death(PlayerId),
+}
+
+/// Log time as the viewer reads it: the time of the latest cue, run on
+/// at the clock's rate for as long as the viewer has waited since.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Clock {
+    /// Log time when the latest cue arrived.
+    pub at: f64,
+    /// Log milliseconds per viewer millisecond.
+    pub rate: f64,
+    /// Whether the clock runs. A saved game shown at rest stops it at its
+    /// last cue.
+    pub running: bool,
+}
+
+impl Default for Clock {
+    fn default() -> Self {
+        Self {
+            at: 0.0,
+            rate: 1.0,
+            running: false,
+        }
+    }
+}
+
+impl Clock {
+    /// Log time `elapsed` viewer milliseconds after the latest cue arrived.
+    pub fn now(&self, elapsed: f64) -> f64 {
+        if self.running {
+            self.at + elapsed.max(0.0) * self.rate
+        } else {
+            self.at
+        }
+    }
+}
+
+/// A countdown: a phase's, or a tentative decision's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timer {
+    /// When it started, in log time.
+    pub began: Millis,
+    /// How long it runs.
+    pub limit_ms: u64,
+}
+
+impl Timer {
+    /// Milliseconds left at log time `now`, never below zero.
+    pub fn left(&self, now: f64) -> f64 {
+        (self.began as f64 + self.limit_ms as f64 - now).clamp(0.0, self.limit_ms as f64)
+    }
+
+    /// Whole seconds left at log time `now`, rounded up.
+    pub fn seconds(&self, now: f64) -> u64 {
+        (self.left(now) / 1_000.0).ceil() as u64
+    }
+
+    /// The share of the countdown left at log time `now`, from 1 to 0.
+    pub fn share(&self, now: f64) -> f64 {
+        if self.limit_ms == 0 {
+            0.0
+        } else {
+            self.left(now) / self.limit_ms as f64
+        }
+    }
 }
 
 /// Everything the screen shows.
@@ -90,10 +164,10 @@ pub struct Screen {
     /// The dots of every call out longer than [`THINKING_DELAY`], in the
     /// order they showed.
     pub thinkers: Vec<Thinker>,
-    /// Log milliseconds per viewer millisecond.
-    pub rate: f64,
     /// Every call out whose dots have not shown, with when it went out.
     thinking: Vec<(PlayerId, Millis)>,
+    /// The log-time clock.
+    pub clock: Clock,
     /// How many cues have been applied.
     applied: usize,
 }
@@ -110,23 +184,26 @@ impl Default for Screen {
             panel: None,
             landed: Vec::new(),
             thinkers: Vec::new(),
-            rate: 1.0,
             thinking: Vec::new(),
+            clock: Clock::default(),
             applied: 0,
         }
     }
 }
 
 impl Screen {
-    /// Show `cue`. With `flash`, every choice a new board makes lands, and
-    /// the cue's number comes back for [`Screen::expire`] to end the
-    /// flash; without it, as for a saved game shown at once, nothing
-    /// lands. Every call out longer than [`THINKING_DELAY`] by the cue's
-    /// time shows its dots.
+    /// Show `cue`. With `flash`, every choice a new board makes lands, the
+    /// cue's number comes back for [`Screen::expire`] to end the flash,
+    /// and the clock runs on from the cue; without it, as for a saved game
+    /// shown at once, nothing lands and the clock stops at the cue. A cue
+    /// earlier than the clock leaves it where it is. Every call out longer
+    /// than [`THINKING_DELAY`] by the cue's time shows its dots.
     pub fn apply(&mut self, cue: &Cue, flash: bool) -> Option<usize> {
         self.reveal(cue.at);
         self.applied += 1;
         let number = self.applied;
+        self.clock.at = self.clock.at.max(cue.at as f64);
+        self.clock.running = flash;
         match &cue.beat {
             Beat::Cast { game, seats } => {
                 self.game = Some(*game);
@@ -145,7 +222,7 @@ impl Screen {
                 self.thinking.retain(|(thinker, _)| thinker != who);
                 self.thinkers.retain(|thinker| thinker.who != *who);
             }
-            Beat::Clock { rate } => self.rate = *rate,
+            Beat::Clock { rate } => self.clock.rate = *rate,
             Beat::Panel(panel) => {
                 let landed = match (flash, &self.panel, panel) {
                     (true, before, Panel::Avalon(after)) => {
@@ -154,6 +231,13 @@ impl Screen {
                             _ => None,
                         };
                         landings(before, after)
+                    }
+                    (true, before, Panel::Werewolf(after)) => {
+                        let before = match before {
+                            Some(Panel::Werewolf(before)) => Some(before),
+                            _ => None,
+                        };
+                        werewolf_landings(before, after)
                     }
                     _ => vec![],
                 };
@@ -194,17 +278,59 @@ impl Screen {
         self.landed.retain(|(landed_by, _)| *landed_by != number);
     }
 
+    /// Run the clock on by `elapsed` viewer milliseconds, as the viewer
+    /// does just before it applies the next cue.
+    pub fn advance(&mut self, elapsed: f64) {
+        self.clock.at = self.clock.now(elapsed);
+    }
+
     /// What the Avalon board draws, once there is one.
     pub fn board(&self) -> Option<Board> {
         match &self.panel {
-            Some(Panel::Avalon(panel)) => Some(Board {
-                panel: panel.clone(),
-                seats: self.seats.clone(),
-                landed: self
-                    .landed
-                    .iter()
-                    .map(|(_, landed)| landed.clone())
-                    .collect(),
+            Some(Panel::Avalon(panel)) => Some(self.drawn(panel.clone())),
+            _ => None,
+        }
+    }
+
+    /// What the Werewolf board draws, once there is one.
+    pub fn werewolf(&self) -> Option<Board<WerewolfPanel>> {
+        match &self.panel {
+            Some(Panel::Werewolf(panel)) => Some(self.drawn(panel.clone())),
+            _ => None,
+        }
+    }
+
+    /// `panel` with the seats and the choices flashing on it.
+    fn drawn<P>(&self, panel: P) -> Board<P> {
+        Board {
+            panel,
+            seats: self.seats.clone(),
+            landed: self
+                .landed
+                .iter()
+                .map(|(_, landed)| landed.clone())
+                .collect(),
+        }
+    }
+
+    /// The phase's countdown, from the latest board of either game.
+    pub fn phase_timer(&self) -> Option<Timer> {
+        let (began, limit_ms) = match self.panel.as_ref()? {
+            Panel::Avalon(panel) => (panel.began, panel.limit_ms),
+            Panel::Werewolf(panel) => (panel.began, panel.limit_ms),
+        };
+        Some(Timer { began, limit_ms })
+    }
+
+    /// The root element's `data-theme`: `dark` by night and `light` by day
+    /// in a Werewolf game underway, or in a saved one shown at rest, and
+    /// otherwise none, so the page follows the OS.
+    pub fn theme(&self) -> Option<&'static str> {
+        let underway = self.outcome.is_none() || !self.clock.running;
+        match &self.panel {
+            Some(Panel::Werewolf(panel)) if underway => Some(match panel.phase {
+                WerewolfPhase::Night => "dark",
+                WerewolfPhase::Day => "light",
             }),
             _ => None,
         }
@@ -225,19 +351,19 @@ impl Screen {
     }
 }
 
-/// What the Avalon board draws: the board, the seats, and the choices
-/// flashing on it.
+/// What a board draws: the board, the seats, and the choices flashing on
+/// it.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Board {
+pub struct Board<P = AvalonPanel> {
     /// The board as it stands.
-    pub panel: AvalonPanel,
+    pub panel: P,
     /// Every seat, in seat order.
     pub seats: Vec<Seat>,
     /// The choices flashing now.
     pub landed: Vec<Landed>,
 }
 
-impl Board {
+impl<P> Board<P> {
     /// Whether `choice` is flashing.
     pub fn is_landed(&self, choice: &Landed) -> bool {
         self.landed.contains(choice)
@@ -253,6 +379,81 @@ impl Board {
 /// sends one out.
 pub fn dots_due(cue: &Cue) -> Option<Millis> {
     matches!(cue.beat, Beat::Thinking { .. }).then_some(cue.at + THINKING_DELAY)
+}
+
+impl Board<WerewolfPanel> {
+    /// The day's votes counted per target, most first, a tie in seat
+    /// order.
+    pub fn tally(&self) -> Vec<(PlayerId, usize)> {
+        let mut tally: Vec<(PlayerId, usize)> = self
+            .seats
+            .iter()
+            .map(|seat| {
+                let votes = self.panel.votes.iter();
+                let count = votes
+                    .filter(|(_, vote)| vote.as_deref() == Some(seat.name.as_str()))
+                    .count();
+                (seat.name.clone(), count)
+            })
+            .filter(|(_, count)| *count > 0)
+            .collect();
+        tally.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        tally
+    }
+}
+
+/// A day's vote row: `Player 1 → Player 6`, or `Player 1 · undecided`.
+pub fn vote(player: &str, target: Option<&str>) -> String {
+    match target {
+        Some(target) => format!("{player} → {target}"),
+        None => format!("{player} · undecided"),
+    }
+}
+
+/// A night role's row: `Player 4 · kill → Player 3`, or
+/// `Player 4 · choosing…` while it chooses.
+pub fn deed(player: &str, deed: &NightDeed) -> String {
+    match deed {
+        NightDeed::Pending => format!("{player} · choosing…"),
+        NightDeed::Kill(target) => format!("{player} · kill → {target}"),
+        NightDeed::Protect(target) => format!("{player} · protect → {target}"),
+        NightDeed::Ask(target) => format!("{player} · ask → {target}"),
+    }
+}
+
+/// The tentative decision: `Player 4 out in 14s`, or `Nobody out in 14s`.
+pub fn ratify(target: Option<&str>, seconds: u64) -> String {
+    format!("{} out in {seconds}s", target.unwrap_or("Nobody"))
+}
+
+/// How a player died: `killed night 2`, or `voted out day 1`.
+pub fn death(death: &Death) -> String {
+    match death.phase {
+        WerewolfPhase::Night => format!("killed night {}", death.round),
+        WerewolfPhase::Day => format!("voted out day {}", death.round),
+    }
+}
+
+/// What a seer learned: `Player 6 is a werewolf · night 1`.
+pub fn learned(learned: &Learned) -> String {
+    format!(
+        "{} is a {} · night {}",
+        learned.player, learned.role, learned.night
+    )
+}
+
+/// How a night turned out: `2 · wolves chose Player 2, who died`, or
+/// `1 · wolves chose Player 3, protected by Player 1`.
+pub fn night(night: &NightOutcome) -> String {
+    let what = match (&night.victim, &night.died) {
+        (None, _) => "wolves chose nobody".to_string(),
+        (Some(victim), Some(_)) => format!("wolves chose {victim}, who died"),
+        (Some(victim), None) => format!(
+            "wolves chose {victim}, protected by {}",
+            night.protected_by.join(" and ")
+        ),
+    };
+    format!("{} · {what}", night.night)
 }
 
 /// `player`'s choice in `entries`, if made.
@@ -346,11 +547,47 @@ pub fn landings(before: Option<&AvalonPanel>, after: &AvalonPanel) -> Vec<Landed
     landed
 }
 
+/// The choices `after` makes that the Werewolf board `before` it did not
+/// have: each vote changed, a retraction among them, each night deed
+/// changed, a new tentative decision, and each new death.
+pub fn werewolf_landings(before: Option<&WerewolfPanel>, after: &WerewolfPanel) -> Vec<Landed> {
+    let mut landed = Vec::new();
+    for (player, target) in &after.votes {
+        let was = before
+            .and_then(|before| before.votes.iter().find(|(name, _)| name == player))
+            .and_then(|(_, target)| target.as_ref());
+        if target.as_ref() != was {
+            landed.push(Landed::Vote(player.clone()));
+        }
+    }
+    for (player, deed) in &after.night {
+        let was = before
+            .and_then(|before| before.night.iter().find(|(name, _)| name == player))
+            .map_or(&NightDeed::Pending, |(_, deed)| deed);
+        if deed != was {
+            landed.push(Landed::Night(player.clone()));
+        }
+    }
+    let target = |panel: &WerewolfPanel| panel.ratify.as_ref().map(|ratify| ratify.target.clone());
+    if target(after).is_some() && target(after) != before.and_then(target) {
+        landed.push(Landed::Ratify);
+    }
+    for seat in &after.seats {
+        let was = before
+            .and_then(|before| before.seats.iter().find(|old| old.name == seat.name))
+            .and_then(|old| old.died);
+        if seat.died.is_some() && was.is_none() {
+            landed.push(Landed::Death(seat.name.clone()));
+        }
+    }
+    landed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use social_deduction_stage::{
-        Assassination, AvalonPhase, AvalonSeat, Deed, ProposalRow, QuestToken,
+        Assassination, AvalonPhase, AvalonSeat, Deed, ProposalRow, QuestToken, Ratify, SeatState,
     };
 
     /// `beat` at time 0.
@@ -616,6 +853,8 @@ mod tests {
         for number in flashes {
             replayed.expire(number);
         }
+        assert!(replayed.clock.running);
+        replayed.clock.running = false;
         assert_eq!(replayed, shown(&cues));
     }
 
@@ -723,16 +962,346 @@ mod tests {
     }
 
     #[test]
+    fn the_clock_runs_at_its_rate_from_the_latest_cue_and_never_runs_backward() {
+        let mut screen = Screen::default();
+        screen.apply(&cue_at(1_000, Beat::Clock { rate: 2.0 }), true);
+        assert_eq!(screen.clock.now(0.0), 1_000.0);
+        assert_eq!(screen.clock.now(250.0), 1_500.0);
+        assert_eq!(screen.clock.now(-5.0), 1_000.0);
+        // Half a second on, a cue stamped earlier than the clock leaves
+        // it where it is.
+        screen.advance(500.0);
+        screen.apply(&cue_at(1_200, Beat::Heading("Day 1.".to_string())), true);
+        assert_eq!(screen.clock.now(0.0), 2_000.0);
+        // A later one moves it on.
+        screen.advance(0.0);
+        screen.apply(&cue_at(5_000, Beat::Heading("Night 2.".to_string())), true);
+        assert_eq!(screen.clock.now(100.0), 5_200.0);
+    }
+
+    #[test]
+    fn a_saved_game_at_rest_stops_the_clock_at_its_last_cue() {
+        let cues = [
+            cue_at(1_000, Beat::Clock { rate: 1.0 }),
+            cue_at(9_000, Beat::Heading("Day 1.".to_string())),
+        ];
+        let mut screen = shown(&cues);
+        assert_eq!(screen.clock.now(60_000.0), 9_000.0);
+        screen.advance(60_000.0);
+        assert_eq!(screen.clock.at, 9_000.0);
+    }
+
+    #[test]
+    fn a_timer_counts_down_its_limit_from_its_start() {
+        let timer = Timer {
+            began: 1_000,
+            limit_ms: 20_000,
+        };
+        assert_eq!(timer.left(0.0), 20_000.0);
+        assert_eq!(timer.left(6_000.0), 15_000.0);
+        assert_eq!(timer.seconds(6_500.0), 15);
+        assert_eq!(timer.share(11_000.0), 0.5);
+        assert_eq!(timer.left(30_000.0), 0.0);
+        assert_eq!(timer.seconds(30_000.0), 0);
+        let none = Timer {
+            began: 0,
+            limit_ms: 0,
+        };
+        assert_eq!(none.share(0.0), 0.0);
+    }
+
+    #[test]
+    fn the_phase_timer_is_the_latest_boards_of_either_game() {
+        assert_eq!(Screen::default().phase_timer(), None);
+        let avalon = shown(&[cast(), panel(&board())]);
+        assert_eq!(
+            avalon.phase_timer(),
+            Some(Timer {
+                began: 0,
+                limit_ms: 60_000
+            })
+        );
+        let werewolf = shown(&[werewolf_cast(), tonight()]);
+        assert_eq!(
+            werewolf.phase_timer(),
+            Some(Timer {
+                began: 1_000,
+                limit_ms: 30_000
+            })
+        );
+    }
+
+    /// The cast of a Werewolf game of four: a werewolf, a doctor, a seer
+    /// and a villager.
+    fn werewolf_cast() -> Cue {
+        cue(Beat::Cast {
+            game: GameName::Werewolf,
+            seats: vec![
+                seat("Player 1", Role::Werewolf, Side::Evil),
+                seat("Player 2", Role::Doctor, Side::Good),
+                seat("Player 3", Role::Seer, Side::Good),
+                seat("Player 4", Role::Villager, Side::Good),
+            ],
+        })
+    }
+
+    /// The four's first night, with nobody yet chosen.
+    fn first_night() -> WerewolfPanel {
+        let players = ["Player 1", "Player 2", "Player 3", "Player 4"];
+        WerewolfPanel {
+            round: 1,
+            phase: WerewolfPhase::Night,
+            began: 1_000,
+            limit_ms: 30_000,
+            ratify: None,
+            seats: players
+                .map(|name| SeatState {
+                    name: name.to_string(),
+                    died: None,
+                })
+                .to_vec(),
+            votes: vec![],
+            night: players[..3]
+                .iter()
+                .map(|name| (name.to_string(), NightDeed::Pending))
+                .collect(),
+            seers: vec![("Player 3".to_string(), vec![])],
+            nights: vec![],
+        }
+    }
+
+    /// The four's first day, everyone alive and undecided.
+    fn first_day() -> WerewolfPanel {
+        let mut day = first_night();
+        day.phase = WerewolfPhase::Day;
+        day.night = vec![];
+        day.votes = day
+            .seats
+            .iter()
+            .map(|seat| (seat.name.clone(), None))
+            .collect();
+        day
+    }
+
+    /// `panel` as a cue.
+    fn werewolf(panel: &WerewolfPanel) -> Cue {
+        cue(Beat::Panel(Panel::Werewolf(panel.clone())))
+    }
+
+    /// The first night as a cue.
+    fn tonight() -> Cue {
+        werewolf(&first_night())
+    }
+
+    #[test]
+    fn night_is_dark_and_day_light_and_otherwise_the_page_follows_the_os() {
+        assert_eq!(Screen::default().theme(), None);
+        assert_eq!(shown(&[werewolf_cast()]).theme(), None);
+        assert_eq!(shown(&[werewolf_cast(), tonight()]).theme(), Some("dark"));
+        let day = werewolf(&first_day());
+        assert_eq!(
+            shown(&[werewolf_cast(), tonight(), day.clone()]).theme(),
+            Some("light")
+        );
+        let over = cue(Beat::Over {
+            outcome: Outcome::Stopped,
+            log: None,
+        });
+        let ended = [werewolf_cast(), day, over];
+        // A saved game at rest takes its final phase's theme, and one
+        // played through follows the OS once it is over.
+        assert_eq!(shown(&ended).theme(), Some("light"));
+        let mut played = Screen::default();
+        for cue in &ended {
+            played.apply(cue, true);
+        }
+        assert_eq!(played.theme(), None);
+        assert_eq!(shown(&game()).theme(), None);
+    }
+
+    /// The choices that land as `after` follows `before` on a screen.
+    fn landed_between(before: &WerewolfPanel, after: &WerewolfPanel) -> Vec<Landed> {
+        let mut screen = Screen::default();
+        screen.apply(&werewolf_cast(), false);
+        screen.apply(&werewolf(before), false);
+        let number = screen.apply(&werewolf(after), true);
+        let landed: Vec<Landed> = screen
+            .landed
+            .iter()
+            .map(|(_, landed)| landed.clone())
+            .collect();
+        assert_eq!(number.is_some(), !landed.is_empty());
+        if let Some(number) = number {
+            assert!(screen.landed.iter().all(|(by, _)| *by == number));
+        }
+        landed
+    }
+
+    #[test]
+    fn a_vote_and_a_retraction_each_land_exactly_their_row() {
+        let mut voted = first_day();
+        voted.votes[1].1 = Some("Player 1".to_string());
+        assert_eq!(
+            landed_between(&first_day(), &voted),
+            [Landed::Vote("Player 2".to_string())]
+        );
+        let mut changed = voted.clone();
+        changed.votes[1].1 = Some("Player 4".to_string());
+        assert_eq!(
+            landed_between(&voted, &changed),
+            [Landed::Vote("Player 2".to_string())]
+        );
+        assert_eq!(
+            landed_between(&voted, &first_day()),
+            [Landed::Vote("Player 2".to_string())]
+        );
+        assert!(landed_between(&voted, &voted).is_empty());
+        // A new day of undecided votes lands nothing.
+        assert!(landed_between(&first_night(), &first_day()).is_empty());
+    }
+
+    #[test]
+    fn a_night_deed_lands_its_row() {
+        let mut chosen = first_night();
+        chosen.night[1].1 = NightDeed::Protect("Player 4".to_string());
+        assert_eq!(
+            landed_between(&first_night(), &chosen),
+            [Landed::Night("Player 2".to_string())]
+        );
+        assert!(landed_between(&first_day(), &first_night()).is_empty());
+    }
+
+    #[test]
+    fn a_death_lands_its_seat() {
+        let mut dead = first_day();
+        dead.seats[3].died = Some(Death {
+            round: 1,
+            phase: WerewolfPhase::Night,
+        });
+        assert_eq!(
+            landed_between(&first_night(), &dead),
+            [Landed::Death("Player 4".to_string())]
+        );
+        assert!(landed_between(&dead, &dead).is_empty());
+    }
+
+    #[test]
+    fn a_tentative_decision_lands_when_its_target_changes() {
+        let ratify = |target: Option<&str>, since| {
+            let mut day = first_day();
+            day.ratify = Some(Ratify {
+                target: target.map(str::to_string),
+                since,
+                limit_ms: 20_000,
+            });
+            day
+        };
+        let first = ratify(Some("Player 1"), 3_000);
+        assert_eq!(landed_between(&first_day(), &first), [Landed::Ratify]);
+        assert!(landed_between(&first, &ratify(Some("Player 1"), 4_000)).is_empty());
+        assert_eq!(
+            landed_between(&first, &ratify(None, 5_000)),
+            [Landed::Ratify]
+        );
+        assert!(landed_between(&first, &first_day()).is_empty());
+    }
+
+    #[test]
+    fn a_werewolf_board_after_an_avalon_one_lands_as_if_first() {
+        let mut screen = Screen::default();
+        screen.apply(&panel(&board()), true);
+        let mut voted = first_day();
+        voted.votes[0].1 = Some("Player 2".to_string());
+        screen.apply(&werewolf(&voted), true);
+        assert_eq!(
+            screen.werewolf().unwrap().landed,
+            [Landed::Vote("Player 1".to_string())]
+        );
+        assert_eq!(screen.board(), None);
+        assert_eq!(shown(&[panel(&board())]).werewolf(), None);
+    }
+
+    #[test]
+    fn the_votes_are_counted_most_first_and_a_tie_in_seat_order() {
+        let mut day = first_day();
+        day.votes[0].1 = Some("Player 4".to_string());
+        day.votes[1].1 = Some("Player 3".to_string());
+        day.votes[2].1 = Some("Player 4".to_string());
+        day.votes[3].1 = Some("Player 2".to_string());
+        let screen = shown(&[werewolf_cast(), werewolf(&day)]);
+        let board = screen.werewolf().unwrap();
+        assert_eq!(
+            board.tally(),
+            [
+                ("Player 4".to_string(), 2),
+                ("Player 2".to_string(), 1),
+                ("Player 3".to_string(), 1)
+            ]
+        );
+    }
+
+    #[test]
     fn the_clock_sets_the_rate() {
-        assert_eq!(Screen::default().rate, 1.0);
+        assert_eq!(Screen::default().clock.rate, 1.0);
         let screen = shown(&[cue(Beat::Clock { rate: 4.0 })]);
-        assert_eq!(screen.rate, 4.0);
+        assert_eq!(screen.clock.rate, 4.0);
     }
 
     #[test]
     fn late_bubbles_are_styled() {
         let css = include_str!("../style.css");
         assert!(css.contains(".sd-late"));
+    }
+
+    #[test]
+    fn the_board_writes_its_rows_as_the_console_would_say_them() {
+        assert_eq!(vote("Player 1", Some("Player 6")), "Player 1 → Player 6");
+        assert_eq!(vote("Player 1", None), "Player 1 · undecided");
+        let target = || "Player 3".to_string();
+        assert_eq!(
+            deed("Player 4", &NightDeed::Pending),
+            "Player 4 · choosing…"
+        );
+        assert_eq!(
+            deed("Player 4", &NightDeed::Kill(target())),
+            "Player 4 · kill → Player 3"
+        );
+        assert_eq!(
+            deed("Player 1", &NightDeed::Protect(target())),
+            "Player 1 · protect → Player 3"
+        );
+        assert_eq!(
+            deed("Player 5", &NightDeed::Ask(target())),
+            "Player 5 · ask → Player 3"
+        );
+        assert_eq!(ratify(Some("Player 4"), 14), "Player 4 out in 14s");
+        assert_eq!(ratify(None, 3), "Nobody out in 3s");
+        let died = |round, phase| death(&Death { round, phase });
+        assert_eq!(died(2, WerewolfPhase::Night), "killed night 2");
+        assert_eq!(died(1, WerewolfPhase::Day), "voted out day 1");
+        let outcome = |victim: Option<&str>, protected_by: &[&str], died: Option<&str>| {
+            super::night(&NightOutcome {
+                night: 2,
+                victim: victim.map(str::to_string),
+                protected_by: protected_by.iter().map(|name| name.to_string()).collect(),
+                died: died.map(str::to_string),
+            })
+        };
+        assert_eq!(
+            outcome(Some("Player 2"), &[], Some("Player 2")),
+            "2 · wolves chose Player 2, who died"
+        );
+        assert_eq!(
+            outcome(Some("Player 3"), &["Player 1", "Player 5"], None),
+            "2 · wolves chose Player 3, protected by Player 1 and Player 5"
+        );
+        assert_eq!(outcome(None, &[], None), "2 · wolves chose nobody");
+        let learned = Learned {
+            player: "Player 6".to_string(),
+            role: Role::Werewolf,
+            night: 1,
+        };
+        assert_eq!(super::learned(&learned), "Player 6 is a werewolf · night 1");
     }
 
     #[test]
