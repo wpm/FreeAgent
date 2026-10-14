@@ -541,11 +541,11 @@ impl<G: game::Game> Settings<G> {
     }
 
     /// The configuration a game of `deal` runs under, as the log records
-    /// it right after the deal: how many of each role, the limits, every
-    /// strategy and the allotments, `models`, the models in play as
-    /// [`Settings::set_up`] set them up, each prompted player's system
-    /// prompt from `prompts` as [`Lineup::told`] tells it, and the text
-    /// blocks as written.
+    /// it right after the deal: the version playing it, how many of each
+    /// role, the limits, every strategy and the allotments, `models`, the
+    /// models in play as [`Settings::set_up`] set them up, each prompted
+    /// player's system prompt from `prompts` as [`Lineup::told`] tells it,
+    /// and the text blocks as written.
     pub fn configuration(
         &self,
         deal: &HashMap<PlayerId, Dealt<G::Role>>,
@@ -554,6 +554,7 @@ impl<G: game::Game> Settings<G> {
     ) -> anyhow::Result<Configuration<G>> {
         let lineup = &self.lineup;
         Ok(Configuration {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             role_counts: lineup.role_counts(),
             limits: self.limits.clone(),
             strategies: lineup.strategies.clone(),
@@ -573,6 +574,10 @@ impl<G: game::Game> Settings<G> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct Configuration<G: game::Game> {
+    /// The version of `social-deduction` that played this game, as its
+    /// `Cargo.toml` says, so that whatever reads the log knows which shape
+    /// it was written in.
+    pub version: String,
     /// How many of each role were dealt.
     pub role_counts: BTreeMap<G::Role, usize>,
     /// How long each phase waited for the players.

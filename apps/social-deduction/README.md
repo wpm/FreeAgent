@@ -88,7 +88,8 @@ social-deduction play configs/werewolf/prompted.toml
 
 A setting comes from the file if it is given there, otherwise from a
 default in the code. The log's second entry is
-the configuration as it took effect: the role counts and limits, every
+the configuration as it took effect: the version of `social-deduction`
+that played the game, the role counts and limits, every
 strategy as written, the allotments, each model in play with what was
 settled for it, each prompted player's rendered prompt, and the text
 blocks as written, so a log says by itself what was played and under which

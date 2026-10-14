@@ -789,6 +789,7 @@ count = 1
         assert_eq!(
             configuration,
             Configuration {
+                version: env!("CARGO_PKG_VERSION").to_string(),
                 role_counts: BTreeMap::from([
                     (Role::Werewolf, 1),
                     (Role::Villager, 1),
@@ -835,6 +836,7 @@ count = 1
         let entry = Entry::Configuration(Box::new(configuration));
         let json = serde_json::to_value(&entry).unwrap();
         let configuration = &json["Configuration"];
+        assert_eq!(configuration["version"], json!(env!("CARGO_PKG_VERSION")));
         assert_eq!(configuration["night_limit"], json!("30s"));
         assert_eq!(configuration["day_limit"], json!("1m 30s"));
         assert_eq!(configuration["ratify_limit"], json!("10s"));
@@ -859,6 +861,7 @@ count = 1
             .configuration(&settings.lineup.deal(), &[], Models::new())
             .unwrap();
         assert!(configuration.models.is_empty() && configuration.prompts.is_empty());
+        assert_eq!(configuration.version, env!("CARGO_PKG_VERSION"));
         let entry = Entry::Configuration(Box::new(configuration));
         let back: Entry = serde_json::from_str(&serde_json::to_string(&entry).unwrap()).unwrap();
         assert_eq!(back, entry);

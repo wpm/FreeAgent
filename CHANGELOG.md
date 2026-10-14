@@ -152,6 +152,8 @@ workflow takes a version's notes from here.
   caller gives, and the episode it builds logs to the caller's logger.
   `config::parse` settles a configuration's text, and the command line
   looks keys up in the process `Environment`.
+- The log's `Configuration` entry names the version of `social-deduction`
+  that played the game, in its `version` field.
 
 ### Changed
 

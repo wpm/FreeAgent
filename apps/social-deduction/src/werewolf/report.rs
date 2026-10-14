@@ -2832,6 +2832,7 @@ mod tests {
     fn configured_with(models: &[(&str, ToolChoice)]) -> Event<Entry> {
         let models = in_play(models);
         logged(Entry::Configuration(Box::new(Configuration {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             role_counts: BTreeMap::from([(Role::Werewolf, 1), (Role::Villager, 2)]),
             limits: Limits {
                 night_limit: Duration::from_secs(30),
