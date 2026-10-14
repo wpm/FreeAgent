@@ -1,552 +1,237 @@
-//! The announcing environment, which runs every game: it opens each
-//! phase with a message to every living player, awake in it or not, takes
-//! the awake players' selections as they come, and ends the phase. A
+//! Werewolf's rules for the [announcing environment](crate::announced):
+//! each phase is announced to every living player, awake in it or not. A
 //! player announced a phase it sleeps through learns the phase has begun,
-//! and its selections do not count. Players who take seconds to decide
-//! hold nothing up.
+//! and its selections do not count.
 //!
-//! A night, and a day without a ratify limit, take each player's first
-//! selection and end once everyone awake has selected or at the limit,
-//! whichever comes first. A day with a ratify limit takes each player's
-//! latest selection as its vote, unless the player has retracted it since
-//! with a [`Move::Retract`] and is undecided again, and keeps the votes:
-//! whenever they change the tentative decision, the player they select or
-//! nobody, every living player is sent a [`Move::Tentative`], and
-//! whenever they change it to a player the ratify timer starts again. The
-//! day ends when the timer fires, and the selected player is voted out, or
-//! at the day limit, whatever is standing, and nobody is.
+//! A night, and a day without a ratify limit, take each awake player's
+//! first selection and end once everyone awake has selected or at the
+//! limit, whichever comes first. A day with a ratify limit takes each
+//! player's latest selection as its vote, unless the player has retracted
+//! it since with a [`Move::Retract`] and is undecided again, and keeps the
+//! votes: whenever they change the tentative decision, the player they
+//! select or nobody, every living player is sent a [`Move::Tentative`], and
+//! whenever they change it to a player a [`Move::Ratify`] timer starts
+//! again. The day ends when the latest timer fires, and the selected player
+//! is voted out, or at the day limit, whatever is standing, and nobody is.
 //!
-//! The environment logs the deal, then the configuration;
-//! an [`Entry::Action`] for each announcement and tentative decision it
-//! sends, numbered in one series from 1; an [`Entry::Observation`] for each
-//! selection and retraction it receives, stale or not, with the phase it
-//! was in when it arrived; each night's hunt as [`Outcome::Hunted`]; each day's
-//! vote as [`Outcome::Voted`]; and the result. The reminders it sends itself
-//! are not logged.
+//! Each night's hunt is logged as [`Outcome::Hunted`], and each day's vote
+//! as [`Outcome::Voted`]. Whoever dies is stopped at once.
 
 use super::{
-    Choices, Dealt, Ending, Entry, Hunt, Message, Move, Outcome, Phase, PlayerId, Role, Rules,
-    State, Team,
+    Choices, Ending, Hunt, Message, Move, Outcome, Phase, PlayerId, Role, State, Werewolf,
 };
-use crate::game::{act, observe};
+use crate::announced::{Announced, Awaited, Core, Counted, Opening, Over, Resolved};
 use crate::report::in_order;
-use async_trait::async_trait;
-use free_agent::{ActorInit, Behavior, Context, Think};
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::collections::HashMap;
 use std::time::Duration;
-use tokio::sync::oneshot;
-use tokio::time::Instant;
-
-/// Everything the episode needs to run the environment for a game of
-/// `deal`, every player's role and strategy, under `rules`, as the actor
-/// `wrap` makes of it: it may send to and stop every
-/// player, holds the logger, and thinks. It logs the deal, then
-/// `configuration`, before it opens the first night. The winning team is
-/// sent on `winner` when the game ends.
-pub fn init<A>(
-    deal: HashMap<PlayerId, Dealt>,
-    rules: Rules,
-    configuration: Entry,
-    winner: oneshot::Sender<Team>,
-    wrap: impl FnOnce(Environment) -> A + Send + 'static,
-) -> ActorInit<A>
-where
-    A: Behavior<Message = Message, Log = Entry>,
-{
-    let players: HashSet<PlayerId> = deal.keys().cloned().collect();
-    let opening = Box::new([Entry::start(&deal, &rules), configuration]);
-    let roles = deal
-        .into_iter()
-        .map(|(id, dealt)| (id, dealt.role))
-        .collect();
-    let game = Arc::new(Mutex::new(Game::new(roles, rules, winner)));
-    let shared = Arc::clone(&game);
-    ActorInit {
-        behavior: Box::new(move |context| {
-            wrap(Environment {
-                context,
-                game,
-                opening: Some(opening),
-            })
-        }),
-        think: Some(Box::new(move |context| {
-            Box::new(Environment {
-                context,
-                game: shared,
-                opening: None,
-            })
-        })),
-        can_send_to: players.clone(),
-        can_shut_down: players,
-        has_logger: true,
-    }
-}
-
-/// What the environment's two loops share: the game, the phase it is at,
-/// and where the winner goes.
-struct Game {
-    state: State,
-    rules: Rules,
-    /// The number of the current phase. The first night is 1.
-    seq: u64,
-    /// The number of the last message the environment sent to a player.
-    /// Each announcement is a message of its own.
-    n: u64,
-    /// The phase underway, while one is: taken when it ends, so that
-    /// nothing more counts until the next one opens.
-    underway: Option<Underway>,
-    /// Where the winning team goes when the game ends. Taken when sent.
-    winner: Option<oneshot::Sender<Team>>,
-    /// When the game was made, which is as good as when it was dealt.
-    started: Instant,
-}
 
 /// The phase underway: whom the environment waits on and what they have
-/// said.
-#[derive(Default)]
-struct Underway {
-    /// The players awake in the phase.
-    awake: HashSet<PlayerId>,
-    /// Each awake player's selection: its latest in a day with a ratify
-    /// limit, unless retracted since, its first otherwise.
-    selections: Choices,
+/// selected.
+pub struct Underway {
+    /// The players awake in the phase, and each one's selection: its
+    /// latest in a day with a ratify limit, unless retracted since, its
+    /// first otherwise.
+    awake: Awaited<PlayerId>,
     /// In a day with a ratify limit, the tentative decision standing: the
     /// player the votes select, if they select anyone.
     tentative: Option<PlayerId>,
     /// How many times the tentative decision has changed, which numbers
     /// the ratify timers so that a stale one is known.
     changes: u64,
+    /// The tentative decision has stood for the ratify limit: the day ends
+    /// with it, and nothing more counts.
+    ratified: bool,
 }
 
-/// What the environment does about a selection or retraction that counted.
-#[derive(Debug, Default, PartialEq)]
-struct Counted {
-    /// The selection was the last the phase was waiting for: end it.
-    last: bool,
-    /// The vote changed the tentative decision: tell every living player.
-    tentative: Option<(Message, HashSet<PlayerId>)>,
-    /// The vote changed the tentative decision to a player: restart the
-    /// ratify timer, to fire this reminder after the ratify limit.
-    ratify: Option<(Duration, Message)>,
-}
+impl Announced for Werewolf {
+    type State = State;
+    type Underway = Underway;
 
-impl Game {
-    /// A game of `roles` under `rules`, before its first night. The
-    /// winning team is sent on `winner` when the game ends.
-    fn new(roles: HashMap<PlayerId, Role>, rules: Rules, winner: oneshot::Sender<Team>) -> Self {
-        Self {
-            state: State::new(roles),
-            rules,
-            seq: 0,
-            n: 0,
-            underway: None,
-            winner: Some(winner),
-            started: Instant::now(),
-        }
+    /// The first night, with everyone alive.
+    fn state(roles: HashMap<PlayerId, Role>) -> State {
+        State::new(roles)
     }
 
-    /// Open the next phase: number it, write every living player its
-    /// announcement, numbered in turn in seat order, and wait on the
-    /// players awake in it.
-    fn open(&mut self) -> anyhow::Result<Opened> {
-        self.seq += 1;
-        let awake = self.state.awake();
-        let limit = match self.state.phase {
-            Phase::Night => self.rules.night_limit,
-            Phase::Day => self.rules.day_limit,
+    /// Every living player, awaiting those awake in the phase.
+    fn open(core: &Core<Self>) -> anyhow::Result<Opening<Self>> {
+        let state = &core.state;
+        let limit = match state.phase {
+            Phase::Night => core.rules.night_limit,
+            Phase::Day => core.rules.day_limit,
         };
-        let alive = in_order(&self.state.alive);
-        let mut announcements = Vec::new();
-        for player in alive {
-            self.n += 1;
-            let message = Message::Announce {
-                seq: self.seq,
-                n: self.n,
-                view: self.state.view(player.clone())?,
-                limit,
-            };
-            announcements.push((player.clone(), message));
-        }
-        self.underway = Some(Underway {
-            awake,
-            ..Underway::default()
-        });
-        Ok(Opened {
-            seq: self.seq,
-            announcements,
+        let views = in_order(&state.alive)
+            .into_iter()
+            .map(|player| Ok((player.clone(), state.view(player.clone())?)))
+            .collect::<anyhow::Result<_>>()?;
+        Ok(Opening {
+            views,
             limit,
+            underway: Underway {
+                awake: Awaited::new(state.awake()),
+                tentative: None,
+                changes: 0,
+                ratified: false,
+            },
         })
     }
 
-    /// The ratify limit, if the current phase is a day with one above
-    /// zero. A day whose limit is zero is not ratified, so no timer of
-    /// zero ever starts.
-    fn ratifying(&self) -> Option<Duration> {
-        match self.state.phase {
-            Phase::Day if self.rules.ratified() => Some(self.rules.ratify_limit),
+    /// An awake player's first selection; or, in a day with a ratify
+    /// limit, an awake player's every selection, a retraction of its vote
+    /// standing, and the latest ratify timer, until it fires.
+    fn counts(
+        core: &mut Core<Self>,
+        underway: &mut Underway,
+        played: &Move,
+    ) -> Option<Counted<Self>> {
+        match (played, ratifying(core)) {
+            (Move::Select { from, target, .. }, None) => underway.awake.first(from, target.clone()),
+            (Move::Select { from, target, .. }, Some(ratify))
+                if underway.awake.players.contains(from) && !underway.ratified =>
+            {
+                underway.awake.choices.insert(from.clone(), target.clone());
+                Some(decide(core, underway, ratify))
+            }
+            (Move::Retract { from, .. }, Some(ratify)) if !underway.ratified => {
+                underway.awake.choices.remove(from)?;
+                Some(decide(core, underway, ratify))
+            }
+            (Move::Ratify { change, .. }, Some(_)) if *change == underway.changes => {
+                underway.ratified = true;
+                Some(Counted {
+                    last: true,
+                    ..Counted::default()
+                })
+            }
             _ => None,
         }
     }
 
-    /// Record `from`'s selection of `target` in the phase numbered `seq`
-    /// if it counts: the phase is the one underway and `from` is awake in
-    /// it, and, unless the day's vote is ratified, this is its first
-    /// selection. Returns what the environment does about a selection that
-    /// counted, and nothing for one that did not.
-    fn select(&mut self, seq: u64, from: &PlayerId, target: &PlayerId) -> Option<Counted> {
-        if seq != self.seq {
-            return None;
-        }
-        let ratifying = self.ratifying();
-        let underway = self.underway.as_mut()?;
-        if !underway.awake.contains(from) {
-            return None;
-        }
-        let Some(ratify) = ratifying else {
-            if underway.selections.contains_key(from) {
-                return None;
-            }
-            underway.selections.insert(from.clone(), target.clone());
-            return Some(Counted {
-                last: underway.selections.len() == underway.awake.len(),
-                ..Counted::default()
-            });
-        };
-        underway.selections.insert(from.clone(), target.clone());
-        self.decide(ratify)
-    }
-
-    /// Remove `from`'s vote in the phase numbered `seq` if the retraction
-    /// counts: the phase is the one underway, a day with a ratify limit,
-    /// and `from` has a vote standing in it, which only a player awake in
-    /// it can. Returns what the environment does about a retraction that
-    /// counted, and nothing for one that did not.
-    fn retract(&mut self, seq: u64, from: &PlayerId) -> Option<Counted> {
-        if seq != self.seq {
-            return None;
-        }
-        let ratify = self.ratifying()?;
-        self.underway.as_mut()?.selections.remove(from)?;
-        self.decide(ratify)
-    }
-
-    /// Work out the day's tentative decision again from the votes standing,
-    /// whose ratify limit is `ratify`. Returns what the environment does
-    /// about it: nothing if the decision is unchanged; otherwise tell every
-    /// living player, and restart the ratify timer if it selects a player.
-    fn decide(&mut self, ratify: Duration) -> Option<Counted> {
-        let underway = self.underway.as_mut()?;
-        let selected = self.rules.day_vote.elect(&underway.selections);
-        if selected == underway.tentative {
-            return Some(Counted::default());
-        }
-        underway.changes += 1;
-        self.n += 1;
-        let message = Message::Move(Move::Tentative {
-            seq: self.seq,
-            n: self.n,
-            target: selected.clone(),
-            ratify,
-        });
-        let tentative = Some((message, self.state.alive.clone()));
-        let ratify = selected.is_some().then(|| {
-            let reminder = Message::Move(Move::Ratify {
-                seq: self.seq,
-                change: underway.changes,
-            });
-            (ratify, reminder)
-        });
-        underway.tentative = selected;
-        Some(Counted {
-            last: false,
-            tentative,
-            ratify,
-        })
-    }
-
-    /// End the phase numbered `seq` at its limit, or because everyone awake
-    /// has selected, unless it has already ended. At the limit of a day
-    /// whose vote is ratified nothing stands, whatever was. Returns how the
-    /// phase ended, or nothing if it had already.
-    fn end(&mut self, seq: u64) -> Option<Ended> {
-        if seq != self.seq {
-            return None;
-        }
+    /// The night's hunt or the day's vote, from the selections standing
+    /// under the phase's vote. At the limit of a day whose vote is ratified
+    /// nothing stands, whatever was. The game is over once a team has won,
+    /// the survivors stopped.
+    fn resolve(core: &mut Core<Self>, underway: Underway) -> Resolved<Self> {
         let Underway {
-            awake, selections, ..
-        } = self.underway.take()?;
-        let (ballots, by) = match self.ratifying() {
+            awake, ratified, ..
+        } = underway;
+        let everyone = awake.all();
+        let (ballots, by) = match ratifying(core) {
+            _ if ratified => (awake.choices, Ending::Ratified),
             Some(_) => (Choices::new(), Ending::DayLimit),
-            None if selections.len() == awake.len() => (selections, Ending::AllSelected),
-            None => (selections, Ending::DayLimit),
+            None if everyone => (awake.choices, Ending::AllSelected),
+            None => (awake.choices, Ending::DayLimit),
         };
-        Some(self.conclude(&ballots, by))
-    }
-
-    /// End the day numbered `seq` because its tentative decision has stood
-    /// for the ratify limit since its `change`th change, unless the
-    /// reminder is stale: the decision has changed since, or the day has
-    /// ended. Returns how it ended, or nothing if the reminder was stale.
-    fn ratify(&mut self, seq: u64, change: u64) -> Option<Ended> {
-        if seq != self.seq || self.underway.as_ref()?.changes != change {
-            return None;
-        }
-        let Underway { selections, .. } = self.underway.take()?;
-        Some(self.conclude(&selections, Ending::Ratified))
-    }
-
-    /// End the current phase: resolve it from `ballots` under its vote, a
-    /// day as ended `by`, and move on to the next phase if the game goes
-    /// on.
-    fn conclude(&mut self, ballots: &Choices, by: Ending) -> Ended {
-        let outcome = match self.state.phase {
-            Phase::Night => Resolved::Night(
-                self.state
-                    .resolve_night(ballots, self.rules.night_vote.as_ref()),
-            ),
-            Phase::Day => Resolved::Day {
-                out: self
+        let seq = core.seq;
+        let (outcome, out) = match core.state.phase {
+            Phase::Night => {
+                let hunt = core
                     .state
-                    .resolve_day(ballots, self.rules.day_vote.as_ref()),
-                by,
-            },
-        };
-        let winner = self.state.winner();
-        if winner.is_none() {
-            self.state.next();
-        }
-        Ended { outcome, winner }
-    }
-}
-
-/// How a phase ended: what it came to, and who won the game if anyone.
-struct Ended {
-    outcome: Resolved,
-    winner: Option<Team>,
-}
-
-/// What a phase came to: by night the hunt, if the werewolves elected
-/// anyone; by day who was voted out, if anyone, and how the day ended.
-#[derive(Debug, PartialEq)]
-enum Resolved {
-    Night(Option<Hunt>),
-    Day { out: Option<PlayerId>, by: Ending },
-}
-
-impl Resolved {
-    /// Who died in the phase, if anyone.
-    fn dead(&self) -> Option<&PlayerId> {
-        match self {
-            Resolved::Night(hunt) => hunt.as_ref().and_then(Hunt::dead),
-            Resolved::Day { out, .. } => out.as_ref(),
-        }
-    }
-
-    /// The entry that records the phase numbered `seq` coming to this: a
-    /// night's hunt, if the werewolves elected anyone, or a day's vote.
-    fn entry(self, seq: u64) -> Option<Entry> {
-        match self {
-            Resolved::Night(hunt) => hunt.map(|hunt| Entry::Event(Outcome::Hunted { seq, hunt })),
-            Resolved::Day { out, by } => Some(Entry::Event(Outcome::Voted { seq, out, by })),
-        }
-    }
-}
-
-/// A phase just opened: its number, the announcement for each living
-/// player, and how long it waits for the awake ones.
-struct Opened {
-    seq: u64,
-    announcements: Vec<(PlayerId, Message)>,
-    limit: Duration,
-}
-
-/// The actor that holds the game. Its perceive loop and its think loop are
-/// each an `Environment` with a context of its own over the one shared
-/// game: the perceive loop opens the first night, takes selections and
-/// announces tentative decisions, and the think loop ends phases.
-/// [`Actor::Environment`](super::Actor::Environment) holds the perceive
-/// loop's, built by [`init`].
-pub struct Environment {
-    context: Context<Message, Entry>,
-    game: Arc<Mutex<Game>>,
-    /// The entries the perceive loop opens the log with: the deal, then
-    /// the configuration. Taken when logged. Boxed to keep the environment
-    /// no larger than a player in [`Actor`](super::Actor).
-    opening: Option<Box<[Entry; 2]>>,
-}
-
-impl Environment {
-    /// The game, locked for as long as the guard lives. Never held across
-    /// an await.
-    fn game(&self) -> MutexGuard<'_, Game> {
-        self.game.lock().unwrap()
-    }
-
-    /// Open the next phase: show each living player what it may see of it
-    /// and how long it lasts, each announcement an action of its own, and
-    /// set the timer that ends it at its limit.
-    fn open_phase(&self) -> anyhow::Result<()> {
-        let Opened {
-            seq,
-            announcements,
-            limit,
-        } = self.game().open()?;
-        for (to, message) in announcements {
-            act(&self.context, message, HashSet::from([to]), None, None)?;
-        }
-        self.context.think_after(limit, Message::EndPhase { seq })
-    }
-
-    /// Carry out the end of the phase numbered `seq`, if `ended` says it
-    /// did: log the hunt or the vote, stop whoever died, and then end the
-    /// game or open the next phase.
-    fn end_phase(&self, seq: u64, ended: Option<Ended>) -> anyhow::Result<()> {
-        let Some(Ended { outcome, winner }) = ended else {
-            return Ok(());
-        };
-        if let Some(dead) = outcome.dead() {
-            self.context.stop(dead)?;
-        }
-        if let Some(entry) = outcome.entry(seq) {
-            self.context.log(entry);
-        }
-        match winner {
-            Some(team) => self.end_game(team),
-            None => self.open_phase(),
-        }
-    }
-
-    /// Stop the survivors, log the result, send the winner, and shut down.
-    /// The survivors stop first: a player still waiting on its model is
-    /// dropped at that wait, and logs nothing after the end.
-    fn end_game(&self, winner: Team) -> anyhow::Result<()> {
-        let (days, survivors, took, report) = {
-            let mut game = self.game();
-            (
-                game.state.days(),
-                game.state.alive.clone(),
-                game.started.elapsed(),
-                game.winner.take(),
-            )
-        };
-        for player in &survivors {
-            self.context.stop(player)?;
-        }
-        self.context.log(Entry::Event(Outcome::End {
-            winner,
-            days,
-            survivors,
-            took,
-        }));
-        if let Some(report) = report {
-            // The owner of the episode may have stopped listening.
-            let _ = report.send(winner);
-        }
-        self.context.shutdown();
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl Behavior for Environment {
-    type Message = Message;
-    type Log = Entry;
-
-    fn context(&self) -> &Context<Message, Entry> {
-        &self.context
-    }
-
-    /// Log a selection or retraction as observed in the current phase,
-    /// stale or not, and record it if it counts. One that changes the
-    /// tentative decision has every living player told, and one that
-    /// changes it to a player restarts the ratify timer; the last selection
-    /// a phase is waiting for ends it. Anything else is ignored.
-    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        let (current, from, n, counted) = {
-            let mut game = self.game();
-            match message {
-                Message::Move(Move::Select {
+                    .resolve_night(&ballots, core.rules.night_vote.as_ref());
+                let dead = hunt.as_ref().and_then(Hunt::dead).cloned();
+                (hunt.map(|hunt| Outcome::Hunted { seq, hunt }), dead)
+            }
+            Phase::Day => {
+                let out = core
+                    .state
+                    .resolve_day(&ballots, core.rules.day_vote.as_ref());
+                let voted = Outcome::Voted {
                     seq,
-                    from,
-                    n,
-                    target,
-                }) => (game.seq, from, n, game.select(*seq, from, target)),
-                Message::Move(Move::Retract { seq, from, n }) => {
-                    (game.seq, from, n, game.retract(*seq, from))
-                }
-                _ => return Ok(()),
+                    out: out.clone(),
+                    by,
+                };
+                (Some(voted), out)
             }
         };
-        observe(&self.context, from.clone(), *n, current);
-        if let Some(Counted {
-            last,
-            tentative,
-            ratify,
-        }) = counted
-        {
-            if let Some((message, to)) = tentative {
-                act(&self.context, message, to, None, None)?;
+        let over = match core.state.winner() {
+            Some(winner) => Some(Over {
+                winner,
+                stopped: core.state.alive.iter().cloned().collect(),
+                end: Outcome::End {
+                    winner,
+                    days: core.state.days(),
+                    survivors: core.state.alive.clone(),
+                    took: core.took(),
+                },
+            }),
+            None => {
+                core.state.next();
+                None
             }
-            if let Some((limit, reminder)) = ratify {
-                self.context.think_after(limit, reminder)?;
-            }
-            // A selection counts only in the phase underway.
-            if last {
-                self.context.think(Message::EndPhase { seq: current })?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Log the deal and the limits, then the configuration, and open the
-    /// first night.
-    async fn start(&mut self) -> anyhow::Result<()> {
-        for entry in self.opening.take().into_iter().flat_map(|opening| *opening) {
-            self.context.log(entry);
-        }
-        self.open_phase()
+        };
+        Resolved { outcome, out, over }
     }
 }
 
-#[async_trait]
-impl Think for Environment {
-    type Message = Message;
+/// The ratify limit, if the current phase is a day with one above zero. A
+/// day whose limit is zero is not ratified, so no timer of zero ever
+/// starts.
+fn ratifying(core: &Core<Werewolf>) -> Option<Duration> {
+    match core.state.phase {
+        Phase::Day if core.rules.ratified() => Some(core.rules.ratify_limit),
+        _ => None,
+    }
+}
 
-    /// End the phase the message says is over, or the day whose votes it
-    /// says have stood, unless they have ended already. Nothing else is
-    /// thought about.
-    async fn think(&mut self, message: &Message) -> anyhow::Result<()> {
-        if let Message::EndPhase { seq } = message {
-            let ended = self.game().end(*seq);
-            self.end_phase(*seq, ended)?;
-        }
-        if let Message::Move(Move::Ratify { seq, change }) = message {
-            let ended = self.game().ratify(*seq, *change);
-            self.end_phase(*seq, ended)?;
-        }
-        Ok(())
+/// Work out the day's tentative decision again from the votes standing,
+/// whose ratify limit is `ratify`. Returns what the environment does about
+/// it: nothing if the decision is unchanged; otherwise tell every living
+/// player, and restart the ratify timer if it selects a player.
+fn decide(
+    core: &mut Core<Werewolf>,
+    underway: &mut Underway,
+    ratify: Duration,
+) -> Counted<Werewolf> {
+    let selected = core.rules.day_vote.elect(&underway.awake.choices);
+    if selected == underway.tentative {
+        return Counted::default();
+    }
+    underway.changes += 1;
+    let message = Message::Move(Move::Tentative {
+        seq: core.seq,
+        n: core.number(),
+        target: selected.clone(),
+        ratify,
+    });
+    let tell = Some((message, core.state.alive.clone()));
+    let remind = selected.is_some().then(|| {
+        let reminder = Message::Move(Move::Ratify {
+            seq: core.seq,
+            change: underway.changes,
+        });
+        (ratify, reminder)
+    });
+    underway.tentative = selected;
+    Counted {
+        last: false,
+        tell,
+        remind,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::announced::Opened;
+    use crate::announced::tests::{counted, last};
     use crate::seat::id;
     use crate::werewolf::candidates;
     use crate::werewolf::tests::{
         self, Script, at_once, mute, observed_by_the_environment, one_wolf_against, play, quick,
         retraction, selection, village,
     };
-    use crate::werewolf::{Actor, Seat};
+    use crate::werewolf::{Actor, Entry, Rules, Seat, Team};
+    use std::collections::HashSet;
+    use tokio::sync::oneshot;
+
+    type Game = Core<Werewolf>;
 
     /// The selections that count in the phase underway.
     fn selections(game: &Game) -> &Choices {
-        &game.underway.as_ref().unwrap().selections
+        &game.underway.as_ref().unwrap().awake.choices
     }
 
     /// A game of `roles` under `rules`, with its first night open.
-    fn opened_under(roles: HashMap<PlayerId, Role>, rules: Rules) -> (Game, Opened) {
+    fn opened_under(roles: HashMap<PlayerId, Role>, rules: Rules) -> (Game, Opened<Werewolf>) {
         let (winner, _) = oneshot::channel();
         let mut game = Game::new(roles, rules, winner);
         let night = game.open().unwrap();
@@ -554,13 +239,13 @@ mod tests {
     }
 
     /// The village, with its first night open.
-    fn opened() -> (Game, Opened) {
+    fn opened() -> (Game, Opened<Werewolf>) {
         opened_under(village().roles, Rules::default())
     }
 
     /// Whom `opened` announces to, in name order, and the numbers of its
     /// announcements, in order.
-    fn announced(opened: &Opened) -> (Vec<&PlayerId>, Vec<u64>) {
+    fn announced(opened: &Opened<Werewolf>) -> (Vec<&PlayerId>, Vec<u64>) {
         let mut to: Vec<&PlayerId> = opened.announcements.iter().map(|(to, _)| to).collect();
         to.sort();
         let mut numbers: Vec<u64> = opened
@@ -574,7 +259,54 @@ mod tests {
 
     /// The players the phase underway waits on, in name order.
     fn awake(game: &Game) -> Vec<PlayerId> {
-        tests::sorted(game.underway.as_ref().unwrap().awake.clone())
+        tests::sorted(game.underway.as_ref().unwrap().awake.players.clone())
+    }
+
+    /// Count `from`'s selection of `target` in the phase numbered `seq`.
+    fn select(
+        game: &mut Game,
+        seq: u64,
+        from: &PlayerId,
+        target: &PlayerId,
+    ) -> Option<Counted<Werewolf>> {
+        game.count(&Move::Select {
+            seq,
+            from: from.clone(),
+            n: 1,
+            target: target.clone(),
+        })
+    }
+
+    /// Count `from`'s retraction in the phase numbered `seq`.
+    fn retract(game: &mut Game, seq: u64, from: &PlayerId) -> Option<Counted<Werewolf>> {
+        game.count(&Move::Retract {
+            seq,
+            from: from.clone(),
+            n: 1,
+        })
+    }
+
+    /// Fire the ratify timer set at the `change`th change of the tentative
+    /// decision of the day numbered `seq`: the day as it ended, or nothing
+    /// if the timer was stale.
+    fn ratify(game: &mut Game, seq: u64, change: u64) -> Option<Resolved<Werewolf>> {
+        game.count(&Move::Ratify { seq, change })?;
+        game.end(seq)
+    }
+
+    /// Who won, if the phase ended the game.
+    fn winner(ended: &Resolved<Werewolf>) -> Option<Team> {
+        ended.over.as_ref().map(|over| over.winner)
+    }
+
+    /// The day numbered `seq`'s vote: `out` voted out, if anyone, the day
+    /// ended `by`.
+    fn vote(seq: u64, out: Option<&str>, by: Ending) -> Option<Outcome> {
+        Some(Outcome::Voted {
+            seq,
+            out: out.map(id),
+            by,
+        })
     }
 
     #[test]
@@ -610,32 +342,31 @@ mod tests {
         }
     }
 
-    /// A selection that counted and calls for nothing more.
-    fn counted() -> Option<Counted> {
-        Some(Counted::default())
-    }
-
-    /// A selection that counted and was the last the phase waited for.
-    fn last() -> Option<Counted> {
-        Some(Counted {
-            last: true,
-            ..Counted::default()
-        })
-    }
-
     #[test]
     fn the_last_selection_of_a_phase_ends_it() {
         let (mut game, Opened { seq, .. }) = opened();
-        assert_eq!(game.select(seq, &id("wolf1"), &id("villager")), counted());
-        assert_eq!(game.select(seq, &id("wolf2"), &id("villager")), counted());
-        assert_eq!(game.select(seq, &id("seer"), &id("wolf1")), last());
+        assert_eq!(
+            select(&mut game, seq, &id("wolf1"), &id("villager")),
+            counted()
+        );
+        assert_eq!(
+            select(&mut game, seq, &id("wolf2"), &id("villager")),
+            counted()
+        );
+        assert_eq!(select(&mut game, seq, &id("seer"), &id("wolf1")), last());
     }
 
     #[test]
     fn a_selection_for_another_phase_does_not_count() {
         let (mut game, Opened { seq, .. }) = opened();
-        assert_eq!(game.select(seq - 1, &id("wolf1"), &id("villager")), None);
-        assert_eq!(game.select(seq + 1, &id("wolf1"), &id("villager")), None);
+        assert_eq!(
+            select(&mut game, seq - 1, &id("wolf1"), &id("villager")),
+            None
+        );
+        assert_eq!(
+            select(&mut game, seq + 1, &id("wolf1"), &id("villager")),
+            None
+        );
         assert!(selections(&game).is_empty());
     }
 
@@ -644,11 +375,17 @@ mod tests {
         // The villager is announced the night and sleeps through it: its
         // selection is not kept, and the night still waits on the awake.
         let (mut game, Opened { seq, .. }) = opened();
-        assert_eq!(game.select(seq, &id("villager"), &id("wolf1")), None);
+        assert_eq!(select(&mut game, seq, &id("villager"), &id("wolf1")), None);
         assert!(selections(&game).is_empty());
-        assert_eq!(game.select(seq, &id("wolf1"), &id("villager")), counted());
-        assert_eq!(game.select(seq, &id("wolf2"), &id("villager")), counted());
-        assert_eq!(game.select(seq, &id("seer"), &id("wolf1")), last());
+        assert_eq!(
+            select(&mut game, seq, &id("wolf1"), &id("villager")),
+            counted()
+        );
+        assert_eq!(
+            select(&mut game, seq, &id("wolf2"), &id("villager")),
+            counted()
+        );
+        assert_eq!(select(&mut game, seq, &id("seer"), &id("wolf1")), last());
     }
 
     #[test]
@@ -658,18 +395,18 @@ mod tests {
         // selects nobody, tells nobody, and sets no timer.
         let roles = one_wolf_against(&["ann", "bob", "cat"]);
         let (mut game, Opened { seq, .. }) = opened_under(roles, ratified());
-        game.select(seq, &id("wolf"), &id("ann"));
+        select(&mut game, seq, &id("wolf"), &id("ann"));
         game.end(seq);
         let day = game.open().unwrap().seq;
-        assert_eq!(game.select(day, &id("ann"), &id("wolf")), None);
+        assert_eq!(select(&mut game, day, &id("ann"), &id("wolf")), None);
         assert!(selections(&game).is_empty());
         assert_eq!(game.underway.as_ref().unwrap().changes, 0);
         assert_eq!(
-            game.select(day, &id("bob"), &id("wolf")),
+            select(&mut game, day, &id("bob"), &id("wolf")),
             Some(Counted {
                 last: false,
-                tentative: tentative_to(day, 8, Some("wolf"), &["wolf", "bob", "cat"]),
-                ratify: timer(day, 1),
+                tell: tentative_to(day, 8, Some("wolf"), &["wolf", "bob", "cat"]),
+                remind: timer(day, 1),
             })
         );
     }
@@ -677,9 +414,9 @@ mod tests {
     #[test]
     fn only_a_players_first_selection_in_a_phase_counts() {
         let (mut game, Opened { seq, .. }) = opened();
-        game.select(seq, &id("wolf1"), &id("villager"));
-        game.select(seq, &id("wolf2"), &id("villager"));
-        assert_eq!(game.select(seq, &id("wolf1"), &id("seer")), None);
+        select(&mut game, seq, &id("wolf1"), &id("villager"));
+        select(&mut game, seq, &id("wolf2"), &id("villager"));
+        assert_eq!(select(&mut game, seq, &id("wolf1"), &id("seer")), None);
         assert_eq!(selections(&game)[&id("wolf1")], id("villager"));
     }
 
@@ -687,38 +424,32 @@ mod tests {
     fn a_selection_after_a_phase_has_ended_does_not_count() {
         let (mut game, Opened { seq, .. }) = opened();
         game.end(seq).unwrap();
-        assert_eq!(game.select(seq, &id("wolf1"), &id("villager")), None);
+        assert_eq!(select(&mut game, seq, &id("wolf1"), &id("villager")), None);
     }
 
     #[test]
     fn a_phase_is_resolved_from_its_selections_under_its_vote() {
         let roles = one_wolf_against(&["ann", "bob", "cat"]);
         let (mut game, Opened { seq, .. }) = opened_under(roles, Rules::default());
-        game.select(seq, &id("wolf"), &id("ann"));
+        select(&mut game, seq, &id("wolf"), &id("ann"));
         let night = game.end(seq).unwrap();
         let hunt = Hunt {
             victim: id("ann"),
             protectors: HashSet::new(),
         };
-        assert_eq!(night.outcome, Resolved::Night(Some(hunt)));
-        assert_eq!(night.outcome.dead(), Some(&id("ann")));
-        assert_eq!(night.winner, None);
+        assert_eq!(night.outcome, Some(Outcome::Hunted { seq, hunt }));
+        assert_eq!(night.out.as_ref(), Some(&id("ann")));
+        assert_eq!(winner(&night), None);
         // The game goes on, so the next phase is the day.
         let day = game.open().unwrap();
         assert_eq!(day.seq, 2);
         assert_eq!(day.limit, Rules::default().day_limit);
-        game.select(day.seq, &id("wolf"), &id("bob"));
-        game.select(day.seq, &id("bob"), &id("wolf"));
+        select(&mut game, day.seq, &id("wolf"), &id("bob"));
+        select(&mut game, day.seq, &id("bob"), &id("wolf"));
         let tied = game.end(day.seq).unwrap();
-        assert_eq!(
-            tied.outcome,
-            Resolved::Day {
-                out: None,
-                by: Ending::DayLimit
-            }
-        );
-        assert_eq!(tied.outcome.dead(), None);
-        assert_eq!(tied.winner, None);
+        assert_eq!(tied.outcome, vote(day.seq, None, Ending::DayLimit));
+        assert_eq!(tied.out.as_ref(), None);
+        assert_eq!(winner(&tied), None);
     }
 
     #[test]
@@ -726,52 +457,29 @@ mod tests {
         let roles = one_wolf_against(&["ann", "bob", "cat"]);
         let (mut game, Opened { seq, .. }) = opened_under(roles, Rules::default());
         assert_eq!(game.rules.ratify_limit, Duration::ZERO);
-        game.end(seq);
+        // A night's hunt is recorded only when the werewolves elected
+        // someone; a day's vote always.
+        assert_eq!(game.end(seq).unwrap().outcome, None);
         let day = game.open().unwrap().seq;
         // Each first vote counts, and tells nobody of a tentative decision
         // and sets no timer; a second does not count.
         for voter in ["wolf", "ann", "bob"] {
-            assert_eq!(game.select(day, &id(voter), &id("ann")), counted());
+            assert_eq!(select(&mut game, day, &id(voter), &id("ann")), counted());
         }
-        assert_eq!(game.select(day, &id("wolf"), &id("bob")), None);
-        assert_eq!(game.select(day, &id("cat"), &id("ann")), last());
+        assert_eq!(select(&mut game, day, &id("wolf"), &id("bob")), None);
+        assert_eq!(select(&mut game, day, &id("cat"), &id("ann")), last());
         let ended = game.end(day).unwrap();
-        assert_eq!(
-            ended.outcome,
-            Resolved::Day {
-                out: Some(id("ann")),
-                by: Ending::AllSelected
-            }
-        );
-        // A night's hunt is recorded only when the werewolves elected
-        // someone; a day's vote always.
-        assert_eq!(Resolved::Night(None).entry(1), None);
-        assert_eq!(
-            ended.outcome.entry(day),
-            Some(Entry::Event(Outcome::Voted {
-                seq: day,
-                out: Some(id("ann")),
-                by: Ending::AllSelected
-            }))
-        );
-    }
-
-    #[test]
-    fn a_phase_that_has_ended_does_not_end_again() {
-        let (mut game, Opened { seq, .. }) = opened();
-        assert!(game.end(seq).is_some());
-        game.open().unwrap();
-        assert!(game.end(seq).is_none());
+        assert_eq!(ended.outcome, vote(day, Some("ann"), Ending::AllSelected));
     }
 
     #[test]
     fn a_phase_that_decides_the_game_is_the_last() {
         let (mut game, Opened { seq, .. }) = opened();
         game.state.alive.remove("wolf2");
-        game.select(seq, &id("wolf1"), &id("villager"));
+        select(&mut game, seq, &id("wolf1"), &id("villager"));
         let night = game.end(seq).unwrap();
-        assert_eq!(night.outcome.dead(), Some(&id("villager")));
-        assert_eq!(night.winner, Some(Team::Werewolves));
+        assert_eq!(night.out.as_ref(), Some(&id("villager")));
+        assert_eq!(winner(&night), Some(Team::Werewolves));
         assert_eq!(game.state.days(), 0);
     }
 
@@ -828,11 +536,11 @@ mod tests {
         // players each.
         assert_eq!(game.n, 8);
         assert_eq!(
-            game.select(day, &id("ann"), &id("wolf")),
+            select(&mut game, day, &id("ann"), &id("wolf")),
             Some(Counted {
                 last: false,
-                tentative: tentative(day, 9, Some("wolf")),
-                ratify: timer(day, 1),
+                tell: tentative(day, 9, Some("wolf")),
+                remind: timer(day, 1),
             })
         );
     }
@@ -840,98 +548,92 @@ mod tests {
     #[test]
     fn a_selection_that_leaves_the_decision_unchanged_sets_no_timer_and_tells_nobody() {
         let (mut game, day) = ratifying_day();
-        game.select(day, &id("ann"), &id("wolf"));
+        select(&mut game, day, &id("ann"), &id("wolf"));
         // A vote for the selected player, the same vote cast again, and a
         // vote moved between other players all leave the werewolf selected.
-        assert_eq!(game.select(day, &id("bob"), &id("wolf")), counted());
-        assert_eq!(game.select(day, &id("bob"), &id("wolf")), counted());
-        assert_eq!(game.select(day, &id("cat"), &id("ann")), counted());
-        assert_eq!(game.select(day, &id("cat"), &id("bob")), counted());
+        assert_eq!(select(&mut game, day, &id("bob"), &id("wolf")), counted());
+        assert_eq!(select(&mut game, day, &id("bob"), &id("wolf")), counted());
+        assert_eq!(select(&mut game, day, &id("cat"), &id("ann")), counted());
+        assert_eq!(select(&mut game, day, &id("cat"), &id("bob")), counted());
         assert_eq!(game.underway.as_ref().unwrap().changes, 1);
     }
 
     #[test]
     fn a_selection_that_leaves_the_decision_unchanged_leaves_the_running_timer_to_fire() {
         let (mut game, day) = ratifying_day();
-        game.select(day, &id("ann"), &id("wolf"));
-        game.select(day, &id("bob"), &id("wolf"));
-        game.select(day, &id("bob"), &id("wolf"));
-        let ended = game.ratify(day, 1).unwrap();
-        assert_eq!(
-            ended.outcome,
-            Resolved::Day {
-                out: Some(id("wolf")),
-                by: Ending::Ratified
-            }
-        );
+        select(&mut game, day, &id("ann"), &id("wolf"));
+        select(&mut game, day, &id("bob"), &id("wolf"));
+        select(&mut game, day, &id("bob"), &id("wolf"));
+        let ended = ratify(&mut game, day, 1).unwrap();
+        assert_eq!(ended.outcome, vote(day, Some("wolf"), Ending::Ratified));
     }
 
     #[test]
     fn a_change_from_nobody_or_another_player_sets_a_fresh_timer() {
         let (mut game, day) = ratifying_day();
         assert_eq!(
-            game.select(day, &id("ann"), &id("cat")),
+            select(&mut game, day, &id("ann"), &id("cat")),
             Some(Counted {
                 last: false,
-                tentative: tentative(day, 9, Some("cat")),
-                ratify: timer(day, 1),
+                tell: tentative(day, 9, Some("cat")),
+                remind: timer(day, 1),
             })
         );
         assert_eq!(
-            game.select(day, &id("ann"), &id("wolf")),
+            select(&mut game, day, &id("ann"), &id("wolf")),
             Some(Counted {
                 last: false,
-                tentative: tentative(day, 10, Some("wolf")),
-                ratify: timer(day, 2),
+                tell: tentative(day, 10, Some("wolf")),
+                remind: timer(day, 2),
             })
         );
         // The timer set when cat was selected is stale.
-        assert!(game.ratify(day, 1).is_none());
-        assert!(game.ratify(day, 2).is_some());
+        assert!(ratify(&mut game, day, 1).is_none());
+        assert!(ratify(&mut game, day, 2).is_some());
     }
 
     #[test]
     fn a_tie_selects_nobody_and_sets_no_timer() {
         let (mut game, day) = ratifying_day();
-        game.select(day, &id("ann"), &id("wolf"));
+        select(&mut game, day, &id("ann"), &id("wolf"));
         assert_eq!(
-            game.select(day, &id("wolf"), &id("ann")),
+            select(&mut game, day, &id("wolf"), &id("ann")),
             Some(Counted {
                 last: false,
-                tentative: tentative(day, 10, None),
-                ratify: None,
+                tell: tentative(day, 10, None),
+                remind: None,
             })
         );
         // The timer set before the tie is stale.
-        assert!(game.ratify(day, 1).is_none());
+        assert!(ratify(&mut game, day, 1).is_none());
         // A vote that breaks the tie selects again.
         assert_eq!(
-            game.select(day, &id("bob"), &id("wolf")),
+            select(&mut game, day, &id("bob"), &id("wolf")),
             Some(Counted {
                 last: false,
-                tentative: tentative(day, 11, Some("wolf")),
-                ratify: timer(day, 3),
+                tell: tentative(day, 11, Some("wolf")),
+                remind: timer(day, 3),
             })
         );
-        assert!(game.ratify(day, 3).is_some());
+        assert!(ratify(&mut game, day, 3).is_some());
     }
 
     #[test]
     fn in_a_ratified_day_a_players_latest_selection_is_its_vote() {
         let (mut game, day) = ratifying_day();
-        game.select(day, &id("ann"), &id("wolf"));
+        select(&mut game, day, &id("ann"), &id("wolf"));
         assert_eq!(
-            game.select(day, &id("ann"), &id("bob")),
+            select(&mut game, day, &id("ann"), &id("bob")),
             Some(Counted {
                 last: false,
-                tentative: tentative(day, 10, Some("bob")),
-                ratify: timer(day, 2),
+                tell: tentative(day, 10, Some("bob")),
+                remind: timer(day, 2),
             })
         );
         assert_eq!(selections(&game)[&id("ann")], id("bob"));
         // Everyone selecting does not end the day.
         for voter in ["wolf", "bob", "cat"] {
-            assert!(!game.select(day, &id(voter), &id("ann")).unwrap().last);
+            assert!(!select(&mut game, day, &id(voter), &id("ann")).unwrap().last);
         }
     }
 
@@ -939,99 +641,81 @@ mod tests {
     fn by_night_the_first_selection_still_counts_whatever_the_ratify_limit() {
         let roles = one_wolf_against(&["ann", "bob", "cat"]);
         let (mut game, Opened { seq, .. }) = opened_under(roles, ratified());
-        assert_eq!(game.select(seq, &id("wolf"), &id("ann")), last());
-        assert_eq!(game.select(seq, &id("wolf"), &id("bob")), None);
+        assert_eq!(select(&mut game, seq, &id("wolf"), &id("ann")), last());
+        assert_eq!(select(&mut game, seq, &id("wolf"), &id("bob")), None);
         assert_eq!(selections(&game)[&id("wolf")], id("ann"));
     }
 
     #[test]
     fn the_ratify_timer_votes_out_the_selected_player_unless_it_is_stale() {
         let (mut game, day) = ratifying_day();
-        game.select(day, &id("ann"), &id("bob"));
-        game.select(day, &id("ann"), &id("wolf"));
+        select(&mut game, day, &id("ann"), &id("bob"));
+        select(&mut game, day, &id("ann"), &id("wolf"));
         // The first selection's timer is stale: the decision has changed
         // since. So is one for another day.
-        assert!(game.ratify(day, 1).is_none());
-        assert!(game.ratify(day + 1, 2).is_none());
-        let ended = game.ratify(day, 2).unwrap();
-        assert_eq!(
-            ended.outcome,
-            Resolved::Day {
-                out: Some(id("wolf")),
-                by: Ending::Ratified
-            }
-        );
-        assert_eq!(ended.winner, Some(Team::Villagers));
+        assert!(ratify(&mut game, day, 1).is_none());
+        assert!(ratify(&mut game, day + 1, 2).is_none());
+        let ended = ratify(&mut game, day, 2).unwrap();
+        assert_eq!(ended.outcome, vote(day, Some("wolf"), Ending::Ratified));
+        assert_eq!(winner(&ended), Some(Team::Villagers));
         // The day has ended, so its timer is stale now too.
-        assert!(game.ratify(day, 2).is_none());
+        assert!(ratify(&mut game, day, 2).is_none());
     }
 
     #[test]
     fn the_day_limit_votes_nobody_out_whatever_is_standing() {
         let (mut game, day) = ratifying_day();
-        game.select(day, &id("ann"), &id("wolf"));
-        game.select(day, &id("bob"), &id("wolf"));
+        select(&mut game, day, &id("ann"), &id("wolf"));
+        select(&mut game, day, &id("bob"), &id("wolf"));
         let ended = game.end(day).unwrap();
-        assert_eq!(
-            ended.outcome,
-            Resolved::Day {
-                out: None,
-                by: Ending::DayLimit
-            }
-        );
-        assert_eq!(ended.winner, None);
+        assert_eq!(ended.outcome, vote(day, None, Ending::DayLimit));
+        assert_eq!(winner(&ended), None);
         assert!(game.state.alive.contains("wolf"));
     }
 
     #[test]
     fn a_retraction_by_the_only_voter_for_the_selected_player_selects_nobody() {
         let (mut game, day) = ratifying_day();
-        game.select(day, &id("ann"), &id("wolf"));
+        select(&mut game, day, &id("ann"), &id("wolf"));
         assert_eq!(
-            game.retract(day, &id("ann")),
+            retract(&mut game, day, &id("ann")),
             Some(Counted {
                 last: false,
-                tentative: tentative(day, 10, None),
-                ratify: None,
+                tell: tentative(day, 10, None),
+                remind: None,
             })
         );
         assert!(selections(&game).is_empty());
         // The timer set when the werewolf was selected is stale.
-        assert!(game.ratify(day, 1).is_none());
+        assert!(ratify(&mut game, day, 1).is_none());
     }
 
     #[test]
     fn a_retraction_that_breaks_a_tie_selects_the_remaining_leader_and_sets_a_fresh_timer() {
         let (mut game, day) = ratifying_day();
-        game.select(day, &id("ann"), &id("wolf"));
-        game.select(day, &id("bob"), &id("cat"));
+        select(&mut game, day, &id("ann"), &id("wolf"));
+        select(&mut game, day, &id("bob"), &id("cat"));
         assert_eq!(
-            game.retract(day, &id("bob")),
+            retract(&mut game, day, &id("bob")),
             Some(Counted {
                 last: false,
-                tentative: tentative(day, 11, Some("wolf")),
-                ratify: timer(day, 3),
+                tell: tentative(day, 11, Some("wolf")),
+                remind: timer(day, 3),
             })
         );
-        assert!(game.ratify(day, 1).is_none());
-        assert!(game.ratify(day, 3).is_some());
+        assert!(ratify(&mut game, day, 1).is_none());
+        assert!(ratify(&mut game, day, 3).is_some());
     }
 
     #[test]
     fn a_retraction_that_leaves_the_decision_unchanged_tells_nobody_and_leaves_the_timer_running() {
         let (mut game, day) = ratifying_day();
-        game.select(day, &id("ann"), &id("wolf"));
-        game.select(day, &id("bob"), &id("wolf"));
-        assert_eq!(game.retract(day, &id("bob")), counted());
+        select(&mut game, day, &id("ann"), &id("wolf"));
+        select(&mut game, day, &id("bob"), &id("wolf"));
+        assert_eq!(retract(&mut game, day, &id("bob")), counted());
         assert_eq!(game.underway.as_ref().unwrap().changes, 1);
-        let ended = game.ratify(day, 1).unwrap();
-        assert_eq!(
-            ended.outcome,
-            Resolved::Day {
-                out: Some(id("wolf")),
-                by: Ending::Ratified
-            }
-        );
+        let ended = ratify(&mut game, day, 1).unwrap();
+        assert_eq!(ended.outcome, vote(day, Some("wolf"), Ending::Ratified));
     }
 
     #[test]
@@ -1040,32 +724,32 @@ mod tests {
         // Ann dies the first night, so by day she is not awake.
         let roles = one_wolf_against(&["ann", "bob", "cat"]);
         let (mut game, Opened { seq, .. }) = opened_under(roles, ratified());
-        game.select(seq, &id("wolf"), &id("ann"));
+        select(&mut game, seq, &id("wolf"), &id("ann"));
         game.end(seq);
         let day = game.open().unwrap().seq;
-        assert_eq!(game.retract(day, &id("bob")), None);
-        game.select(day, &id("bob"), &id("wolf"));
-        assert_eq!(game.retract(day, &id("ann")), None);
-        assert_eq!(game.retract(day - 1, &id("bob")), None);
-        assert_eq!(game.retract(day + 1, &id("bob")), None);
+        assert_eq!(retract(&mut game, day, &id("bob")), None);
+        select(&mut game, day, &id("bob"), &id("wolf"));
+        assert_eq!(retract(&mut game, day, &id("ann")), None);
+        assert_eq!(retract(&mut game, day - 1, &id("bob")), None);
+        assert_eq!(retract(&mut game, day + 1, &id("bob")), None);
         assert_eq!(selections(&game)[&id("bob")], id("wolf"));
         assert_eq!(game.underway.as_ref().unwrap().changes, 1);
         // Nor does one after the day has ended.
         game.end(day);
-        assert_eq!(game.retract(day, &id("bob")), None);
+        assert_eq!(retract(&mut game, day, &id("bob")), None);
     }
 
     #[test]
     fn a_player_that_retracts_and_votes_again_is_counted_with_its_new_vote() {
         let (mut game, day) = ratifying_day();
-        game.select(day, &id("ann"), &id("wolf"));
-        game.retract(day, &id("ann"));
+        select(&mut game, day, &id("ann"), &id("wolf"));
+        retract(&mut game, day, &id("ann"));
         assert_eq!(
-            game.select(day, &id("ann"), &id("bob")),
+            select(&mut game, day, &id("ann"), &id("bob")),
             Some(Counted {
                 last: false,
-                tentative: tentative(day, 11, Some("bob")),
-                ratify: timer(day, 3),
+                tell: tentative(day, 11, Some("bob")),
+                remind: timer(day, 3),
             })
         );
         assert_eq!(selections(&game)[&id("ann")], id("bob"));
@@ -1075,14 +759,14 @@ mod tests {
     fn by_night_and_in_a_day_without_a_ratify_limit_a_retraction_does_not_count() {
         let roles = one_wolf_against(&["ann", "bob", "cat"]);
         let (mut game, Opened { seq, .. }) = opened_under(roles.clone(), ratified());
-        game.select(seq, &id("wolf"), &id("ann"));
-        assert_eq!(game.retract(seq, &id("wolf")), None);
+        select(&mut game, seq, &id("wolf"), &id("ann"));
+        assert_eq!(retract(&mut game, seq, &id("wolf")), None);
         assert_eq!(selections(&game)[&id("wolf")], id("ann"));
         let (mut game, Opened { seq, .. }) = opened_under(roles, Rules::default());
         game.end(seq);
         let day = game.open().unwrap().seq;
-        game.select(day, &id("bob"), &id("wolf"));
-        assert_eq!(game.retract(day, &id("bob")), None);
+        select(&mut game, day, &id("bob"), &id("wolf"));
+        assert_eq!(retract(&mut game, day, &id("bob")), None);
         assert_eq!(selections(&game)[&id("bob")], id("wolf"));
     }
 
