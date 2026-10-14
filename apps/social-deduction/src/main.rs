@@ -6,14 +6,12 @@
 use clap::{Args, Parser};
 use free_agent::{Behavior, Episode, Event, Logger};
 use serde::Serialize;
-use social_deduction::avalon::Avalon;
 use social_deduction::config::{self, Name, Settings, Settled};
 use social_deduction::game::{self, Game, Narrate};
 use social_deduction::model::spec::Probed;
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
 };
-use social_deduction::werewolf::Werewolf;
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -163,7 +161,7 @@ async fn checked(
                 let Probed::Played(from) = probed else {
                     break;
                 };
-                probed = check_plays(game, model, &id, from).await?;
+                probed = game.check_plays(model, &id, from).await?;
             }
             match probed {
                 Probed::Played(tool_choice) => Some(Mark::Played(tool_choice)),
@@ -178,20 +176,6 @@ async fn checked(
         marked.push((id, mark));
     }
     Ok(marked)
-}
-
-/// What the probe of `game` finds of the model `id`, asked first under
-/// `from`.
-async fn check_plays(
-    game: Name,
-    model: &dyn Model,
-    id: &str,
-    from: ToolChoice,
-) -> anyhow::Result<Probed> {
-    match game {
-        Name::Werewolf => Werewolf::check_plays(model, id, from).await,
-        Name::Avalon => Avalon::check_plays(model, id, from).await,
-    }
 }
 
 /// Write why the model `id` did not play: a line `! id` naming it as

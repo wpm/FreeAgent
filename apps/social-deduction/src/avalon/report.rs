@@ -514,6 +514,7 @@ mod tests {
     use crate::avalon::tests::{announcement, dealt, five, logged, seated, utterance, view_of};
     use crate::avalon::{Rules, State};
     use crate::report::FORGOTTEN;
+    use crate::report::tests::estimated;
     use crate::seat::ENVIRONMENT;
     use crate::seat::id;
     use crate::strategy::RANDOM;
@@ -1135,11 +1136,6 @@ mod tests {
         memories.push(heard(announcement(2, state.view(&me))));
         memories.push(sent(utterance(2, "Player 3", 1, &at_length("Third."))));
         told("Player 3", memories)
-    }
-
-    /// The tokens `lines` take, joined by newlines, by estimate.
-    fn estimated(lines: &[&str]) -> u64 {
-        crate::model::estimate(&lines.join("\n"))
     }
 
     #[test]

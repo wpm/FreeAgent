@@ -16,10 +16,10 @@
 //! the models in play and make the [`Configuration`] a game runs under.
 
 use crate::avalon::{self, Avalon};
-use crate::game;
-use crate::model::spec::{self, Handles, Models, Spec};
+use crate::game::{self, Game};
+use crate::model::spec::{self, Handles, Models, Probed, Spec};
 use crate::model::window::{self, ContextWindow};
-use crate::model::{Provider, ToolChoice};
+use crate::model::{Model, Provider, ToolChoice};
 use crate::seat::{Dealt, PlayerId, seats};
 use crate::strategy::{RANDOM, Random, RoleConfig, Strategy};
 use crate::werewolf::{self, Werewolf};
@@ -57,8 +57,22 @@ pub enum Name {
 }
 
 impl Name {
-    /// Every game, in the order `models --check` probes them.
+    /// Every game, in order.
     pub const ALL: [Name; 2] = [Name::Werewolf, Name::Avalon];
+
+    /// What the game's probe finds of the model `model_id`, asked first
+    /// under `from`, as [`Game::check_plays`] probes it.
+    pub async fn check_plays(
+        self,
+        model: &dyn Model,
+        model_id: &str,
+        from: ToolChoice,
+    ) -> anyhow::Result<Probed> {
+        match self {
+            Name::Werewolf => Werewolf::check_plays(model, model_id, from).await,
+            Name::Avalon => Avalon::check_plays(model, model_id, from).await,
+        }
+    }
 }
 
 /// The one key [`load`] reads first, every other key ignored.

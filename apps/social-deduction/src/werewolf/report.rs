@@ -786,6 +786,7 @@ mod tests {
     use super::*;
     use crate::model::ToolChoice;
     use crate::report::FORGOTTEN;
+    use crate::report::tests::estimated;
     use crate::report::tests::in_play;
     use crate::seat::id;
 
@@ -1812,11 +1813,6 @@ mod tests {
             ],
         );
         story
-    }
-
-    /// The estimate of `lines`, joined as a request joins them.
-    fn estimated(lines: &[&str]) -> u64 {
-        crate::model::estimate(&lines.join("\n"))
     }
 
     #[test]

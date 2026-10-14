@@ -276,7 +276,7 @@ pub(crate) mod tests {
     }
 
     /// The tokens `lines` take, joined by newlines, by estimate.
-    fn estimated(lines: &[&str]) -> u64 {
+    pub(crate) fn estimated(lines: &[&str]) -> u64 {
         estimate(&lines.join("\n"))
     }
 
