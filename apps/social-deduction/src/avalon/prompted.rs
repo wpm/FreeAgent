@@ -576,12 +576,13 @@ fn asked(response: &Response, duty: Option<&Duty>, limit: Duration) -> anyhow::R
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::avalon::report::Story;
     use crate::avalon::tests::{
         Played, Script, configured, dealt, five, mute, observed_by, quick, run, utterance, view_of,
     };
+    use crate::avalon::{Actor, Team};
     use crate::avalon::{Entry, Move, Outcome, Rules, Seat, Tally, Victory};
     use crate::game::game;
     use crate::model::Request;
@@ -599,10 +600,11 @@ mod tests {
     use crate::seat::id;
     use crate::seat::{ENVIRONMENT, to_the_environment, to_the_players_but};
     use free_agent::ActorId;
+    use free_agent::{Episode, Event};
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::sync::mpsc::unbounded_channel;
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
     use tokio::sync::oneshot;
 
     /// Run a game of `roles` under `rules`, every player a model player
@@ -613,10 +615,49 @@ mod tests {
         roles: HashMap<PlayerId, Role>,
         rules: Rules,
         model: Arc<FakeModel>,
-        mut puppets: HashMap<&str, Seat>,
+        puppets: HashMap<&str, Seat>,
         tool_choice: ToolChoice,
         window: u64,
     ) -> anyhow::Result<Played> {
+        let (episode, won, log) = episode_as(roles, rules, model, puppets, tool_choice, window);
+        run(episode, won, log).await
+    }
+
+    /// The log of a game of the default table under quick limits, every
+    /// player a model player whose model talks, made to call a tool.
+    pub(crate) async fn prompted_game() -> Vec<Event<Entry>> {
+        let model = answering(choosing_first);
+        let required = ToolChoice::Required;
+        let (episode, _, mut log) = episode_as(
+            five(),
+            quick(),
+            model,
+            HashMap::new(),
+            required,
+            CONTEXT_WINDOW,
+        );
+        episode.run(Duration::from_secs(60 * 60)).await.unwrap();
+        let mut events = Vec::new();
+        while let Some(event) = log.recv().await {
+            events.push(event);
+        }
+        events
+    }
+
+    /// A game of `roles` under `rules` as [`play_as`] plays it, with where
+    /// its winner and its log come.
+    fn episode_as(
+        roles: HashMap<PlayerId, Role>,
+        rules: Rules,
+        model: Arc<FakeModel>,
+        mut puppets: HashMap<&str, Seat>,
+        tool_choice: ToolChoice,
+        window: u64,
+    ) -> (
+        Episode<Actor>,
+        oneshot::Receiver<Team>,
+        UnboundedReceiver<Event<Entry>>,
+    ) {
         let configuration = configured(&roles, &rules);
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
@@ -643,7 +684,7 @@ mod tests {
             player,
             logger,
         );
-        run(episode, won, log).await
+        (episode, won, log)
     }
 
     /// Run a game of the default table under `rules`, every player a model

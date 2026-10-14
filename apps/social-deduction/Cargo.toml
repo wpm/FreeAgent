@@ -31,6 +31,7 @@ reqwest.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+social-deduction-stage = { path = "../social-deduction-stage" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 toml.workspace = true
 

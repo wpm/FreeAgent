@@ -24,6 +24,7 @@
 //! model makes. The [`config`] says which strategies are dealt.
 
 pub mod announced;
+pub mod board;
 pub mod config;
 pub mod prompted;
 pub mod random;
