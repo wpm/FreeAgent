@@ -55,9 +55,32 @@
   directory holds the example configurations, deal a table and watch a
   game:</p>
   <pre><code>social-deduction play configs/werewolf/random.toml</code></pre>
+  <p>Watch a random game of <a href="viewer/#avalon">Avalon</a> or
+  <a href="viewer/#werewolf">Werewolf</a>, played afresh on every change
+  to <code>main</code>.</p>
   <p>Every build is also on the
   <a href="https://github.com/wpm/FreeAgent/releases">releases page</a>
   as a plain archive.</p>
+</section>
+
+<section>
+  <h2>Desktop app</h2>
+  <p><strong>Social Deduction</strong> for the desktop plays one game of
+  Werewolf or Avalon and shows it as a group chat, beside a live board.</p>
+  <ul class="downloads">
+    <li><a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction.dmg">macOS</a>
+      <span>Apple silicon and Intel, <code>.dmg</code></span></li>
+    <li><a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction-setup.exe">Windows</a>
+      <span><code>setup.exe</code>, or the
+      <a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction.msi"><code>.msi</code></a></span></li>
+    <li><a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction.AppImage">Linux</a>
+      <span><code>.AppImage</code>, or the
+      <a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction.deb"><code>.deb</code></a>
+      or <a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction.rpm"><code>.rpm</code></a></span></li>
+  </ul>
+  <p>The macOS app may be unsigned. Drag it to Applications, then clear
+  its quarantine mark once and it opens normally:</p>
+  <pre><code>xattr -d com.apple.quarantine "/Applications/Social Deduction.app"</code></pre>
 </section>
 </main>
 

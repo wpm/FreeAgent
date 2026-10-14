@@ -14,7 +14,7 @@ use super::{
 };
 use crate::game::Narrate;
 use crate::prompted::Account;
-use crate::report::{Seat, configured, in_order, in_prose, late, told_within, whole_seconds};
+use crate::report::{Line, Seat, configured, in_order, in_prose, late, told_within, whole_seconds};
 use crate::seat::PlayerId;
 use free_agent::Event;
 use humantime::format_duration;
@@ -57,7 +57,7 @@ struct Told {
 
 impl Narrate<Avalon> for Narrator {
     /// The lines the log's `event` adds to the account, often none.
-    fn narrate(&mut self, event: &Event<Entry>) -> Vec<String> {
+    fn narrate(&mut self, event: &Event<Entry>) -> Vec<Line> {
         let time = event.time;
         match &event.payload {
             Entry::Start {
@@ -85,34 +85,38 @@ impl Narrate<Avalon> for Narrator {
                 .collect(),
             Entry::Failed { player, seq, error } => {
                 let player = self.seat(player);
-                vec![match late(&self.announced, *seq)
-                    .then(|| self.phase_name(*seq))
-                    .flatten()
-                {
-                    Some(phase) => format!("{player} fails to play for {phase}: {error}"),
-                    None => format!("{player} fails to play: {error}"),
-                }]
+                vec![Line::Told(
+                    match late(&self.announced, *seq)
+                        .then(|| self.phase_name(*seq))
+                        .flatten()
+                    {
+                        Some(phase) => format!("{player} fails to play for {phase}: {error}"),
+                        None => format!("{player} fails to play: {error}"),
+                    },
+                )]
             }
             Entry::Event(Outcome::Proposed { seq, team }) => {
                 let leader = match self.announced.get(seq) {
                     Some(view) => self.seat(&view.leader).to_string(),
                     None => "The leader".to_string(),
                 };
-                vec![match team {
+                vec![Line::Told(match team {
                     Some(team) => format!("{leader} proposes {}.", self.listed(team)),
                     None => format!("{leader} proposes nobody in time."),
-                }]
+                })]
             }
             Entry::Event(Outcome::Tallied { tally, .. }) => self.tallied(tally),
-            Entry::Event(Outcome::Quested { result, .. }) => vec![quested(result)],
-            Entry::Event(Outcome::Assassinated { target, merlin, .. }) => vec![match target {
-                Some(target) => format!(
-                    "The Assassin names {}, who is {}Merlin.",
-                    self.seat(target),
-                    if *merlin { "" } else { "not " }
-                ),
-                None => "The Assassin names nobody in time.".to_string(),
-            }],
+            Entry::Event(Outcome::Quested { result, .. }) => vec![Line::Told(quested(result))],
+            Entry::Event(Outcome::Assassinated { target, merlin, .. }) => {
+                vec![Line::Told(match target {
+                    Some(target) => format!(
+                        "The Assassin names {}, who is {}Merlin.",
+                        self.seat(target),
+                        if *merlin { "" } else { "not " }
+                    ),
+                    None => "The Assassin names nobody in time.".to_string(),
+                })]
+            }
             Entry::Event(Outcome::End { by, took, .. }) => self.end(*by, *took, time),
             _ => vec![],
         }
@@ -122,7 +126,7 @@ impl Narrate<Avalon> for Narrator {
 impl Narrator {
     /// The deal: how many players, then each with its role and its
     /// strategy on a line of its own, then how long each phase waits.
-    fn table(&self, rules: &Rules) -> Vec<String> {
+    fn table(&self, rules: &Rules) -> Vec<Line> {
         let Rules {
             propose_limit: propose,
             vote_limit: vote,
@@ -146,6 +150,7 @@ impl Narrator {
         std::iter::once(heading)
             .chain(seats)
             .chain(std::iter::once(limits))
+            .map(Line::Told)
             .collect()
     }
 
@@ -164,27 +169,27 @@ impl Narrator {
     /// `view`, adds to the account: nothing if the phase has begun, and
     /// otherwise the end of the phase before it, then a blank line and what
     /// the new phase is.
-    fn announce(&mut self, seq: u64, view: &View, time: SystemTime) -> Vec<String> {
+    fn announce(&mut self, seq: u64, view: &View, time: SystemTime) -> Vec<Line> {
         if self.announced.contains_key(&seq) {
             return vec![];
         }
         self.announced.insert(seq, view.clone());
         let mut lines = self.finish(time);
-        lines.push(String::new());
+        lines.push(Line::Blank);
         lines.push(match view.phase {
-            Phase::Propose => format!(
+            Phase::Propose => Line::Heading(format!(
                 "Quest {}, proposal {} of {PROPOSALS}. {} leads and needs a team of {}.",
                 view.quest,
                 view.proposal,
                 self.seat(&view.leader),
                 view.size
-            ),
-            Phase::Vote => "Everyone votes on the team.".to_string(),
+            )),
+            Phase::Vote => Line::Told("Everyone votes on the team.".to_string()),
             Phase::Quest => {
                 let team: Vec<PlayerId> = view.team.iter().flatten().cloned().collect();
-                questing(&self.listed(&team), view)
+                Line::Told(questing(&self.listed(&team), view))
             }
-            Phase::Assassinate => "The Assassin tries to name Merlin.".to_string(),
+            Phase::Assassinate => Line::Told("The Assassin tries to name Merlin.".to_string()),
         });
         self.phase = Some(Told {
             phase: view.phase,
@@ -195,12 +200,16 @@ impl Narrator {
 
     /// How long the phase being told took, if one was, as it ends at
     /// `time`.
-    fn finish(&mut self, time: SystemTime) -> Vec<String> {
+    fn finish(&mut self, time: SystemTime) -> Vec<Line> {
         self.phase
             .take()
             .map(|told| {
                 let took = time.duration_since(told.began).unwrap_or_default();
-                format!("The {} took {}.", told.phase.told(), whole_seconds(took))
+                Line::Told(format!(
+                    "The {} took {}.",
+                    told.phase.told(),
+                    whole_seconds(took)
+                ))
             })
             .into_iter()
             .collect()
@@ -209,31 +218,30 @@ impl Narrator {
     /// How a vote came out: who approved, who rejected, and who did not
     /// vote, each in seat order and left out when nobody did, then whether
     /// the team goes.
-    fn tallied(&self, tally: &Tally) -> Vec<String> {
+    fn tallied(&self, tally: &Tally) -> Vec<Line> {
         tallied(tally, &in_order(self.roles.keys()), |who| self.listed(who))
     }
 
     /// The end of the game at `time`: how long the last phase took, then a
     /// blank line, who won and how, and how long the game took.
-    fn end(&mut self, by: Victory, took: Duration, time: SystemTime) -> Vec<String> {
+    fn end(&mut self, by: Victory, took: Duration, time: SystemTime) -> Vec<Line> {
         let mut lines = self.finish(time);
-        lines.push(String::new());
-        lines.push(
-            match by {
-                Victory::Quests => "Good wins with three successful quests.",
-                Victory::Sabotage => "Evil wins with three failed quests.",
-                Victory::Rejections => "Evil wins with five failed proposals in a row.",
-                Victory::Assassination => "Evil wins by naming Merlin.",
-            }
-            .to_string(),
-        );
-        lines.push(format!("The game took {}.", whole_seconds(took)));
+        lines.push(Line::Blank);
+        lines.push(Line::Told(won(by).to_string()));
+        lines.push(Line::Told(format!(
+            "The game took {}.",
+            whole_seconds(took)
+        )));
         lines
     }
 
-    /// `player` says `text`.
-    fn said(&self, player: &PlayerId, text: &str) -> String {
-        format!("{} says, \"{text}\"", self.seat(player))
+    /// `player` says `text`, named with its role.
+    fn said(&self, player: &PlayerId, text: &str) -> Line {
+        Line::Said {
+            who: player.clone(),
+            speaker: self.seat(player).to_string(),
+            text: text.to_string(),
+        }
     }
 
     /// The phase numbered `seq` as prose names it mid-sentence, "quest 2",
@@ -251,6 +259,17 @@ impl Narrator {
     }
 }
 
+/// How a game was won `by`, as the account tells it: "Evil wins by naming
+/// Merlin."
+pub(crate) fn won(by: Victory) -> &'static str {
+    match by {
+        Victory::Quests => "Good wins with three successful quests.",
+        Victory::Sabotage => "Evil wins with three failed quests.",
+        Victory::Rejections => "Evil wins with five failed proposals in a row.",
+        Victory::Assassination => "Evil wins by naming Merlin.",
+    }
+}
+
 /// How a vote came out, told of `players` in seat order, each list of them
 /// as `listed` names them: who approved, who rejected, and who did not
 /// vote, each left out when nobody did, then whether the team goes.
@@ -258,7 +277,7 @@ fn tallied(
     tally: &Tally,
     players: &[&PlayerId],
     listed: impl Fn(&[PlayerId]) -> String,
-) -> Vec<String> {
+) -> Vec<Line> {
     let voted = |ballot| -> Vec<PlayerId> {
         players
             .iter()
@@ -266,7 +285,7 @@ fn tallied(
             .map(|player| (*player).clone())
             .collect()
     };
-    let mut lines: Vec<String> = [
+    let mut lines: Vec<Line> = [
         (voted(Some(&Ballot::Approve)), "approves", "approve"),
         (voted(Some(&Ballot::Reject)), "rejects", "reject"),
         (voted(None), "does not vote", "do not vote"),
@@ -275,16 +294,16 @@ fn tallied(
     .filter(|(who, _, _)| !who.is_empty())
     .map(|(who, one, several)| {
         let verb = if who.len() == 1 { one } else { several };
-        format!("{} {verb}.", listed(&who))
+        Line::Vote(format!("{} {verb}.", listed(&who)))
     })
     .collect();
-    lines.push(
+    lines.push(Line::Told(
         match tally.approved {
             true => "The team goes on the quest.",
             false => "The team does not go.",
         }
         .to_string(),
-    );
+    ));
     lines
 }
 
@@ -325,7 +344,7 @@ fn quested(result: &QuestResult) -> String {
 /// What a line of a player's story is, which decides whether a story told
 /// within a budget may forget it.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Line {
+enum Kind {
     /// Something a player said, which a story may forget.
     Talk,
     /// Anything else, which stays.
@@ -348,7 +367,7 @@ pub struct Story {
     /// The latest phase the player was shown, once one has been.
     shown: Option<View>,
     /// The lines told so far, in order, each with what it is.
-    account: Vec<(String, Line)>,
+    account: Vec<(String, Kind)>,
 }
 
 impl Story {
@@ -442,6 +461,9 @@ impl Story {
             Phase::Vote => after.tally.as_ref().map_or(vec![], |tally| {
                 let players: Vec<&PlayerId> = before.players.iter().collect();
                 tallied(tally, &players, |who| in_prose(who))
+                    .iter()
+                    .map(Line::to_string)
+                    .collect()
             }),
             Phase::Quest => after.record.last().map(quested).into_iter().collect(),
             _ => vec![],
@@ -483,35 +505,37 @@ impl Account<Avalon> for Story {
     /// phase, a choice the player made is told as made, and an utterance
     /// it made or heard as said. Nothing else adds anything.
     fn recall(&mut self, event: &Event<Memory>) {
-        let (lines, line) = match &event.payload {
+        let (lines, kind) = match &event.payload {
             Memory::Observed {
                 message: Message::Announce { view, .. },
-            } => (self.shown(view), Line::Kept),
+            } => (self.shown(view), Kind::Kept),
             Memory::Acted {
                 message: Message::Say { from, text, .. },
             }
             | Memory::Observed {
                 message: Message::Say { from, text, .. },
-            } => (vec![self.said(from, text)], Line::Talk),
+            } => (vec![self.said(from, text)], Kind::Talk),
             Memory::Acted {
                 message: Message::Move(made),
-            } => (vec![self.chose(&made.choice().2)], Line::Kept),
-            Memory::Acted { .. } => (vec![], Line::Kept),
-            Memory::Observed { .. } => (vec![], Line::Kept),
+            } => (vec![self.chose(&made.choice().2)], Kind::Kept),
+            Memory::Acted { .. } => (vec![], Kind::Kept),
+            Memory::Observed { .. } => (vec![], Kind::Kept),
         };
         self.account
-            .extend(lines.into_iter().map(|text| (text, line)));
+            .extend(lines.into_iter().map(|text| (text, kind)));
     }
 
     fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
-        told_within(&self.account, |line| *line == Line::Talk, budget)
+        told_within(&self.account, |kind| *kind == Kind::Talk, budget)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::avalon::tests::{announcement, dealt, five, logged, seated, utterance, view_of};
+    use crate::avalon::tests::{
+        announcement, dealt, five, logged, logged_at, seated, utterance, view_of,
+    };
     use crate::avalon::{Rules, State};
     use crate::report::FORGOTTEN;
     use crate::report::tests::estimated;
@@ -519,15 +543,6 @@ mod tests {
     use crate::seat::id;
     use crate::strategy::RANDOM;
     use std::collections::HashSet;
-    use std::time::UNIX_EPOCH;
-
-    /// `entry`, logged `seconds` into the game.
-    fn at(seconds: u64, entry: Entry) -> Event<Entry> {
-        Event {
-            time: UNIX_EPOCH + Duration::from_secs(seconds),
-            ..logged(entry)
-        }
-    }
 
     /// A narrator that has been told the deal of the default table.
     fn dealt_five() -> Narrator {
@@ -561,7 +576,7 @@ mod tests {
     /// quest with `team` on the table, to the first seat, `seconds` into
     /// the game.
     fn opens(seconds: u64, seq: u64, phase: Phase, team: &[&str]) -> Event<Entry> {
-        at(
+        logged_at(
             seconds,
             announced("Player 1", seq, view_of("Player 1", phase, team)),
         )
@@ -606,7 +621,7 @@ mod tests {
         );
         // The same phase announced to another player adds nothing.
         let again = announced("Player 2", 1, view_of("Player 2", Phase::Propose, &[]));
-        assert!(narrator.narrate(&at(0, again)).is_empty());
+        assert!(narrator.narrate(&logged_at(0, again)).is_empty());
         assert_eq!(
             narrator.narrate(&opens(3, 2, Phase::Vote, &["Player 1", "Player 3"])),
             ["The proposal took 3s.", "", "Everyone votes on the team."]
@@ -628,7 +643,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            narrator.narrate(&at(
+            narrator.narrate(&logged_at(
                 70,
                 Entry::Event(Outcome::End {
                     winner: crate::avalon::Team::Good,
@@ -1178,5 +1193,64 @@ mod tests {
         );
         // The story itself keeps every line.
         assert_eq!(story.lines(), lines);
+    }
+
+    #[test]
+    fn an_utterance_is_said_by_its_speaker_named_with_its_role() {
+        let mut narrator = dealt_five();
+        narrator.narrate(&opens(0, 1, Phase::Propose, &[]));
+        let spoke = logged(Entry::Action {
+            from: id("Player 3"),
+            n: 1,
+            to: HashSet::from([id("Player 1")]),
+            message: utterance(1, "Player 3", 1, "Take me."),
+            seen: None,
+            forgot: None,
+        });
+        assert_eq!(
+            narrator.narrate(&spoke),
+            [Line::Said {
+                who: id("Player 3"),
+                speaker: "Player 3 (Servant)".to_string(),
+                text: "Take me.".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_proposal_opens_with_a_blank_line_and_its_heading() {
+        let mut narrator = dealt_five();
+        assert_eq!(
+            narrator.narrate(&opens(0, 1, Phase::Propose, &[])),
+            [
+                Line::Blank,
+                Line::Heading(
+                    "Quest 1, proposal 1 of 5. Player 1 (Merlin) leads and needs a team of 2."
+                        .to_string()
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tallys_ballots_are_votes_and_whether_the_team_goes_is_told() {
+        let narrator = dealt_five();
+        let tally = Tally::of(
+            HashMap::from([
+                (id("Player 1"), Ballot::Approve),
+                (id("Player 2"), Ballot::Reject),
+            ]),
+            5,
+        );
+        let vote = |line: &str| Line::Vote(line.to_string());
+        assert_eq!(
+            narrator.tallied(&tally),
+            [
+                vote("Player 1 (Merlin) approves."),
+                vote("Player 2 (Assassin) rejects."),
+                vote("Player 3 (Servant), Player 4 (Servant) and Player 5 (Minion) do not vote."),
+                Line::Told("The team does not go.".to_string()),
+            ]
+        );
     }
 }

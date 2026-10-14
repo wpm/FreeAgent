@@ -26,6 +26,7 @@
 //! each is played.
 
 pub mod announced;
+pub mod board;
 pub mod config;
 pub mod prompted;
 pub mod random;
@@ -1232,6 +1233,7 @@ pub(crate) mod tests {
         let count = |role| roles.values().filter(|r| **r == role).count();
         let roles = [Role::Werewolf, Role::Villager, Role::Doctor, Role::Seer];
         Configuration {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             role_counts: roles.into_iter().map(|role| (role, count(role))).collect(),
             limits: Werewolf::limits(rules),
             strategies: BTreeMap::from([(RANDOM.to_string(), Strategy::Random(Random {}))]),

@@ -1,0 +1,28 @@
+[package]
+name = "social-deduction-gui"
+version.workspace = true
+edition.workspace = true
+description = "A viewer for social deduction games: a group chat beside a live board"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# The viewer's web page, built with Trunk; it ships as a page, not a crate.
+publish = false
+
+[package.metadata.dist]
+dist = false
+
+[dependencies]
+leptos = { version = "0.8", features = ["csr"] }
+# Pinned to the commit that adds Transcript, ahead of the crate's first
+# release. Game talk needs no code highlighting or math fonts.
+leptos-rich-chat = { git = "https://github.com/wpm/Rich-Chat", rev = "9388aead651e2db11b26cc0d21b2a6547eb60fdd", default-features = false }
+social-deduction-stage = { path = "../social-deduction-stage" }
+console_error_panic_hook = "0.1"
+serde.workspace = true
+serde_json.workspace = true
+serde-wasm-bindgen = "0.6"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console", "Document", "Element", "HtmlInputElement", "HtmlSelectElement", "HtmlTextAreaElement", "Location", "Performance", "Request", "RequestInit", "Response", "Window"] }

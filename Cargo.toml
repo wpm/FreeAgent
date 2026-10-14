@@ -29,9 +29,12 @@ uuid.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [workspace]
-members = ["apps/*"]
+# The desktop shell sits inside the viewer's frontend, out of reach of apps/*.
+members = ["apps/*", "apps/social-deduction-gui/src-tauri"]
 # Without this a bare cargo command at the root would skip the applications.
-default-members = [".", "apps/*"]
+# The viewer's frontend is built for the browser, by Trunk, and the desktop
+# shell needs the system's webview libraries, so both are left out.
+default-members = [".", "apps/social-deduction", "apps/social-deduction-stage"]
 resolver = "3"
 
 # Versions live here so the crates cannot drift apart on a shared dependency.
@@ -48,8 +51,13 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.2", features = ["macros", "rt", "sync", "time"] }
 tokio-util = { version = "0.7.20", features = ["time"] }
+tracing = "0.1.44"
+# The key-leak tests capture every event at TRACE.
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 # Only parsing: nothing writes TOML.
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
+# Editing a configuration file keeps its comments and order.
+toml_edit = "0.25.17"
 rand = "0.10.3"
 # Only what reaching a model needs: rustls and JSON, nothing by default.
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }

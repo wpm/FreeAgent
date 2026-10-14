@@ -1,0 +1,12 @@
+[build]
+target = "index.html"
+
+# The desktop app's window loads the page from here in development.
+[serve]
+port = 1420
+open = false
+
+[watch]
+# The desktop shell writes under src-tauri as it builds; that is not a
+# reason to rebuild the page.
+ignore = ["src-tauri"]

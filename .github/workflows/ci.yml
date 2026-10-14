@@ -47,9 +47,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo build
       - run: cargo test
+      # The viewer's frontend builds the cue types for the browser.
+      - run: cargo check -p social-deduction-stage --target wasm32-unknown-unknown
 
   docs:
     name: Docs
@@ -63,11 +67,101 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # The viewer's frontend builds for the browser, so the jobs above leave it
+  # out. This one checks it natively and for wasm, builds the page the
+  # Website workflow deploys, from freshly played games and the recorded
+  # prompted ones, and drives the page in headless Chromium.
+  viewer:
+    name: Viewer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      - run: cargo clippy -p social-deduction-gui --all-targets -- -D warnings
+      - run: cargo test -p social-deduction-gui
+      - run: cargo check -p social-deduction-gui --target wasm32-unknown-unknown
+      - run: apps/social-deduction-gui/build-page.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/social-deduction-gui/e2e/package-lock.json
+      - run: npm ci
+        working-directory: apps/social-deduction-gui/e2e
+      # Playwright's Chromium, kept between runs for as long as the lock
+      # file pins the same Playwright.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/social-deduction-gui/e2e/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/social-deduction-gui/e2e
+      - run: npm test
+        working-directory: apps/social-deduction-gui/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: viewer-screenshots
+          path: apps/social-deduction-gui/e2e/screenshots
+
+  # The desktop shell needs each platform's webview, so the jobs above
+  # leave it out. One leg per platform, since the shell has code only one
+  # of them compiles: the macOS dev app bundle, and the Windows subsystem
+  # attribute.
+  desktop:
+    name: Desktop (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux, os: ubuntu-latest }
+          - { name: macOS, os: macos-latest }
+          - { name: Windows, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Only Linux needs system packages: macOS and Windows ship their
+      # webviews, and their credential stores need no library. The Secret
+      # Service is reached through D-Bus.
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf libdbus-1-dev
+      - run: cargo clippy -p social-deduction-desktop --all-targets -- -D warnings
+      - run: cargo test -p social-deduction-desktop
+
+  # The release workflows and their scripts, which otherwise run only at a
+  # release. dist generates release.yml, so actionlint leaves it out.
+  workflows:
+    name: Workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # actionlint's own installer, pinned. The runner has shellcheck, which
+      # actionlint runs on each script step.
+      - run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          shopt -s extglob
+          ./actionlint .github/workflows/!(release).yml
+      - run: shellcheck .github/scripts/*.sh
+      - run: .github/scripts/release-scripts-test.sh
+
   # The one check a ruleset needs to require: it passes only if every job it
   # needs did, so jobs can come and go without the ruleset changing.
   required:
     name: Required
-    needs: [format, clippy, test, docs]
+    needs: [format, clippy, test, docs, viewer, desktop, workflows]
     # Without always() a failure above would skip this job, and a ruleset
     # counts a skipped check as passing.
     if: always()
@@ -95,8 +189,12 @@ jobs:
         with:
           tool: cargo-llvm-cov
       # Without --workspace the tests of the applications still run, but the
-      # report leaves their source files out.
-      - run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      # report leaves their source files out. The viewer's frontend is the
+      # browser's, and the Viewer job tests it. The desktop shell is wiring:
+      # Tauri commands around social_deduction's live, editing and secret
+      # modules, which are measured here, the keyring store and the macOS
+      # dev bundle. It needs a webview to build, so the Desktop jobs test it.
+      - run: cargo llvm-cov --workspace --exclude social-deduction-gui --exclude social-deduction-desktop --lcov --output-path lcov.info
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v7
         with:

@@ -20,6 +20,7 @@ use crate::model::spec::Probed;
 use crate::model::{Model, ToolChoice};
 use crate::prompted::{self, Account};
 use crate::random;
+use crate::report::Line;
 use crate::seat::{Dealt, ENVIRONMENT, PlayerId, to_everyone_but};
 use async_trait::async_trait;
 use free_agent::{ActorId, ActorInit, Behavior, Context, Episode, Logger};
@@ -150,7 +151,7 @@ pub trait Game: Debug + Clone + PartialEq + Send + Sync + 'static {
 /// Turns the events of a game, one at a time, into lines of prose.
 pub trait Narrate<G: Game>: Default + Send + 'static {
     /// The lines the log's `event` adds to the account, often none.
-    fn narrate(&mut self, event: &free_agent::Event<Entry<G>>) -> Vec<String>;
+    fn narrate(&mut self, event: &free_agent::Event<Entry<G>>) -> Vec<Line>;
 }
 
 /// What the shared [`Message`] asks of a game's own moves: each one's
@@ -263,13 +264,15 @@ impl<G: Game> Message<G> {
 }
 
 /// What the log holds: the deal, the configuration, every message sent as
-/// the action of its sender and the observation of its receiver, the usage
-/// the provider reported for each model call, each message a model player
+/// the action of its sender and the observation of its receiver, each model
+/// call going out and coming back, the usage the provider reported for each
+/// model call, each message a model player
 /// withheld because its phase had ended, each failure of a model player to
 /// act, and the game's own events, such as how each phase came out and the
 /// result. Every actor logs its own actions and observations: the
 /// environment logs the deal, the configuration and the game's events
-/// besides, and a player its usages, what it withholds and its failures.
+/// besides, and a player its calls, usages, what it withholds and its
+/// failures.
 /// Every entry made during a phase names the phase in a field, so nothing
 /// about phases depends on the order entries reach the log or on their
 /// times.
@@ -356,6 +359,28 @@ pub enum Entry<G: Game> {
         /// What went wrong, as the error says it, causes included.
         error: String,
     },
+    /// `player` called its model in the phase numbered `seq`. Logged by the
+    /// player. Its `Thought` follows unless the player is stopped first,
+    /// as by its death or the end of the game, and then a reader of the log
+    /// ends the call at the player's death, at the game's `End`, or at the
+    /// end of the log.
+    Thinking {
+        /// Who made the call.
+        player: PlayerId,
+        /// The phase the call was made in.
+        seq: u64,
+    },
+    /// The call `player` made in the phase numbered `seq` came back, as
+    /// `ending` says. Logged by the player as soon as the call returns,
+    /// before its usage and before the answer is judged.
+    Thought {
+        /// Who made the call.
+        player: PlayerId,
+        /// The phase the call was made in.
+        seq: u64,
+        /// How the call came back.
+        ending: Ending,
+    },
     /// The model answered a call `player` made in the phase numbered `seq`,
     /// and its provider reported `usage` for it, as sent. Logged by the
     /// player.
@@ -370,6 +395,17 @@ pub enum Entry<G: Game> {
     /// An entry only this game has, written as the game writes it.
     #[serde(untagged)]
     Event(G::Event),
+}
+
+/// How a model call came back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Ending {
+    /// The provider answered. Whatever the answer leads to, an action, a
+    /// withheld message or a failure to act, is logged after it.
+    Answered,
+    /// The call failed, with the error written as it says itself, causes
+    /// included.
+    Failed(String),
 }
 
 impl<G: Game> Entry<G> {
@@ -571,17 +607,23 @@ pub(crate) mod tests {
     >(
         episode: Episode<A>,
         won: oneshot::Receiver<G::Team>,
-        mut log: UnboundedReceiver<Event<Entry<G>>>,
+        log: UnboundedReceiver<Event<Entry<G>>>,
     ) -> anyhow::Result<Played<G>> {
         let started = Instant::now();
         episode.run(Duration::from_secs(60 * 60)).await?;
         let took = started.elapsed();
-
-        let mut logged = Vec::new();
-        while let Some(event) = log.recv().await {
-            logged.push(event.payload);
-        }
+        let logged = drained(log).await;
+        let logged = logged.into_iter().map(|event| event.payload).collect();
         Ok((won.await?, logged, took))
+    }
+
+    /// Every event `log` holds once the episode that writes it is over.
+    pub(crate) async fn drained<L>(mut log: UnboundedReceiver<Event<L>>) -> Vec<Event<L>> {
+        let mut events = Vec::new();
+        while let Some(event) = log.recv().await {
+            events.push(event);
+        }
+        events
     }
 
     /// Run a game of `roles` under `rules`, each player choosing at random
@@ -589,8 +631,26 @@ pub(crate) mod tests {
     pub(crate) async fn play<G: Fixture>(
         roles: HashMap<PlayerId, G::Role>,
         rules: G::Rules,
-        mut puppets: HashMap<&str, Seat<G>>,
+        puppets: HashMap<&str, Seat<G>>,
     ) -> anyhow::Result<Played<G>> {
+        let (episode, won, log) = episode(roles, rules, puppets);
+        run(episode, won, log).await
+    }
+
+    /// A game ready to run, with where its winner and its log come.
+    pub(crate) type Started<G> = (
+        Episode<Actor<G>>,
+        oneshot::Receiver<<G as Game>::Team>,
+        UnboundedReceiver<Event<Entry<G>>>,
+    );
+
+    /// A game of `roles` under `rules` as [`play`] plays it, with where its
+    /// winner and its log come.
+    pub(crate) fn episode<G: Fixture>(
+        roles: HashMap<PlayerId, G::Role>,
+        rules: G::Rules,
+        mut puppets: HashMap<&str, Seat<G>>,
+    ) -> Started<G> {
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
         let player = |id: &PlayerId| {
@@ -607,7 +667,16 @@ pub(crate) mod tests {
             player,
             logger,
         );
-        run(episode, won, log).await
+        (episode, won, log)
+    }
+
+    /// `roles` seated in order, `Player 1` onward.
+    pub(crate) fn seated<R: Copy>(roles: &[R]) -> HashMap<PlayerId, R> {
+        roles
+            .iter()
+            .enumerate()
+            .map(|(seat, role)| (format!("Player {}", seat + 1), *role))
+            .collect()
     }
 
     /// `payload`, an entry or a memory, as an event logged or remembered
@@ -617,6 +686,14 @@ pub(crate) mod tests {
             time: std::time::UNIX_EPOCH,
             episode: Default::default(),
             payload,
+        }
+    }
+
+    /// `payload`, logged `seconds` into the game.
+    pub(crate) fn logged_at<L>(seconds: u64, payload: L) -> Event<L> {
+        Event {
+            time: std::time::UNIX_EPOCH + Duration::from_secs(seconds),
+            ..logged(payload)
         }
     }
 

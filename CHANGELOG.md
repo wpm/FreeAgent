@@ -9,10 +9,34 @@ workflow takes a version's notes from here.
 
 ### Added
 
+- A viewer for social deduction games, in the browser: the game as a group
+  chat beside a live Avalon board, built with Leptos and Rich-Chat. Every
+  push to `main` plays a random game of Avalon and deploys it to
+  <https://wpm.github.io/FreeAgent/viewer/>.
+- The viewer as a desktop app, built with Tauri: pick a preset
+  configuration, press **Run**, and watch the game live, with **Stop**.
+  Each game's log is saved, and API keys come from the OS keychain, then
+  the environment.
+- Installers for the desktop app on each release: a `.dmg` for macOS, a
+  setup `.exe` and an `.msi` for Windows, and an `.AppImage`, a `.deb` and
+  an `.rpm` for Linux. The website links to the newest of each.
+- The desktop app's settings screen edits a configuration file as a form
+  or as TOML, with **Open** and **Save**, and keeps its comments and order.
+  Each model has a **Check**, and the Keys section stores and removes API
+  keys in the OS keychain. The configuration last run opens at the start.
+- `social_deduction::document`, a configuration file edited one value at a
+  time, and `social_deduction::model::check`, the probe `models --check`
+  runs, which the desktop app's **Check** runs too.
+- `social_deduction::live`, which plays a prepared game in the background,
+  saving its log and folding it into cues as it happens.
+- `social_deduction::stage`, which folds a game's log into the viewer's
+  cues, and the `stage` example, which folds a log file.
 - The release archives hold the example configurations in `configs/`,
   beside the binary.
 - The `free-agent` library: episodes of actors that talk to each other by
   sending messages on the Tokio runtime.
+- `Episode::stopper`, a `Stopper` that ends a running episode from outside
+  it, think loops included. A stopped episode returns `Ok(())`.
 - The `social-deduction` application, which plays Werewolf with the roles
   dealt at random.
 - `social-deduction werewolf llm`, in which every player is a language
@@ -138,9 +162,27 @@ workflow takes a version's notes from here.
   not answer each well stops the program, naming it.
   `examples/avalon/prompted.toml` plays a game of model players against a
   local model.
+- The `social-deduction-stage` crate: the cues a game's viewer is drawn
+  from, built natively and for `wasm32-unknown-unknown`.
+- A prompted player logs `Thinking` as each model call goes out and
+  `Thought` as it comes back, answered or failed with its error, so a log
+  shows how long every call took and whose call is out. A call cut off by
+  the player's stopping ends at its death, at the game's end, or at the
+  end of the log. The narration leaves both out.
+- `social_deduction::run::prepare` makes a game ready from a
+  configuration's text, with its API keys looked up in the `Keys` the
+  caller gives, and the episode it builds logs to the caller's logger.
+  `config::parse` settles a configuration's text, and the command line
+  looks keys up in the process `Environment`.
+- The log's `Configuration` entry names the version of `social-deduction`
+  that played the game, in its `version` field.
 
 ### Changed
 
+- Each game's narrator tells its story in lines that say what they are:
+  a phase heading, a player's vote or selection, a player's utterance with
+  who spoke, a blank line, or anything else told. The console prints them
+  as before.
 - `social-deduction models --check` asks each model to play Werewolf, then
   Avalon, and marks it as playing when it plays both. A model that refuses
   to be made to call a tool in Werewolf is asked to call one in Avalon. The

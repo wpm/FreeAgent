@@ -17,7 +17,7 @@
 
 use crate::avalon::{self, Avalon};
 use crate::game::{self, Game};
-use crate::model::spec::{self, Handles, Models, Probed, Spec};
+use crate::model::spec::{self, Handles, Keys, Models, Probed, Spec};
 use crate::model::window::{self, ContextWindow};
 use crate::model::{Model, Provider, ToolChoice};
 use crate::seat::{Dealt, PlayerId, seats};
@@ -81,25 +81,28 @@ struct Which {
     game: Name,
 }
 
-/// Read the configuration file at `path` once, parse it as the game its
-/// `game` key names, and settle it. A file that cannot be read, that has
-/// no `game` or names no game by it, that holds a setting the game it
-/// names does not have, or that does not parse or settle for any other
-/// reason, is an invalid configuration file, and the error names it.
-/// Reading it says nothing about the API keys, so a file can be checked
-/// without them being set.
+/// Parse `text`, a configuration file's, as the game its `game` key
+/// names, and settle it. A document that has no `game` or names no game
+/// by it, that holds a setting the game it names does not have, or that
+/// does not parse or settle for any other reason, is an error, which
+/// `toml` places at its line and column. Parsing it says nothing about
+/// the API keys, so a document can be checked without them.
+pub fn parse(text: &str) -> anyhow::Result<Settled> {
+    let Which { game } = toml::from_str(text)?;
+    Ok(match game {
+        Name::Werewolf => Settled::Werewolf(Box::new(werewolf::config::parse(text)?.settle()?)),
+        Name::Avalon => Settled::Avalon(Box::new(avalon::config::parse(text)?.settle()?)),
+    })
+}
+
+/// Read the configuration file at `path` once, and [`parse`] it. A file
+/// that cannot be read or parsed is an invalid configuration file, and
+/// the error names it.
 pub fn load(path: &Path) -> anyhow::Result<Settled> {
-    let settled = || -> anyhow::Result<Settled> {
-        let file = std::fs::read_to_string(path)?;
-        let Which { game } = toml::from_str(&file)?;
-        Ok(match game {
-            Name::Werewolf => {
-                Settled::Werewolf(Box::new(werewolf::config::parse(&file)?.settle()?))
-            }
-            Name::Avalon => Settled::Avalon(Box::new(avalon::config::parse(&file)?.settle()?)),
-        })
-    };
-    settled().with_context(|| format!("invalid configuration file {}", path.display()))
+    std::fs::read_to_string(path)
+        .map_err(anyhow::Error::from)
+        .and_then(|text| parse(&text))
+        .with_context(|| format!("invalid configuration file {}", path.display()))
 }
 
 /// A game's configuration file, as written, its `[phases]` table a
@@ -522,25 +525,27 @@ impl<G: game::Game> Settings<G> {
 
     /// Set up each model in play as [`spec::set_up`] sets it up, settling
     /// its context window for `prompts` and asking it to play as the game
-    /// probes it, which settles the tool choice. A model the file defines
-    /// and no strategy at the table asks is not contacted.
+    /// probes it, which settles the tool choice, with its key looked up in
+    /// `keys`. A model the file defines and no strategy at the table asks
+    /// is not contacted.
     pub async fn set_up(
         &self,
         prompts: &[SystemPrompt<G::Role>],
+        keys: &dyn Keys,
     ) -> anyhow::Result<(Models, Handles)> {
         let needed = |name: &str| self.needs(name, prompts);
         let probe = async |provider: &Provider, id: &str| {
             G::check_plays(provider, id, ToolChoice::Required).await
         };
-        spec::set_up(self.models_in_play(), needed, probe).await
+        spec::set_up(self.models_in_play(), keys, needed, probe).await
     }
 
     /// The configuration a game of `deal` runs under, as the log records
-    /// it right after the deal: how many of each role, the limits, every
-    /// strategy and the allotments, `models`, the models in play as
-    /// [`Settings::set_up`] set them up, each prompted player's system
-    /// prompt from `prompts` as [`Lineup::told`] tells it, and the text
-    /// blocks as written.
+    /// it right after the deal: the version playing it, how many of each
+    /// role, the limits, every strategy and the allotments, `models`, the
+    /// models in play as [`Settings::set_up`] set them up, each prompted
+    /// player's system prompt from `prompts` as [`Lineup::told`] tells it,
+    /// and the text blocks as written.
     pub fn configuration(
         &self,
         deal: &HashMap<PlayerId, Dealt<G::Role>>,
@@ -549,6 +554,7 @@ impl<G: game::Game> Settings<G> {
     ) -> anyhow::Result<Configuration<G>> {
         let lineup = &self.lineup;
         Ok(Configuration {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             role_counts: lineup.role_counts(),
             limits: self.limits.clone(),
             strategies: lineup.strategies.clone(),
@@ -568,6 +574,10 @@ impl<G: game::Game> Settings<G> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct Configuration<G: game::Game> {
+    /// The version of `social-deduction` that played this game, as its
+    /// `Cargo.toml` says, so that whatever reads the log knows which shape
+    /// it was written in.
+    pub version: String,
     /// How many of each role were dealt.
     pub role_counts: BTreeMap<G::Role, usize>,
     /// How long each phase waited for the players.
@@ -691,6 +701,13 @@ mod tests {
             };
             assert_eq!(loaded, named, "{name}");
         }
+    }
+
+    #[test]
+    fn an_invalid_document_s_error_is_placed_and_names_no_file() {
+        let shown = format!("{:#}", parse("game = \"werewolf\"\n[roles\n").unwrap_err());
+        assert_placed(&shown);
+        assert!(!shown.contains("invalid configuration file"), "{shown}");
     }
 
     #[test]

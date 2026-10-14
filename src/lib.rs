@@ -12,6 +12,6 @@ mod log;
 mod message;
 
 pub use actor::{ActorId, ActorInit, Behavior, Builder, Context, Think, ThinkBuilder};
-pub use episode::Episode;
+pub use episode::{Episode, Stopper};
 pub use log::{Event, Logger, console_log, drain};
 pub use message::Message;

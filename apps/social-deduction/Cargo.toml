@@ -31,11 +31,16 @@ reqwest.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+social-deduction-stage = { path = "../social-deduction-stage" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 toml.workspace = true
+toml_edit.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 # A paused clock lets a test wait out a day's time limit without waiting.
 tokio = { workspace = true, features = ["test-util"] }
 # The binary's tests write configuration files by editing an example's tables.
 toml = { workspace = true, features = ["display"] }
+tracing-subscriber.workspace = true

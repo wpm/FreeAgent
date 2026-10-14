@@ -24,6 +24,7 @@
 //! model makes. The [`config`] says which strategies are dealt.
 
 pub mod announced;
+pub mod board;
 pub mod config;
 pub mod prompted;
 pub mod random;
@@ -1097,7 +1098,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::game::tests::Fixture;
     pub(crate) use crate::game::tests::{
-        announcement, dealt, logged, observed_by, run, sorted, utterance,
+        announcement, dealt, logged, logged_at, observed_by, run, seated, sorted, utterance,
     };
     use crate::game::{act, observe};
     use crate::seat::{ENVIRONMENT, id};
@@ -1119,15 +1120,6 @@ pub(crate) mod tests {
             Role::Servant,
             Role::Minion,
         ])
-    }
-
-    /// `roles`, seated in order from `Player 1`.
-    pub(crate) fn seated(roles: &[Role]) -> HashMap<PlayerId, Role> {
-        roles
-            .iter()
-            .enumerate()
-            .map(|(seat, role)| (format!("Player {}", seat + 1), *role))
-            .collect()
     }
 
     #[test]
@@ -2026,6 +2018,7 @@ pub(crate) mod tests {
     pub(crate) fn configured(roles: &HashMap<PlayerId, Role>, rules: &Rules) -> Configuration {
         let count = |role| roles.values().filter(|r| **r == role).count();
         Configuration {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             role_counts: EVERYONE.map(|role| (role, count(role))).into(),
             limits: rules.clone(),
             strategies: BTreeMap::from([(RANDOM.to_string(), Strategy::Random(Random {}))]),

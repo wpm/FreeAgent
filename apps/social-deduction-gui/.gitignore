@@ -1,0 +1,6 @@
+# Generated: the cues of a game, and Trunk's build.
+/game/*.json
+/dist/
+# The screen check's packages and screenshots.
+/e2e/node_modules/
+/e2e/screenshots/

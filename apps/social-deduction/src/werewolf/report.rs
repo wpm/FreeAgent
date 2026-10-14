@@ -16,7 +16,7 @@ use super::{
 use crate::game::Narrate;
 use crate::prompted::Account;
 use crate::report::{
-    Seat, configured, in_order, in_prose, late, seat_order, told_within, whole_seconds,
+    Line, Seat, configured, in_order, in_prose, late, seat_order, told_within, whole_seconds,
 };
 use crate::seat::{ENVIRONMENT, PlayerId};
 use free_agent::{ActorId, Event};
@@ -119,7 +119,7 @@ pub struct Narrator {
     votes: HashMap<PlayerId, PlayerId>,
     /// In a player's account, the lines told so far, in order, each with
     /// what it is.
-    account: Vec<(String, Line)>,
+    account: Vec<(String, Kind)>,
 }
 
 /// A player's selection or retraction, as cast.
@@ -133,7 +133,7 @@ enum Ballot {
 
 /// What a line of a player's account is, which decides what becomes of it.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Line {
+enum Kind {
     /// Something a player said, which a story may forget.
     Talk,
     /// A vote or a tentative decision of the day being told, which the
@@ -156,7 +156,7 @@ impl Narrate<Werewolf> for Narrator {
     /// The lines the log's `event` adds to the account, often none. The
     /// omniscient account is told from the log; a player's reads only the
     /// end of the game from it.
-    fn narrate(&mut self, event: &Event<Entry>) -> Vec<String> {
+    fn narrate(&mut self, event: &Event<Entry>) -> Vec<Line> {
         let time = event.time;
         if let Entry::Event(Outcome::End {
             winner,
@@ -209,7 +209,7 @@ impl Narrate<Werewolf> for Narrator {
             Entry::Action {
                 message: Message::Move(Move::Tentative { target, ratify, .. }),
                 ..
-            } => vec![self.tentative(target.as_ref(), *ratify)],
+            } => vec![Line::Told(self.tentative(target.as_ref(), *ratify))],
             Entry::Action {
                 message: Message::Say {
                     seq, from, text, ..
@@ -247,13 +247,15 @@ impl Narrate<Werewolf> for Narrator {
                     Some((_, Phase::Day)) => "play",
                     _ => "select",
                 };
-                vec![match late(&self.announced, *seq)
-                    .then(|| self.phase_name(*seq))
-                    .flatten()
-                {
-                    Some(phase) => format!("{player} fails to {verb} for {phase}: {error}"),
-                    None => format!("{player} fails to {verb}: {error}"),
-                }]
+                vec![Line::Told(
+                    match late(&self.announced, *seq)
+                        .then(|| self.phase_name(*seq))
+                        .flatten()
+                    {
+                        Some(phase) => format!("{player} fails to {verb} for {phase}: {error}"),
+                        None => format!("{player} fails to {verb}: {error}"),
+                    },
+                )]
             }
             _ => vec![],
         }
@@ -284,19 +286,19 @@ impl Narrator {
         survivors: &HashSet<PlayerId>,
         took: Duration,
         time: SystemTime,
-    ) -> Vec<String> {
+    ) -> Vec<Line> {
         let mut lines = self.outcome(survivors, false, time);
-        lines.push(String::new());
-        lines.push(format!(
-            "The {winner} win after {days} {}.",
-            if days == 1 { "day" } else { "days" }
-        ));
-        lines.push(format!("The game took {}.", whole_seconds(took)));
-        lines.push("Survivors:".to_string());
+        lines.push(Line::Blank);
+        lines.push(Line::Told(won(winner, days)));
+        lines.push(Line::Told(format!(
+            "The game took {}.",
+            whole_seconds(took)
+        )));
+        lines.push(Line::Told("Survivors:".to_string()));
         lines.extend(
             in_order(survivors)
                 .into_iter()
-                .map(|player| self.seat(player).to_string()),
+                .map(|player| Line::Told(self.seat(player).to_string())),
         );
         lines
     }
@@ -311,19 +313,19 @@ impl Narrator {
     /// [account](Narrator::account), where the day's tally takes the place
     /// of its votes and tentative decisions.
     pub fn recall(&mut self, event: &Event<Memory>) -> Vec<String> {
-        let line = match &event.payload {
+        let kind = match &event.payload {
             Memory::Acted {
                 message: Message::Say { .. },
             }
             | Memory::Observed {
                 message: Message::Say { .. },
-            } => Line::Talk,
-            memory if self.passes(memory) => Line::Passing,
-            _ => Line::Kept,
+            } => Kind::Talk,
+            memory if self.passes(memory) => Kind::Passing,
+            _ => Kind::Kept,
         };
-        let lines = self.remember(event);
+        let lines: Vec<String> = self.remember(event).iter().map(Line::to_string).collect();
         self.account
-            .extend(lines.iter().map(|text| (text.clone(), line)));
+            .extend(lines.iter().map(|text| (text.clone(), kind)));
         lines
     }
 
@@ -336,14 +338,14 @@ impl Narrator {
 
     /// The lines a player's memory `event` adds, as [`Narrator::recall`]
     /// tells them.
-    fn remember(&mut self, event: &Event<Memory>) -> Vec<String> {
+    fn remember(&mut self, event: &Event<Memory>) -> Vec<Line> {
         match &event.payload {
             Memory::Observed {
                 message: Message::Announce { seq, view, .. },
             } => self.announce(*seq, view, event.time),
             Memory::Observed {
                 message: Message::Move(Move::Tentative { target, ratify, .. }),
-            } => vec![self.tentative(target.as_ref(), *ratify)],
+            } => vec![Line::Told(self.tentative(target.as_ref(), *ratify))],
             Memory::Acted {
                 message: Message::Move(Move::Select { from, target, .. }),
             }
@@ -400,7 +402,7 @@ impl Narrator {
 
     /// What the announcement at `time` of the phase numbered `seq`, showing
     /// `view`, adds to the account.
-    fn announce(&mut self, seq: u64, view: &View, time: SystemTime) -> Vec<String> {
+    fn announce(&mut self, seq: u64, view: &View, time: SystemTime) -> Vec<Line> {
         self.announced.insert(seq, (view.round, view.phase.clone()));
         self.show(view, time)
     }
@@ -409,7 +411,7 @@ impl Narrator {
     /// strategy on a line of its own, then how long a night and a day wait
     /// for them, and how long a vote must stand if the day's vote is
     /// ratified, which it is when the ratify limit is above zero.
-    fn table(&self, limits: &Limits) -> Vec<String> {
+    fn table(&self, limits: &Limits) -> Vec<Line> {
         let Limits {
             night_limit,
             day_limit,
@@ -439,6 +441,7 @@ impl Narrator {
         std::iter::once(heading)
             .chain(seats)
             .chain(std::iter::once(limits))
+            .map(Line::Told)
             .collect()
     }
 
@@ -450,7 +453,7 @@ impl Narrator {
     /// Takes in the roles an view shows that were not known. In a
     /// player's account, its first view says who it is, and a role
     /// it is shown later is one it learned.
-    fn learn(&mut self, roles: &HashMap<PlayerId, Role>) -> Vec<String> {
+    fn learn(&mut self, roles: &HashMap<PlayerId, Role>) -> Vec<Line> {
         let new: Vec<(&PlayerId, Role)> = in_order(roles.keys())
             .into_iter()
             .filter(|player| !self.roles.contains_key(*player))
@@ -458,10 +461,10 @@ impl Narrator {
             .collect();
         let lines = match &self.voice {
             Voice::Omniscient => vec![],
-            Voice::Player(me) if self.phase.is_none() => vec![identity(me, roles)],
+            Voice::Player(me) if self.phase.is_none() => vec![Line::Told(identity(me, roles))],
             Voice::Player(_) => new
                 .iter()
-                .map(|(player, role)| format!("You learn {player} is a {role}."))
+                .map(|(player, role)| Line::Told(format!("You learn {player} is a {role}.")))
                 .collect(),
         };
         self.roles
@@ -471,7 +474,7 @@ impl Narrator {
 
     /// What a player being shown `view` at `time` adds to the
     /// account: the roles it learns, and the phase it begins.
-    fn show(&mut self, view: &View, time: SystemTime) -> Vec<String> {
+    fn show(&mut self, view: &View, time: SystemTime) -> Vec<Line> {
         let mut lines = self.learn(&view.roles);
         lines.extend(self.begin(view, time));
         lines
@@ -481,7 +484,7 @@ impl Narrator {
     /// phase before it ends then, with whoever is no longer alive, and a
     /// blank line sets the new phase off from what came before it. In a
     /// player's account, a phase the player sleeps through says so.
-    fn begin(&mut self, view: &View, time: SystemTime) -> Vec<String> {
+    fn begin(&mut self, view: &View, time: SystemTime) -> Vec<Line> {
         let phase = (view.round, view.phase.clone());
         if self.phase.as_ref().is_some_and(|told| told.phase == phase) {
             return vec![];
@@ -493,12 +496,12 @@ impl Narrator {
         let mut lines = self.tally();
         lines.extend(self.outcome(&view.alive, slept, time));
         self.alive = view.alive.clone();
-        lines.push(String::new());
-        lines.push(format!("{}.", title(&phase)));
+        lines.push(Line::Blank);
+        lines.push(Line::Heading(format!("{}.", title(&phase))));
         if let Voice::Player(me) = &self.voice
             && !awake(me, view)
         {
-            lines.push("You sleep.".to_string());
+            lines.push(Line::Told("You sleep.".to_string()));
         }
         self.phase = Some(Told { phase, began: time });
         lines
@@ -515,9 +518,9 @@ impl Narrator {
         alive_after: &HashSet<PlayerId>,
         slept: bool,
         time: SystemTime,
-    ) -> Vec<String> {
+    ) -> Vec<Line> {
         let mut lines = self.done();
-        lines.extend(self.resolution.take());
+        lines.extend(self.resolution.take().map(Line::Told));
         let Some(told) = &self.phase else {
             return lines;
         };
@@ -531,14 +534,14 @@ impl Narrator {
             (false, _) => format!("{listed} die."),
         };
         self.alive = alive_after.clone();
-        lines.push(line);
+        lines.push(Line::Told(line));
         if matches!(self.voice, Voice::Omniscient) {
             let took = time.duration_since(told.began).unwrap_or_default();
-            lines.push(format!(
+            lines.push(Line::Told(format!(
                 "{} took {}.",
                 title(&told.phase),
                 whole_seconds(took)
-            ));
+            )));
         }
         lines
     }
@@ -546,7 +549,7 @@ impl Narrator {
     /// `player`'s deed of choosing `chosen`, as [`Narrator::tell`] tells
     /// it. By day it is `player`'s vote, unless the day's vote is not
     /// ratified and `player` has voted already, and then it does not count.
-    fn did(&mut self, player: &PlayerId, chosen: &PlayerId) -> Vec<String> {
+    fn did(&mut self, player: &PlayerId, chosen: &PlayerId) -> Vec<Line> {
         let line = self.deed(player, chosen);
         if !self.counts(player) {
             let line = format!(
@@ -570,7 +573,7 @@ impl Narrator {
     /// `player`'s deed of retracting its vote, as [`Narrator::tell`] tells
     /// it: undecided again if the retraction counts, and otherwise a
     /// withdrawal that does not count.
-    fn withdrew(&mut self, player: &PlayerId) -> Vec<String> {
+    fn withdrew(&mut self, player: &PlayerId) -> Vec<Line> {
         let (subject, s) = self.subject(player);
         let (whose, is) = if self.is_me(player) {
             ("your", "are")
@@ -597,13 +600,13 @@ impl Narrator {
     /// the omniscient one in a day whose vote is ratified, since the votes
     /// may change and their order matters; otherwise held for the end of
     /// the phase, to be told in seat order.
-    fn tell(&mut self, player: &PlayerId, line: String) -> Vec<String> {
+    fn tell(&mut self, player: &PlayerId, line: String) -> Vec<Line> {
         match self.voice {
             Voice::Omniscient if !(self.ratified && self.by_day()) => {
                 self.deeds.push((player.clone(), line));
                 vec![]
             }
-            _ => vec![line],
+            _ => vec![Line::Vote(line)],
         }
     }
 
@@ -616,18 +619,20 @@ impl Narrator {
     /// each player alive that day, in seat order, with its vote standing
     /// or that it did not vote. The day's votes and tentative decisions leave
     /// the account, for the tally to take their place.
-    fn tally(&mut self) -> Vec<String> {
+    fn tally(&mut self) -> Vec<Line> {
         let votes = std::mem::take(&mut self.votes);
         if !(matches!(self.voice, Voice::Player(_)) && self.by_day()) {
             return vec![];
         }
-        self.account.retain(|(_, line)| *line != Line::Passing);
+        self.account.retain(|(_, kind)| *kind != Kind::Passing);
         in_order(&self.alive)
             .into_iter()
-            .map(|player| match votes.get(player) {
-                Some(chosen) => self.deed(player, chosen),
-                None if self.is_me(player) => "You do not vote.".to_string(),
-                None => format!("{} does not vote.", self.seat(player)),
+            .map(|player| {
+                Line::Vote(match votes.get(player) {
+                    Some(chosen) => self.deed(player, chosen),
+                    None if self.is_me(player) => "You do not vote.".to_string(),
+                    None => format!("{} does not vote.", self.seat(player)),
+                })
             })
             .collect()
     }
@@ -646,10 +651,13 @@ impl Narrator {
     }
 
     /// The deeds held for the phase being told, in seat order.
-    fn done(&mut self) -> Vec<String> {
+    fn done(&mut self) -> Vec<Line> {
         let mut deeds = std::mem::take(&mut self.deeds);
         deeds.sort_by(|a, b| seat_order(&a.0, &b.0));
-        deeds.into_iter().map(|(_, line)| line).collect()
+        deeds
+            .into_iter()
+            .map(|(_, line)| Line::Vote(line))
+            .collect()
     }
 
     /// Whether this is `player`'s own account, in which it is "you".
@@ -668,10 +676,18 @@ impl Narrator {
         }
     }
 
-    /// `player` says `text`.
-    fn said(&self, player: &PlayerId, text: &str) -> String {
-        let (subject, s) = self.subject(player);
-        format!("{subject} say{s}, \"{text}\"")
+    /// `player` says `text`, named as this account names it. In a
+    /// player's own account, what it says itself is told in the second
+    /// person.
+    fn said(&self, player: &PlayerId, text: &str) -> Line {
+        if self.is_me(player) {
+            return Line::Told(format!("You say, \"{text}\""));
+        }
+        Line::Said {
+            who: player.clone(),
+            speaker: self.seat(player).to_string(),
+            text: text.to_string(),
+        }
     }
 
     /// The phase numbered `seq` as prose names it mid-sentence, "day 2",
@@ -736,7 +752,7 @@ impl Account<Werewolf> for Story {
     }
 
     fn told_within(&self, budget: u64) -> (Vec<&str>, usize) {
-        told_within(&self.narrator.account, |line| *line == Line::Talk, budget)
+        told_within(&self.narrator.account, |kind| *kind == Kind::Talk, budget)
     }
 }
 
@@ -779,6 +795,15 @@ fn ordinal((round, phase): &(NonZero<u8>, Phase)) -> u16 {
         Phase::Day => 1,
     };
     u16::from(round.get()) * 2 + half
+}
+
+/// That `winner` won after `days` days, as the account tells it: "The
+/// villagers win after 1 day."
+pub(crate) fn won(winner: Team, days: u8) -> String {
+    format!(
+        "The {winner} win after {days} {}.",
+        if days == 1 { "day" } else { "days" }
+    )
 }
 
 #[cfg(test)]
@@ -923,14 +948,14 @@ mod tests {
         seq: u64,
         target: &str,
         observed_in: u64,
-    ) -> Vec<String> {
+    ) -> Vec<Line> {
         assert!(narrator.narrate(&acted(from, seq, target)).is_empty());
         narrator.narrate(&observed_by_the_environment(from, seq, observed_in))
     }
 
     /// Tell `narrator` that `from` selected `target` for the phase numbered
     /// `seq`, which the environment observed in that phase: what it adds.
-    fn selected(narrator: &mut Narrator, from: &str, seq: u64, target: &str) -> Vec<String> {
+    fn selected(narrator: &mut Narrator, from: &str, seq: u64, target: &str) -> Vec<Line> {
         selected_in(narrator, from, seq, target, seq)
     }
 
@@ -944,7 +969,7 @@ mod tests {
         seq: u64,
         n: u64,
         observed_in: u64,
-    ) -> Vec<String> {
+    ) -> Vec<Line> {
         let action = logged(Entry::Action {
             from: id(from),
             n,
@@ -2813,6 +2838,7 @@ mod tests {
     fn configured_with(models: &[(&str, ToolChoice)]) -> Event<Entry> {
         let models = in_play(models);
         logged(Entry::Configuration(Box::new(Configuration {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             role_counts: BTreeMap::from([(Role::Werewolf, 1), (Role::Villager, 2)]),
             limits: Limits {
                 night_limit: Duration::from_secs(30),
@@ -2857,6 +2883,106 @@ mod tests {
             Narrator::for_player(id("wolf"), true)
                 .narrate(&configuration)
                 .is_empty()
+        );
+    }
+
+    /// A vote, as the narrator tells it.
+    fn vote(line: &str) -> Line {
+        Line::Vote(line.to_string())
+    }
+
+    /// Something told that is neither a vote nor a heading.
+    fn told_line(line: &str) -> Line {
+        Line::Told(line.to_string())
+    }
+
+    #[test]
+    fn an_utterance_is_said_by_its_speaker_named_with_its_role() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
+        assert_eq!(
+            narrator.narrate(&spoke("wolf", 2, 1, "Trust me.", &["ann"])),
+            [Line::Said {
+                who: id("wolf"),
+                speaker: "wolf (werewolf)".to_string(),
+                text: "Trust me.".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_phase_opens_with_a_blank_line_and_its_heading() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        assert_eq!(
+            narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone)),
+            [Line::Blank, Line::Heading("Night 1.".to_string())]
+        );
+    }
+
+    #[test]
+    fn the_nights_choices_are_votes_and_what_came_of_them_is_told() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&start());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Night, &everyone));
+        selected(&mut narrator, "wolf", 1, "ann");
+        selected(&mut narrator, "doctor", 1, "seer");
+        selected(&mut narrator, "seer", 1, "ann");
+        narrator.narrate(&hunted("ann", &[]));
+        assert_eq!(
+            narrator.narrate(&shown("wolf", 1, Phase::Day, &["wolf", "seer", "doctor"]))[..5],
+            [
+                vote("doctor (doctor) protects seer (seer)."),
+                vote("seer (seer) learns ann is a villager."),
+                vote("wolf (werewolf) votes to kill ann (villager)."),
+                told_line("The werewolves choose ann (villager)."),
+                told_line("ann dies."),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_day_vote_and_its_retraction_are_votes() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&ratified());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
+        assert_eq!(
+            selected(&mut narrator, "wolf", 2, "ann"),
+            [vote("wolf (werewolf) votes against ann (villager).")]
+        );
+        assert_eq!(
+            retracted_in(&mut narrator, "wolf", 2, 3, 2),
+            [vote(
+                "wolf (werewolf) withdraws their vote and is undecided again."
+            )]
+        );
+    }
+
+    #[test]
+    fn a_players_own_deeds_and_its_tally_are_votes() {
+        let mut narrator = Narrator::for_player(id("seer"), false);
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        let known = [("seer", Role::Seer)];
+        narrator.remember(&heard(1, Phase::Night, &everyone, &known));
+        assert_eq!(
+            narrator.remember(&chose("seer", 1, "wolf")),
+            [vote("You ask about wolf.")]
+        );
+        narrator.remember(&heard(1, Phase::Day, &everyone, &known));
+        narrator.remember(&chose("seer", 2, "wolf"));
+        assert_eq!(
+            narrator.remember(&heard(2, Phase::Night, &everyone, &known))[..4],
+            [
+                vote("ann does not vote."),
+                vote("doctor does not vote."),
+                vote("You vote against wolf."),
+                vote("wolf does not vote."),
+            ]
         );
     }
 }

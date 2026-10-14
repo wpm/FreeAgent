@@ -3,18 +3,56 @@
 //! model in play into the [`ModelInPlay`] the log records and the handle
 //! its players ask it through.
 //!
-//! The API key never appears in the file. The file names the environment
-//! variable that holds it, and [`Spec::api_key`] reads that variable into
-//! a [`SecretString`], which is redacted wherever it is shown.
+//! The API key never appears in the file. The file names the variable
+//! that holds it, and [`Spec::api_key`] looks it up in the [`Keys`] the
+//! caller gives, such as the process [`Environment`], as a
+//! [`SecretString`], which is redacted wherever it is shown.
 
 use super::window::{self, ContextWindow};
-use super::{Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable};
-use anyhow::Context as _;
+use super::{Model, Provider, REQUEST_TIMEOUT, ToolChoice, key_variable};
+use anyhow::{Context as _, anyhow};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Where API keys come from, by the name of the variable that holds them.
+pub trait Keys: Send + Sync {
+    /// The key `variable` names, or `None` when there is none.
+    fn key(&self, variable: &str) -> anyhow::Result<Option<SecretString>>;
+}
+
+/// The process environment: what the command line reads its keys from.
+/// A variable set to something that is not UTF-8 is an error naming it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Environment;
+
+impl Keys for Environment {
+    fn key(&self, variable: &str) -> anyhow::Result<Option<SecretString>> {
+        key(variable, std::env::var_os(variable))
+    }
+}
+
+/// The key the environment variable `name` holds as `value`, if it is set.
+fn key(name: &str, value: Option<OsString>) -> anyhow::Result<Option<SecretString>> {
+    value
+        .map(|value| {
+            value
+                .into_string()
+                .map(SecretString::from)
+                .map_err(|_| anyhow!("{name} is set to something that is not UTF-8"))
+        })
+        .transpose()
+}
+
+/// The key `variable` names in `keys`. A variable with no key is an error
+/// naming it.
+pub fn required(keys: &dyn Keys, variable: &str) -> anyhow::Result<SecretString> {
+    keys.key(variable)?
+        .ok_or_else(|| anyhow!("{variable} is not set"))
+}
 
 /// A `[models.<name>]` table: one model from one provider, and how to
 /// reach it.
@@ -43,17 +81,20 @@ impl Spec {
         key_variable(&self.base_url, self.api_key_env.as_deref())
     }
 
-    /// The API key, read from the variable [`Spec::key_variable`] names.
-    /// A variable that is named but not set is an error. When none is
-    /// named there is no key, which is what a local server expects.
-    pub fn api_key(&self) -> anyhow::Result<Option<SecretString>> {
-        self.key_variable().map(api_key).transpose()
+    /// The API key `keys` holds for the variable [`Spec::key_variable`]
+    /// names. A variable that is named but has no key is an error naming
+    /// it. When none is named there is no key, which is what a local
+    /// server expects.
+    pub fn api_key(&self, keys: &dyn Keys) -> anyhow::Result<Option<SecretString>> {
+        self.key_variable()
+            .map(|variable| required(keys, variable))
+            .transpose()
     }
 
-    /// The provider the model is reached through, with its key read from
-    /// the environment as [`Spec::api_key`] reads it.
-    pub fn provider(&self) -> anyhow::Result<Provider> {
-        Provider::new(&self.base_url, self.api_key()?, self.request_timeout)
+    /// The provider the model is reached through, with its key looked up
+    /// in `keys` as [`Spec::api_key`] looks it up.
+    pub fn provider(&self, keys: &dyn Keys) -> anyhow::Result<Provider> {
+        Provider::new(&self.base_url, self.api_key(keys)?, self.request_timeout)
     }
 }
 
@@ -101,7 +142,7 @@ pub enum Probed {
 }
 
 /// Set up each model `in_play`, by name, one at a time, since a local
-/// server loads each model it is asked for: read its key, find it in its
+/// server loads each model it is asked for: look its key up in `keys`, find it in its
 /// provider's listing, settle its context window against `needed`, the
 /// tokens the game's largest request to it takes before what the player
 /// remembers, and
@@ -110,6 +151,7 @@ pub enum Probed {
 /// cannot be set up is an error naming it.
 pub async fn set_up(
     in_play: BTreeMap<&str, &Spec>,
+    keys: &dyn Keys,
     needed: impl Fn(&str) -> anyhow::Result<u64>,
     probe: impl AsyncFn(&Provider, &str) -> anyhow::Result<Probed>,
 ) -> anyhow::Result<(Models, Handles)> {
@@ -117,7 +159,7 @@ pub async fn set_up(
     let mut handles = Handles::new();
     for (name, spec) in in_play {
         let set_up = async {
-            let provider = spec.provider()?;
+            let provider = spec.provider(keys)?;
             let listed = provider.listed(&spec.id).await?;
             let context_window = window::settle(name, spec, listed.context_window, needed(name)?)?;
             let tool_choice = match probe(&provider, &spec.id).await? {
@@ -147,7 +189,7 @@ pub async fn set_up(
 pub(crate) mod tests {
     use super::*;
     use crate::model::CONTEXT_WINDOW;
-    use crate::model::canned::{playing, playing_within, serving};
+    use crate::model::canned::{answering, listing, playing, playing_within, serving};
     use crate::model::window::Source;
     use anyhow::anyhow;
     use secrecy::ExposeSecret;
@@ -187,8 +229,69 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_key_variable_that_is_not_set_is_an_error_naming_it() {
+        let error = required(&Environment, "SOCIAL_DEDUCTION_NO_SUCH_KEY").unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("SOCIAL_DEDUCTION_NO_SUCH_KEY"), "{shown}");
+        assert!(shown.contains("not set"), "{shown}");
+    }
+
+    #[test]
+    fn the_environment_s_key_is_read_from_the_named_variable_and_never_shown() {
+        // A variable Cargo sets for every test, since setting one is unsafe.
+        let name = "CARGO_MANIFEST_DIR";
+        let value = std::env::var(name).unwrap();
+        let key = required(&Environment, name).unwrap();
+        assert_eq!(key.expose_secret(), value);
+        assert!(!format!("{key:?}").contains(&value));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_key_variable_whose_value_is_not_utf_8_is_an_error_naming_it() {
+        use std::os::unix::ffi::OsStringExt;
+        let error = key("SOCIAL_DEDUCTION_KEY", Some(OsString::from_vec(vec![0xff]))).unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("SOCIAL_DEDUCTION_KEY"), "{shown}");
+        assert!(!shown.contains("not set"), "{shown}");
+    }
+
+    #[test]
     fn an_omitted_key_variable_means_no_key() {
-        assert!(qwen(LOCAL, "").api_key().unwrap().is_none());
+        assert!(qwen(LOCAL, "").api_key(&Environment).unwrap().is_none());
+    }
+
+    /// Keys holding the one given, if any, for `OPENAI_API_KEY`, the only
+    /// variable they are asked for.
+    struct Holding(Option<&'static str>);
+
+    impl Keys for Holding {
+        fn key(&self, variable: &str) -> anyhow::Result<Option<SecretString>> {
+            assert_eq!(variable, "OPENAI_API_KEY");
+            Ok(self.0.map(SecretString::from))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_key_the_keys_hold_for_the_spec_s_variable_reaches_its_provider() {
+        let (base_url, served) = answering("200 OK", &listing(&["a"], None));
+        let spec = qwen(&base_url, "api_key_env = \"OPENAI_API_KEY\"");
+        let provider = spec.provider(&Holding(Some("sk-secret"))).unwrap();
+        provider.models().await.unwrap();
+        let head = served.join().unwrap().head;
+        assert!(
+            head.contains(&"authorization: bearer sk-secret".to_string()),
+            "{head:?}"
+        );
+    }
+
+    #[test]
+    fn a_variable_the_keys_hold_nothing_for_is_an_error_naming_it() {
+        let spec = qwen(OPENAI, "");
+        let error = spec.api_key(&Holding(None)).unwrap_err();
+        assert_eq!(format!("{error:#}"), "OPENAI_API_KEY is not set");
+        let error = spec.provider(&Holding(None)).unwrap_err();
+        assert_eq!(format!("{error:#}"), "OPENAI_API_KEY is not set");
     }
 
     #[test]
@@ -197,7 +300,7 @@ pub(crate) mod tests {
         let name = "CARGO_MANIFEST_DIR";
         let value = std::env::var(name).unwrap();
         let spec = qwen(LOCAL, &format!("api_key_env = \"{name}\""));
-        let key = spec.api_key().unwrap().unwrap();
+        let key = spec.api_key(&Environment).unwrap().unwrap();
         assert_eq!(key.expose_secret(), value);
         let shown = format!("{key:?}\n{spec:?}");
         assert!(shown.contains(name), "{shown}");
@@ -234,7 +337,7 @@ pub(crate) mod tests {
             };
             Ok(Probed::Played(tool_choice))
         };
-        let (models, handles) = set_up(in_play, needed, probe).await.unwrap();
+        let (models, handles) = set_up(in_play, &Environment, needed, probe).await.unwrap();
         assert_eq!(
             *asked.lock().unwrap(),
             [
@@ -279,7 +382,9 @@ pub(crate) mod tests {
         );
         assert_eq!(handles.keys().collect::<Vec<_>>(), ["claude", "qwen"]);
         // No model in play sets up nothing.
-        let (models, handles) = set_up(BTreeMap::new(), needed, probe).await.unwrap();
+        let (models, handles) = set_up(BTreeMap::new(), &Environment, needed, probe)
+            .await
+            .unwrap();
         assert!(models.is_empty() && handles.is_empty());
     }
 
@@ -292,7 +397,10 @@ pub(crate) mod tests {
                 async |_: &Provider, _: &str| Ok(Probed::DidNotPlay(anyhow!("it did not play")));
             let in_play = BTreeMap::from([("qwen", spec)]);
             let needed = |_: &str| needed.ok_or_else(|| anyhow!("no prompt"));
-            let error = set_up(in_play, needed, probe).await.err().unwrap();
+            let error = set_up(in_play, &Environment, needed, probe)
+                .await
+                .err()
+                .unwrap();
             format!("{error:#}")
         };
         // Not served.

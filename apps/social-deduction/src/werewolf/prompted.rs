@@ -500,13 +500,16 @@ mod tests {
     use crate::model::window::{ContextWindow, Source};
     use crate::model::{CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT};
     use crate::prompted::tests::{
-        MODEL_ID, Made, PROMPTED, a_failure_logs_its_usage_first, answering, asked_of,
-        every_call_logs_its_usage, failed, forgotten, narrated, received, reporting, sent,
-        situated, speaking, story, told, usages, waiting,
+        MODEL_ID, Made, PROMPTED, a_call_cut_off_logs_no_thought, a_failed_call_logs_its_error,
+        a_failure_logs_its_usage_first, answering, asked_of, calls, every_call_logs_its_usage,
+        every_call_logs_thinking_then_thought, failed, forgotten, narrated, received, reporting,
+        sent, situated, speaking, story, told, usages, waiting,
     };
     use crate::prompted::{ANSWER, Account, Mind, Shown};
     use crate::report::FORGOTTEN;
+    use crate::stage::tests::{check_calls, staged};
     use crate::strategy::{Prompted, Strategy};
+    use crate::werewolf::Outcome;
     use crate::werewolf::config::{Configuration, players};
     use crate::werewolf::report::Story;
     use crate::werewolf::tests::{
@@ -519,6 +522,7 @@ mod tests {
         to_the_players_but,
     };
     use free_agent::ActorId;
+    use social_deduction_stage::Beat;
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -552,6 +556,7 @@ mod tests {
             model: MODEL.to_string(),
         });
         Configuration {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             role_counts: all.into_iter().map(|role| (role, count(role))).collect(),
             limits: Limits {
                 night_limit: rules.night_limit,
@@ -1554,6 +1559,66 @@ mod tests {
         }
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn every_model_call_logs_thinking_then_thought_then_its_usage_then_what_came_of_it() {
+        let model = reporting(choosing_first);
+        let (_, logged, _) = play(doctored(), quick(), Arc::clone(&model)).await.unwrap();
+        every_call_logs_thinking_then_thought(&model, logged);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_model_call_that_fails_logs_its_thought_failed_with_the_error() {
+        let model = answering(down);
+        let (_, logged, _) = play(at_parity(), quick(), Arc::clone(&model))
+            .await
+            .unwrap();
+        let error = "POST http://localhost:1234/v1/chat/completions failed: connection refused";
+        a_failed_call_logs_its_error(&model, &logged, error);
+    }
+
+    /// A game in which the werewolf kills ann the first night and bob the
+    /// second, while bob's call of the first day is still out, and the
+    /// model asked never answers.
+    async fn killed_while_thinking() -> (Arc<FakeModel>, Vec<Entry>) {
+        let model = Arc::new(FakeModel::answering(choosing_first).taking(Duration::MAX));
+        let roles = one_wolf_against(&["ann", "bob", "cat"]);
+        let puppets = HashMap::from([("wolf", hunting_after(Duration::ZERO))]);
+        let (winner, logged, _) = play_with(roles, quick(), Arc::clone(&model), puppets)
+            .await
+            .unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        (model, logged)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_player_killed_with_its_call_out_logs_thinking_and_no_thought() {
+        let (model, logged) = killed_while_thinking().await;
+        a_call_cut_off_logs_no_thought(&model, &logged);
+        assert_eq!(
+            calls(&logged)["bob"],
+            [[("thinking", Some(2), String::new())]]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_viewer_closes_a_call_at_its_player_s_death_and_every_other_at_the_end() {
+        let (_, logged) = killed_while_thinking().await;
+        let staged = staged(&logged);
+        check_calls(&staged.concat());
+        let thought = |who: &str| Beat::Thought {
+            who: who.to_string(),
+        };
+        let killed = logged
+            .iter()
+            .position(|entry| {
+                matches!(entry, Entry::Event(Outcome::Hunted { hunt, .. }) if hunt.victim == "bob")
+            })
+            .unwrap();
+        assert_eq!(staged[killed].last(), Some(&thought("bob")));
+        let end = staged.last().unwrap();
+        assert_eq!(end[end.len() - 2], thought("cat"));
+    }
+
     /// The number of the environment's first tentative decision.
     fn decided(logged: &[Entry]) -> u64 {
         logged
@@ -2400,13 +2465,11 @@ mod tests {
         let Retraction {} = arguments(&call("{}")).unwrap();
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_response_that_comes_after_the_phase_ended_is_withheld_and_logged_as_such() {
-        // Sam, the seer, takes three seconds to answer. Bob votes against
-        // cat as soon as day 1 opens, and the vote stands a second later,
-        // so night 2 is announced while sam's day call is in progress. When
-        // it comes back, speaking, voting and asking to wait, nothing is
-        // sent and no reminder is set.
+    /// A game in which sam, the seer, takes three seconds to answer. Bob
+    /// votes against cat as soon as day 1 opens, and the vote stands a
+    /// second later, so night 2 is announced while sam's day call is in
+    /// progress. It comes back speaking, voting and asking to wait.
+    async fn answered_after_the_day() -> (Arc<FakeModel>, Played) {
         let model = Arc::new(
             by_day(|_| {
                 Ok(Response::calling(&[
@@ -2433,9 +2496,17 @@ mod tests {
             ratify_limit: Duration::from_secs(1),
             ..quick()
         };
-        let (winner, entries, took) = play_with(roles, rules, Arc::clone(&model), puppets)
+        let played = play_with(roles, rules, Arc::clone(&model), puppets)
             .await
             .unwrap();
+        (model, played)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_response_that_comes_after_the_phase_ended_is_withheld_and_logged_as_such() {
+        // When sam's day call comes back, nothing is sent and no reminder
+        // is set.
+        let (model, (winner, entries, took)) = answered_after_the_day().await;
         assert_eq!(winner, Team::Werewolves);
         // Night 1 takes three seconds, day 1 one, and night 2 five: the
         // werewolf kills three seconds in, and sam, woken for the night as
@@ -2467,6 +2538,23 @@ mod tests {
         assert!(
             !told.iter().any(|line| line.starts_with("sam (seer) votes")),
             "{told:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_viewer_shows_a_withheld_utterance_as_late_and_leaves_out_the_withheld_vote() {
+        let (_, (_, entries, _)) = answered_after_the_day().await;
+        let late: Vec<Beat> = staged(&entries)
+            .concat()
+            .into_iter()
+            .filter(|beat| matches!(beat, Beat::Late { .. }))
+            .collect();
+        assert_eq!(
+            late,
+            [Beat::Late {
+                who: "sam".to_string(),
+                text: SAID.to_string()
+            }]
         );
     }
 

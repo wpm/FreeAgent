@@ -576,28 +576,32 @@ fn asked(response: &Response, duty: Option<&Duty>, limit: Duration) -> anyhow::R
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::avalon::Team;
     use crate::avalon::report::Story;
     use crate::avalon::tests::{
         Played, Script, configured, dealt, five, mute, observed_by, quick, run, utterance, view_of,
     };
     use crate::avalon::{Entry, Move, Outcome, Rules, Seat, Tally, Victory};
     use crate::game::game;
+    use crate::game::tests::{Started, drained};
     use crate::model::Request;
     use crate::model::canned;
     use crate::model::fake::{FakeModel, SAID, canned_calls, choosing_first};
     use crate::model::{CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT};
     use crate::prompted::tests::{
-        MODEL_ID, Made, PROMPTED, a_failure_logs_its_usage_first, answering, asked_of,
-        every_call_logs_its_usage, failed, forgotten, narrated, received, reporting, sent,
-        situated, speaking, story, told, usages, waiting,
+        MODEL_ID, Made, PROMPTED, a_call_cut_off_logs_no_thought, a_failed_call_logs_its_error,
+        a_failure_logs_its_usage_first, answering, asked_of, every_call_logs_its_usage,
+        every_call_logs_thinking_then_thought, failed, forgotten, narrated, received, reporting,
+        sent, situated, speaking, story, told, usages, waiting,
     };
     use crate::prompted::{ANSWER, Account, Mind, Shown};
     use crate::report::FORGOTTEN;
     use crate::seat::id;
     use crate::seat::{ENVIRONMENT, to_the_environment, to_the_players_but};
     use free_agent::ActorId;
+    use free_agent::Event;
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -612,10 +616,41 @@ mod tests {
         roles: HashMap<PlayerId, Role>,
         rules: Rules,
         model: Arc<FakeModel>,
-        mut puppets: HashMap<&str, Seat>,
+        puppets: HashMap<&str, Seat>,
         tool_choice: ToolChoice,
         window: u64,
     ) -> anyhow::Result<Played> {
+        let (episode, won, log) = episode_as(roles, rules, model, puppets, tool_choice, window);
+        run(episode, won, log).await
+    }
+
+    /// The log of a game of the default table under quick limits, every
+    /// player a model player whose model talks, made to call a tool.
+    pub(crate) async fn prompted_game() -> Vec<Event<Entry>> {
+        let model = answering(choosing_first);
+        let required = ToolChoice::Required;
+        let (episode, _, log) = episode_as(
+            five(),
+            quick(),
+            model,
+            HashMap::new(),
+            required,
+            CONTEXT_WINDOW,
+        );
+        episode.run(Duration::from_secs(60 * 60)).await.unwrap();
+        drained(log).await
+    }
+
+    /// A game of `roles` under `rules` as [`play_as`] plays it, with where
+    /// its winner and its log come.
+    fn episode_as(
+        roles: HashMap<PlayerId, Role>,
+        rules: Rules,
+        model: Arc<FakeModel>,
+        mut puppets: HashMap<&str, Seat>,
+        tool_choice: ToolChoice,
+        window: u64,
+    ) -> Started<Avalon> {
         let configuration = configured(&roles, &rules);
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
@@ -642,7 +677,7 @@ mod tests {
             player,
             logger,
         );
-        run(episode, won, log).await
+        (episode, won, log)
     }
 
     /// Run a game of the default table under `rules`, every player a model
@@ -1581,6 +1616,33 @@ mod tests {
             assert!(!model.requests().is_empty());
             assert!(usages(&logged).is_empty(), "{logged:?}");
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn every_model_call_logs_thinking_then_thought_then_its_usage_then_what_came_of_it() {
+        let model = reporting(choosing_first);
+        let (_, logged, _) = play_with(Rules::default(), Arc::clone(&model), HashMap::new())
+            .await
+            .unwrap();
+        every_call_logs_thinking_then_thought(&model, logged);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_model_call_that_fails_logs_its_thought_failed_with_the_error() {
+        let model = Arc::new(FakeModel::failing("the model is down"));
+        let (_, logged, _) = play_with(quick(), Arc::clone(&model), HashMap::new())
+            .await
+            .unwrap();
+        a_failed_call_logs_its_error(&model, &logged, "the model is down");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_player_stopped_at_the_end_with_its_call_out_logs_thinking_and_no_thought() {
+        let model = Arc::new(FakeModel::answering(choosing_first).taking(Duration::MAX));
+        let (_, logged, _) = play_with(quick(), Arc::clone(&model), HashMap::new())
+            .await
+            .unwrap();
+        a_call_cut_off_logs_no_thought(&model, &logged);
     }
 
     #[tokio::test(start_paused = true)]

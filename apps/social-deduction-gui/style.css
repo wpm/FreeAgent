@@ -1,0 +1,752 @@
+/* The viewer's own look. Rich-Chat's stylesheets are in cascade layers,
+   so these unlayered rules win over them. */
+
+:root {
+  --sd-good: #1d4ed8;
+  --sd-good-fg: #ffffff;
+  --sd-evil: #b91c1c;
+  --sd-evil-fg: #ffffff;
+
+  --role-villager-bg: #dde6f2;
+  --role-villager-fg: #1e3a5f;
+  --role-seer-bg: #e6e0fb;
+  --role-seer-fg: #3b2a86;
+  --role-doctor-bg: #d3f1ec;
+  --role-doctor-fg: #134e4a;
+  --role-werewolf-bg: #fbdcdc;
+  --role-werewolf-fg: #7f1d1d;
+  --role-merlin-bg: #dbe7fe;
+  --role-merlin-fg: #1e3a8a;
+  --role-percival-bg: #d0f4fb;
+  --role-percival-fg: #155e75;
+  --role-servant-bg: #e2e8f0;
+  --role-servant-fg: #334155;
+  --role-assassin-bg: #fbdcdc;
+  --role-assassin-fg: #7f1d1d;
+  --role-morgana-bg: #fbe0f0;
+  --role-morgana-fg: #831843;
+  --role-mordred-bg: #6b1320;
+  --role-mordred-fg: #ffe4e6;
+  --role-mordred-outline: none;
+  --role-oberon-bg: #fde3d3;
+  --role-oberon-fg: #7c2d12;
+  --role-minion-bg: #fde4df;
+  --role-minion-fg: #8a3b2e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --sd-good: #3b82f6;
+    --sd-evil: #dc2626;
+
+    --role-villager-bg: #22344c;
+    --role-villager-fg: #d7e3f3;
+    --role-seer-bg: #342a6b;
+    --role-seer-fg: #ddd6fe;
+    --role-doctor-bg: #164a46;
+    --role-doctor-fg: #c9f7ee;
+    --role-werewolf-bg: #5a1b1b;
+    --role-werewolf-fg: #fecaca;
+    --role-merlin-bg: #1f3270;
+    --role-merlin-fg: #dbe7fe;
+    --role-percival-bg: #14485a;
+    --role-percival-fg: #cff6fd;
+    --role-servant-bg: #2b3647;
+    --role-servant-fg: #e2e8f0;
+    --role-assassin-bg: #5a1b1b;
+    --role-assassin-fg: #fecaca;
+    --role-morgana-bg: #5c1838;
+    --role-morgana-fg: #fbcfe8;
+    --role-mordred-bg: #7a1a28;
+    --role-mordred-fg: #ffe4e6;
+    --role-mordred-outline: inset 0 0 0 2px #ffe4e6;
+    --role-oberon-bg: #5a2510;
+    --role-oberon-fg: #fed7c3;
+    --role-minion-bg: #4d2620;
+    --role-minion-fg: #fcd5cc;
+  }
+}
+
+:root[data-theme="dark"] {
+  --sd-good: #3b82f6;
+  --sd-evil: #dc2626;
+
+  --role-villager-bg: #22344c;
+  --role-villager-fg: #d7e3f3;
+  --role-seer-bg: #342a6b;
+  --role-seer-fg: #ddd6fe;
+  --role-doctor-bg: #164a46;
+  --role-doctor-fg: #c9f7ee;
+  --role-werewolf-bg: #5a1b1b;
+  --role-werewolf-fg: #fecaca;
+  --role-merlin-bg: #1f3270;
+  --role-merlin-fg: #dbe7fe;
+  --role-percival-bg: #14485a;
+  --role-percival-fg: #cff6fd;
+  --role-servant-bg: #2b3647;
+  --role-servant-fg: #e2e8f0;
+  --role-assassin-bg: #5a1b1b;
+  --role-assassin-fg: #fecaca;
+  --role-morgana-bg: #5c1838;
+  --role-morgana-fg: #fbcfe8;
+  --role-mordred-bg: #7a1a28;
+  --role-mordred-fg: #ffe4e6;
+  --role-mordred-outline: inset 0 0 0 2px #ffe4e6;
+  --role-oberon-bg: #5a2510;
+  --role-oberon-fg: #fed7c3;
+  --role-minion-bg: #4d2620;
+  --role-minion-fg: #fcd5cc;
+}
+
+/* The page */
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--rc-bg);
+  color: var(--rc-fg);
+  font-family: var(--rc-font);
+}
+
+/* Night falls and day breaks over 600 ms. */
+
+body,
+.rc-chat,
+.rc-bubble,
+.sd-chip,
+.sd-swatch {
+  transition:
+    background-color 600ms ease,
+    color 600ms ease,
+    border-color 600ms ease;
+}
+
+.sd-app {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100vh;
+}
+
+.sd-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--rc-border);
+}
+
+.sd-header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.sd-phase {
+  margin: 0;
+  flex: 1;
+  color: var(--rc-muted);
+}
+
+.sd-outcome {
+  margin: 0;
+  font-weight: 600;
+}
+
+.sd-outcome.sd-good {
+  color: var(--sd-good);
+}
+
+.sd-outcome.sd-evil {
+  color: var(--sd-evil);
+}
+
+.sd-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-countdown {
+  display: inline-block;
+  width: 6rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--rc-border);
+  overflow: hidden;
+}
+
+.sd-countdown-left {
+  display: block;
+  height: 100%;
+  background: var(--rc-accent);
+  transition: width 100ms linear;
+}
+
+.sd-games {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.sd-games a {
+  color: var(--rc-muted);
+}
+
+.sd-games a[aria-current="page"] {
+  color: var(--rc-fg);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.sd-header button {
+  font: inherit;
+  padding: 0.25rem 1rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 999px;
+  background: var(--rc-accent);
+  color: var(--rc-accent-fg);
+  cursor: pointer;
+}
+
+.sd-main {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  min-height: 0;
+}
+
+.sd-chat {
+  min-height: 0;
+}
+
+.sd-chat .rc-chat {
+  height: 100%;
+}
+
+.sd-footer {
+  padding: 0.25rem 1rem;
+  border-top: 1px solid var(--rc-border);
+  color: var(--rc-muted);
+  font-size: 0.8rem;
+}
+
+.sd-footer a {
+  color: inherit;
+}
+
+.sd-error {
+  padding: 1rem;
+  color: var(--rc-error);
+}
+
+/* The chat */
+
+.rc-message[data-name="Narrator"] .rc-sender {
+  display: none;
+}
+
+.rc-message[data-name="Narrator"] > .rc-bubble {
+  font-size: 0.85em;
+  padding-block: 0.1em;
+}
+
+.rc-message[data-name$="· Mordred"] > .rc-bubble {
+  box-shadow: var(--role-mordred-outline);
+}
+
+.sd-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  margin: 0.75rem 0 0.25rem;
+  color: var(--rc-muted);
+  font-size: 0.85em;
+  font-weight: 600;
+  text-align: center;
+}
+
+.sd-heading::before,
+.sd-heading::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--rc-border);
+}
+
+/* Speech made too late to be sent: the speaker's bubble, faded and
+   dashed in its own ink. */
+
+.sd-late {
+  opacity: 0.5;
+  border: 1px dashed currentColor;
+}
+
+.sd-late-caption {
+  margin: 0.25rem 0 0;
+  font-size: 0.8em;
+  font-style: italic;
+}
+
+/* The board */
+
+.sd-board {
+  overflow-y: auto;
+  padding: 0.75rem 1rem;
+  border-left: 1px solid var(--rc-border);
+}
+
+.sd-board h2 {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--rc-muted);
+}
+
+.sd-board h2:first-child {
+  margin-top: 0;
+}
+
+.sd-quests {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.sd-token {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  border: 2px solid var(--rc-border);
+  border-radius: 50%;
+  line-height: 1.1;
+}
+
+.sd-token small {
+  font-size: 0.65rem;
+}
+
+.sd-token.sd-current {
+  border-style: dashed;
+  border-color: var(--rc-fg);
+}
+
+.sd-token.sd-succeeded {
+  background: var(--sd-good);
+  border-color: var(--sd-good);
+  color: var(--sd-good-fg);
+}
+
+.sd-token.sd-failed {
+  background: var(--sd-evil);
+  border-color: var(--sd-evil);
+  color: var(--sd-evil-fg);
+}
+
+.sd-pips {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.sd-pip {
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid var(--rc-border);
+  border-radius: 50%;
+}
+
+.sd-pip.sd-last {
+  border-color: var(--sd-evil);
+}
+
+.sd-pip.sd-filled {
+  background: var(--rc-fg);
+  border-color: var(--rc-fg);
+}
+
+.sd-pip.sd-last.sd-filled {
+  background: var(--sd-evil);
+  border-color: var(--sd-evil);
+}
+
+.sd-leader {
+  margin: 0 0 0.5rem;
+}
+
+.sd-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.sd-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 999px;
+}
+
+.sd-swatch {
+  display: inline-block;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  border: 2px solid;
+}
+
+.sd-votes-scroll {
+  overflow-x: auto;
+}
+
+.sd-votes {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.sd-votes th,
+.sd-votes td {
+  padding: 0.15rem 0.4rem;
+  text-align: center;
+}
+
+.sd-votes th:first-child,
+.sd-votes td:first-child,
+.sd-votes td:last-child {
+  text-align: left;
+}
+
+.sd-votes thead th {
+  color: var(--rc-muted);
+  font-weight: 500;
+}
+
+.sd-players {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sd-players li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.15rem 0;
+}
+
+.sd-players .sd-detail {
+  color: var(--rc-muted);
+  font-size: 0.85rem;
+}
+
+.sd-rows {
+  margin: 0 0 0.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.sd-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.1rem 0.25rem;
+  border-radius: var(--rc-radius);
+}
+
+.sd-decision {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem;
+  border-radius: var(--rc-radius);
+  font-weight: 600;
+}
+
+.sd-players li.sd-dead .sd-name {
+  text-decoration: line-through;
+}
+
+.sd-players li.sd-dead {
+  opacity: 0.55;
+}
+
+.sd-seer {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.25rem 0;
+  font-weight: 600;
+}
+
+.sd-assassination {
+  margin-top: 1rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--rc-radius);
+  background: var(--sd-evil);
+  color: var(--sd-evil-fg);
+}
+
+/* A choice landing: a flash of the chooser's role color, fading out. */
+
+@keyframes sd-land {
+  from {
+    background-color: var(--sd-chooser-bg, var(--rc-border));
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+.sd-landed {
+  animation: sd-land 900ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sd-landed {
+    animation: none;
+    outline: 2px solid var(--sd-chooser-fg, var(--rc-fg));
+    outline-offset: -2px;
+  }
+}
+
+/* Narrow windows stack the board under the chat. */
+
+@media (max-width: 860px) {
+  .sd-app {
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .sd-phase {
+    order: 1;
+    flex-basis: 100%;
+  }
+
+  .sd-main {
+    grid-template-columns: 1fr;
+  }
+
+  .sd-chat {
+    height: 70vh;
+  }
+
+  .sd-board {
+    border-left: none;
+    border-top: 1px solid var(--rc-border);
+  }
+}
+
+/* The desktop app's settings screen */
+
+.sd-settings-app {
+  grid-template-rows: auto 1fr;
+}
+
+.sd-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 0;
+  padding: 1rem;
+}
+
+.sd-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+
+.sd-field > span {
+  flex: 0 0 9rem;
+}
+
+.sd-settings select,
+.sd-settings input,
+.sd-settings textarea,
+.sd-toolbar select {
+  font: inherit;
+  font-weight: normal;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.375rem;
+  background: var(--rc-bg);
+  color: var(--rc-fg);
+}
+
+.sd-field input,
+.sd-field select {
+  flex: 1;
+  min-width: 0;
+}
+
+.sd-field input[type="number"] {
+  flex: 0 0 6rem;
+}
+
+.sd-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.sd-settings button,
+.sd-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font: inherit;
+  padding: 0.25rem 1rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 999px;
+  background: var(--rc-bg);
+  color: var(--rc-fg);
+  cursor: pointer;
+}
+
+.sd-tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.sd-tabs .sd-tab-on {
+  background: var(--rc-accent);
+  color: var(--rc-accent-fg);
+}
+
+.sd-form {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.sd-form section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sd-form h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.sd-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.375rem;
+}
+
+.sd-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+}
+
+.sd-card-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  flex: 1;
+}
+
+.sd-area {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.sd-area > span {
+  flex: none;
+}
+
+.sd-area textarea,
+.sd-toml {
+  min-height: 8rem;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+.sd-toml {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  white-space: pre;
+}
+
+.sd-note {
+  margin: 0;
+  color: var(--rc-muted);
+}
+
+.sd-check,
+.sd-key,
+.sd-adder {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sd-key input {
+  flex: 1;
+  min-width: 0;
+}
+
+.sd-run button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font: inherit;
+  padding: 0.375rem 1.5rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 999px;
+  background: var(--rc-accent);
+  color: var(--rc-accent-fg);
+  cursor: pointer;
+}
+
+.sd-run button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.sd-spinner {
+  width: 0.9em;
+  height: 0.9em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: sd-spin 0.8s linear infinite;
+}
+
+@keyframes sd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sd-settings .sd-error {
+  margin: 0;
+  padding: 0;
+  white-space: pre-wrap;
+}
+
+.sd-settings .sd-link {
+  align-self: flex-start;
+}
