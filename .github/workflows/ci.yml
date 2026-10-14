@@ -141,11 +141,28 @@ jobs:
       - run: cargo clippy -p social-deduction-desktop --all-targets -- -D warnings
       - run: cargo test -p social-deduction-desktop
 
+  # The release workflows and their scripts, which otherwise run only at a
+  # release. dist generates release.yml, so actionlint leaves it out.
+  workflows:
+    name: Workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: actionlint
+      # The runner has shellcheck, which actionlint runs on each script step.
+      - run: |
+          shopt -s extglob
+          actionlint .github/workflows/!(release).yml
+      - run: shellcheck .github/scripts/*.sh
+      - run: .github/scripts/release-scripts-test.sh
+
   # The one check a ruleset needs to require: it passes only if every job it
   # needs did, so jobs can come and go without the ruleset changing.
   required:
     name: Required
-    needs: [format, clippy, test, docs, viewer, desktop]
+    needs: [format, clippy, test, docs, viewer, desktop, workflows]
     # Without always() a failure above would skip this job, and a ruleset
     # counts a skipped check as passing.
     if: always()

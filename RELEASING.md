@@ -4,6 +4,7 @@ A release is a git tag. Pushing `v0.1.0` runs the release workflow, which
 builds the applications for macOS, Linux, and Windows, uploads the binaries
 and their installers to a GitHub Release with that version's notes from
 [CHANGELOG.md](CHANGELOG.md), and then publishes `free-agent` to crates.io.
+When it succeeds, a second workflow adds the desktop app's installers.
 
 ## Cutting a release
 
@@ -23,6 +24,29 @@ and their installers to a GitHub Release with that version's notes from
 
 5. Watch the Release workflow under Actions. It creates the GitHub Release
    when the binaries are up and publishes to crates.io after that.
+6. Watch **Release the desktop app** under Actions, which starts when the
+   Release workflow succeeds. It builds the desktop app's installers on
+   macOS, Linux and Windows and puts them on the release, some fifteen to
+   twenty minutes later.
+7. Check the release page: a **Desktop app** table above the notes, and
+   among the assets `Social-Deduction.dmg`, `Social-Deduction-setup.exe`,
+   `Social-Deduction.msi`, `Social-Deduction.AppImage`,
+   `social-deduction.deb` and `social-deduction.rpm`, each beside its
+   versioned twin. The website's download links point at these names.
+
+## The desktop app
+
+`.github/workflows/release-gui.yml` builds the installers with
+[tauri-action](https://github.com/tauri-apps/tauri-action), one job per
+platform. A failed platform leaves the release without its installers:
+open the run and choose **Re-run failed jobs**, which uploads them again
+over any that are there. Run the workflow by hand from the Actions tab to
+build every installer as a workflow artifact without touching a release;
+a pull request that changes the workflow or its scripts does the same.
+
+The macOS app is signed and notarized when the repository has the Apple
+secrets that `.github/scripts/apple-credentials.sh` names, and is unsigned
+otherwise. The release notes say which, and how to open an unsigned app.
 
 ## One-time setup
 

@@ -17,6 +17,9 @@ workflow takes a version's notes from here.
   configuration, press **Run**, and watch the game live, with **Stop**.
   Each game's log is saved, and API keys come from the OS keychain, then
   the environment.
+- Installers for the desktop app on each release: a `.dmg` for macOS, a
+  setup `.exe` and an `.msi` for Windows, and an `.AppImage`, a `.deb` and
+  an `.rpm` for Linux. The website links to the newest of each.
 - `social_deduction::live`, which plays a prepared game in the background,
   saving its log and folding it into cues as it happens.
 - `social_deduction::stage`, which folds a game's log into the viewer's
