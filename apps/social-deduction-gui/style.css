@@ -225,6 +225,20 @@ body {
   border-top: 1px solid var(--rc-border);
 }
 
+/* Speech made too late to be sent: the speaker's bubble, faded and
+   dashed in its own ink. */
+
+.sd-late {
+  opacity: 0.5;
+  border: 1px dashed currentColor;
+}
+
+.sd-late-caption {
+  margin: 0.25rem 0 0;
+  font-size: 0.8em;
+  font-style: italic;
+}
+
 /* The board */
 
 .sd-board {

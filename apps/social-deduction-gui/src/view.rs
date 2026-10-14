@@ -5,12 +5,14 @@ use std::time::Duration;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_rich_chat::{Message, RenderOptions, RichChatStyle, Transcript};
+use leptos_rich_chat::{Message, RenderOptions, RichChatStyle, RichText, Transcript};
 use social_deduction_stage::{Cue, Deed, GameName, Outcome, Side};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
-use crate::screen::{Board, Body, Landed, NARRATOR, Post, Screen, entry, role_key};
+use crate::screen::{
+    Board, Body, Landed, NARRATOR, Post, Screen, THINKING_DELAY, Thinker, dots_due, entry, role_key,
+};
 
 /// How often a replay shows the next cue.
 const STEP: Duration = Duration::from_millis(250);
@@ -66,24 +68,39 @@ pub fn App() -> impl IntoView {
                 if let Some(Some(number)) = screen.try_update(|screen| screen.apply(&cue, true)) {
                     set_timeout(move || screen.update(|screen| screen.expire(number)), FLASH);
                 }
+                if let Some(due) = dots_due(&cue) {
+                    let rate = screen.with_untracked(|screen| screen.rate);
+                    let delay = Duration::from_millis(THINKING_DELAY).div_f64(rate);
+                    set_timeout(move || screen.update(|screen| screen.reveal(due)), delay);
+                }
             },
             STEP,
         );
         replay.set_value(handle.ok());
     };
 
-    // Memos, so that a cue that leaves the chat, the names or the board as
-    // they were redraws none of them.
-    let names = Memo::new(move |_| screen.with(|screen| screen.names.clone()));
-    let posts = Memo::new(move |_| screen.with(|screen| screen.posts.clone()));
-    let board = Memo::new(move |_| screen.with(Screen::board));
-    let messages = Signal::derive(move || posts.with(|posts| messages(posts)));
     let options = RenderOptions {
         math: false,
         highlight: false,
         images: false,
         ..RenderOptions::default()
     };
+    // Memos, so that a cue that leaves the chat, the names or the board as
+    // they were redraws none of them.
+    let names = Memo::new(move |_| screen.with(|screen| screen.names.clone()));
+    let posts = Memo::new(move |_| screen.with(|screen| screen.posts.clone()));
+    let thinkers = Memo::new(move |_| screen.with(|screen| screen.thinkers.clone()));
+    let board = Memo::new(move |_| screen.with(Screen::board));
+    let rendering = options.clone();
+    // Every thinker's dots share one text, which stays empty.
+    let silence = RwSignal::new(String::new());
+    let messages = Signal::derive(move || {
+        let mut messages = posts.with(|posts| messages(posts, &rendering));
+        thinkers.with(|thinkers| {
+            messages.extend(thinkers.iter().map(|thinker| dots(thinker, silence)));
+        });
+        messages
+    });
 
     view! {
         <RichChatStyle highlight=false fonts=false names=names />
@@ -129,8 +146,8 @@ async fn fetched() -> Result<Vec<Cue>, String> {
         .map_err(|error| format!("cues.json: {error}"))
 }
 
-/// `posts`, as Rich-Chat messages.
-fn messages(posts: &[Post]) -> Vec<Message> {
+/// `posts`, as Rich-Chat messages, rendered with `options`.
+fn messages(posts: &[Post], options: &RenderOptions) -> Vec<Message> {
     posts
         .iter()
         .map(|post| match &post.body {
@@ -141,8 +158,27 @@ fn messages(posts: &[Post]) -> Vec<Message> {
                 })
             }
             Body::Text(text) => Message::new(post.id.clone(), post.name.clone(), text.clone()),
+            Body::Late(text) => {
+                let text = text.clone();
+                let options = options.clone();
+                Message::view(post.id.clone(), post.name.clone(), move || {
+                    view! {
+                        <div class="rc-bubble sd-late">
+                            <RichText content=text.clone() options=options.clone() />
+                            <p class="sd-late-caption">"Too late, never sent."</p>
+                        </div>
+                    }
+                })
+            }
         })
         .collect()
+}
+
+/// `thinker`'s dots, `think-Player 3`: a live message whose text,
+/// `silence`, is empty.
+fn dots(thinker: &Thinker, silence: RwSignal<String>) -> Message {
+    let id = format!("think-{}", thinker.who);
+    Message::streaming(id, thinker.name.clone(), silence)
 }
 
 /// The game's name for the header.
