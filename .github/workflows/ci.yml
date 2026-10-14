@@ -47,9 +47,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo build
       - run: cargo test
+      # The viewer's frontend builds the cue types for the browser.
+      - run: cargo check -p social-deduction-stage --target wasm32-unknown-unknown
 
   docs:
     name: Docs

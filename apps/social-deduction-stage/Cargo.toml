@@ -1,0 +1,20 @@
+[package]
+name = "social-deduction-stage"
+version.workspace = true
+edition.workspace = true
+description = "The cues a social deduction game's viewer is drawn from"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# The viewer's own types, shared by its game-folding code and its frontend.
+publish = false
+
+[package.metadata.dist]
+dist = false
+
+# Serde alone, so the crate builds for wasm32-unknown-unknown.
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
