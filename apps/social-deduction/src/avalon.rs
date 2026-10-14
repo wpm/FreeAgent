@@ -73,7 +73,7 @@ impl Game for Avalon {
     type Event = Outcome;
     type Story = report::Story;
     type Narrator = report::Narrator;
-    type Environment = announced::Environment;
+    type Environment = crate::announced::Environment<Avalon>;
     #[cfg(test)]
     type Puppet = tests::Puppet;
 
@@ -87,7 +87,7 @@ impl Game for Avalon {
         configuration: Entry,
         winner: oneshot::Sender<Team>,
     ) -> ActorInit<Actor> {
-        announced::init(deal, rules, configuration, winner, Actor::Environment)
+        crate::announced::init(deal, rules, configuration, winner)
     }
 
     /// Whether the phase [awaits](awaited) `me`.
@@ -577,7 +577,7 @@ pub const PROPOSALS: u8 = 5;
 const TO_WIN: usize = 3;
 
 /// The state of a game, held by the environment alone.
-struct State {
+pub struct State {
     /// Every player's role.
     roles: HashMap<PlayerId, Role>,
     /// The players in seat order, the order the lead passes in.
@@ -704,9 +704,9 @@ impl State {
     /// one; a vote is tallied, and fails the proposal unless it approves
     /// the team; a quest is recorded, a missing deed as support, and starts
     /// the count of failed proposals over; and the assassination names
-    /// Merlin or not. Returns what the phase came to, as the entry that
-    /// records it in the phase numbered `seq`.
-    fn resolve(&mut self, choices: &Choices, seq: u64) -> Entry {
+    /// Merlin or not. Returns what the phase came to, as the log records it
+    /// in the phase numbered `seq`.
+    fn resolve(&mut self, choices: &Choices, seq: u64) -> Outcome {
         match self.phase {
             Phase::Propose => {
                 let team = choices.values().find_map(Choice::team).cloned();
@@ -714,7 +714,7 @@ impl State {
                     self.failed += 1;
                 }
                 self.team.clone_from(&team);
-                Entry::Event(Outcome::Proposed { seq, team })
+                Outcome::Proposed { seq, team }
             }
             Phase::Vote => {
                 let ballots = choices
@@ -726,7 +726,7 @@ impl State {
                     self.failed += 1;
                 }
                 self.tally = Some(tally.clone());
-                Entry::Event(Outcome::Tallied { seq, tally })
+                Outcome::Tallied { seq, tally }
             }
             Phase::Quest => {
                 let team = self.team.clone().unwrap_or_default();
@@ -741,7 +741,7 @@ impl State {
                 };
                 self.record.push(result.clone());
                 self.failed = 0;
-                Entry::Event(Outcome::Quested { seq, result })
+                Outcome::Quested { seq, result }
             }
             Phase::Assassinate => {
                 let target = choices.values().find_map(Choice::target).cloned();
@@ -749,11 +749,11 @@ impl State {
                     .as_ref()
                     .is_some_and(|target| self.roles[target] == Role::Merlin);
                 self.named = Some(merlin);
-                Entry::Event(Outcome::Assassinated {
+                Outcome::Assassinated {
                     seq,
                     target,
                     merlin,
-                })
+                }
             }
         }
     }
@@ -1535,7 +1535,7 @@ pub(crate) mod tests {
 
     /// Resolve the phase underway in `state` from `chosen`, and move on.
     fn resolve(state: &mut State, chosen: &Choices) -> Entry {
-        let entry = state.resolve(chosen, 1);
+        let entry = Entry::Event(state.resolve(chosen, 1));
         if state.winner().is_none() {
             state.next();
         }

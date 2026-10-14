@@ -3,6 +3,7 @@
 
 #![warn(missing_docs)]
 
+pub mod announced;
 pub mod avalon;
 pub mod config;
 pub mod game;

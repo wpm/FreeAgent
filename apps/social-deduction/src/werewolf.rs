@@ -75,7 +75,7 @@ impl Game for Werewolf {
     type Event = Outcome;
     type Story = report::Story;
     type Narrator = report::Narrator;
-    type Environment = announced::Environment;
+    type Environment = crate::announced::Environment<Werewolf>;
     #[cfg(test)]
     type Puppet = tests::Puppet;
 
@@ -93,7 +93,7 @@ impl Game for Werewolf {
         configuration: Entry,
         winner: oneshot::Sender<Team>,
     ) -> ActorInit<Actor> {
-        announced::init(deal, rules, configuration, winner, Actor::Environment)
+        crate::announced::init(deal, rules, configuration, winner)
     }
 
     /// Whether `me` is [`awake`].
@@ -323,7 +323,7 @@ impl Phase {
 }
 
 /// The state of a game, held by the environment alone.
-struct State {
+pub struct State {
     /// Rounds count from one. A round is a night and then a day.
     round: NonZero<u8>,
     /// Which half of the round it is.
@@ -1471,7 +1471,7 @@ pub(crate) mod tests {
     }
 
     /// One werewolf against `villagers`.
-    pub(super) fn one_wolf_against(villagers: &[&str]) -> HashMap<PlayerId, Role> {
+    pub(crate) fn one_wolf_against(villagers: &[&str]) -> HashMap<PlayerId, Role> {
         let mut roles = HashMap::from([("wolf".to_string(), Role::Werewolf)]);
         for villager in villagers {
             roles.insert(villager.to_string(), Role::Villager);

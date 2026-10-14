@@ -1,9 +1,7 @@
-//! The announcing environment, which runs every game: it opens each
-//! phase with a message to every player, awaited in it or not, takes the
-//! awaited players' choices as they come, and ends the phase. Every
+//! Avalon's rules for the [announcing environment](crate::announced):
+//! every phase is announced to every player, awaited in it or not. Every
 //! player hears every phase begin, and may talk in it; only the players
-//! the phase awaits choose. Players who take seconds to decide hold
-//! nothing up.
+//! the phase awaits choose.
 //!
 //! A phase takes each awaited player's first legal choice and ends once
 //! every awaited player has chosen or at its limit, whichever comes
@@ -15,361 +13,105 @@
 //! player's first, is treated like a stale one: observed, and nothing
 //! more.
 //!
-//! The environment logs the deal, then the configuration; an [`Entry::Action`] for each
-//! announcement it sends, numbered in one series from 1; an
-//! [`Entry::Observation`] for each choice it receives, counted or not,
-//! with the phase it was in when it arrived; how each phase came out, as
-//! [`Outcome::Proposed`], [`Outcome::Tallied`], [`Outcome::Quested`] or
-//! [`Outcome::Assassinated`]; and the result. The reminders it sends itself
-//! are not logged.
+//! How each phase came out is logged as [`Outcome::Proposed`],
+//! [`Outcome::Tallied`], [`Outcome::Quested`] or [`Outcome::Assassinated`].
 
-use super::{
-    Choice, Choices, Dealt, Entry, Message, Outcome, PlayerId, Rules, State, Team, Victory,
-};
-use crate::game::{act, observe};
-use async_trait::async_trait;
-use free_agent::{ActorInit, Behavior, Context, Think};
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
-use tokio::sync::oneshot;
-use tokio::time::Instant;
+use super::{Avalon, Choice, Outcome, PlayerId, Role, State};
+use crate::announced::{Announced, Awaited, Core, Counted, Opening, Over, Resolved};
+use crate::game::Tagged;
+use std::collections::HashMap;
 
-/// Everything the episode needs to run the environment for a game of
-/// `deal`, every player's role and strategy, under `rules`, as the actor
-/// `wrap` makes of it: it may send to and stop every player, holds the
-/// logger, and thinks. It logs the deal, then `configuration`, before it
-/// opens the first proposal. The winning team is sent on `winner` when the
-/// game ends.
-pub fn init<A>(
-    deal: HashMap<PlayerId, Dealt>,
-    rules: Rules,
-    configuration: Entry,
-    winner: oneshot::Sender<Team>,
-    wrap: impl FnOnce(Environment) -> A + Send + 'static,
-) -> ActorInit<A>
-where
-    A: Behavior<Message = Message, Log = Entry>,
-{
-    let players: HashSet<PlayerId> = deal.keys().cloned().collect();
-    let opening = Box::new([Entry::start(&deal, &rules), configuration]);
-    let roles = deal
-        .into_iter()
-        .map(|(id, dealt)| (id, dealt.role))
-        .collect();
-    let game = Arc::new(Mutex::new(Game::new(roles, rules, winner)));
-    let shared = Arc::clone(&game);
-    ActorInit {
-        behavior: Box::new(move |context| {
-            wrap(Environment {
-                context,
-                game,
-                opening: Some(opening),
-            })
-        }),
-        think: Some(Box::new(move |context| {
-            Box::new(Environment {
-                context,
-                game: shared,
-                opening: None,
-            })
-        })),
-        can_send_to: players.clone(),
-        can_shut_down: players,
-        has_logger: true,
-    }
-}
+impl Announced for Avalon {
+    type State = State;
+    type Underway = Awaited<Choice>;
 
-/// What the environment's two loops share: the game, the phase it is at,
-/// and where the winner goes.
-struct Game {
-    state: State,
-    rules: Rules,
-    /// The number of the current phase. The first proposal is 1.
-    seq: u64,
-    /// The number of the last message the environment sent to a player.
-    /// Each announcement is a message of its own.
-    n: u64,
-    /// The phase underway, while one is: taken when it ends, so that
-    /// nothing more counts until the next one opens.
-    underway: Option<Underway>,
-    /// Where the winning team goes when the game ends. Taken when sent.
-    winner: Option<oneshot::Sender<Team>>,
-    /// When the game was made, which is as good as when it was dealt.
-    started: Instant,
-}
-
-/// The phase underway: whom the environment waits on and what they have
-/// chosen.
-#[derive(Default)]
-struct Underway {
-    /// The players the phase awaits.
-    awaited: HashSet<PlayerId>,
-    /// Each awaited player's first legal choice.
-    choices: Choices,
-}
-
-/// What the environment does about a choice that counted.
-#[derive(Debug, Default, PartialEq)]
-struct Counted {
-    /// The choice was the last the phase was waiting for: end it.
-    last: bool,
-}
-
-impl Game {
-    /// A game of `roles` under `rules`, before its first proposal. The
-    /// winning team is sent on `winner` when the game ends.
-    fn new(
-        roles: HashMap<PlayerId, super::Role>,
-        rules: Rules,
-        winner: oneshot::Sender<Team>,
-    ) -> Self {
-        Self {
-            state: State::new(roles),
-            rules,
-            seq: 0,
-            n: 0,
-            underway: None,
-            winner: Some(winner),
-            started: Instant::now(),
-        }
+    /// The first proposal, led by the first seat.
+    fn state(roles: HashMap<PlayerId, Role>) -> State {
+        State::new(roles)
     }
 
-    /// Open the next phase: number it, write every player its
-    /// announcement, numbered in turn in seat order, and wait on the
-    /// players it awaits.
-    fn open(&mut self) -> Opened {
-        self.seq += 1;
-        let awaited = self.state.awaited();
-        let limit = self.rules.limit(self.state.phase);
-        let mut announcements = Vec::new();
-        for player in &self.state.seats {
-            self.n += 1;
-            let message = Message::Announce {
-                seq: self.seq,
-                n: self.n,
-                view: self.state.view(player),
-                limit,
-            };
-            announcements.push((player.clone(), message));
-        }
-        self.underway = Some(Underway {
-            awaited,
-            ..Underway::default()
-        });
-        Opened {
-            seq: self.seq,
-            announcements,
-            limit,
-        }
-    }
-
-    /// Record `from`'s `choice` in the phase numbered `seq` if it counts:
-    /// the phase is the one underway, it awaits `from`, this is the first
-    /// choice of `from`'s to count in it, and the rules allow it. Returns
-    /// what the environment does about a choice that counted, and nothing
-    /// for one that did not.
-    fn choose(&mut self, seq: u64, from: &PlayerId, choice: Choice) -> Option<Counted> {
-        if seq != self.seq {
-            return None;
-        }
-        let underway = self.underway.as_mut()?;
-        if !underway.awaited.contains(from)
-            || underway.choices.contains_key(from)
-            || !self.state.legal(from, &choice)
-        {
-            return None;
-        }
-        underway.choices.insert(from.clone(), choice);
-        Some(Counted {
-            last: underway.choices.len() == underway.awaited.len(),
+    /// Every seat, awaiting those the phase waits on.
+    fn open(core: &Core<Self>) -> anyhow::Result<Opening<Self>> {
+        let state = &core.state;
+        Ok(Opening {
+            views: state
+                .seats
+                .iter()
+                .map(|player| (player.clone(), state.view(player)))
+                .collect(),
+            limit: core.rules.limit(state.phase),
+            underway: Awaited::new(state.awaited()),
         })
     }
 
-    /// End the phase numbered `seq` at its limit, or because everyone it
-    /// awaits has chosen, unless it has already ended. Returns how it
-    /// ended, or nothing if it had already.
-    fn end(&mut self, seq: u64) -> Option<Ended> {
-        if seq != self.seq {
+    /// An awaited player's first legal choice.
+    fn counts(
+        core: &mut Core<Self>,
+        underway: &mut Awaited<Choice>,
+        played: &super::Move,
+    ) -> Option<Counted<Self>> {
+        let (_, _, choice) = played.choice();
+        let from = played.sender();
+        if !underway.players.contains(&from) || !core.state.legal(&from, &choice) {
             return None;
         }
-        let Underway { choices, .. } = self.underway.take()?;
-        let entry = self.state.resolve(&choices, seq);
-        let winner = self.state.winner();
-        if winner.is_none() {
-            self.state.next();
-        }
-        Some(Ended { entry, winner })
-    }
-}
-
-/// How a phase ended: the entry that records what it came to, and who
-/// won the game and how, if anyone did.
-struct Ended {
-    entry: Entry,
-    winner: Option<(Team, Victory)>,
-}
-
-/// A phase just opened: its number, the announcement for each player, and
-/// how long it waits for the awaited ones.
-struct Opened {
-    seq: u64,
-    announcements: Vec<(PlayerId, Message)>,
-    limit: Duration,
-}
-
-/// The actor that holds the game. Its perceive loop and its think loop are
-/// each an `Environment` with a context of its own over the one shared
-/// game: the perceive loop opens the first proposal and takes choices,
-/// and the think loop ends phases.
-/// [`Actor::Environment`](super::Actor::Environment) holds the perceive
-/// loop's, built by [`init`].
-pub struct Environment {
-    context: Context<Message, Entry>,
-    game: Arc<Mutex<Game>>,
-    /// The entries the perceive loop opens the log with: the deal, then
-    /// the configuration. Taken when logged. Boxed to keep the environment
-    /// no larger than a player in [`Actor`](super::Actor).
-    opening: Option<Box<[Entry; 2]>>,
-}
-
-impl Environment {
-    /// The game, locked for as long as the guard lives. Never held across
-    /// an await.
-    fn game(&self) -> MutexGuard<'_, Game> {
-        self.game.lock().unwrap()
+        underway.first(&from, choice)
     }
 
-    /// Open the next phase: show each player what it may see of it and
-    /// how long it lasts, each announcement an action of its own, and set
-    /// the timer that ends it at its limit.
-    fn open_phase(&self) -> anyhow::Result<()> {
-        let Opened {
-            seq,
-            announcements,
-            limit,
-        } = self.game().open();
-        for (to, message) in announcements {
-            act(&self.context, message, HashSet::from([to]), None, None)?;
-        }
-        self.context.think_after(limit, Message::EndPhase { seq })
-    }
-
-    /// Carry out the end of a phase, if `ended` says it did: log what it
-    /// came to, and then end the game or open the next phase.
-    fn end_phase(&self, ended: Option<Ended>) -> anyhow::Result<()> {
-        let Some(Ended { entry, winner }) = ended else {
-            return Ok(());
+    /// The phase resolved from the choices made, and the game over once a
+    /// team has won, every seat stopped.
+    fn resolve(core: &mut Core<Self>, underway: Awaited<Choice>) -> Resolved<Self> {
+        let outcome = core.state.resolve(&underway.choices, core.seq);
+        let over = match core.state.winner() {
+            Some((winner, by)) => Some(Over {
+                winner,
+                stopped: core.state.seats.clone(),
+                end: Outcome::End {
+                    winner,
+                    by,
+                    took: core.took(),
+                },
+            }),
+            None => {
+                core.state.next();
+                None
+            }
         };
-        self.context.log(entry);
-        match winner {
-            Some((team, by)) => self.end_game(team, by),
-            None => self.open_phase(),
+        Resolved {
+            outcome: Some(outcome),
+            out: None,
+            over,
         }
-    }
-
-    /// Stop the players, log the result, send the winner, and shut down.
-    /// The players stop first: a player still waiting on its model is
-    /// dropped at that wait, and logs nothing after the end.
-    fn end_game(&self, winner: Team, by: Victory) -> anyhow::Result<()> {
-        let (players, took, report) = {
-            let mut game = self.game();
-            (
-                game.state.seats.clone(),
-                game.started.elapsed(),
-                game.winner.take(),
-            )
-        };
-        for player in &players {
-            self.context.stop(player)?;
-        }
-        self.context
-            .log(Entry::Event(Outcome::End { winner, by, took }));
-        if let Some(report) = report {
-            // The owner of the episode may have stopped listening.
-            let _ = report.send(winner);
-        }
-        self.context.shutdown();
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl Behavior for Environment {
-    type Message = Message;
-    type Log = Entry;
-
-    fn context(&self) -> &Context<Message, Entry> {
-        &self.context
-    }
-
-    /// Log a choice as observed in the current phase, counted or not, and
-    /// record it if it counts. The last choice a phase is waiting for ends
-    /// it. Anything else is ignored.
-    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        let Message::Move(made) = message else {
-            return Ok(());
-        };
-        let (seq, n, choice) = made.choice();
-        let from = message.sender();
-        let (current, counted) = {
-            let mut game = self.game();
-            (game.seq, game.choose(seq, &from, choice))
-        };
-        observe(&self.context, from, n, current);
-        // A choice counts only in the phase underway.
-        if counted.is_some_and(|counted| counted.last) {
-            self.context.think(Message::EndPhase { seq: current })?;
-        }
-        Ok(())
-    }
-
-    /// Log the deal and the limits, then the configuration, and open the
-    /// first proposal.
-    async fn start(&mut self) -> anyhow::Result<()> {
-        for entry in self.opening.take().into_iter().flat_map(|opening| *opening) {
-            self.context.log(entry);
-        }
-        self.open_phase()
-    }
-}
-
-#[async_trait]
-impl Think for Environment {
-    type Message = Message;
-
-    /// End the phase the message says is over, unless it has ended
-    /// already. Nothing else is thought about.
-    async fn think(&mut self, message: &Message) -> anyhow::Result<()> {
-        if let Message::EndPhase { seq } = message {
-            let ended = self.game().end(*seq);
-            self.end_phase(ended)?;
-        }
-        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::announced::Opened;
+    use crate::announced::tests::{counted, last};
     use crate::avalon::tests::{
         Script, ending, five, mute, observed_by, outcomes, play, quick, seated, sorted,
     };
-    use crate::avalon::{Actor, Ballot, Deed, Phase, QuestResult, Role, Tally};
+    use crate::avalon::{
+        Actor, Ballot, Deed, Entry, Message, Phase, QuestResult, Rules, Tally, Team, Victory,
+    };
     use crate::seat::ENVIRONMENT;
     use crate::seat::id;
+    use std::time::Duration;
+    use tokio::sync::oneshot;
 
     /// The default table, with its first proposal open.
-    fn opened() -> (Game, Opened) {
+    fn opened() -> (Core<Avalon>, Opened<Avalon>) {
         let (winner, _) = oneshot::channel();
-        let mut game = Game::new(five(), Rules::default(), winner);
-        let proposal = game.open();
+        let mut game = Core::new(five(), Rules::default(), winner);
+        let proposal = game.open().unwrap();
         (game, proposal)
     }
 
     /// The players the phase underway awaits, in name order.
-    fn awaited(game: &Game) -> Vec<PlayerId> {
-        sorted(game.underway.as_ref().unwrap().awaited.clone())
+    fn awaited(game: &Core<Avalon>) -> Vec<PlayerId> {
+        sorted(game.underway.as_ref().unwrap().players.clone())
     }
 
     /// A team of the players named.
@@ -377,14 +119,14 @@ mod tests {
         Choice::Team(players.iter().map(|player| id(player)).collect())
     }
 
-    /// A choice that counted and calls for nothing more.
-    fn counted() -> Option<Counted> {
-        Some(Counted::default())
-    }
-
-    /// A choice that counted and was the last the phase waited for.
-    fn last() -> Option<Counted> {
-        Some(Counted { last: true })
+    /// Count `from`'s `choice` in the phase numbered `seq`.
+    fn choose(
+        game: &mut Core<Avalon>,
+        seq: u64,
+        from: &PlayerId,
+        choice: Choice,
+    ) -> Option<Counted<Avalon>> {
+        game.count(&choice.made(seq, from.clone(), 1))
     }
 
     #[test]
@@ -406,11 +148,16 @@ mod tests {
         assert_eq!(awaited(&game), ["Player 1"]);
         // The leader proposes, which is all the proposal waits for.
         assert_eq!(
-            game.choose(1, &id("Player 1"), team(&["Player 1", "Player 2"])),
+            choose(
+                &mut game,
+                1,
+                &id("Player 1"),
+                team(&["Player 1", "Player 2"])
+            ),
             last()
         );
         game.end(1).unwrap();
-        let vote = game.open();
+        let vote = game.open().unwrap();
         assert_eq!(vote.seq, 2);
         assert_eq!(vote.announcements[0].1.number(), Some(6));
         assert_eq!(vote.limit, Rules::default().vote_limit);
@@ -423,8 +170,8 @@ mod tests {
         let mut roles = seated(&[Role::Servant; 10]);
         roles.insert(id("Player 1"), Role::Merlin);
         roles.insert(id("Player 2"), Role::Assassin);
-        let mut game = Game::new(roles, Rules::default(), winner);
-        let opened = game.open();
+        let mut game = Core::<Avalon>::new(roles, Rules::default(), winner);
+        let opened = game.open().unwrap();
         let to: Vec<&str> = opened
             .announcements
             .iter()
@@ -437,17 +184,27 @@ mod tests {
     #[test]
     fn the_last_choice_of_a_phase_ends_it() {
         let (mut game, Opened { seq, .. }) = opened();
-        game.choose(seq, &id("Player 1"), team(&["Player 1", "Player 2"]));
+        choose(
+            &mut game,
+            seq,
+            &id("Player 1"),
+            team(&["Player 1", "Player 2"]),
+        );
         game.end(seq);
-        let vote = game.open().seq;
+        let vote = game.open().unwrap().seq;
         for voter in ["Player 1", "Player 2", "Player 3", "Player 4"] {
             assert_eq!(
-                game.choose(vote, &id(voter), Choice::Ballot(Ballot::Approve)),
+                choose(&mut game, vote, &id(voter), Choice::Ballot(Ballot::Approve)),
                 counted()
             );
         }
         assert_eq!(
-            game.choose(vote, &id("Player 5"), Choice::Ballot(Ballot::Reject)),
+            choose(
+                &mut game,
+                vote,
+                &id("Player 5"),
+                Choice::Ballot(Ballot::Reject)
+            ),
             last()
         );
     }
@@ -457,42 +214,55 @@ mod tests {
         let (mut game, Opened { seq, .. }) = opened();
         let proposal = team(&["Player 1", "Player 2"]);
         assert_eq!(
-            game.choose(seq - 1, &id("Player 1"), proposal.clone()),
+            choose(&mut game, seq - 1, &id("Player 1"), proposal.clone()),
             None
         );
         assert_eq!(
-            game.choose(seq + 1, &id("Player 1"), proposal.clone()),
+            choose(&mut game, seq + 1, &id("Player 1"), proposal.clone()),
             None
         );
         // Only the leader proposes.
-        assert_eq!(game.choose(seq, &id("Player 2"), proposal.clone()), None);
-        // A team of the wrong size, or a vote, is not a proposal.
-        assert_eq!(game.choose(seq, &id("Player 1"), team(&["Player 1"])), None);
         assert_eq!(
-            game.choose(seq, &id("Player 1"), Choice::Ballot(Ballot::Approve)),
+            choose(&mut game, seq, &id("Player 2"), proposal.clone()),
+            None
+        );
+        // A team of the wrong size, or a vote, is not a proposal.
+        assert_eq!(
+            choose(&mut game, seq, &id("Player 1"), team(&["Player 1"])),
+            None
+        );
+        assert_eq!(
+            choose(
+                &mut game,
+                seq,
+                &id("Player 1"),
+                Choice::Ballot(Ballot::Approve)
+            ),
             None
         );
         assert!(game.underway.as_ref().unwrap().choices.is_empty());
-        assert_eq!(game.choose(seq, &id("Player 1"), proposal), last());
+        assert_eq!(choose(&mut game, seq, &id("Player 1"), proposal), last());
         // A second proposal does not count.
         assert_eq!(
-            game.choose(seq, &id("Player 1"), team(&["Player 3", "Player 4"])),
+            choose(
+                &mut game,
+                seq,
+                &id("Player 1"),
+                team(&["Player 3", "Player 4"])
+            ),
             None
         );
         // Nor does one after the phase has ended.
         game.end(seq).unwrap();
         assert_eq!(
-            game.choose(seq, &id("Player 1"), team(&["Player 3", "Player 4"])),
+            choose(
+                &mut game,
+                seq,
+                &id("Player 1"),
+                team(&["Player 3", "Player 4"])
+            ),
             None
         );
-    }
-
-    #[test]
-    fn a_phase_that_has_ended_does_not_end_again() {
-        let (mut game, Opened { seq, .. }) = opened();
-        assert!(game.end(seq).is_some());
-        game.open();
-        assert!(game.end(seq).is_none());
     }
 
     /// A leader who proposes itself and the next seat in seat order, a
