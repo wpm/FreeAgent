@@ -197,16 +197,19 @@ pub fn key_variable<'a>(base_url: &str, named: Option<&'a str>) -> Option<&'a st
 /// not set, or is set to something that is not UTF-8, is an error naming
 /// it.
 pub fn api_key(name: &str) -> anyhow::Result<SecretString> {
-    key(name, std::env::var_os(name))
+    spec::required(&spec::Environment, name)
 }
 
-/// The key the environment variable `name` holds as `value`.
-fn key(name: &str, value: Option<OsString>) -> anyhow::Result<SecretString> {
-    let value = value.ok_or_else(|| anyhow!("{name} is not set"))?;
-    let value = value
-        .into_string()
-        .map_err(|_| anyhow!("{name} is set to something that is not UTF-8"))?;
-    Ok(SecretString::from(value))
+/// The key the environment variable `name` holds as `value`, if it is set.
+fn key(name: &str, value: Option<OsString>) -> anyhow::Result<Option<SecretString>> {
+    value
+        .map(|value| {
+            value
+                .into_string()
+                .map(SecretString::from)
+                .map_err(|_| anyhow!("{name} is set to something that is not UTF-8"))
+        })
+        .transpose()
 }
 
 /// A request the provider answered with anything but success: the status,

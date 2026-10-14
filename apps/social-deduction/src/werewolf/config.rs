@@ -141,7 +141,7 @@ mod tests {
     use crate::game::game;
     use crate::model::canned::{self, playing};
     use crate::model::fake::{FakeModel, choosing_first};
-    use crate::model::spec::{Handles, ModelInPlay, Models};
+    use crate::model::spec::{Environment, Handles, ModelInPlay, Models};
     use crate::model::window::{ContextWindow, Source};
     use crate::model::{self, CONTEXT_WINDOW, REQUEST_TIMEOUT, ToolChoice};
     use crate::report::Line;
@@ -523,7 +523,7 @@ strategy = \"smart\"
         let (qwen_url, asked) = canned::recording(&["qwen2.5-7b-instruct"]);
         let settings = settle(&three_models(&claude_url, &qwen_url));
         let prompts = settings.prompts().unwrap();
-        let (models, handles) = settings.set_up(&prompts).await.unwrap();
+        let (models, handles) = settings.set_up(&prompts, &Environment).await.unwrap();
         assert_eq!(
             models,
             Models::from([
@@ -579,7 +579,7 @@ strategy = \"smart\"
         let qwen_url = canned::refusing(&["qwen2.5-7b-instruct"]);
         let settings = settle(&three_models(&claude_url, &qwen_url));
         let error = settings
-            .set_up(&settings.prompts().unwrap())
+            .set_up(&settings.prompts().unwrap(), &Environment)
             .await
             .err()
             .unwrap();
@@ -598,7 +598,7 @@ strategy = \"smart\"
         let file = two_models("").replace("http://localhost:1234/v1", &base_url);
         let settings = settle(&file);
         let prompts = settings.prompts().unwrap();
-        let (models, handles) = settings.set_up(&prompts).await.unwrap();
+        let (models, handles) = settings.set_up(&prompts, &Environment).await.unwrap();
         assert_eq!(
             models,
             Models::from([(
@@ -620,7 +620,7 @@ strategy = \"smart\"
         // A table of random players sets up nothing.
         let file = two_models("").replace("strategy = \"plain\"", "strategy = \"random\"");
         let settings = settle(&file);
-        let (models, handles) = settings.set_up(&[]).await.unwrap();
+        let (models, handles) = settings.set_up(&[], &Environment).await.unwrap();
         assert!(models.is_empty() && handles.is_empty());
     }
 
