@@ -169,6 +169,7 @@ mod tests {
         let told: Vec<String> = entries
             .into_iter()
             .flat_map(|entry| narrator.narrate(&logged(entry)))
+            .map(|line| line.to_string())
             .collect();
         assert_eq!(told[0], "5 players:");
         let won = format!("{winner} wins");

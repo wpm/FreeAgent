@@ -786,6 +786,7 @@ pub(crate) mod tests {
         entries
             .into_iter()
             .flat_map(|entry| narrator.narrate(&logged(entry)))
+            .map(|line| line.to_string())
             .collect()
     }
 

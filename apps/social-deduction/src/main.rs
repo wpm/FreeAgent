@@ -12,6 +12,7 @@ use social_deduction::model::spec::Probed;
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
 };
+use social_deduction::report::Line;
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -249,7 +250,7 @@ async fn run<G: Game>(settings: Settings<G>, logging: bool) -> anyhow::Result<()
 /// error as JSON lines when `logging` is on.
 async fn play<A, L>(
     logging: bool,
-    mut narrate: impl FnMut(&Event<L>) -> Vec<String> + Send + 'static,
+    mut narrate: impl FnMut(&Event<L>) -> Vec<Line> + Send + 'static,
     game: impl FnOnce(Logger<L>) -> Episode<A>,
 ) -> anyhow::Result<()>
 where

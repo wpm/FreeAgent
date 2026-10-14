@@ -144,6 +144,7 @@ mod tests {
     use crate::model::spec::{Handles, ModelInPlay, Models};
     use crate::model::window::{ContextWindow, Source};
     use crate::model::{self, CONTEXT_WINDOW, REQUEST_TIMEOUT, ToolChoice};
+    use crate::report::Line;
     use crate::seat::PlayerId;
     use crate::strategy::Strategy;
     use crate::strategy::{Prompted, RANDOM, Random};
@@ -1098,7 +1099,11 @@ count = 0
         );
         // The table is told with every player's strategy.
         let mut narrator = Narrator::default();
-        let told = narrator.narrate(&logged(entries[0].clone()));
+        let told: Vec<String> = narrator
+            .narrate(&logged(entries[0].clone()))
+            .iter()
+            .map(Line::to_string)
+            .collect();
         assert_eq!(told[0], "6 players:");
         for (seat, dealt) in &deal {
             let line = format!("{seat}, a {}, plays {}", dealt.role, dealt.strategy);
