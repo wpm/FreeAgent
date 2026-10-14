@@ -432,16 +432,16 @@ mod tests {
     }
 
     /// The board after each of `events` in turn, `None` where it did not
-    /// change.
+    /// change, checking that the board folded out is the board held.
     fn boards(events: &[Event<Entry>]) -> Vec<Option<AvalonPanel>> {
         let mut board = Board::default();
         events
             .iter()
             .map(|event| {
-                board.fold(event).map(|panel| match panel {
-                    Panel::Avalon(panel) => panel,
-                    Panel::Werewolf(_) => panic!("a Werewolf board"),
-                })
+                let folded = board.fold(event);
+                let changed = folded.as_ref().and(board.panel.clone());
+                assert_eq!(folded, changed.clone().map(Panel::Avalon));
+                changed
             })
             .collect()
     }

@@ -67,11 +67,37 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # The viewer's frontend builds for the browser, so the jobs above leave it
+  # out. This one checks it natively and for wasm, then builds the page the
+  # Website workflow deploys, from a freshly played game.
+  viewer:
+    name: Viewer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      - run: cargo clippy -p social-deduction-gui --all-targets -- -D warnings
+      - run: cargo test -p social-deduction-gui
+      - run: cargo check -p social-deduction-gui --target wasm32-unknown-unknown
+      - name: Play a random game of Avalon and fold its log into cues
+        run: |
+          cargo run --release -p social-deduction -- play apps/social-deduction/configs/avalon/random.toml 2> game.jsonl > /dev/null
+          cargo run --release -p social-deduction --example stage < game.jsonl > apps/social-deduction-gui/cues.json
+      - run: trunk build --release --public-url /FreeAgent/viewer/
+        working-directory: apps/social-deduction-gui
+
   # The one check a ruleset needs to require: it passes only if every job it
   # needs did, so jobs can come and go without the ruleset changing.
   required:
     name: Required
-    needs: [format, clippy, test, docs]
+    needs: [format, clippy, test, docs, viewer]
     # Without always() a failure above would skip this job, and a ruleset
     # counts a skipped check as passing.
     if: always()
@@ -99,8 +125,9 @@ jobs:
         with:
           tool: cargo-llvm-cov
       # Without --workspace the tests of the applications still run, but the
-      # report leaves their source files out.
-      - run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      # report leaves their source files out. The viewer's frontend is the
+      # browser's, and the Viewer job tests it.
+      - run: cargo llvm-cov --workspace --exclude social-deduction-gui --lcov --output-path lcov.info
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v7
         with:

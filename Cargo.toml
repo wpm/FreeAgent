@@ -31,7 +31,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 [workspace]
 members = ["apps/*"]
 # Without this a bare cargo command at the root would skip the applications.
-default-members = [".", "apps/*"]
+# The viewer's frontend is built for the browser, by Trunk, so it is left out.
+default-members = [".", "apps/social-deduction", "apps/social-deduction-stage"]
 resolver = "3"
 
 # Versions live here so the crates cannot drift apart on a shared dependency.

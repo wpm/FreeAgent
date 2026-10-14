@@ -1,10 +1,10 @@
 name: Website
 
-# The site under site/ goes to GitHub Pages on every push to main.
+# The site under site/ goes to GitHub Pages on every push to main, with the
+# viewer at viewer/ showing a game of random Avalon played for the push.
 on:
   push:
     branches: [main]
-    paths: [site/**, .github/workflows/pages.yml]
   workflow_dispatch:
 
 permissions:
@@ -17,6 +17,9 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   deploy:
     name: Deploy
@@ -26,6 +29,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      - name: Play a random game of Avalon and fold its log into cues
+        run: |
+          cargo run --release -p social-deduction -- play apps/social-deduction/configs/avalon/random.toml 2> game.jsonl > /dev/null
+          cargo run --release -p social-deduction --example stage < game.jsonl > apps/social-deduction-gui/cues.json
+      # The page's footer names the commit, from GITHUB_SHA, which Actions
+      # sets for every step.
+      - run: trunk build --release --public-url /FreeAgent/viewer/
+        working-directory: apps/social-deduction-gui
+      - run: cp -R apps/social-deduction-gui/dist site/viewer
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

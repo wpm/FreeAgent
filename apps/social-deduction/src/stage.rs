@@ -219,20 +219,22 @@ impl Staged for Avalon {
     }
 
     fn side(role: avalon::Role) -> Side {
-        match role.team() {
-            avalon::Team::Good => Side::Good,
-            avalon::Team::Evil => Side::Evil,
-        }
+        side(role.team())
     }
 
     fn winner(event: &avalon::Outcome) -> Option<Side> {
         match event {
-            avalon::Outcome::End { winner, .. } => Some(match winner {
-                avalon::Team::Good => Side::Good,
-                avalon::Team::Evil => Side::Evil,
-            }),
+            avalon::Outcome::End { winner, .. } => Some(side(*winner)),
             _ => None,
         }
+    }
+}
+
+/// The side an Avalon team is.
+fn side(team: avalon::Team) -> Side {
+    match team {
+        avalon::Team::Good => Side::Good,
+        avalon::Team::Evil => Side::Evil,
     }
 }
 
@@ -370,34 +372,33 @@ mod tests {
         side: Side,
     ) {
         let cues = folded(events);
-        let Beat::Cast { game, seats } = &cues[0].beat else {
-            panic!("{:?}", cues[0]);
-        };
-        assert_eq!(*game, G::GAME);
-        let names: Vec<&str> = seats.iter().map(|seat| seat.name.as_str()).collect();
-        assert_eq!(names, in_order(roles.keys()));
-        for seat in seats {
-            let role = roles[&seat.name];
-            assert_eq!(seat.role, G::role(role));
-            assert_eq!(seat.side, G::side(role));
-            assert_eq!(seat.strategy, RANDOM);
-            let label = format!("{} · {}", seat.name, capitalized(&role.to_string()));
-            assert_eq!(seat.label, label);
-        }
+        let seats = in_order(roles.keys())
+            .into_iter()
+            .map(|name| {
+                let role = roles[name];
+                Seat {
+                    name: name.clone(),
+                    label: format!("{name} · {}", capitalized(&role.to_string())),
+                    role: G::role(role),
+                    side: G::side(role),
+                    strategy: RANDOM.to_string(),
+                }
+            })
+            .collect();
+        let game = G::GAME;
+        assert_eq!(cues[0].beat, Beat::Cast { game, seats });
         assert_eq!(cues[1].beat, Beat::Clock { rate: 1.0 });
         let (words, votes) = narrated(events);
         assert_eq!(shown(&cues), words);
         assert!(!votes.is_empty());
         assert!(shown(&cues).iter().all(|word| !votes.contains(word)));
-        let Beat::Over { outcome, log } = &cues.last().unwrap().beat else {
-            panic!("{:?}", cues.last());
+        let how = words.iter().rfind(|word| word.contains(" win")).unwrap();
+        let outcome = Outcome::Won {
+            side,
+            how: how.clone(),
         };
-        let Outcome::Won { side: won, how } = outcome else {
-            panic!("{outcome:?}");
-        };
-        assert_eq!(*won, side);
-        assert!(how.contains(" win"), "{how}");
-        assert_eq!(*log, None);
+        let over = Beat::Over { outcome, log: None };
+        assert_eq!(cues.last().unwrap().beat, over);
         let overs = cues
             .iter()
             .filter(|cue| matches!(cue.beat, Beat::Over { .. }));
@@ -418,11 +419,7 @@ mod tests {
         let events = random_game::<Avalon>(roles.clone(), avalon::Rules::default()).await;
         let logged: Vec<_> = events.iter().map(|event| event.payload.clone()).collect();
         let (winner, _) = avalon::tests::ending(&logged);
-        let side = match winner {
-            avalon::Team::Good => Side::Good,
-            avalon::Team::Evil => Side::Evil,
-        };
-        check_random_game(&events, &roles, side);
+        check_random_game(&events, &roles, side(winner));
     }
 
     #[tokio::test]
@@ -606,6 +603,12 @@ mod tests {
         ];
         assert_eq!(how(&lines), "Good wins with three successful quests.");
         assert_eq!(how(&[told("Evil wins.")]), "Evil wins.");
+        let survivors = [
+            Line::Blank,
+            Line::Vote("No vote.".to_string()),
+            told("Won."),
+        ];
+        assert_eq!(how(&survivors), "Won.");
         assert_eq!(how(&[]), "");
     }
 

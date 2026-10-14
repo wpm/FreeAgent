@@ -127,7 +127,7 @@ pub enum Outcome {
 pub struct Seat {
     /// The player's name: `Player 3`.
     pub name: PlayerId,
-    /// The name with its role, `Player 3 · seer`: the bubble's name and its
+    /// The name with its role, `Player 3 · Seer`: the bubble's name and its
     /// key in the list of names.
     pub label: String,
     /// The player's role, which colors their bubbles.
