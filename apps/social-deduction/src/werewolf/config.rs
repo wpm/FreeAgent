@@ -10,7 +10,8 @@
 //!
 //! A model is in play when a prompted strategy that names it is allotted a
 //! seat. [`Settings::set_up`] sets up each model in play before any actor
-//! is built: it reads the key, settles the [`ContextWindow`] and asks the
+//! is built: it reads the key, settles the
+//! [`ContextWindow`](crate::model::window::ContextWindow) and asks the
 //! model to play. The API key never appears in the file. The file names
 //! the environment variable that holds it, and
 //! [`Spec::api_key`](crate::model::spec::Spec::api_key) reads that
@@ -20,18 +21,12 @@
 //! The log records the [`Configuration`] a game ran under right after the
 //! deal, and [`players`] builds each seat's player from it.
 
-use super::{Dealt, Limits, Role, Rules, Table, Werewolf};
-use crate::config::Lineup;
+use super::{Limits, Role, Rules, Table, Werewolf};
 pub use crate::config::players;
-use crate::model::spec::{Handles, Models, Spec};
-use crate::model::window::ContextWindow;
-use crate::seat::PlayerId;
 use crate::strategy::RoleConfig;
 use anyhow::bail;
 use humantime::format_duration;
-use minijinja::context;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 /// The variables every template has besides the text blocks.
@@ -101,19 +96,8 @@ pub type Allotments = crate::config::Allotments<Role>;
 /// prompted strategy.
 pub type SystemPrompt = crate::config::SystemPrompt<Role>;
 
-/// The settings that took effect: the file as written, and the settings
-/// the file and the code have a say in, decided.
-#[derive(Debug)]
-pub struct Settings {
-    /// The file as written.
-    pub config: Config,
-    /// How many of each role sit at the table.
-    pub table: Table,
-    /// How long each phase waits, and how long a day's votes must stand.
-    pub limits: Limits,
-    /// Every strategy, and how many seats of each role play each.
-    pub lineup: Lineup<Role>,
-}
+/// The settings that took effect.
+pub type Settings = crate::config::Settings<Werewolf>;
 
 impl Config {
     /// The settings that take effect: each limit from the file if given
@@ -133,85 +117,16 @@ impl Config {
             );
         }
         let lineup = self.allot(Table::default().counts(), Roles::get)?;
-        let seats = |role| lineup.allotments[&role].values().sum();
         Ok(Settings {
-            table: Table {
-                werewolves: seats(Role::Werewolf),
-                villagers: seats(Role::Villager),
-                doctors: seats(Role::Doctor),
-                seers: seats(Role::Seer),
-            },
             limits: Limits {
                 night_limit: self.phases.night_limit.unwrap_or(rules.night_limit),
                 day_limit,
                 ratify_limit,
             },
             lineup,
-            config: self,
+            models: self.models,
+            text: self.text,
         })
-    }
-}
-
-impl Settings {
-    /// The models in play, by name: those a prompted strategy at the table
-    /// asks.
-    pub fn models_in_play(&self) -> BTreeMap<&str, &Spec> {
-        self.lineup.models_in_play(&self.config.models)
-    }
-
-    /// Render every system prompt a game could call for, as
-    /// [`Lineup::prompts`] renders it, with the variable `role`, the
-    /// role's name.
-    pub fn prompts(&self) -> anyhow::Result<Vec<SystemPrompt>> {
-        let variables = |role: Role| context! { role => role.to_string() };
-        self.lineup.prompts(&self.config.text, variables)
-    }
-
-    /// The context window of the model `name`, as [`Lineup::context_window`]
-    /// settles it for `prompts`.
-    pub fn context_window(
-        &self,
-        name: &str,
-        reported: Option<u64>,
-        prompts: &[SystemPrompt],
-    ) -> anyhow::Result<ContextWindow> {
-        let models = &self.config.models;
-        let limits = &self.limits;
-        (self.lineup).context_window::<Werewolf>(models, limits, name, reported, prompts)
-    }
-
-    /// The most a request to the model `name` takes of the context window
-    /// before its story, as [`Lineup::needs`] estimates it for `prompts`.
-    #[cfg(test)]
-    fn unstoried(&self, name: &str, prompts: &[SystemPrompt]) -> anyhow::Result<u64> {
-        (self.lineup).needs::<Werewolf>(&self.config.models, &self.limits, name, prompts)
-    }
-
-    /// Set up each model in play as [`Lineup::set_up`] sets it up for
-    /// `prompts`, asking it to play as by night and as by day.
-    pub async fn set_up(&self, prompts: &[SystemPrompt]) -> anyhow::Result<(Models, Handles)> {
-        (self.lineup)
-            .set_up::<Werewolf>(&self.config.models, &self.limits, prompts)
-            .await
-    }
-
-    /// The configuration a game of `deal` runs under, as
-    /// [`Lineup::configuration`] makes it from these settings, `models`
-    /// and `prompts`.
-    pub fn configuration(
-        &self,
-        deal: &HashMap<PlayerId, Dealt>,
-        prompts: &[SystemPrompt],
-        models: Models,
-    ) -> anyhow::Result<Configuration> {
-        let (limits, text) = (self.limits.clone(), &self.config.text);
-        (self.lineup).configuration(limits, models, deal, prompts, text)
-    }
-
-    /// The rules a game is played under: the default rules, with the
-    /// limits that took effect.
-    pub fn rules(&self) -> Rules {
-        self.limits.rules()
     }
 }
 
@@ -221,20 +136,24 @@ pub type Configuration = crate::config::Configuration<Werewolf>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Lineup;
     use crate::game::Narrate;
     use crate::game::game;
     use crate::model::canned::{self, playing};
     use crate::model::fake::{FakeModel, choosing_first};
-    use crate::model::spec::ModelInPlay;
-    use crate::model::window::Source;
+    use crate::model::spec::{Handles, ModelInPlay, Models};
+    use crate::model::window::{ContextWindow, Source};
     use crate::model::{self, CONTEXT_WINDOW, REQUEST_TIMEOUT, ToolChoice};
+    use crate::seat::PlayerId;
     use crate::strategy::Strategy;
     use crate::strategy::{Prompted, RANDOM, Random};
+    use crate::werewolf::Dealt;
     use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{between_the_deal_and_the_end, logged, run};
     use crate::werewolf::{Entry, Message, Move, Outcome};
     use serde_json::json;
     use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::Arc;
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::sync::oneshot;
@@ -254,6 +173,18 @@ system = "{{ name }} the {{ role }}"
     /// The settings `file` produces under the code defaults.
     fn settle(file: &str) -> Settings {
         parse(file).unwrap().settle().unwrap()
+    }
+
+    /// The table `lineup` seats: how many of each role.
+    fn table(lineup: &Lineup<Role>) -> Table {
+        let counts = lineup.role_counts();
+        let seats = |role| counts[&role];
+        Table {
+            werewolves: seats(Role::Werewolf),
+            villagers: seats(Role::Villager),
+            doctors: seats(Role::Doctor),
+            seers: seats(Role::Seer),
+        }
     }
 
     /// The error `file` settles to, causes included.
@@ -292,11 +223,11 @@ system = "{{ name }} the {{ role }}"
             let prompts = settings
                 .prompts()
                 .unwrap_or_else(|e| panic!("{name}: {e:#}"));
-            assert_eq!(settings.table, Table::default(), "{name}");
+            assert_eq!(table(&settings.lineup), Table::default(), "{name}");
             // The rules, where there are any, tell the players the ratify
             // limit, and that by day they may speak, vote, or wait, and
             // withdraw their vote.
-            if let Some(rules) = settings.config.text.get("rules") {
+            if let Some(rules) = settings.text.get("rules") {
                 assert!(!prompts.is_empty(), "{name}");
                 let ratify = format_duration(settings.limits.ratify_limit).to_string();
                 assert!(rules.contains(&ratify), "{name}: {rules}");
@@ -322,7 +253,7 @@ system = "{{ name }} the {{ role }}"
     #[test]
     fn with_nothing_in_the_file_every_role_of_the_default_table_is_random() {
         let settings = settle("");
-        assert_eq!(settings.table, Table::default());
+        assert_eq!(table(&settings.lineup), Table::default());
         assert_eq!(
             settings.lineup.allotments,
             Table::default()
@@ -404,10 +335,10 @@ count = 7
 count = 8
 ";
         // The code alone.
-        assert_eq!(settle("").table, Table::default());
+        assert_eq!(table(&settle("").lineup), Table::default());
         // The file over the code.
         assert_eq!(
-            settle(file).table,
+            table(&settle(file).lineup),
             Table {
                 werewolves: 5,
                 villagers: 6,
@@ -724,9 +655,9 @@ strategy = \"smart\"
         let long = prompts_of_length(&settings, 30, 12000);
         // The longest prompt's day request, with no story, by estimate, of
         // those asking the model.
-        let needed = settings.unstoried("qwen", &long).unwrap();
-        assert!(needed > settings.unstoried("qwen", &short).unwrap() + 3900);
-        assert!(needed < settings.unstoried("qwen", &short).unwrap() + 4500);
+        let needed = settings.needs("qwen", &long).unwrap();
+        assert!(needed > settings.needs("qwen", &short).unwrap() + 3900);
+        assert!(needed < settings.needs("qwen", &short).unwrap() + 4500);
         assert!(needed > CONTEXT_WINDOW);
         assert_eq!(
             settings

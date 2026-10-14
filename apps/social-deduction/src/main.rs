@@ -6,16 +6,13 @@
 use clap::{Args, Parser};
 use free_agent::{Behavior, Episode, Event, Logger};
 use serde::Serialize;
-use social_deduction::avalon;
-use social_deduction::config::{self, Game};
-use social_deduction::game::{self, Narrate};
+use social_deduction::config::{self, Settings, Settled};
+use social_deduction::game::{self, Game, Narrate};
 use social_deduction::model::spec::Probed;
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
 };
-use social_deduction::werewolf::prompted;
-use social_deduction::werewolf::report::Narrator;
-use social_deduction::werewolf::{self, Team};
+use social_deduction::werewolf::Werewolf;
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -84,48 +81,8 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 async fn main() -> anyhow::Result<()> {
     match CommandLine::parse() {
         CommandLine::Play(Play { config, logging }) => match config::load(&config)? {
-            Game::Werewolf(settings) => {
-                // Every prompt is rendered, and every model in play set
-                // up, before any actor is built, so that a template that is
-                // broken or a model that does not play fails before
-                // anything else.
-                let prompts = settings.prompts()?;
-                let (models, handles) = settings.set_up(&prompts).await?;
-                let deal = settings.lineup.deal();
-                let configuration = settings.configuration(&deal, &prompts, models)?;
-                let players = werewolf::config::players(&configuration, &deal, &handles);
-                let rules = settings.rules();
-                let mut narrator = Narrator::default();
-                play(
-                    logging.enabled(),
-                    move |event| narrator.narrate(event),
-                    |logger| {
-                        let (winner, _) = oneshot::channel::<Team>();
-                        game::game(deal, rules, configuration, winner, players, logger)
-                    },
-                )
-                .await
-            }
-            Game::Avalon(settings) => {
-                // As in Werewolf, every prompt is rendered and every model
-                // in play set up before any actor is built.
-                let prompts = settings.prompts()?;
-                let (models, handles) = settings.set_up(&prompts).await?;
-                let deal = settings.lineup.deal();
-                let configuration = settings.configuration(&deal, &prompts, models)?;
-                let players = avalon::config::players(&configuration, &deal, &handles);
-                let rules = settings.rules;
-                let mut narrator = avalon::report::Narrator::default();
-                play(
-                    logging.enabled(),
-                    move |event| narrator.narrate(event),
-                    |logger| {
-                        let (winner, _) = oneshot::channel();
-                        game::game(deal, rules, configuration, winner, players, logger)
-                    },
-                )
-                .await
-            }
+            Settled::Werewolf(settings) => run(*settings, logging.enabled()).await,
+            Settled::Avalon(settings) => run(*settings, logging.enabled()).await,
         },
         CommandLine::Models {
             base_url,
@@ -144,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
                     for id in &check {
                         served(&base_url, &listed, id)?;
                     }
-                    checked(&provider, ids, &check, &mut io::stderr()).await?
+                    checked::<Werewolf>(&provider, ids, &check, &mut io::stderr()).await?
                 }
             };
             print!("{}", listing(&models));
@@ -184,13 +141,13 @@ enum Mark {
 }
 
 /// Each of `ids`, in order, with its mark: those in `check`, or every one
-/// of them when `check` is empty, are asked by `model` to play, one model
+/// of them when `check` is empty, are asked by `model` to play `G`, one model
 /// at a time, since a local server loads each model it is asked for, and
 /// the rest are unmarked. Why a model that did not play failed goes to
 /// `reasons`, as [`reason`] writes it. A model that could not be asked
 /// stops the listing with the error, since nothing it would say about
 /// the rest would be true.
-async fn checked(
+async fn checked<G: Game>(
     model: &dyn Model,
     ids: Vec<String>,
     check: &[String],
@@ -199,7 +156,7 @@ async fn checked(
     let mut marked = Vec::new();
     for id in ids {
         let mark = if check.is_empty() || check.contains(&id) {
-            match prompted::check_plays(model, &id).await? {
+            match G::check_plays(model, &id).await? {
                 Probed::Played(tool_choice) => Some(Mark::Played(tool_choice)),
                 Probed::DidNotPlay(error) => {
                     reason(reasons, &id, &error)?;
@@ -254,6 +211,29 @@ fn listing(models: &[(String, Option<Mark>)]) -> String {
         .unwrap();
     }
     listing
+}
+
+/// Play one game of `G` under `settings`, logged when `logging` is on.
+/// Every prompt is rendered, and every model in play set up, before any
+/// actor is built, so that a template that is broken or a model that does
+/// not play fails before anything else.
+async fn run<G: Game>(settings: Settings<G>, logging: bool) -> anyhow::Result<()> {
+    let prompts = settings.prompts()?;
+    let (models, handles) = settings.set_up(&prompts).await?;
+    let deal = settings.lineup.deal();
+    let configuration = settings.configuration(&deal, &prompts, models)?;
+    let players = config::players(&configuration, &deal, &handles);
+    let rules = settings.rules();
+    let mut narrator = G::Narrator::default();
+    play(
+        logging,
+        move |event| narrator.narrate(event),
+        |logger| {
+            let (winner, _) = oneshot::channel();
+            game::game(deal, rules, configuration, winner, players, logger)
+        },
+    )
+    .await
 }
 
 /// Play one game, the episode `game` builds once given the logger the
@@ -587,7 +567,7 @@ mod tests {
         let ids = ["gpt-0", "llama", "qwen2.5-7b-instruct"].map(String::from);
         let model = playing_only_as("qwen2.5-7b-instruct");
         let mut reasons = Vec::new();
-        let marked = checked(&model, ids.to_vec(), &[], &mut reasons)
+        let marked = checked::<Werewolf>(&model, ids.to_vec(), &[], &mut reasons)
             .await
             .unwrap();
         assert_eq!(
@@ -624,7 +604,7 @@ mod tests {
         let model = playing_only_as("qwen2.5-7b-instruct");
         let check = ["qwen2.5-7b-instruct", "gpt-0"].map(String::from);
         let mut reasons = Vec::new();
-        let marked = checked(&model, ids.to_vec(), &check, &mut reasons)
+        let marked = checked::<Werewolf>(&model, ids.to_vec(), &check, &mut reasons)
             .await
             .unwrap();
         assert_eq!(
@@ -651,7 +631,7 @@ mod tests {
         let base_url = canned::refusing_required(&["sonnet"]);
         let provider = Provider::new(base_url, None, REQUEST_TIMEOUT).unwrap();
         let mut reasons = Vec::new();
-        let marked = checked(&provider, vec!["sonnet".to_string()], &[], &mut reasons)
+        let marked = checked::<Werewolf>(&provider, vec!["sonnet".to_string()], &[], &mut reasons)
             .await
             .unwrap();
         assert_eq!(
@@ -669,7 +649,7 @@ mod tests {
         let provider = Provider::new(base_url.clone(), None, REQUEST_TIMEOUT).unwrap();
         let ids = ["gpt-0", "llama"].map(String::from);
         let mut reasons = Vec::new();
-        let error = checked(&provider, ids.to_vec(), &[], &mut reasons)
+        let error = checked::<Werewolf>(&provider, ids.to_vec(), &[], &mut reasons)
             .await
             .unwrap_err();
         let shown = format!("{error:#}");

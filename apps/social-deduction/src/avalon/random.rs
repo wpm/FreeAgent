@@ -394,7 +394,7 @@ mod tests {
             let (logger, _) = unbounded_channel();
             let episode = game(
                 settings.lineup.deal(),
-                settings.rules.clone(),
+                settings.rules(),
                 configuration.clone(),
                 winner,
                 |_| Player::init(),

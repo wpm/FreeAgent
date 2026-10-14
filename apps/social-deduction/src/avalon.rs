@@ -81,6 +81,16 @@ impl Game for Avalon {
         rules.clone()
     }
 
+    fn rules(limits: &Rules) -> Rules {
+        limits.clone()
+    }
+
+    /// The role as [`Role::told`] tells it, and its team, `good` or
+    /// `evil`.
+    fn variables(role: Role) -> minijinja::Value {
+        minijinja::context! { role => role.told(), team => role.team().to_string() }
+    }
+
     fn environment(
         deal: HashMap<PlayerId, Dealt>,
         rules: Rules,

@@ -10,7 +10,8 @@
 //!
 //! A model is in play when a prompted strategy that names it is allotted a
 //! seat. [`Settings::set_up`] sets up each model in play before any actor
-//! is built: it reads the key, settles the [`ContextWindow`] and asks the
+//! is built: it reads the key, settles the
+//! [`ContextWindow`](crate::model::window::ContextWindow) and asks the
 //! model to play. The API key never appears in the file. The file names
 //! the environment variable that holds it, and
 //! [`Spec::api_key`](crate::model::spec::Spec::api_key) reads that
@@ -20,16 +21,11 @@
 //! The log records the [`Configuration`] a game ran under right after the
 //! deal, and [`players`] builds each seat's player from it.
 
-use super::{Avalon, Dealt, Role, Rules, Table};
+use super::{Avalon, Role, Rules, Table};
 use crate::config::Lineup;
 pub use crate::config::players;
-use crate::model::spec::{Handles, Models, Spec};
-use crate::model::window::ContextWindow;
-use crate::seat::PlayerId;
 use crate::strategy::RoleConfig;
-use minijinja::context;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 /// The variables every template has besides the text blocks.
@@ -118,19 +114,8 @@ pub type Allotments = crate::config::Allotments<Role>;
 /// prompted strategy.
 pub type SystemPrompt = crate::config::SystemPrompt<Role>;
 
-/// The settings that took effect: the file as written, and the settings
-/// the file and the code have a say in, decided.
-#[derive(Debug)]
-pub struct Settings {
-    /// The file as written.
-    pub config: Config,
-    /// How many of each role sit at the table.
-    pub table: Table,
-    /// The rules, with the limits that took effect.
-    pub rules: Rules,
-    /// Every strategy, and how many seats of each role play each.
-    pub lineup: Lineup<Role>,
-}
+/// The settings that took effect.
+pub type Settings = crate::config::Settings<Avalon>;
 
 impl Config {
     /// The settings that take effect: each limit from the file if given
@@ -139,88 +124,36 @@ impl Config {
     /// make is then checked as [`Table::check`] checks it.
     pub fn settle(self) -> anyhow::Result<Settings> {
         let (code, file) = (Rules::default(), &self.phases);
-        let rules = Rules {
+        let limits = Rules {
             propose_limit: file.propose_limit.unwrap_or(code.propose_limit),
             vote_limit: file.vote_limit.unwrap_or(code.vote_limit),
             quest_limit: file.quest_limit.unwrap_or(code.quest_limit),
             assassinate_limit: file.assassinate_limit.unwrap_or(code.assassinate_limit),
         };
         let lineup = self.allot(Table::default().counts(), Roles::get)?;
-        let seats = |role| lineup.allotments[&role].values().sum();
-        let table = Table {
-            merlin: seats(Role::Merlin),
-            percival: seats(Role::Percival),
-            servants: seats(Role::Servant),
-            assassin: seats(Role::Assassin),
-            morgana: seats(Role::Morgana),
-            mordred: seats(Role::Mordred),
-            oberon: seats(Role::Oberon),
-            minions: seats(Role::Minion),
-        };
-        table.check()?;
+        table(&lineup).check()?;
         Ok(Settings {
-            table,
-            rules,
+            limits,
             lineup,
-            config: self,
+            models: self.models,
+            text: self.text,
         })
     }
 }
 
-impl Settings {
-    /// The models in play, by name: those a prompted strategy at the table
-    /// asks.
-    pub fn models_in_play(&self) -> BTreeMap<&str, &Spec> {
-        self.lineup.models_in_play(&self.config.models)
-    }
-
-    /// Render every system prompt a game could call for, as
-    /// [`Lineup::prompts`] renders it, with the variables `role`, as
-    /// [`Role::told`] tells it, and `team`, `good` or `evil`.
-    pub fn prompts(&self) -> anyhow::Result<Vec<SystemPrompt>> {
-        let variables =
-            |role: Role| context! { role => role.told(), team => role.team().to_string() };
-        self.lineup.prompts(&self.config.text, variables)
-    }
-
-    /// The context window of the model `name`, as [`Lineup::context_window`]
-    /// settles it for `prompts`.
-    pub fn context_window(
-        &self,
-        name: &str,
-        reported: Option<u64>,
-        prompts: &[SystemPrompt],
-    ) -> anyhow::Result<ContextWindow> {
-        let (models, rules) = (&self.config.models, &self.rules);
-        (self.lineup).context_window::<Avalon>(models, rules, name, reported, prompts)
-    }
-
-    /// The most a request to the model `name` takes of the context window
-    /// before its story, as [`Lineup::needs`] estimates it for `prompts`.
-    #[cfg(test)]
-    fn unstoried(&self, name: &str, prompts: &[SystemPrompt]) -> anyhow::Result<u64> {
-        (self.lineup).needs::<Avalon>(&self.config.models, &self.rules, name, prompts)
-    }
-
-    /// Set up each model in play as [`Lineup::set_up`] sets it up for
-    /// `prompts`, asking it to play as the player each phase waits on.
-    pub async fn set_up(&self, prompts: &[SystemPrompt]) -> anyhow::Result<(Models, Handles)> {
-        (self.lineup)
-            .set_up::<Avalon>(&self.config.models, &self.rules, prompts)
-            .await
-    }
-
-    /// The configuration a game of `deal` runs under, as
-    /// [`Lineup::configuration`] makes it from these settings, `models`
-    /// and `prompts`.
-    pub fn configuration(
-        &self,
-        deal: &HashMap<PlayerId, Dealt>,
-        prompts: &[SystemPrompt],
-        models: Models,
-    ) -> anyhow::Result<Configuration> {
-        let (rules, text) = (self.rules.clone(), &self.config.text);
-        (self.lineup).configuration(rules, models, deal, prompts, text)
+/// The table `lineup` seats: how many of each role.
+fn table(lineup: &Lineup<Role>) -> Table {
+    let counts = lineup.role_counts();
+    let seats = |role| counts[&role];
+    Table {
+        merlin: seats(Role::Merlin),
+        percival: seats(Role::Percival),
+        servants: seats(Role::Servant),
+        assassin: seats(Role::Assassin),
+        morgana: seats(Role::Morgana),
+        mordred: seats(Role::Mordred),
+        oberon: seats(Role::Oberon),
+        minions: seats(Role::Minion),
     }
 }
 
@@ -230,6 +163,7 @@ pub type Configuration = crate::config::Configuration<Avalon>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::avalon::Dealt;
     use crate::avalon::report::Narrator;
     use crate::avalon::tests::{logged, run};
     use crate::avalon::{Entry, Message, Outcome, Team, random};
@@ -237,13 +171,15 @@ mod tests {
     use crate::game::game;
     use crate::model::canned::{self, playing};
     use crate::model::fake::{FakeModel, choosing_first};
-    use crate::model::spec::ModelInPlay;
-    use crate::model::window::Source;
+    use crate::model::spec::{Handles, ModelInPlay, Models};
+    use crate::model::window::{ContextWindow, Source};
     use crate::model::{self, CONTEXT_WINDOW, REQUEST_TIMEOUT, ToolChoice};
+    use crate::seat::PlayerId;
     use crate::strategy::Strategy;
     use crate::strategy::{Prompted, RANDOM, Random};
     use serde_json::json;
     use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::Arc;
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::sync::oneshot;
@@ -300,7 +236,7 @@ policy = "random"
         assert_eq!(names, ["prompted.toml", "random.toml"]);
         for name in &names {
             let settings = example(name).settle().unwrap();
-            assert_eq!(settings.table, Table::default(), "{name}");
+            assert_eq!(table(&settings.lineup), Table::default(), "{name}");
             settings.prompts().unwrap();
         }
         // The prompted example tells every player the rules, that it may
@@ -309,7 +245,7 @@ policy = "random"
         let prompts = settings.prompts().unwrap();
         let in_play: Vec<&str> = settings.models_in_play().into_keys().collect();
         assert_eq!(in_play, ["qwen"]);
-        let rules = &settings.config.text["rules"];
+        let rules = &settings.text["rules"];
         for said in ["every phase", "speak", "wait"] {
             assert!(rules.contains(said), "{said}: {rules}");
         }
@@ -350,7 +286,7 @@ policy = "random"
     #[test]
     fn with_nothing_in_the_file_every_role_of_the_default_table_is_random() {
         let settings = settle("");
-        assert_eq!(settings.table, Table::default());
+        assert_eq!(table(&settings.lineup), Table::default());
         assert_eq!(
             settings.lineup.allotments,
             Table::default()
@@ -363,7 +299,7 @@ policy = "random"
             settings.lineup.strategies,
             BTreeMap::from([(RANDOM.to_string(), Strategy::Random(Random {}))])
         );
-        assert_eq!(settings.rules, Rules::default());
+        assert_eq!(settings.limits, Rules::default());
     }
 
     #[test]
@@ -473,7 +409,7 @@ count = 1
     #[test]
     fn the_role_counts_fall_back_from_the_file_to_the_code() {
         // The code alone.
-        assert_eq!(settle("").table, Table::default());
+        assert_eq!(table(&settle("").lineup), Table::default());
         // The file over the code.
         let ten = Table {
             merlin: 1,
@@ -485,7 +421,7 @@ count = 1
             oberon: 1,
             minions: 1,
         };
-        assert_eq!(settle(COUNTED).table, ten);
+        assert_eq!(table(&settle(COUNTED).lineup), ten);
     }
 
     #[test]
@@ -533,10 +469,10 @@ assassinate_limit = \"4m\"
             .map(|limit| limit.as_secs())
         };
         // The file over the code.
-        assert_eq!(secs(&settle(file).rules), [90, 120, 180, 240]);
+        assert_eq!(secs(&settle(file).limits), [90, 120, 180, 240]);
         // The code without the file.
         let code = Rules::default();
-        assert_eq!(secs(&settle("").rules), secs(&code));
+        assert_eq!(secs(&settle("").limits), secs(&code));
     }
 
     /// A file saying something under every table, for a game of Merlin,
@@ -648,7 +584,7 @@ count = 1
             let (logger, log) = unbounded_channel();
             let episode = game(
                 deal.clone(),
-                settings.rules.clone(),
+                settings.rules(),
                 configuration.clone(),
                 winner,
                 |_| random::Player::init(),
@@ -847,8 +783,8 @@ system = \"Smart {{{{ name }}}}.\"
                 prompt.text = "x".repeat(12000);
             }
         }
-        let plain = settings.unstoried("qwen", &prompts).unwrap();
-        let smart = settings.unstoried("claude", &prompts).unwrap();
+        let plain = settings.needs("qwen", &prompts).unwrap();
+        let smart = settings.needs("claude", &prompts).unwrap();
         assert!(smart > plain + 3900, "{smart} {plain}");
         assert!(smart < plain + 4500, "{smart} {plain}");
         assert_eq!(
@@ -883,7 +819,7 @@ system = \"Smart {{{{ name }}}}.\"
         let slow = settle(&file(&phases));
         let needed = |settings: &Settings| {
             settings
-                .unstoried("qwen", &settings.prompts().unwrap())
+                .needs("qwen", &settings.prompts().unwrap())
                 .unwrap()
         };
         assert!(needed(&ten) > needed(&five));
@@ -984,7 +920,7 @@ system = \"Smart {{{{ name }}}}.\"
         let (logger, log) = unbounded_channel();
         let episode = game(
             deal.clone(),
-            settings.rules.clone(),
+            settings.rules(),
             configuration.clone(),
             winner,
             players,

@@ -12,15 +12,17 @@
 //! defined. The [`Lineup`] the allotments make deals the (role, strategy)
 //! pairs to the seats at random, and renders every [`SystemPrompt`] a game
 //! could call for, so that a broken template stops the program before any
-//! game begins.
+//! game begins. A game's file settles into its [`Settings`], which set up
+//! the models in play and make the [`Configuration`] a game runs under.
 
+use crate::avalon::{self, Avalon};
 use crate::game;
 use crate::model::Provider;
 use crate::model::spec::{self, Handles, Models, Spec};
 use crate::model::window::{self, ContextWindow};
 use crate::seat::{Dealt, PlayerId, seats};
 use crate::strategy::{RANDOM, Random, RoleConfig, Strategy};
-use crate::{avalon, werewolf};
+use crate::werewolf::{self, Werewolf};
 use crate::{prompted, random};
 use anyhow::{Context as _, anyhow, bail};
 use minijinja::value::merge_maps;
@@ -37,11 +39,11 @@ use std::sync::Arc;
 /// One game's settled settings, of either kind, boxed, since the two
 /// differ in size.
 #[derive(Debug)]
-pub enum Game {
+pub enum Settled {
     /// A game of Werewolf.
-    Werewolf(Box<werewolf::config::Settings>),
+    Werewolf(Box<Settings<Werewolf>>),
     /// A game of Avalon.
-    Avalon(Box<avalon::config::Settings>),
+    Avalon(Box<Settings<Avalon>>),
 }
 
 /// A game, as a configuration file's `game` key names it.
@@ -67,13 +69,15 @@ struct Which {
 /// reason, is an invalid configuration file, and the error names it.
 /// Reading it says nothing about the API keys, so a file can be checked
 /// without them being set.
-pub fn load(path: &Path) -> anyhow::Result<Game> {
-    let settled = || -> anyhow::Result<Game> {
+pub fn load(path: &Path) -> anyhow::Result<Settled> {
+    let settled = || -> anyhow::Result<Settled> {
         let file = std::fs::read_to_string(path)?;
         let Which { game } = toml::from_str(&file)?;
         Ok(match game {
-            Name::Werewolf => Game::Werewolf(Box::new(werewolf::config::parse(&file)?.settle()?)),
-            Name::Avalon => Game::Avalon(Box::new(avalon::config::parse(&file)?.settle()?)),
+            Name::Werewolf => {
+                Settled::Werewolf(Box::new(werewolf::config::parse(&file)?.settle()?))
+            }
+            Name::Avalon => Settled::Avalon(Box::new(avalon::config::parse(&file)?.settle()?)),
         })
     };
     settled().with_context(|| format!("invalid configuration file {}", path.display()))
@@ -297,6 +301,13 @@ impl<R: Copy + Ord + Hash + fmt::Display> Lineup<R> {
         seats(self.allotments.values().flat_map(BTreeMap::values).sum())
     }
 
+    /// How many seats of each role there are.
+    pub fn role_counts(&self) -> BTreeMap<R, usize> {
+        let seats =
+            |(role, allotted): (&R, &BTreeMap<String, usize>)| (*role, allotted.values().sum());
+        self.allotments.iter().map(seats).collect()
+    }
+
     /// Deal the (role, strategy) pairs the allotments make, one per seat,
     /// at random to the seats `Player 1` onward.
     pub fn deal(&self) -> HashMap<PlayerId, Dealt<R>> {
@@ -429,83 +440,101 @@ impl<R: Copy + Ord + Hash + fmt::Display> Lineup<R> {
         }
         Ok(told)
     }
+}
+
+/// The settings that took effect for a game of `G`: the models and the
+/// text blocks as the file defines them, and the limits and the lineup
+/// the file and the code decided.
+#[derive(Debug)]
+pub struct Settings<G: game::Game> {
+    /// The models, by name, and how to reach each.
+    pub models: BTreeMap<String, Spec>,
+    /// The `[text]` blocks as written.
+    pub text: BTreeMap<String, String>,
+    /// How long each phase waits for the players.
+    pub limits: G::Limits,
+    /// Every strategy, and how many seats of each role play each.
+    pub lineup: Lineup<G::Role>,
+}
+
+impl<G: game::Game> Settings<G> {
+    /// The models in play, by name: those a prompted strategy at the table
+    /// asks.
+    pub fn models_in_play(&self) -> BTreeMap<&str, &Spec> {
+        self.lineup.models_in_play(&self.models)
+    }
+
+    /// Render every system prompt a game could call for, as
+    /// [`Lineup::prompts`] renders it, with the variables the game gives
+    /// each role.
+    pub fn prompts(&self) -> anyhow::Result<Vec<SystemPrompt<G::Role>>> {
+        self.lineup.prompts(&self.text, G::variables)
+    }
+
+    /// The rules a game is played under, with the limits that took effect.
+    pub fn rules(&self) -> G::Rules {
+        G::rules(&self.limits)
+    }
 
     /// The most a request to the model `name` takes of the context window
     /// before its story, by estimate, for any of `prompts` whose strategy
-    /// asks it, as the game `G` estimates one at this table under `limits`,
-    /// the model as `models` defines it.
-    pub fn needs<G: game::Game<Role = R>>(
-        &self,
-        models: &BTreeMap<String, Spec>,
-        limits: &G::Limits,
-        name: &str,
-        prompts: &[SystemPrompt<R>],
-    ) -> anyhow::Result<u64> {
-        let seats: Vec<PlayerId> = self.seats().collect();
-        let id = &models[name].id;
-        self.unstoried(name, prompts, |prompt| {
+    /// asks it, as the game estimates one at this table under these limits.
+    pub fn needs(&self, name: &str, prompts: &[SystemPrompt<G::Role>]) -> anyhow::Result<u64> {
+        let seats: Vec<PlayerId> = self.lineup.seats().collect();
+        let id = &self.models[name].id;
+        self.lineup.unstoried(name, prompts, |prompt| {
             let (text, seat, role) = (&prompt.text, &prompt.seat, prompt.role);
-            G::unstoried(id, text, seat, role, &seats, limits)
+            G::unstoried(id, text, seat, role, &seats, &self.limits)
         })
     }
 
     /// The context window of the model `name`, settled as
     /// [`window::settle`] settles it, against what a request takes before
-    /// its story, as [`Lineup::needs`] estimates it.
-    pub fn context_window<G: game::Game<Role = R>>(
+    /// its story, as [`Settings::needs`] estimates it.
+    pub fn context_window(
         &self,
-        models: &BTreeMap<String, Spec>,
-        limits: &G::Limits,
         name: &str,
         reported: Option<u64>,
-        prompts: &[SystemPrompt<R>],
+        prompts: &[SystemPrompt<G::Role>],
     ) -> anyhow::Result<ContextWindow> {
-        let needed = self.needs::<G>(models, limits, name, prompts)?;
-        window::settle(name, &models[name], reported, needed)
+        let needed = self.needs(name, prompts)?;
+        window::settle(name, &self.models[name], reported, needed)
     }
 
-    /// Set up each model in play, as `models` defines it, as
-    /// [`spec::set_up`] sets it up, settling its context window for
-    /// `prompts` under `limits` and asking it to play as the game `G`
+    /// Set up each model in play as [`spec::set_up`] sets it up, settling
+    /// its context window for `prompts` and asking it to play as the game
     /// probes it, which settles the tool choice. A model the file defines
     /// and no strategy at the table asks is not contacted.
-    pub async fn set_up<G: game::Game<Role = R>>(
+    pub async fn set_up(
         &self,
-        models: &BTreeMap<String, Spec>,
-        limits: &G::Limits,
-        prompts: &[SystemPrompt<R>],
+        prompts: &[SystemPrompt<G::Role>],
     ) -> anyhow::Result<(Models, Handles)> {
-        let needed = |name: &str| self.needs::<G>(models, limits, name, prompts);
+        let needed = |name: &str| self.needs(name, prompts);
         let probe = async |provider: &Provider, id: &str| G::check_plays(provider, id).await;
-        spec::set_up(self.models_in_play(models), needed, probe).await
+        spec::set_up(self.models_in_play(), needed, probe).await
     }
 
     /// The configuration a game of `deal` runs under, as the log records
-    /// it right after the deal: how many of each role, `limits`, every
+    /// it right after the deal: how many of each role, the limits, every
     /// strategy and the allotments, `models`, the models in play as
-    /// [`Lineup::set_up`] set them up, each prompted player's system prompt
-    /// from `prompts` as [`Lineup::told`] tells it, and `text`, the text
+    /// [`Settings::set_up`] set them up, each prompted player's system
+    /// prompt from `prompts` as [`Lineup::told`] tells it, and the text
     /// blocks as written.
-    pub fn configuration<G: game::Game<Role = R>>(
+    pub fn configuration(
         &self,
-        limits: G::Limits,
+        deal: &HashMap<PlayerId, Dealt<G::Role>>,
+        prompts: &[SystemPrompt<G::Role>],
         models: Models,
-        deal: &HashMap<PlayerId, Dealt<R>>,
-        prompts: &[SystemPrompt<R>],
-        text: &BTreeMap<String, String>,
     ) -> anyhow::Result<Configuration<G>> {
+        let lineup = &self.lineup;
         Ok(Configuration {
-            role_counts: self
-                .allotments
-                .iter()
-                .map(|(role, allotted)| (*role, allotted.values().sum()))
-                .collect(),
-            limits,
-            strategies: self.strategies.clone(),
-            allotments: self.allotments.clone(),
+            role_counts: lineup.role_counts(),
+            limits: self.limits.clone(),
+            strategies: lineup.strategies.clone(),
+            allotments: lineup.allotments.clone(),
             models,
-            prompts: self.told(deal, prompts)?,
-            text: text.clone(),
+            prompts: lineup.told(deal, prompts)?,
+            text: self.text.clone(),
         })
     }
 }
@@ -636,8 +665,8 @@ mod tests {
         ] {
             let game = load(&example(name)).unwrap_or_else(|e| panic!("{name}: {e:#}"));
             let loaded = match game {
-                Game::Werewolf(_) => Name::Werewolf,
-                Game::Avalon(_) => Name::Avalon,
+                Settled::Werewolf(_) => Name::Werewolf,
+                Settled::Avalon(_) => Name::Avalon,
             };
             assert_eq!(loaded, named, "{name}");
         }
