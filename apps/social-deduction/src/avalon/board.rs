@@ -9,7 +9,7 @@ use super::{
 use crate::game::Tagged;
 use crate::report::in_order;
 use crate::seat::PlayerId;
-use crate::stage::{self, millis};
+use crate::stage::{self, millis, millis_of};
 use free_agent::Event;
 use social_deduction_stage as cue;
 use social_deduction_stage::{AvalonPanel, AvalonSeat, Millis, Panel, ProposalRow, QuestToken};
@@ -20,8 +20,8 @@ use std::time::Duration;
 /// The Avalon board, once the deal has set it.
 #[derive(Debug, Default)]
 pub struct Board {
-    /// Every role, from the deal.
-    roles: HashMap<PlayerId, Role>,
+    /// The Assassin, if the deal seated one.
+    assassin: Option<PlayerId>,
     /// The latest phase announced, by its number: 0 before the first.
     seq: u64,
     /// The board, from the deal on.
@@ -64,7 +64,10 @@ impl Board {
     /// the first quest, led by the first seat, with the quest track, and
     /// every seat with whom it sees.
     fn start(&mut self, roles: &HashMap<PlayerId, Role>, rules: &Rules, at: Millis) {
-        self.roles = roles.clone();
+        self.assassin = roles
+            .iter()
+            .find(|(_, role)| **role == Role::Assassin)
+            .map(|(name, _)| name.clone());
         let seats: Vec<PlayerId> = in_order(roles.keys()).into_iter().cloned().collect();
         let players = seats.len();
         let quests = (1..=5)
@@ -110,7 +113,6 @@ impl Board {
     /// it.
     fn announce(&mut self, seq: u64, view: &View, limit: Duration, at: Millis) {
         self.seq = seq;
-        let assassin = self.assassin();
         let Some(panel) = self.panel.as_mut() else {
             return;
         };
@@ -120,32 +122,22 @@ impl Board {
         panel.leader = view.leader.clone();
         panel.began = at;
         panel.limit_ms = millis_of(limit);
-        panel.team = match view.phase {
-            Phase::Propose => None,
-            _ => view.team.clone(),
-        };
-        panel.deeds = match view.phase {
-            Phase::Quest => view
-                .team
-                .iter()
-                .flatten()
-                .map(|member| (member.clone(), None))
-                .collect(),
-            _ => vec![],
-        };
+        panel.team = view.team.clone();
+        panel.deeds = vec![];
         match view.phase {
-            Phase::Vote => {
-                let team = view.team.clone();
-                proposed(panel, team);
+            Phase::Propose => panel.team = None,
+            Phase::Vote => proposed(panel, view.team.clone()),
+            Phase::Quest => {
+                let team = view.team.iter().flatten();
+                panel.deeds = team.map(|member| (member.clone(), None)).collect();
             }
             Phase::Assassinate => {
-                panel.assassination = assassin.map(|assassin| cue::Assassination {
+                panel.assassination = self.assassin.clone().map(|assassin| cue::Assassination {
                     assassin,
                     target: None,
                     merlin: None,
                 });
             }
-            _ => {}
         }
     }
 
@@ -177,7 +169,6 @@ impl Board {
 
     /// The phase underway comes out as `outcome` says.
     fn settle(&mut self, outcome: &Outcome) {
-        let assassin = self.assassin();
         let Some(panel) = self.panel.as_mut() else {
             return;
         };
@@ -196,7 +187,7 @@ impl Board {
                 panel.quests[usize::from(panel.quest) - 1].result = Some(result);
             }
             Outcome::Assassinated { target, merlin, .. } => {
-                panel.assassination = assassin.map(|assassin| cue::Assassination {
+                panel.assassination = self.assassin.clone().map(|assassin| cue::Assassination {
                     assassin,
                     target: target.clone(),
                     merlin: Some(*merlin),
@@ -204,14 +195,6 @@ impl Board {
             }
             Outcome::End { .. } => {}
         }
-    }
-
-    /// The Assassin, if the table has one.
-    fn assassin(&self) -> Option<PlayerId> {
-        self.roles
-            .iter()
-            .find(|(_, role)| **role == Role::Assassin)
-            .map(|(name, _)| name.clone())
     }
 }
 
@@ -257,11 +240,6 @@ fn set<T>(entries: &mut [(PlayerId, Option<T>)], player: &PlayerId, value: Optio
     }
 }
 
-/// `duration` in whole milliseconds.
-fn millis_of(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-}
-
 /// `phase` as the board shows it.
 fn phase(phase: Phase) -> cue::AvalonPhase {
     match phase {
@@ -293,11 +271,11 @@ fn quest_result(result: &QuestResult) -> cue::QuestResult {
 mod tests {
     use super::*;
     use crate::avalon::Tally;
-    use crate::avalon::tests::{announcement, five, logged, quick, seated};
+    use crate::avalon::tests::{announcement, dealt, five, logged, logged_at, quick, seated};
     use crate::seat::{ENVIRONMENT, id, to_the_environment};
     use crate::stage::Board as _;
+    use crate::strategy::RANDOM;
     use std::collections::HashSet;
-    use std::time::UNIX_EPOCH;
 
     /// The default table's names, in seat order.
     fn players() -> Vec<PlayerId> {
@@ -329,33 +307,15 @@ mod tests {
         }
     }
 
-    /// `payload`, logged `seconds` after the epoch.
-    fn at(seconds: u64, payload: Entry) -> Event<Entry> {
-        Event {
-            time: UNIX_EPOCH + Duration::from_secs(seconds),
-            ..logged(payload)
-        }
-    }
-
     /// The deal of `roles` under quick limits.
     fn start(roles: HashMap<PlayerId, Role>) -> Event<Entry> {
-        let strategies = roles
-            .keys()
-            .map(|name| (name.clone(), "random".to_string()));
-        at(
-            0,
-            Entry::Start {
-                strategies: strategies.collect(),
-                roles,
-                limits: quick(),
-            },
-        )
+        logged(Entry::start(&dealt(&roles, RANDOM), &quick()))
     }
 
     /// The environment's announcement of the phase numbered `seq`, showing
     /// `view`, logged `seq` seconds in.
     fn announce(seq: u64, view: View) -> Event<Entry> {
-        at(
+        logged_at(
             seq,
             Entry::Action {
                 from: ENVIRONMENT.to_string(),

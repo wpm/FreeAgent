@@ -1098,7 +1098,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::game::tests::Fixture;
     pub(crate) use crate::game::tests::{
-        announcement, dealt, logged, observed_by, run, sorted, utterance,
+        announcement, dealt, logged, logged_at, observed_by, run, seated, sorted, utterance,
     };
     use crate::game::{act, observe};
     use crate::seat::{ENVIRONMENT, id};
@@ -1120,15 +1120,6 @@ pub(crate) mod tests {
             Role::Servant,
             Role::Minion,
         ])
-    }
-
-    /// `roles`, seated in order from `Player 1`.
-    pub(crate) fn seated(roles: &[Role]) -> HashMap<PlayerId, Role> {
-        roles
-            .iter()
-            .enumerate()
-            .map(|(seat, role)| (format!("Player {}", seat + 1), *role))
-            .collect()
     }
 
     #[test]

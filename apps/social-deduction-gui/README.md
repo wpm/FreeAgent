@@ -14,8 +14,9 @@ With the `wasm32-unknown-unknown` target and [Trunk](https://trunkrs.dev)
 installed, from the root of a checkout:
 
 ```sh
-cargo run -p social-deduction -- play apps/social-deduction/configs/avalon/random.toml 2> game.jsonl > /dev/null
-cargo run -p social-deduction --example stage < game.jsonl > apps/social-deduction-gui/cues.json
+cargo build -p social-deduction --bin social-deduction --example stage
+cargo run -q -p social-deduction -- play apps/social-deduction/configs/avalon/random.toml 2> game.jsonl > /dev/null
+cargo run -q -p social-deduction --example stage < game.jsonl > apps/social-deduction-gui/cues.json
 cd apps/social-deduction-gui
 trunk serve
 ```

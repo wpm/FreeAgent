@@ -16,7 +16,7 @@ use anyhow::Context;
 use free_agent::Event;
 use social_deduction_stage::{Beat, Cue, GameName, Millis, Outcome, Panel, Role, Seat, Side};
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// What a game supplies for its log to be folded into cues: its name, how
 /// its roles and sides are drawn, how it is won, and its board.
@@ -32,8 +32,9 @@ pub trait Staged: Game {
     /// The side `role` wins with.
     fn side(role: Self::Role) -> Side;
 
-    /// The side that won, if `event` ends the game.
-    fn winner(event: &Self::Event) -> Option<Side>;
+    /// The side that won and how, as the narrator tells it, if `event`
+    /// ends the game.
+    fn winner(event: &Self::Event) -> Option<(Side, String)>;
 }
 
 /// A game's board, moved by the log's events.
@@ -85,12 +86,9 @@ impl<G: Staged> Stage<G> {
         };
         beats.extend(self.board.fold(event).map(Beat::Panel));
         if let Entry::Event(own) = &event.payload
-            && let Some(side) = G::winner(own)
+            && let Some((side, how)) = G::winner(own)
         {
-            let outcome = Outcome::Won {
-                side,
-                how: how(&lines),
-            };
+            let outcome = Outcome::Won { side, how };
             beats.push(Beat::Over { outcome, log: None });
         }
         beats.into_iter().map(|beat| Cue { at, beat }).collect()
@@ -122,8 +120,12 @@ fn read<G: Staged>(log: &str) -> serde_json::Result<Vec<Cue>> {
 
 /// `time` in milliseconds since the Unix epoch.
 pub(crate) fn millis(time: SystemTime) -> Millis {
-    let since = time.duration_since(UNIX_EPOCH).unwrap_or_default();
-    Millis::try_from(since.as_millis()).unwrap_or(Millis::MAX)
+    millis_of(time.duration_since(UNIX_EPOCH).unwrap_or_default())
+}
+
+/// `duration` in whole milliseconds.
+pub(crate) fn millis_of(duration: Duration) -> Millis {
+    Millis::try_from(duration.as_millis()).unwrap_or(Millis::MAX)
 }
 
 /// The cast of a game dealt `roles` and `strategies`: every seat in seat
@@ -188,19 +190,6 @@ fn beats(lines: &[Line]) -> Vec<Beat> {
     beats
 }
 
-/// How the game was won, as the narrator's closing `lines` tell it: the
-/// first told line after the last blank one.
-fn how(lines: &[Line]) -> String {
-    let last = lines.iter().rposition(|line| *line == Line::Blank);
-    lines[last.map_or(0, |blank| blank + 1)..]
-        .iter()
-        .find_map(|line| match line {
-            Line::Told(text) => Some(text.clone()),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
 impl Staged for Avalon {
     const GAME: GameName = GameName::Avalon;
     type Board = avalon::board::Board;
@@ -222,9 +211,11 @@ impl Staged for Avalon {
         side(role.team())
     }
 
-    fn winner(event: &avalon::Outcome) -> Option<Side> {
+    fn winner(event: &avalon::Outcome) -> Option<(Side, String)> {
         match event {
-            avalon::Outcome::End { winner, .. } => Some(side(*winner)),
+            avalon::Outcome::End { winner, by, .. } => {
+                Some((side(*winner), avalon::report::won(*by).to_string()))
+            }
             _ => None,
         }
     }
@@ -255,9 +246,11 @@ impl Staged for Werewolf {
         team(role.team())
     }
 
-    fn winner(event: &werewolf::Outcome) -> Option<Side> {
+    fn winner(event: &werewolf::Outcome) -> Option<(Side, String)> {
         match event {
-            werewolf::Outcome::End { winner, .. } => Some(team(*winner)),
+            werewolf::Outcome::End { winner, days, .. } => {
+                Some((team(*winner), werewolf::report::won(*winner, *days)))
+            }
             _ => None,
         }
     }
@@ -274,40 +267,17 @@ fn team(team: werewolf::Team) -> Side {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::tests::Fixture;
-    use crate::game::{Message, game};
-    use crate::random;
+    use crate::game::Message;
+    use crate::game::tests::{Fixture, drained, episode, seated};
     use crate::strategy::RANDOM;
     use social_deduction_stage::AvalonPanel;
-    use std::time::Duration;
-    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
-    use tokio::sync::oneshot;
-
-    /// Every event `log` holds once the episode that writes it is over.
-    async fn drained<L>(mut log: UnboundedReceiver<Event<L>>) -> Vec<Event<L>> {
-        let mut events = Vec::new();
-        while let Some(event) = log.recv().await {
-            events.push(event);
-        }
-        events
-    }
 
     /// The log of a game of `roles` under `rules`, every player random.
     async fn random_game<G: Fixture>(
         roles: HashMap<PlayerId, G::Role>,
         rules: G::Rules,
     ) -> Vec<Event<Entry<G>>> {
-        let (winner, _won) = oneshot::channel();
-        let (logger, log) = unbounded_channel();
-        let configuration = G::configured(&roles, &rules);
-        let episode = game(
-            crate::game::tests::dealt(&roles, RANDOM),
-            rules,
-            configuration,
-            winner,
-            |_| random::Player::init(),
-            logger,
-        );
+        let (episode, _, log) = episode(roles, rules, HashMap::new());
         episode.run(Duration::from_secs(60 * 60)).await.unwrap();
         drained(log).await
     }
@@ -392,11 +362,15 @@ mod tests {
         assert_eq!(shown(&cues), words);
         assert!(!votes.is_empty());
         assert!(shown(&cues).iter().all(|word| !votes.contains(word)));
-        let how = words.iter().rfind(|word| word.contains(" win")).unwrap();
-        let outcome = Outcome::Won {
-            side,
-            how: how.clone(),
-        };
+        let (_, how) = events
+            .iter()
+            .find_map(|event| match &event.payload {
+                Entry::Event(own) => G::winner(own),
+                _ => None,
+            })
+            .unwrap();
+        assert!(words.contains(&how), "{how}");
+        let outcome = Outcome::Won { side, how };
         let over = Beat::Over { outcome, log: None };
         assert_eq!(cues.last().unwrap().beat, over);
         let overs = cues
@@ -407,7 +381,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_random_game_of_avalon_is_its_cast_its_narration_and_its_outcome() {
-        let roles = avalon::tests::seated(&[
+        let roles = seated(&[
             avalon::Role::Merlin,
             avalon::Role::Percival,
             avalon::Role::Servant,
@@ -424,18 +398,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_random_game_of_werewolf_is_its_cast_its_narration_and_its_outcome() {
-        let roles: HashMap<PlayerId, werewolf::Role> = [
+        let roles = seated(&[
             werewolf::Role::Werewolf,
             werewolf::Role::Villager,
             werewolf::Role::Doctor,
             werewolf::Role::Werewolf,
             werewolf::Role::Seer,
             werewolf::Role::Villager,
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(seat, role)| (format!("Player {}", seat + 1), role))
-        .collect();
+        ]);
         let events = random_game::<Werewolf>(roles.clone(), werewolf::Rules::default()).await;
         let winner = events
             .iter()
@@ -590,26 +560,6 @@ mod tests {
                 Beat::Told(vec!["d".to_string()]),
             ]
         );
-    }
-
-    #[test]
-    fn the_win_is_the_first_told_line_after_the_last_blank_one() {
-        let told = |text: &str| Line::Told(text.to_string());
-        let lines = [
-            told("The quest took 3s."),
-            Line::Blank,
-            told("Good wins with three successful quests."),
-            told("The game took 9s."),
-        ];
-        assert_eq!(how(&lines), "Good wins with three successful quests.");
-        assert_eq!(how(&[told("Evil wins.")]), "Evil wins.");
-        let survivors = [
-            Line::Blank,
-            Line::Vote("No vote.".to_string()),
-            told("Won."),
-        ];
-        assert_eq!(how(&survivors), "Won.");
-        assert_eq!(how(&[]), "");
     }
 
     #[test]

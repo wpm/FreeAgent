@@ -578,13 +578,14 @@ fn asked(response: &Response, duty: Option<&Duty>, limit: Duration) -> anyhow::R
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::avalon::Team;
     use crate::avalon::report::Story;
     use crate::avalon::tests::{
         Played, Script, configured, dealt, five, mute, observed_by, quick, run, utterance, view_of,
     };
-    use crate::avalon::{Actor, Team};
     use crate::avalon::{Entry, Move, Outcome, Rules, Seat, Tally, Victory};
     use crate::game::game;
+    use crate::game::tests::{Started, drained};
     use crate::model::Request;
     use crate::model::canned;
     use crate::model::fake::{FakeModel, SAID, canned_calls, choosing_first};
@@ -600,11 +601,11 @@ pub(crate) mod tests {
     use crate::seat::id;
     use crate::seat::{ENVIRONMENT, to_the_environment, to_the_players_but};
     use free_agent::ActorId;
-    use free_agent::{Episode, Event};
+    use free_agent::Event;
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+    use tokio::sync::mpsc::unbounded_channel;
     use tokio::sync::oneshot;
 
     /// Run a game of `roles` under `rules`, every player a model player
@@ -628,7 +629,7 @@ pub(crate) mod tests {
     pub(crate) async fn prompted_game() -> Vec<Event<Entry>> {
         let model = answering(choosing_first);
         let required = ToolChoice::Required;
-        let (episode, _, mut log) = episode_as(
+        let (episode, _, log) = episode_as(
             five(),
             quick(),
             model,
@@ -637,11 +638,7 @@ pub(crate) mod tests {
             CONTEXT_WINDOW,
         );
         episode.run(Duration::from_secs(60 * 60)).await.unwrap();
-        let mut events = Vec::new();
-        while let Some(event) = log.recv().await {
-            events.push(event);
-        }
-        events
+        drained(log).await
     }
 
     /// A game of `roles` under `rules` as [`play_as`] plays it, with where
@@ -653,11 +650,7 @@ pub(crate) mod tests {
         mut puppets: HashMap<&str, Seat>,
         tool_choice: ToolChoice,
         window: u64,
-    ) -> (
-        Episode<Actor>,
-        oneshot::Receiver<Team>,
-        UnboundedReceiver<Event<Entry>>,
-    ) {
+    ) -> Started<Avalon> {
         let configuration = configured(&roles, &rules);
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();

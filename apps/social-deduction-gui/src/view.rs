@@ -6,11 +6,11 @@ use std::time::Duration;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_rich_chat::{Message, RenderOptions, RichChatStyle, Transcript};
-use social_deduction_stage::{AvalonPanel, Cue, Deed, GameName, Outcome, Panel, Side};
+use social_deduction_stage::{Cue, Deed, GameName, Outcome, Side};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
-use crate::screen::{Body, Landed, NARRATOR, Screen, role_key};
+use crate::screen::{Board, Body, Landed, NARRATOR, Post, Screen, entry, role_key};
 
 /// How often a replay shows the next cue.
 const STEP: Duration = Duration::from_millis(250);
@@ -72,8 +72,12 @@ pub fn App() -> impl IntoView {
         replay.set_value(handle.ok());
     };
 
-    let names = Signal::derive(move || screen.with(|screen| screen.names.clone()));
-    let messages = Signal::derive(move || screen.with(messages));
+    // Memos, so that a cue that leaves the chat, the names or the board as
+    // they were redraws none of them.
+    let names = Memo::new(move |_| screen.with(|screen| screen.names.clone()));
+    let posts = Memo::new(move |_| screen.with(|screen| screen.posts.clone()));
+    let board = Memo::new(move |_| screen.with(Screen::board));
+    let messages = Signal::derive(move || posts.with(|posts| messages(posts)));
     let options = RenderOptions {
         math: false,
         highlight: false,
@@ -98,14 +102,7 @@ pub fn App() -> impl IntoView {
                     <Transcript messages=messages show_names=true options=options />
                 </div>
                 <aside class="sd-board">
-                    {move || {
-                        screen
-                            .with(|screen| match &screen.panel {
-                                Some(Panel::Avalon(panel)) => Some((screen.clone(), panel.clone())),
-                                _ => None,
-                            })
-                            .map(|(screen, panel)| view! { <AvalonBoard screen=screen panel=panel /> })
-                    }}
+                    {move || board.get().map(|board| view! { <AvalonBoard board=board /> })}
                 </aside>
             </main>
             <footer class="sd-footer">{footer()}</footer>
@@ -132,10 +129,9 @@ async fn fetched() -> Result<Vec<Cue>, String> {
         .map_err(|error| format!("cues.json: {error}"))
 }
 
-/// The chat `screen` shows, as Rich-Chat messages.
-fn messages(screen: &Screen) -> Vec<Message> {
-    screen
-        .posts
+/// `posts`, as Rich-Chat messages.
+fn messages(posts: &[Post]) -> Vec<Message> {
+    posts
         .iter()
         .map(|post| match &post.body {
             Body::Heading(text) => {
@@ -193,33 +189,36 @@ fn short(player: &str) -> String {
     player.replace("Player ", "P")
 }
 
-/// The style that colors a swatch, or a flash, in `player`'s role colors.
-fn colors(screen: &Screen, player: &str) -> String {
-    screen
+/// The custom properties that give `player`'s role colors to a flash.
+fn chooser(board: &Board, player: &str) -> String {
+    board
         .seat(player)
         .map(|seat| {
             let role = role_key(seat.role);
             format!(
-                "--sd-chooser-bg: var(--role-{role}-bg); --sd-chooser-fg: var(--role-{role}-fg); \
-                 background: var(--role-{role}-bg); border-color: var(--role-{role}-fg);"
+                "--sd-chooser-bg: var(--role-{role}-bg); --sd-chooser-fg: var(--role-{role}-fg);"
             )
         })
         .unwrap_or_default()
 }
 
-/// The flash colors for a choice `player` made, when it is landing.
-fn flash(screen: &Screen, landed: &Landed, player: &str) -> (bool, String) {
-    let landing = screen.is_landed(landed);
+/// The style of a swatch in `player`'s role colors.
+fn swatch(board: &Board, player: &str) -> String {
+    board
+        .seat(player)
+        .map(|seat| {
+            let role = role_key(seat.role);
+            format!("background: var(--role-{role}-bg); border-color: var(--role-{role}-fg);")
+        })
+        .unwrap_or_default()
+}
+
+/// Whether `choice`, which `player` made, is landing, and the style that
+/// flashes it in `player`'s colors when it is.
+fn flash(board: &Board, choice: &Landed, player: &str) -> (bool, String) {
+    let landing = board.is_landed(choice);
     let style = if landing {
-        screen
-            .seat(player)
-            .map(|seat| {
-                let role = role_key(seat.role);
-                format!(
-                    "--sd-chooser-bg: var(--role-{role}-bg); --sd-chooser-fg: var(--role-{role}-fg);"
-                )
-            })
-            .unwrap_or_default()
+        chooser(board, player)
     } else {
         String::new()
     };
@@ -227,10 +226,10 @@ fn flash(screen: &Screen, landed: &Landed, player: &str) -> (bool, String) {
 }
 
 /// The Avalon board: the quests, the rejected proposals, the team on the
-/// table, every vote so far, the players and the assassination, as
-/// `shown` shows `panel`. It is drawn again whenever either changes.
+/// table, every vote so far, the players and the assassination.
 #[component]
-fn AvalonBoard(#[prop(name = "screen")] shown: Screen, panel: AvalonPanel) -> impl IntoView {
+fn AvalonBoard(board: Board) -> impl IntoView {
+    let panel = &board.panel;
     let rejected = panel
         .proposals
         .iter()
@@ -271,29 +270,28 @@ fn AvalonBoard(#[prop(name = "screen")] shown: Screen, panel: AvalonPanel) -> im
         .collect_view();
 
     let team = panel.team.clone().unwrap_or_default();
+    let (by_team, team_style) = flash(&board, &Landed::Team, &panel.leader);
     let chips = team
         .iter()
         .map(|member| {
-            let deed = panel
-                .deeds
-                .iter()
-                .find(|(player, _)| player == member)
-                .and_then(|(_, deed)| *deed)
-                .map(|deed| match deed {
-                    Deed::Support => " ✓",
-                    Deed::Sabotage => " ✗",
-                });
-            let (by_deed, deed_style) = flash(&shown, &Landed::Deed(member.clone()), member);
-            let (by_team, team_style) = flash(&shown, &Landed::Team, &panel.leader);
+            let deed = entry(&panel.deeds, member).map(|deed| match deed {
+                Deed::Support => " ✓",
+                Deed::Sabotage => " ✗",
+            });
+            let (by_deed, deed_style) = flash(&board, &Landed::Deed(member.clone()), member);
             let class = if by_deed || by_team {
                 "sd-chip sd-landed"
             } else {
                 "sd-chip"
             };
-            let style = if by_deed { deed_style } else { team_style };
+            let style = if by_deed {
+                deed_style
+            } else {
+                team_style.clone()
+            };
             view! {
                 <span class=class style=style>
-                    <span class="sd-swatch" style=colors(&shown, member)></span>
+                    <span class="sd-swatch" style=swatch(&board, member)></span>
                     {member.clone()}
                     {deed}
                 </span>
@@ -301,24 +299,21 @@ fn AvalonBoard(#[prop(name = "screen")] shown: Screen, panel: AvalonPanel) -> im
         })
         .collect_view();
 
-    let seats: Vec<String> = panel.seats.iter().map(|seat| seat.name.clone()).collect();
-    let header = seats
+    let header = panel
+        .seats
         .iter()
-        .map(|seat| view! { <th>{short(seat)}</th> })
+        .map(|seat| view! { <th>{short(&seat.name)}</th> })
         .collect_view();
     let rows = panel
         .proposals
         .iter()
         .map(|row| {
-            let ballots = seats
+            let ballots = panel
+                .seats
                 .iter()
                 .map(|seat| {
-                    let ballot = row
-                        .ballots
-                        .iter()
-                        .find(|(voter, _)| voter == seat)
-                        .and_then(|(_, ballot)| *ballot);
-                    let mark = match ballot {
+                    let seat = &seat.name;
+                    let mark = match entry(&row.ballots, seat) {
                         Some(true) => "✓",
                         Some(false) => "✗",
                         None => "",
@@ -328,7 +323,7 @@ fn AvalonBoard(#[prop(name = "screen")] shown: Screen, panel: AvalonPanel) -> im
                         proposal: row.proposal,
                         player: seat.clone(),
                     };
-                    let (landing, style) = flash(&shown, &landed, seat);
+                    let (landing, style) = flash(&board, &landed, seat);
                     let class = if landing { "sd-landed" } else { "" };
                     view! { <td class=class style=style>{mark}</td> }
                 })
@@ -344,7 +339,7 @@ fn AvalonBoard(#[prop(name = "screen")] shown: Screen, panel: AvalonPanel) -> im
         })
         .collect_view();
 
-    let players = shown
+    let players = board
         .seats
         .iter()
         .map(|seat| {
@@ -363,7 +358,7 @@ fn AvalonBoard(#[prop(name = "screen")] shown: Screen, panel: AvalonPanel) -> im
                 });
             view! {
                 <li>
-                    <span class="sd-swatch" style=colors(&shown, &seat.name)></span>
+                    <span class="sd-swatch" style=swatch(&board, &seat.name)></span>
                     <span>{seat.name.clone()}</span>
                     <span class="sd-detail">
                         {format!("{}, {}", seat.role, seat.strategy)}
@@ -375,7 +370,7 @@ fn AvalonBoard(#[prop(name = "screen")] shown: Screen, panel: AvalonPanel) -> im
         .collect_view();
 
     let assassination = panel.assassination.clone().map(|shot| {
-        let (landing, style) = flash(&shown, &Landed::Target, &shot.assassin);
+        let (landing, style) = flash(&board, &Landed::Target, &shot.assassin);
         let target = shot.target.clone().unwrap_or_else(|| "…".to_string());
         let verdict = shot
             .merlin

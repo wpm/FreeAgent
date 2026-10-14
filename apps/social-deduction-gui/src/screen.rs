@@ -144,19 +144,27 @@ impl Screen {
         self.landed.retain(|(landed_by, _)| *landed_by != number);
     }
 
-    /// Whether `choice` is flashing.
-    pub fn is_landed(&self, choice: &Landed) -> bool {
-        self.landed.iter().any(|(_, landed)| landed == choice)
-    }
-
-    /// The seat of `player`, if cast.
-    pub fn seat(&self, player: &str) -> Option<&Seat> {
-        self.seats.iter().find(|seat| seat.name == player)
+    /// What the Avalon board draws, once there is one.
+    pub fn board(&self) -> Option<Board> {
+        match &self.panel {
+            Some(Panel::Avalon(panel)) => Some(Board {
+                panel: panel.clone(),
+                seats: self.seats.clone(),
+                landed: self
+                    .landed
+                    .iter()
+                    .map(|(_, landed)| landed.clone())
+                    .collect(),
+            }),
+            _ => None,
+        }
     }
 
     /// `player`'s label, or the name alone before the cast.
     fn label(&self, player: &str) -> String {
-        self.seat(player)
+        self.seats
+            .iter()
+            .find(|seat| seat.name == player)
             .map_or_else(|| player.to_string(), |seat| seat.label.clone())
     }
 
@@ -165,6 +173,38 @@ impl Screen {
         let id = format!("m{}", self.posts.len() + 1);
         self.posts.push(Post { id, name, body });
     }
+}
+
+/// What the Avalon board draws: the board, the seats, and the choices
+/// flashing on it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Board {
+    /// The board as it stands.
+    pub panel: AvalonPanel,
+    /// Every seat, in seat order.
+    pub seats: Vec<Seat>,
+    /// The choices flashing now.
+    pub landed: Vec<Landed>,
+}
+
+impl Board {
+    /// Whether `choice` is flashing.
+    pub fn is_landed(&self, choice: &Landed) -> bool {
+        self.landed.contains(choice)
+    }
+
+    /// The seat of `player`.
+    pub fn seat(&self, player: &str) -> Option<&Seat> {
+        self.seats.iter().find(|seat| seat.name == player)
+    }
+}
+
+/// `player`'s choice in `entries`, if made.
+pub fn entry<T: Copy>(entries: &[(PlayerId, Option<T>)], player: &str) -> Option<T> {
+    entries
+        .iter()
+        .find(|(name, _)| name == player)
+        .and_then(|(_, choice)| *choice)
 }
 
 /// The names table for `seats`: evil on the left and good on the right,
@@ -222,12 +262,7 @@ pub fn landings(before: Option<&AvalonPanel>, after: &AvalonPanel) -> Vec<Landed
                 .find(|old| old.quest == row.quest && old.proposal == row.proposal)
         });
         for (player, ballot) in &row.ballots {
-            let was = earlier.and_then(|old| {
-                old.ballots
-                    .iter()
-                    .find(|(voter, _)| voter == player)
-                    .and_then(|(_, ballot)| *ballot)
-            });
+            let was = earlier.and_then(|old| entry(&old.ballots, player));
             if ballot.is_some() && *ballot != was {
                 landed.push(Landed::Ballot {
                     quest: row.quest,
@@ -238,13 +273,7 @@ pub fn landings(before: Option<&AvalonPanel>, after: &AvalonPanel) -> Vec<Landed
         }
     }
     for (player, deed) in &after.deeds {
-        let was = before.and_then(|before| {
-            before
-                .deeds
-                .iter()
-                .find(|(member, _)| member == player)
-                .and_then(|(_, deed)| *deed)
-        });
+        let was = before.and_then(|before| entry(&before.deeds, player));
         if deed.is_some() && *deed != was {
             landed.push(Landed::Deed(player.clone()));
         }
@@ -489,7 +518,7 @@ mod tests {
                 )
             ]
         );
-        assert!(screen.is_landed(&Landed::Team));
+        assert!(screen.board().unwrap().is_landed(&Landed::Team));
         // The same board again lands nothing more.
         assert_eq!(screen.apply(&panel(&next), true), None);
         screen.expire(number);
