@@ -51,8 +51,9 @@ impl Playing {
 /// `log`, the file at `path`, and folded into cues, each passed to `show`
 /// as it happens. When `show` fails, the game stops.
 ///
-/// The last cue is [`Beat::Over`], with `path` as its log: the side that
-/// won, [`Outcome::Stopped`] after a stop, or [`Outcome::Failed`] when the
+/// The last cue is [`Beat::Over`], with `path` as its log, after a
+/// thought for every call still out: the side that won,
+/// [`Outcome::Stopped`] after a stop, or [`Outcome::Failed`] when the
 /// episode fails, after one [`Beat::Told`] line with the error. A write to
 /// `log` that fails tells one line saying so, and the game goes on
 /// unsaved.
@@ -136,8 +137,13 @@ where
                 self.show(cue);
             }
         }
+        let ended = run.await;
         let at = millis(SystemTime::now());
-        let outcome = match run.await {
+        // No player is left thinking once the game is over.
+        for cue in stage.close(at) {
+            self.show(cue);
+        }
+        let outcome = match ended {
             Err(error) => {
                 let error = format!("{error:#}");
                 self.show(Cue {
@@ -193,6 +199,7 @@ pub fn create_log(
 mod tests {
     use super::*;
     use crate::avalon::Avalon;
+    use crate::game::tests::logged;
     use crate::model::spec::Environment;
     use crate::run::prepare;
     use crate::stage::cues;
@@ -351,8 +358,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_episode_tells_its_error_and_ends_failed() {
+    async fn a_failed_episode_closes_the_calls_still_out_tells_its_error_and_ends_failed() {
         let (logger, events) = unbounded_channel::<Event<Entry<Avalon>>>();
+        let thinking = Entry::Thinking {
+            player: "Player 2".to_string(),
+            seq: 1,
+        };
+        logger.send(logged(thinking)).unwrap();
         drop(logger);
         let (sender, receiver) = unbounded_channel();
         let (unused, _) = unbounded_channel();
@@ -371,9 +383,12 @@ mod tests {
             .map(|cue| cue.beat)
             .collect();
         let error = "actor Player 1 failed: no model".to_string();
+        let who = "Player 2".to_string();
         assert_eq!(
             beats,
             [
+                Beat::Thinking { who: who.clone() },
+                Beat::Thought { who },
                 Beat::Told(vec![error.clone()]),
                 Beat::Over {
                     outcome: Outcome::Failed(error),
