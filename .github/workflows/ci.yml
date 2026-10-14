@@ -68,8 +68,9 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   # The viewer's frontend builds for the browser, so the jobs above leave it
-  # out. This one checks it natively and for wasm, then builds the page the
-  # Website workflow deploys, from a freshly played game.
+  # out. This one checks it natively and for wasm, builds the page the
+  # Website workflow deploys, from freshly played games and the recorded
+  # prompted ones, and drives the page in headless Chromium.
   viewer:
     name: Viewer
     runs-on: ubuntu-latest
@@ -87,6 +88,28 @@ jobs:
       - run: cargo test -p social-deduction-gui
       - run: cargo check -p social-deduction-gui --target wasm32-unknown-unknown
       - run: apps/social-deduction-gui/build-page.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/social-deduction-gui/e2e/package-lock.json
+      - run: npm ci
+        working-directory: apps/social-deduction-gui/e2e
+      # Playwright's Chromium, kept between runs for as long as the lock
+      # file pins the same Playwright.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/social-deduction-gui/e2e/package-lock.json') }}
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/social-deduction-gui/e2e
+      - run: npm test
+        working-directory: apps/social-deduction-gui/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: viewer-screenshots
+          path: apps/social-deduction-gui/e2e/screenshots
 
   # The desktop shell needs each platform's webview, so the jobs above
   # leave it out. One leg per platform, since the shell has code only one

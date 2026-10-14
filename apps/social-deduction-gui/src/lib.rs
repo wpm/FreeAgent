@@ -2,11 +2,13 @@
 //! chat beside a live board, drawn from the game's cues.
 //!
 //! [`screen`] is what the screen shows, a pure function of the cues so
-//! far; [`view`] draws it. In the desktop app, [`tauri`] reaches the
-//! backend that plays a game live, and [`settings`] picks the game.
+//! far; [`view`] draws it, for the game the URL's [`address`] names. In
+//! the desktop app, [`tauri`] reaches the backend that plays a game live,
+//! and [`settings`] picks the game.
 
 #![warn(missing_docs)]
 
+pub mod address;
 mod desktop;
 pub mod screen;
 pub mod settings;

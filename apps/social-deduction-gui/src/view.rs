@@ -15,6 +15,7 @@ use social_deduction_stage::{
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
+use crate::address::{Address, GAMES};
 use crate::desktop::Desktop;
 use crate::screen::{
     self, Board, Body, Landed, NARRATOR, Post, Screen, THINKING_DELAY, Thinker, Timer, dots_due,
@@ -34,11 +35,6 @@ const TICK: Duration = Duration::from_millis(100);
 /// The commit the page was built from, when the build names one.
 const COMMIT: Option<&str> = option_env!("GITHUB_SHA");
 
-/// The games the page shows, each by the name of its cues file in `game/`
-/// and its URL hash. The cues are in a directory of their own so that the
-/// page builds without them, as the desktop app's does.
-const GAMES: [(&str, &str); 2] = [("avalon", "Avalon"), ("werewolf", "Werewolf")];
-
 /// The viewer: the desktop app's inside the desktop app, and the web
 /// page's in a browser.
 #[component]
@@ -51,9 +47,10 @@ pub fn App() -> impl IntoView {
 }
 
 /// The web page: it fetches the cues of the game the URL hash names,
-/// `#avalon` (the default) or `#werewolf`, from beside the page and shows
-/// the whole game at once. **Play** clears the screen and replays the
-/// cues, one every 250 ms.
+/// `#avalon` (the default) or `#werewolf`, from `game/` beside the page
+/// and shows the whole game at once. **Play** clears the screen and
+/// replays the cues, one every 250 ms, or ten times as fast for a hash
+/// that ends in `-fast`.
 #[component]
 fn Web() -> impl IntoView {
     let live = Live::default();
@@ -62,7 +59,7 @@ fn Web() -> impl IntoView {
     let failure = RwSignal::new(None::<String>);
     let replayed = RwSignal::new(false);
     let replay = StoredValue::new(None::<IntervalHandle>);
-    let game = RwSignal::new(hashed());
+    let address = RwSignal::new(hashed());
 
     let stop = move || {
         if let Some(handle) = replay.get_value() {
@@ -70,16 +67,16 @@ fn Web() -> impl IntoView {
         }
     };
 
-    let _ = window_event_listener(ev::hashchange, move |_| game.set(hashed()));
+    let _ = window_event_listener(ev::hashchange, move |_| address.set(hashed()));
     Effect::new(move |_| {
-        let name = game.get();
+        let name = address.get().game;
         stop();
         screen.set(Screen::default());
         replayed.set(false);
         failure.set(None);
         spawn_local(async move {
             let fetched = fetched(name).await;
-            if game.get_untracked() != name {
+            if address.get_untracked().game != name {
                 return;
             }
             match fetched {
@@ -98,6 +95,8 @@ fn Web() -> impl IntoView {
 
     let play = move |_| {
         stop();
+        let pace = address.get_untracked().pace;
+        live.set_pace(pace);
         screen.set(Screen::default());
         replayed.set(true);
         let next = StoredValue::new(0usize);
@@ -113,7 +112,7 @@ fn Web() -> impl IntoView {
                 next.set_value(index + 1);
                 live.show(&cue);
             },
-            STEP,
+            STEP.div_f64(pace),
         );
         replay.set_value(handle.ok());
     };
@@ -123,7 +122,7 @@ fn Web() -> impl IntoView {
             <nav class="sd-games">
                 {GAMES
                     .map(|(name, title)| {
-                        let current = move || (game.get() == name).then_some("page");
+                        let current = move || (address.get().game == name).then_some("page");
                         view! {
                             <a href=format!("#{name}") aria-current=current>
                                 {title}
@@ -147,6 +146,8 @@ pub struct Live {
     pub screen: RwSignal<Screen>,
     /// The viewer's time when the latest cue arrived.
     arrived: StoredValue<f64>,
+    /// How many times the usual speed the cues arrive at.
+    pace: StoredValue<f64>,
 }
 
 impl Default for Live {
@@ -155,17 +156,34 @@ impl Default for Live {
         Self {
             screen: RwSignal::new(Screen::default()),
             arrived: StoredValue::new(elapsed()),
+            pace: StoredValue::new(1.0),
         }
     }
 }
 
 impl Live {
+    /// The viewer's time, run at the pace the cues arrive at.
+    fn now(self) -> f64 {
+        elapsed() * self.pace.get_value()
+    }
+
+    /// `wait` at the usual pace, at the pace the cues arrive at.
+    fn paced(self, wait: Duration) -> Duration {
+        wait.div_f64(self.pace.get_value())
+    }
+
+    /// Have the cues arrive at `pace` times the usual speed.
+    pub fn set_pace(self, pace: f64) {
+        self.pace.set_value(pace);
+        self.arrived.set_value(self.now());
+    }
+
     /// Show `cue` as it arrives: the clocks run on to it, what it lands
     /// flashes, and the dots of a call it sends out show once the call
     /// has been out a while.
     pub fn show(self, cue: &Cue) {
         let screen = self.screen;
-        let at = elapsed();
+        let at = self.now();
         let waited = at - self.arrived.get_value();
         self.arrived.set_value(at);
         let applied = screen.try_update(|screen| {
@@ -173,11 +191,12 @@ impl Live {
             screen.apply(cue, true)
         });
         if let Some(Some(number)) = applied {
-            set_timeout(move || screen.update(|screen| screen.expire(number)), FLASH);
+            let flash = self.paced(FLASH);
+            set_timeout(move || screen.update(|screen| screen.expire(number)), flash);
         }
         if let Some(due) = dots_due(cue) {
             let rate = screen.with_untracked(|screen| screen.clock.rate);
-            let delay = Duration::from_millis(THINKING_DELAY).div_f64(rate);
+            let delay = self.paced(Duration::from_millis(THINKING_DELAY).div_f64(rate));
             set_timeout(move || screen.update(|screen| screen.reveal(due)), delay);
         }
     }
@@ -196,8 +215,8 @@ pub(crate) fn Viewer(
 ) -> impl IntoView {
     let screen = live.screen;
     // The viewer's time, now.
-    let tick = RwSignal::new(elapsed());
-    let _ = set_interval_with_handle(move || tick.set(elapsed()), TICK);
+    let tick = RwSignal::new(live.now());
+    let _ = set_interval_with_handle(move || tick.set(live.now()), TICK);
     // A memo, so that a stopped clock redraws nothing as it ticks.
     let now = Signal::from(Memo::new(move |_| {
         let waited = tick.get() - live.arrived.get_value();
@@ -268,14 +287,9 @@ pub(crate) fn Viewer(
     }
 }
 
-/// The game the URL hash names, or else the first of the [`GAMES`].
-fn hashed() -> &'static str {
-    let hash = window().location().hash().unwrap_or_default();
-    GAMES
-        .iter()
-        .map(|(name, _)| *name)
-        .find(|name| hash.strip_prefix('#') == Some(name))
-        .unwrap_or(GAMES[0].0)
+/// The address the URL hash names.
+fn hashed() -> Address {
+    Address::parse(&window().location().hash().unwrap_or_default())
 }
 
 /// The viewer's time in milliseconds, from the page's own clock.
