@@ -22,6 +22,9 @@ pub struct Episode<B: Behavior> {
     readies: HashMap<ActorId, oneshot::Receiver<()>>,
     /// One-time signals telling each actor that every actor is running.
     starts: HashMap<ActorId, oneshot::Sender<()>>,
+    /// The parent of every actor's shutdown token: cancelling it shuts
+    /// every actor down.
+    stop: CancellationToken,
 }
 
 impl<B: Behavior> Episode<B> {
@@ -40,6 +43,7 @@ impl<B: Behavior> Episode<B> {
         // map. The senders and tokens are clonable, so they go into lookup
         // tables that each actor copies the permitted entries from.
         let episode = Uuid::new_v4();
+        let stop = CancellationToken::new();
         let mut senders = HashMap::new();
         let mut shutdowns = HashMap::new();
         let staged: Staged<B> = init
@@ -47,7 +51,7 @@ impl<B: Behavior> Episode<B> {
             .map(|(id, init)| {
                 let (tx, rx) = unbounded_channel();
                 senders.insert(id.clone(), tx);
-                shutdowns.insert(id.clone(), CancellationToken::new());
+                shutdowns.insert(id.clone(), stop.child_token());
                 (id, (init, rx))
             })
             .collect();
@@ -94,6 +98,15 @@ impl<B: Behavior> Episode<B> {
             actors,
             readies,
             starts,
+            stop,
+        }
+    }
+
+    /// A handle that stops this episode once it runs. Take it before
+    /// [`run`](Episode::run).
+    pub fn stopper(&self) -> Stopper {
+        Stopper {
+            stop: self.stop.clone(),
         }
     }
 
@@ -114,11 +127,7 @@ impl<B: Behavior> Episode<B> {
     where
         B: 'static,
     {
-        let stops: Vec<_> = self
-            .actors
-            .values()
-            .map(|actor| actor.behavior.context().shutdown.mine.clone())
-            .collect();
+        let stop = self.stop;
         let mut tasks = JoinSet::new();
         for (id, actor) in self.actors {
             tasks.spawn(async move {
@@ -139,22 +148,79 @@ impl<B: Behavior> Episode<B> {
             } else {
                 // An actor failed to initialize. Its error surfaces when its
                 // task is joined. Nobody starts.
-                for stop in &stops {
-                    stop.cancel();
-                }
+                stop.cancel();
             }
-            wait_for_all(&mut tasks, &stops).await
+            wait_for_all(&mut tasks, &stop).await
         };
         match timeout(patience, episode).await {
             Ok(outcome) => outcome,
             Err(_) => {
-                for stop in &stops {
-                    stop.cancel();
-                }
-                wait_for_all(&mut tasks, &stops).await?;
+                stop.cancel();
+                wait_for_all(&mut tasks, &stop).await?;
                 bail!("ran out of patience after {patience:?}");
             }
         }
+    }
+}
+
+/// Stops a running episode from outside it. Cloneable, and cheap to hold.
+///
+/// A stopped episode ends as it does after a failure: every perceive loop
+/// and every think loop stops, a step or a thought in progress is dropped
+/// at its next await, and [`run`](Episode::run) returns once every actor
+/// has stopped. A stopped episode has not failed, so `run` returns
+/// `Ok(())`. Stopped before it runs, an episode ends at once, starting
+/// nobody.
+///
+/// ```
+/// # use async_trait::async_trait;
+/// # use free_agent::{ActorInit, Behavior, Context, Episode, Message};
+/// # use serde::{Deserialize, Serialize};
+/// # use std::collections::{HashMap, HashSet};
+/// # use std::time::Duration;
+/// # use tokio::sync::mpsc::unbounded_channel;
+/// # #[derive(Debug, Clone, Serialize, Deserialize)]
+/// # struct Note;
+/// # impl Message for Note {}
+/// # struct Idle(Context<Note>);
+/// # #[async_trait]
+/// # impl Behavior for Idle {
+/// #     type Message = Note;
+/// #     type Log = Note;
+/// #     fn context(&self) -> &Context<Note> {
+/// #         &self.0
+/// #     }
+/// # }
+/// # #[tokio::main]
+/// # async fn main() -> anyhow::Result<()> {
+/// # let init = ActorInit {
+/// #     behavior: Box::new(Idle),
+/// #     think: None,
+/// #     can_send_to: HashSet::new(),
+/// #     can_shut_down: HashSet::new(),
+/// #     has_logger: false,
+/// # };
+/// # let (logger, _log) = unbounded_channel();
+/// let episode = Episode::new(HashMap::from([("ann".to_string(), init)]), logger);
+/// let stopper = episode.stopper();
+/// let running = tokio::spawn(episode.run(Duration::from_secs(60)));
+///
+/// stopper.stop();
+/// running.await??;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone)]
+pub struct Stopper {
+    /// The parent of every actor's shutdown token.
+    stop: CancellationToken,
+}
+
+impl Stopper {
+    /// Shut every actor down, exactly as the first actor failure does.
+    /// Stopping a stopped episode does nothing more.
+    pub fn stop(&self) {
+        self.stop.cancel();
     }
 }
 
@@ -177,15 +243,13 @@ async fn all_ready(readies: HashMap<ActorId, oneshot::Receiver<()>>) -> bool {
 /// actors down, so the episode ends as a whole, and is the error returned.
 async fn wait_for_all(
     tasks: &mut JoinSet<anyhow::Result<()>>,
-    stops: &[CancellationToken],
+    stop: &CancellationToken,
 ) -> anyhow::Result<()> {
     let mut first_failure = None;
     while let Some(outcome) = tasks.join_next().await {
         let outcome = outcome.context("an actor panicked").and_then(|ran| ran);
         if let Err(failure) = outcome {
-            for stop in stops {
-                stop.cancel();
-            }
+            stop.cancel();
             first_failure.get_or_insert(failure);
         }
     }
@@ -451,12 +515,106 @@ mod tests {
         }
     }
 
-    fn stops<B: Behavior>(episode: &Episode<B>) -> Vec<CancellationToken> {
-        episode
-            .actors
-            .values()
-            .map(|actor| actor.behavior.context().shutdown.mine.clone())
-            .collect()
+    /// Where a [`Dawdler`] dawdles.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Dawdle {
+        /// In its opening move.
+        Step,
+        /// In the one thought its opening move hands its think loop.
+        Thought,
+    }
+
+    /// A behavior that, where it dawdles, announces that it has begun,
+    /// waits an hour, and logs "done".
+    struct Dawdler {
+        context: Context<Note, ActorId>,
+        dawdle: Dawdle,
+        begun: UnboundedSender<()>,
+    }
+    #[async_trait]
+    impl Behavior for Dawdler {
+        type Message = Note;
+        type Log = ActorId;
+        fn context(&self) -> &Context<Note, ActorId> {
+            &self.context
+        }
+        async fn start(&mut self) -> anyhow::Result<()> {
+            match self.dawdle {
+                Dawdle::Step => dawdle(&self.context, &self.begun).await,
+                Dawdle::Thought => self.context.think(Note),
+            }
+        }
+    }
+
+    /// A [`Dawdler`]'s think loop.
+    struct Daydream {
+        context: Context<Note, ActorId>,
+        begun: UnboundedSender<()>,
+    }
+    #[async_trait]
+    impl Think for Daydream {
+        type Message = Note;
+        async fn think(&mut self, _message: &Note) -> anyhow::Result<()> {
+            dawdle(&self.context, &self.begun).await
+        }
+    }
+
+    /// Announce on `begun`, wait an hour, and log "done".
+    async fn dawdle(
+        context: &Context<Note, ActorId>,
+        begun: &UnboundedSender<()>,
+    ) -> anyhow::Result<()> {
+        begun.send(())?;
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+        context.log("done".to_string());
+        Ok(())
+    }
+
+    /// Run an episode of one [`Dawdler`], Ann, who dawdles where `dawdle`
+    /// says, with two hours' patience. Stop it with `stop` once Ann has
+    /// begun to dawdle, and return the outcome and everything logged.
+    async fn stop_while_dawdling(
+        dawdle: Dawdle,
+        stop: impl FnOnce(&Stopper),
+    ) -> (anyhow::Result<()>, Vec<ActorId>) {
+        let (logger, mut log) = unbounded_channel();
+        let (announce, mut begun) = unbounded_channel();
+        let think = (dawdle == Dawdle::Thought).then(|| {
+            let begun = announce.clone();
+            let build: ThinkBuilder<Note, ActorId> =
+                Box::new(move |context| Box::new(Daydream { context, begun }));
+            build
+        });
+        let init = ActorInit {
+            behavior: Box::new(move |context| Dawdler {
+                context,
+                dawdle,
+                begun: announce,
+            }),
+            think,
+            can_send_to: HashSet::new(),
+            can_shut_down: HashSet::new(),
+            has_logger: true,
+        };
+        let episode = Episode::new(HashMap::from([("ann".to_string(), init)]), logger);
+        let stopper = episode.stopper();
+        let running = tokio::spawn(episode.run(Duration::from_secs(2 * 3600)));
+        begun.recv().await.unwrap();
+        stop(&stopper);
+        let outcome = running.await.unwrap();
+        let mut logged = Vec::new();
+        while let Ok(event) = log.try_recv() {
+            logged.push(event.payload);
+        }
+        (outcome, logged)
+    }
+
+    /// [`stop_while_dawdling`], checking that the episode ended well and
+    /// that Ann's dawdling was dropped before it logged.
+    async fn stops_cleanly(dawdle: Dawdle, stop: impl FnOnce(&Stopper)) {
+        let (outcome, logged) = stop_while_dawdling(dawdle, stop).await;
+        outcome.unwrap();
+        assert!(logged.is_empty(), "{logged:?}");
     }
 
     #[test]
@@ -538,14 +696,12 @@ mod tests {
             mut starts,
             ..
         } = episode_of(&["ann", "bob"], &[]);
-        let stops = stops(&episode);
+        let stopper = episode.stopper();
         let running = tokio::spawn(episode.run(Duration::from_secs(60)));
 
         assert_eq!(two_starts(&mut starts).await, ann_and_bob());
 
-        for stop in stops {
-            stop.cancel();
-        }
+        stopper.stop();
         running.await.unwrap().unwrap();
     }
 
@@ -585,7 +741,7 @@ mod tests {
             },
             gate,
         ) = episode_with_bob_held_up();
-        let stops = stops(&episode);
+        let stopper = episode.stopper();
         let running = tokio::spawn(episode.run(Duration::from_secs(60)));
 
         // Ann is ready at once, but with Bob still initializing nothing
@@ -596,9 +752,7 @@ mod tests {
         gate.add_permits(1);
         assert_eq!(two_starts(&mut starts).await, ann_and_bob());
 
-        for stop in stops {
-            stop.cancel();
-        }
+        stopper.stop();
         running.await.unwrap().unwrap();
     }
 
@@ -647,17 +801,63 @@ mod tests {
         } = episode_with(&["ann", "bob"], &[], &["ann"], |_| {
             Initialization::default()
         });
-        let stops = stops(&episode);
+        let stopper = episode.stopper();
         let running = tokio::spawn(episode.run(Duration::from_secs(60)));
         starts.recv().await.unwrap();
         starts.recv().await.unwrap();
-        for stop in stops {
-            stop.cancel();
-        }
+        stopper.stop();
         running.await.unwrap().unwrap();
 
         let event = log.recv().await.unwrap();
         assert_eq!(event.payload, "ann");
         assert!(log.try_recv().is_err(), "bob has no logger");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unstopped_a_dawdler_finishes_dawdling() {
+        let (outcome, logged) = stop_while_dawdling(Dawdle::Thought, |_| {}).await;
+
+        assert!(outcome.is_err(), "the episode should run out of patience");
+        assert_eq!(logged, ["done"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_during_a_step_ends_the_episode_and_drops_the_step() {
+        stops_cleanly(Dawdle::Step, Stopper::stop).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_during_a_thought_ends_the_episode_and_drops_the_thought() {
+        stops_cleanly(Dawdle::Thought, Stopper::stop).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_twice_is_the_same_as_once() {
+        stops_cleanly(Dawdle::Step, |stopper| {
+            stopper.stop();
+            stopper.stop();
+        })
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stopper_clone_stops_the_episode() {
+        stops_cleanly(Dawdle::Thought, |stopper| stopper.clone().stop()).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_before_run_ends_the_episode_at_once_starting_nobody() {
+        let Stage {
+            episode,
+            mut starts,
+            ..
+        } = episode_of(&["ann", "bob"], &[]);
+        episode.stopper().stop();
+        let began = tokio::time::Instant::now();
+
+        episode.run(Duration::from_secs(60)).await.unwrap();
+
+        assert_eq!(began.elapsed(), Duration::ZERO);
+        assert!(starts.try_recv().is_err(), "nobody should have started");
     }
 }
