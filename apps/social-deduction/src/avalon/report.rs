@@ -514,6 +514,7 @@ mod tests {
     use crate::avalon::tests::{announcement, dealt, five, logged, seated, utterance, view_of};
     use crate::avalon::{Rules, State};
     use crate::report::FORGOTTEN;
+    use crate::report::tests::estimated;
     use crate::seat::ENVIRONMENT;
     use crate::seat::id;
     use crate::strategy::RANDOM;
@@ -1137,9 +1138,13 @@ mod tests {
         told("Player 3", memories)
     }
 
-    /// The tokens `lines` take, joined by newlines, by estimate.
-    fn estimated(lines: &[&str]) -> u64 {
-        crate::model::estimate(&lines.join("\n"))
+    #[test]
+    fn a_story_within_its_budget_is_told_whole() {
+        let story = two_phases_of_talk();
+        let lines = story.lines();
+        let budget = estimated(&lines);
+        assert_eq!(story.told_within(budget), (lines.clone(), 0));
+        assert_eq!(story.told_within(u64::MAX), (lines, 0));
     }
 
     #[test]

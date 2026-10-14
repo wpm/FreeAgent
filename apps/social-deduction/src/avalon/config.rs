@@ -762,7 +762,7 @@ system = \"Smart {{{{ name }}}}.\"
         let shown = format!("{error:#}");
         assert!(
             shown.starts_with(
-                "setting up the model qwen: qwen2.5-7b-instruct did not answer as the leader"
+                "setting up the model qwen: qwen2.5-7b-instruct did not play Avalon: did not answer as the leader"
             ),
             "{shown}"
         );

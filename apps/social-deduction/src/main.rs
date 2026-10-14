@@ -6,14 +6,12 @@
 use clap::{Args, Parser};
 use free_agent::{Behavior, Episode, Event, Logger};
 use serde::Serialize;
-use social_deduction::avalon::Avalon;
-use social_deduction::config::{self, Settings, Settled};
+use social_deduction::config::{self, Name, Settings, Settled};
 use social_deduction::game::{self, Game, Narrate};
 use social_deduction::model::spec::Probed;
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
 };
-use social_deduction::werewolf::Werewolf;
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -142,9 +140,10 @@ enum Mark {
 }
 
 /// Each of `ids`, in order, with its mark: those in `check`, or every one
-/// of them when `check` is empty, are asked by `model` to play each game,
-/// one model at a time, since a local server loads each model it is asked
-/// for, and the rest are unmarked. Why a model that did not play failed
+/// of them when `check` is empty, are asked by `model` to play each game in
+/// [`Name::ALL`], one model at a time, since a local server loads each
+/// model it is asked for, and the rest are unmarked. Each game's probe
+/// starts from the tool choice the games before it settled. Why a model that did not play failed
 /// goes to `reasons`, as [`reason`] writes it. A model that could not be
 /// asked stops the listing with the error, since nothing it would say
 /// about the rest would be true.
@@ -157,9 +156,14 @@ async fn checked(
     let mut marked = Vec::new();
     for id in ids {
         let mark = if check.is_empty() || check.contains(&id) {
-            let probed = Probed::Played(ToolChoice::Required);
-            let probed = and_plays::<Werewolf>(probed, model, &id).await?;
-            match and_plays::<Avalon>(probed, model, &id).await? {
+            let mut probed = Probed::Played(ToolChoice::Required);
+            for game in Name::ALL {
+                let Probed::Played(from) = probed else {
+                    break;
+                };
+                probed = game.check_plays(model, &id, from).await?;
+            }
+            match probed {
                 Probed::Played(tool_choice) => Some(Mark::Played(tool_choice)),
                 Probed::DidNotPlay(error) => {
                     reason(reasons, &id, &error)?;
@@ -172,22 +176,6 @@ async fn checked(
         marked.push((id, mark));
     }
     Ok(marked)
-}
-
-/// What probing the model `id` finds, given what `so_far` found of the
-/// games before `G`: a model that did not play one of them is not asked to
-/// play `G`; one that did is asked, and plays under the tool choice every
-/// game allows, or did not play, its error naming `G`.
-async fn and_plays<G: Game>(so_far: Probed, model: &dyn Model, id: &str) -> anyhow::Result<Probed> {
-    let Probed::Played(so_far) = so_far else {
-        return Ok(so_far);
-    };
-    Ok(match G::check_plays(model, id).await? {
-        Probed::Played(tool_choice) => Probed::Played(so_far.max(tool_choice)),
-        Probed::DidNotPlay(error) => {
-            Probed::DidNotPlay(error.context(format!("{id} did not play {}", G::NAME)))
-        }
-    })
 }
 
 /// Write why the model `id` did not play: a line `! id` naming it as
@@ -612,9 +600,9 @@ mod tests {
         // lines indented on each.
         assert_eq!(
             String::from_utf8(reasons).unwrap(),
-            "! gpt-0\n  gpt-0 did not play Werewolf\n  gpt-0 did not answer a night's request\n  \
+            "! gpt-0\n  gpt-0 did not play Werewolf\n  did not answer a night's request\n  \
              gpt-0 does not support tools\n  in two lines\n\
-             ! llama\n  llama did not play Werewolf\n  llama did not answer a night's request\n  \
+             ! llama\n  llama did not play Werewolf\n  did not answer a night's request\n  \
              llama does not support tools\n  in two lines\n"
         );
         // Only the ids given, in the listing's order.
@@ -671,6 +659,49 @@ mod tests {
             [("sonnet".to_string(), Some(Mark::Played(ToolChoice::Auto)))]
         );
         assert!(reasons.is_empty());
+    }
+
+    /// A model asked through a provider, remembering the tool choice each
+    /// request to it was made under.
+    struct Watched {
+        provider: Provider,
+        asked: std::sync::Mutex<Vec<ToolChoice>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Model for Watched {
+        async fn complete(
+            &self,
+            request: &social_deduction::model::Request,
+        ) -> anyhow::Result<social_deduction::model::Response> {
+            self.asked.lock().unwrap().push(request.tool_choice);
+            self.provider.complete(request).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_model_that_refuses_to_be_made_to_call_a_tool_is_not_made_to_again_in_the_next_game()
+    {
+        let base_url = canned::refusing_required(&["sonnet"]);
+        let model = Watched {
+            provider: Provider::new(base_url, None, REQUEST_TIMEOUT).unwrap(),
+            asked: Default::default(),
+        };
+        let mut reasons = Vec::new();
+        let marked = checked(&model, vec!["sonnet".to_string()], &[], &mut reasons)
+            .await
+            .unwrap();
+        assert_eq!(
+            marked,
+            [("sonnet".to_string(), Some(Mark::Played(ToolChoice::Auto)))]
+        );
+        // Refused once by night in Werewolf, then asked to call a tool but
+        // not made to: by night again, by day, and as each of Avalon's four.
+        let asked = model.asked.into_inner().unwrap();
+        assert_eq!(
+            asked,
+            [&[ToolChoice::Required][..], &[ToolChoice::Auto; 6][..]].concat()
+        );
     }
 
     #[tokio::test]

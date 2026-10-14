@@ -16,8 +16,8 @@
 //! naming the message by its sender and number.
 
 use crate::config::Configuration;
-use crate::model::Model;
 use crate::model::spec::Probed;
+use crate::model::{Model, ToolChoice};
 use crate::prompted::{self, Account};
 use crate::random;
 use crate::seat::{Dealt, ENVIRONMENT, PlayerId, to_everyone_but};
@@ -139,10 +139,11 @@ pub trait Game: Debug + Clone + PartialEq + Send + Sync + 'static {
     ) -> anyhow::Result<u64>;
 
     /// Check that `model`, asked as a player is, plays, and find out
-    /// whether it may be made to call a tool.
+    /// whether it may be made to call a tool, asking it first under `from`.
     fn check_plays(
         model: &dyn Model,
         model_id: &str,
+        from: ToolChoice,
     ) -> impl Future<Output = anyhow::Result<Probed>>;
 }
 

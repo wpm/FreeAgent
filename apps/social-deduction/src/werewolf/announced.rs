@@ -39,7 +39,7 @@ pub struct Underway {
     /// the ratify timers so that a stale one is known.
     changes: u64,
     /// The tentative decision has stood for the ratify limit: the day ends
-    /// with it, and nothing more counts.
+    /// with it, at once.
     ratified: bool,
 }
 
@@ -86,12 +86,12 @@ impl Announced for Werewolf {
         match (played, ratifying(core)) {
             (Move::Select { from, target, .. }, None) => underway.awake.first(from, target.clone()),
             (Move::Select { from, target, .. }, Some(ratify))
-                if underway.awake.players.contains(from) && !underway.ratified =>
+                if underway.awake.players.contains(from) =>
             {
                 underway.awake.choices.insert(from.clone(), target.clone());
                 Some(decide(core, underway, ratify))
             }
-            (Move::Retract { from, .. }, Some(ratify)) if !underway.ratified => {
+            (Move::Retract { from, .. }, Some(ratify)) => {
                 underway.awake.choices.remove(from)?;
                 Some(decide(core, underway, ratify))
             }
@@ -287,8 +287,7 @@ mod tests {
     /// decision of the day numbered `seq`: the day as it ended, or nothing
     /// if the timer was stale.
     fn ratify(game: &mut Game, seq: u64, change: u64) -> Option<Resolved<Werewolf>> {
-        game.count(&Move::Ratify { seq, change })?;
-        game.end(seq)
+        game.remind(&Move::Ratify { seq, change }).1
     }
 
     /// Who won, if the phase ended the game.
@@ -657,6 +656,26 @@ mod tests {
         assert_eq!(winner(&ended), Some(Team::Villagers));
         // The day has ended, so its timer is stale now too.
         assert!(ratify(&mut game, day, 2).is_none());
+    }
+
+    #[test]
+    fn the_ratify_timer_ends_the_day_at_once_and_nothing_after_counts_in_it() {
+        let (mut game, day) = ratifying_day();
+        select(&mut game, day, &id("ann"), &id("wolf"));
+        select(&mut game, day, &id("bob"), &id("cat"));
+        select(&mut game, day, &id("cat"), &id("wolf"));
+        let (counted, ended) = game.remind(&Move::Ratify {
+            seq: day,
+            change: 3,
+        });
+        assert_eq!(counted, last());
+        assert_eq!(
+            ended.unwrap().outcome,
+            vote(day, Some("wolf"), Ending::Ratified)
+        );
+        assert!(game.underway.is_none());
+        assert_eq!(select(&mut game, day, &id("bob"), &id("ann")), None);
+        assert_eq!(retract(&mut game, day, &id("ann")), None);
     }
 
     #[test]

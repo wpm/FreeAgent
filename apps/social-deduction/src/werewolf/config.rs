@@ -585,7 +585,7 @@ strategy = \"smart\"
         let shown = format!("{error:#}");
         assert!(
             shown.starts_with(
-                "setting up the model qwen: qwen2.5-7b-instruct did not answer a night's request"
+                "setting up the model qwen: qwen2.5-7b-instruct did not play Werewolf: did not answer a night's request"
             ),
             "{shown}"
         );

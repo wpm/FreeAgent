@@ -32,8 +32,8 @@ pub mod random;
 pub mod report;
 
 use crate::game::{Game, Tagged};
-use crate::model::Model;
 use crate::model::spec::Probed;
+use crate::model::{Model, ToolChoice};
 use crate::report::{in_prose, seat_order};
 use crate::seat::{ENVIRONMENT, PlayerId, to_everyone_but, to_the_environment, to_the_players_but};
 use free_agent::{ActorId, ActorInit};
@@ -178,8 +178,9 @@ impl Game for Werewolf {
     fn check_plays(
         model: &dyn Model,
         model_id: &str,
+        from: ToolChoice,
     ) -> impl Future<Output = anyhow::Result<Probed>> {
-        prompted::check_plays(model, model_id)
+        prompted::check_plays(model, model_id, from)
     }
 }
 

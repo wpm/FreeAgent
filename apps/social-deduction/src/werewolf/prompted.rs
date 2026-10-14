@@ -250,15 +250,19 @@ const PROBE_DAY: Duration = Duration::from_secs(60);
 /// vote, or wait, offers the four tools of a ratified day over a day of
 /// one minute, and is judged as a player's day answer is by `asked`.
 ///
-/// The night's request requires a tool call. If the provider refuses that
-/// as bad, it is asked again allowing one, and both refusals are given if
-/// that is refused too. The first tool choice it is answered under is the
+/// The night's request is asked under `from`. If that requires a tool call
+/// and the provider refuses it as bad, it is asked again allowing one, and
+/// both refusals are given if that is refused too. The first tool choice it is answered under is the
 /// game's, and the day's request is asked under it. The day's request is
 /// not made when the night's fails. A model that could not be asked at
 /// all, because the provider was not reached or answered with anything
 /// but the model's answer, is an error naming the model, with the cause
 /// beneath it.
-pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Result<Probed> {
+pub async fn check_plays(
+    model: &dyn model::Model,
+    model_id: &str,
+    from: ToolChoice,
+) -> anyhow::Result<Probed> {
     let candidates = placeholders();
     let by_night = async |tool_choice| {
         let night = request(
@@ -287,12 +291,12 @@ pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Re
         let response = model.complete(&day).await?;
         asked(&response, &candidates, PROBE_DAY, Voting::Ratified).map(drop)
     };
-    let (tool_choice, night) = first_answered(by_night).await;
+    let (tool_choice, night) = first_answered(from, by_night).await;
     let failed = match night {
         Err(error) => Some(("night", error)),
         Ok(()) => by_day(tool_choice).await.err().map(|error| ("day", error)),
     };
-    probed(
+    probed::<Werewolf>(
         model_id,
         tool_choice,
         failed.map(|(phase, error)| (format!("a {phase}'s request"), error)),
@@ -1647,7 +1651,7 @@ mod tests {
     #[tokio::test]
     async fn the_probe_asks_as_by_night_and_then_as_by_day_and_passes_when_the_model_plays_both() {
         let model = FakeModel::answering(choosing_first);
-        let probed = check_plays(&model, MODEL_ID).await;
+        let probed = check_plays(&model, MODEL_ID, ToolChoice::Required).await;
         assert!(
             matches!(probed, Ok(Probed::Played(ToolChoice::Required))),
             "{probed:?}"
@@ -1681,7 +1685,7 @@ mod tests {
     #[tokio::test]
     async fn the_probe_accepts_a_retraction_as_an_answer_to_the_day_s_request() {
         let model = by_day(|_| Ok(Response::calling(&[retracting()])));
-        let probed = check_plays(&model, MODEL_ID).await;
+        let probed = check_plays(&model, MODEL_ID, ToolChoice::Required).await;
         assert!(
             matches!(probed, Ok(Probed::Played(ToolChoice::Required))),
             "{probed:?}"
@@ -1693,10 +1697,12 @@ mod tests {
     async fn the_probe_names_the_day_s_request_when_the_model_selects_by_night_but_makes_no_call_by_day()
      {
         let model = by_day(saying_nothing);
-        let error = not_playing(check_plays(&model, MODEL_ID).await).unwrap();
+        let error = not_playing(check_plays(&model, MODEL_ID, ToolChoice::Required).await).unwrap();
         assert_eq!(
             format!("{error:#}"),
-            format!("{MODEL_ID} did not answer a day's request: the model made no tool call")
+            format!(
+                "{MODEL_ID} did not play Werewolf: did not answer a day's request: the model made no tool call"
+            )
         );
         assert_eq!(model.requests().len(), 2);
     }
@@ -1704,10 +1710,12 @@ mod tests {
     #[tokio::test]
     async fn the_probe_names_the_night_s_request_when_that_fails_and_never_sends_the_day_s() {
         let model = FakeModel::failing("the model is down");
-        let error = not_playing(check_plays(&model, MODEL_ID).await).unwrap();
+        let error = not_playing(check_plays(&model, MODEL_ID, ToolChoice::Required).await).unwrap();
         assert_eq!(
             format!("{error:#}"),
-            format!("{MODEL_ID} did not answer a night's request: the model is down")
+            format!(
+                "{MODEL_ID} did not play Werewolf: did not answer a night's request: the model is down"
+            )
         );
         assert_eq!(model.requests().len(), 1);
     }
@@ -1729,7 +1737,9 @@ mod tests {
         let base_url = canned::refusing_required(&[MODEL_ID]);
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
         assert!(matches!(
-            check_plays(&provider, MODEL_ID).await.unwrap(),
+            check_plays(&provider, MODEL_ID, ToolChoice::Required)
+                .await
+                .unwrap(),
             Probed::Played(ToolChoice::Auto)
         ));
     }
@@ -1739,7 +1749,9 @@ mod tests {
      {
         let base_url = canned::refusing_required_then_busy(&[MODEL_ID]);
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
-        let error = check_plays(&provider, MODEL_ID).await.unwrap_err();
+        let error = check_plays(&provider, MODEL_ID, ToolChoice::Required)
+            .await
+            .unwrap_err();
         let shown = format!("{error:#}");
         assert!(
             shown.starts_with(&format!(
@@ -1754,7 +1766,8 @@ mod tests {
     async fn the_probe_gives_both_refusals_when_the_night_s_request_is_refused_either_way() {
         let base_url = canned::refusing(&[MODEL_ID]);
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
-        let error = not_playing(check_plays(&provider, MODEL_ID).await).unwrap();
+        let error =
+            not_playing(check_plays(&provider, MODEL_ID, ToolChoice::Required).await).unwrap();
         let shown = format!("{error:#}");
         let refused = format!(
             "POST {base_url}/chat/completions was answered 400 Bad Request. \
@@ -1764,7 +1777,7 @@ mod tests {
         assert_eq!(
             shown,
             format!(
-                "{MODEL_ID} did not answer a night's request: \
+                "{MODEL_ID} did not play Werewolf: did not answer a night's request: \
                  made to call a tool: {refused}\nasked to call one: {refused}"
             )
         );
@@ -1777,7 +1790,9 @@ mod tests {
         let (base_url, _served) =
             canned::answering("401 Unauthorized", r#"{"error": {"message": "no key"}}"#);
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
-        let error = check_plays(&provider, MODEL_ID).await.unwrap_err();
+        let error = check_plays(&provider, MODEL_ID, ToolChoice::Required)
+            .await
+            .unwrap_err();
         let shown = format!("{error:#}");
         assert!(shown.contains("was answered 401 Unauthorized"), "{shown}");
     }
@@ -1788,7 +1803,9 @@ mod tests {
         // request as bad never put the question to the model.
         let (base_url, _served) = canned::answering("429 Too Many Requests", "{}");
         let provider = Provider::new(base_url.clone(), None, REQUEST_TIMEOUT).unwrap();
-        let error = check_plays(&provider, MODEL_ID).await.unwrap_err();
+        let error = check_plays(&provider, MODEL_ID, ToolChoice::Required)
+            .await
+            .unwrap_err();
         let shown = format!("{error:#}");
         assert!(
             shown.starts_with(&format!(
@@ -1817,10 +1834,13 @@ mod tests {
             by_day(move |_| Ok(too_long.clone())),
         ];
         for ((phase, judged), model) in judged.into_iter().zip(models) {
-            let error = not_playing(check_plays(&model, MODEL_ID).await).unwrap();
+            let error =
+                not_playing(check_plays(&model, MODEL_ID, ToolChoice::Required).await).unwrap();
             let shown = format!("{error:#}");
             assert!(
-                shown.starts_with(&format!("{MODEL_ID} did not answer a {phase}'s request")),
+                shown.starts_with(&format!(
+                    "{MODEL_ID} did not play Werewolf: did not answer a {phase}'s request"
+                )),
                 "{shown}"
             );
             assert!(shown.ends_with(&format!("{judged:#}")), "{shown}");
@@ -1845,10 +1865,13 @@ mod tests {
         ];
         for (base_url, phase, said) in refused {
             let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
-            let error = not_playing(check_plays(&provider, MODEL_ID).await).unwrap();
+            let error =
+                not_playing(check_plays(&provider, MODEL_ID, ToolChoice::Required).await).unwrap();
             let shown = format!("{error:#}");
             assert!(
-                shown.starts_with(&format!("{MODEL_ID} did not answer a {phase}'s request")),
+                shown.starts_with(&format!(
+                    "{MODEL_ID} did not play Werewolf: did not answer a {phase}'s request"
+                )),
                 "{shown}"
             );
             assert!(

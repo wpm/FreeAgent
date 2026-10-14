@@ -310,14 +310,18 @@ fn probe_asked(duty: &Duty) -> String {
 /// answer is by `asked`: the leader proposing a team of 2 from five
 /// placeholder seats, a voter, an evil member of a team, and the Assassin.
 ///
-/// The first request requires a tool call. If the provider refuses that as
-/// bad, it is asked again allowing one, and both refusals are given if
-/// that is refused too. The first tool choice it is answered under is the
+/// The first request is asked under `from`. If that requires a tool call
+/// and the provider refuses it as bad, it is asked again allowing one, and
+/// both refusals are given if that is refused too. The first tool choice it is answered under is the
 /// game's, and the rest are asked under it. No request is made after one
 /// fails. A model that could not be asked at all, because the provider
 /// was not reached or answered with anything but the model's answer, is
 /// an error naming the model, with the cause beneath it.
-pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Result<Probed> {
+pub async fn check_plays(
+    model: &dyn model::Model,
+    model_id: &str,
+    from: ToolChoice,
+) -> anyhow::Result<Probed> {
     let ask = async |duty: &Duty, tool_choice| {
         let probe = request(
             model_id,
@@ -331,7 +335,7 @@ pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Re
     };
     let [(first, leading), rest @ ..] = probes();
     let (tool_choice, answered) =
-        first_answered(async |tool_choice| ask(&leading, tool_choice).await).await;
+        first_answered(from, async |tool_choice| ask(&leading, tool_choice).await).await;
     let mut failed = answered.err().map(|error| (first, error));
     for (who, duty) in &rest {
         if failed.is_some() {
@@ -342,7 +346,7 @@ pub async fn check_plays(model: &dyn model::Model, model_id: &str) -> anyhow::Re
             .err()
             .map(|error| (*who, error));
     }
-    probed(
+    probed::<Avalon>(
         model_id,
         tool_choice,
         failed.map(|(who, error)| (format!("as {who}"), error)),
@@ -1680,7 +1684,7 @@ mod tests {
     #[tokio::test]
     async fn the_probe_asks_as_the_player_each_phase_waits_on_and_passes_when_the_model_plays() {
         let model = FakeModel::answering(choosing_first);
-        let probed = check_plays(&model, MODEL_ID).await;
+        let probed = check_plays(&model, MODEL_ID, ToolChoice::Required).await;
         assert!(
             matches!(probed, Ok(Probed::Played(ToolChoice::Required))),
             "{probed:?}"
@@ -1738,10 +1742,13 @@ mod tests {
                 true => Ok(Response::calling(&[speaking(" ")])),
                 false => choosing_first(request),
             });
-            let error = not_playing(check_plays(&model, MODEL_ID).await).unwrap();
+            let error =
+                not_playing(check_plays(&model, MODEL_ID, ToolChoice::Required).await).unwrap();
             assert_eq!(
                 format!("{error:#}"),
-                format!("{MODEL_ID} did not answer as {who}: the model's speak call says nothing")
+                format!(
+                    "{MODEL_ID} did not play Avalon: did not answer as {who}: the model's speak call says nothing"
+                )
             );
             assert_eq!(model.requests().len(), asked, "{who}");
         }
@@ -1752,7 +1759,9 @@ mod tests {
         let base_url = canned::refusing_required(&[MODEL_ID]);
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
         assert!(matches!(
-            check_plays(&provider, MODEL_ID).await.unwrap(),
+            check_plays(&provider, MODEL_ID, ToolChoice::Required)
+                .await
+                .unwrap(),
             Probed::Played(ToolChoice::Auto)
         ));
     }
@@ -1761,7 +1770,8 @@ mod tests {
     async fn the_probe_gives_both_refusals_when_the_first_request_is_refused_either_way() {
         let base_url = canned::refusing(&[MODEL_ID]);
         let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
-        let error = not_playing(check_plays(&provider, MODEL_ID).await).unwrap();
+        let error =
+            not_playing(check_plays(&provider, MODEL_ID, ToolChoice::Required).await).unwrap();
         let refused = format!(
             "POST {base_url}/chat/completions was answered 400 Bad Request. \
              The provider said: {}",
@@ -1770,7 +1780,7 @@ mod tests {
         assert_eq!(
             format!("{error:#}"),
             format!(
-                "{MODEL_ID} did not answer as the leader: \
+                "{MODEL_ID} did not play Avalon: did not answer as the leader: \
                  made to call a tool: {refused}\nasked to call one: {refused}"
             )
         );
@@ -1783,7 +1793,9 @@ mod tests {
             canned::answering("429 Too Many Requests", "{}").0,
         ] {
             let provider = Provider::new(&base_url, None, REQUEST_TIMEOUT).unwrap();
-            let error = check_plays(&provider, MODEL_ID).await.unwrap_err();
+            let error = check_plays(&provider, MODEL_ID, ToolChoice::Required)
+                .await
+                .unwrap_err();
             let shown = format!("{error:#}");
             assert!(
                 shown.starts_with(&format!(

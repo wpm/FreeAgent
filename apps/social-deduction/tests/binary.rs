@@ -311,7 +311,7 @@ impl Tested for Werewolf {
     const PHASES: &[&str] = &QUICK;
     // One request as by night, and one as by day.
     const PROBED: usize = 2;
-    const REFUSED: &str = "did not answer a night's request";
+    const REFUSED: &str = "did not play Werewolf\n    1: did not answer a night's request";
 }
 
 impl Tested for Avalon {
@@ -322,7 +322,7 @@ impl Tested for Avalon {
     const PHASES: &[&str] = &[];
     // One request for each kind of phase.
     const PROBED: usize = 4;
-    const REFUSED: &str = "did not answer as the leader";
+    const REFUSED: &str = "did not play Avalon\n    1: did not answer as the leader";
 }
 
 /// The TOML table `lines` make.
@@ -753,7 +753,8 @@ fn a_model_that_plays_by_night_alone_is_refused_in_the_provider_s_words() {
         "{stderr}"
     );
     for said in [
-        format!("{EXAMPLE_MODEL} did not answer a day's request"),
+        format!("{EXAMPLE_MODEL} did not play Werewolf"),
+        "did not answer a day's request".to_string(),
         format!("POST {base_url}/chat/completions was answered 400"),
         day_refusal(EXAMPLE_MODEL),
     ] {
@@ -897,7 +898,7 @@ fn the_models_command_with_check_asks_each_model_to_play_and_marks_its_answer() 
         [
             "! zephyr-7b".to_string(),
             "  zephyr-7b did not play Werewolf".to_string(),
-            "  zephyr-7b did not answer a night's request".to_string(),
+            "  did not answer a night's request".to_string(),
             format!("  made to call a tool: {refused}"),
             format!("  asked to call one: {refused}"),
         ],
@@ -919,7 +920,7 @@ fn the_models_command_with_check_marks_a_model_that_plays_by_night_alone_as_not_
         [
             "! qwen2.5-7b-instruct",
             "  qwen2.5-7b-instruct did not play Werewolf",
-            "  qwen2.5-7b-instruct did not answer a day's request",
+            "  did not answer a day's request",
             &format!(
                 "  POST {base_url}/chat/completions was answered 400 Bad Request. \
                  The provider said: {}",
@@ -944,7 +945,7 @@ fn the_models_command_with_check_marks_a_model_that_plays_werewolf_but_not_avalo
         [
             "! qwen2.5-7b-instruct",
             "  qwen2.5-7b-instruct did not play Avalon",
-            "  qwen2.5-7b-instruct did not answer as a voter",
+            "  did not answer as a voter",
             &format!(
                 "  POST {base_url}/chat/completions was answered 400 Bad Request. \
                  The provider said: {}",
