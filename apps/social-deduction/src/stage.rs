@@ -8,14 +8,14 @@
 //! game's [`Board`] shows them, whole, after every event that moves it.
 
 use crate::avalon::{self, Avalon};
-use crate::game::{Entry, Game, Narrate};
+use crate::game::{Entry, Game, Message, Narrate};
 use crate::report::{Line, in_order};
 use crate::seat::PlayerId;
 use crate::werewolf::{self, Werewolf};
 use anyhow::Context;
 use free_agent::Event;
 use social_deduction_stage::{Beat, Cue, GameName, Millis, Outcome, Panel, Role, Seat, Side};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// What a game supplies for its log to be folded into cues: its name, how
@@ -35,6 +35,9 @@ pub trait Staged: Game {
     /// The side that won and how, as the narrator tells it, if `event`
     /// ends the game.
     fn winner(event: &Self::Event) -> Option<(Side, String)>;
+
+    /// The player who dies by `event`, if anyone does.
+    fn died(event: &Self::Event) -> Option<&PlayerId>;
 }
 
 /// A game's board, moved by the log's events.
@@ -56,6 +59,8 @@ pub struct Stage<G: Staged> {
     narrator: G::Narrator,
     /// The game's board.
     board: G::Board,
+    /// The players whose model call is out.
+    thinking: HashSet<PlayerId>,
 }
 
 impl<G: Staged> Default for Stage<G> {
@@ -63,6 +68,7 @@ impl<G: Staged> Default for Stage<G> {
         Self {
             narrator: G::Narrator::default(),
             board: G::Board::default(),
+            thinking: HashSet::new(),
         }
     }
 }
@@ -72,8 +78,12 @@ impl<G: Staged> Stage<G> {
     /// is the cast, then the clock at its live rate. Every other event is
     /// what its narrator lines tell: each heading a heading, each run of
     /// told lines one block, each utterance a bubble from its speaker,
-    /// votes and blank lines left out. The board follows when the event
-    /// moves it, and the end of the game is its outcome, last, won as the
+    /// votes and blank lines left out. A model call going out is its
+    /// player thinking, and coming back their thought; a withheld
+    /// utterance is late, and any other withheld message nothing. The
+    /// board follows when the event moves it. A player who dies with a
+    /// call out has thought, and so has everyone still thinking when the
+    /// game ends. The end of the game is its outcome, last, won as the
     /// narrator tells it.
     pub fn fold(&mut self, event: &Event<Entry<G>>) -> Vec<Cue> {
         let at = millis(event.time);
@@ -82,21 +92,65 @@ impl<G: Staged> Stage<G> {
             Entry::Start {
                 roles, strategies, ..
             } => vec![cast::<G>(roles, strategies), Beat::Clock { rate: 1.0 }],
+            Entry::Thinking { player, .. } => {
+                self.thinking.insert(player.clone());
+                vec![Beat::Thinking {
+                    who: player.clone(),
+                }]
+            }
+            Entry::Thought { player, .. } => self.thought(player).into_iter().collect(),
+            Entry::Withheld {
+                from,
+                message: Message::Say { text, .. },
+                ..
+            } => vec![Beat::Late {
+                who: from.clone(),
+                text: text.clone(),
+            }],
             _ => beats(&lines),
         };
         beats.extend(self.board.fold(event).map(Beat::Panel));
-        if let Entry::Event(own) = &event.payload
-            && let Some((side, how)) = G::winner(own)
-        {
-            let outcome = Outcome::Won { side, how };
-            beats.push(Beat::Over { outcome, log: None });
+        if let Entry::Event(own) = &event.payload {
+            beats.extend(G::died(own).and_then(|dead| self.thought(dead)));
+            if let Some((side, how)) = G::winner(own) {
+                beats.extend(self.hushed());
+                let outcome = Outcome::Won { side, how };
+                beats.push(Beat::Over { outcome, log: None });
+            }
         }
         beats.into_iter().map(|beat| Cue { at, beat }).collect()
+    }
+
+    /// The thoughts of every player still thinking, in seat order, stamped
+    /// `at`: what closes every call still out when a game stops or fails,
+    /// before its outcome.
+    pub fn close(&mut self, at: Millis) -> Vec<Cue> {
+        self.hushed()
+            .into_iter()
+            .map(|beat| Cue { at, beat })
+            .collect()
+    }
+
+    /// `player`'s thought, if their call is out.
+    fn thought(&mut self, player: &PlayerId) -> Option<Beat> {
+        self.thinking.remove(player).then(|| Beat::Thought {
+            who: player.clone(),
+        })
+    }
+
+    /// The thoughts of every player still thinking, in seat order.
+    fn hushed(&mut self) -> Vec<Beat> {
+        let thinking = std::mem::take(&mut self.thinking);
+        in_order(&thinking)
+            .into_iter()
+            .map(|who| Beat::Thought { who: who.clone() })
+            .collect()
     }
 }
 
 /// The cues a game's log folds into, the log written as JSON Lines by a
-/// game of either kind.
+/// game of either kind. Calls still out at the end of the log are closed
+/// there.
 ///
 /// # Errors
 ///
@@ -115,6 +169,8 @@ fn read<G: Staged>(log: &str) -> serde_json::Result<Vec<Cue>> {
         let event: Event<Entry<G>> = serde_json::from_str(line)?;
         cues.extend(stage.fold(&event));
     }
+    let at = cues.last().map_or(0, |cue| cue.at);
+    cues.extend(stage.close(at));
     Ok(cues)
 }
 
@@ -219,6 +275,11 @@ impl Staged for Avalon {
             _ => None,
         }
     }
+
+    /// Nobody dies in Avalon.
+    fn died(_: &avalon::Outcome) -> Option<&PlayerId> {
+        None
+    }
 }
 
 /// The side an Avalon team is.
@@ -254,6 +315,14 @@ impl Staged for Werewolf {
             _ => None,
         }
     }
+
+    fn died(event: &werewolf::Outcome) -> Option<&PlayerId> {
+        match event {
+            werewolf::Outcome::Hunted { hunt, .. } => hunt.dead(),
+            werewolf::Outcome::Voted { out, .. } => out.as_ref(),
+            werewolf::Outcome::End { .. } => None,
+        }
+    }
 }
 
 /// The side a Werewolf team is.
@@ -265,10 +334,9 @@ fn team(team: werewolf::Team) -> Side {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::game::Message;
-    use crate::game::tests::{Fixture, drained, episode, seated};
+    use crate::game::tests::{Fixture, drained, episode, logged, seated};
     use crate::strategy::RANDOM;
     use social_deduction_stage::AvalonPanel;
 
@@ -522,6 +590,151 @@ mod tests {
             .map(|cue| cue.beat)
             .collect();
         assert_eq!(bubbles, said);
+    }
+
+    /// `entries`, logged in order, each event's beats apart.
+    pub(crate) fn staged<G: Staged>(entries: &[Entry<G>]) -> Vec<Vec<Beat>> {
+        let mut stage = Stage::<G>::default();
+        entries
+            .iter()
+            .map(|entry| {
+                let event = logged(entry.clone());
+                stage.fold(&event).into_iter().map(|cue| cue.beat).collect()
+            })
+            .collect()
+    }
+
+    /// Check the calls `beats` show: every `Thinking` is closed by one
+    /// `Thought` of its player before `Over`, and each utterance comes
+    /// from its speaker's call that came back, after that call's `Thought`
+    /// and before the speaker's next `Thinking`.
+    pub(crate) fn check_calls(beats: &[Beat]) {
+        let mut thinking = HashSet::new();
+        let mut answered = HashSet::new();
+        let mut calls = 0;
+        for beat in beats {
+            match beat {
+                Beat::Thinking { who } => {
+                    assert!(thinking.insert(who), "{who} thinks twice");
+                    answered.remove(who);
+                    calls += 1;
+                }
+                Beat::Thought { who } => {
+                    assert!(thinking.remove(who), "{who} thought unasked");
+                    answered.insert(who);
+                }
+                Beat::Said { who, .. } => assert!(answered.contains(who), "{who} spoke unasked"),
+                Beat::Over { .. } => assert!(thinking.is_empty(), "{thinking:?}"),
+                _ => {}
+            }
+        }
+        assert!(calls > 0);
+        assert!(beats.iter().any(|beat| matches!(beat, Beat::Over { .. })));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn each_call_in_a_prompted_game_of_avalon_is_closed_and_speaks_after_it_comes_back() {
+        let events = avalon::prompted::tests::prompted_game().await;
+        check_calls(
+            &folded(&events)
+                .into_iter()
+                .map(|cue| cue.beat)
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// `message`, withheld by `Player 1`.
+    fn withheld(message: Message<Avalon>) -> Entry<Avalon> {
+        Entry::Withheld {
+            from: "Player 1".to_string(),
+            message,
+            seen: Some(3),
+            forgot: None,
+        }
+    }
+
+    #[test]
+    fn a_withheld_utterance_is_late_and_a_withheld_move_is_nothing() {
+        let said = withheld(Message::Say {
+            seq: 1,
+            from: "Player 1".to_string(),
+            n: 0,
+            text: "Too slow.".to_string(),
+        });
+        let voted = withheld(Message::Move(avalon::Move::Vote {
+            seq: 1,
+            from: "Player 1".to_string(),
+            n: 0,
+            ballot: avalon::Ballot::Approve,
+        }));
+        assert_eq!(
+            staged(&[said, voted]),
+            [
+                vec![Beat::Late {
+                    who: "Player 1".to_string(),
+                    text: "Too slow.".to_string()
+                }],
+                vec![]
+            ]
+        );
+    }
+
+    #[test]
+    fn a_thought_with_no_call_out_shows_nothing() {
+        let thinking = Entry::<Avalon>::Thinking {
+            player: "Player 1".to_string(),
+            seq: 1,
+        };
+        let thought = Entry::<Avalon>::Thought {
+            player: "Player 1".to_string(),
+            seq: 1,
+            ending: crate::game::Ending::Answered,
+        };
+        let who = "Player 1".to_string();
+        assert_eq!(
+            staged(&[thinking, thought.clone(), thought]),
+            [
+                vec![Beat::Thinking { who: who.clone() }],
+                vec![Beat::Thought { who }],
+                vec![]
+            ]
+        );
+    }
+
+    #[test]
+    fn calls_still_out_at_the_end_of_a_log_are_closed_there_in_seat_order() {
+        let thinking = |player: &str| {
+            logged(Entry::<Avalon>::Thinking {
+                player: player.to_string(),
+                seq: 1,
+            })
+        };
+        let log = written(&[thinking("Player 10"), thinking("Player 2")]);
+        let beats: Vec<Beat> = cues(&log)
+            .unwrap()
+            .into_iter()
+            .map(|cue| cue.beat)
+            .collect();
+        let who = |name: &str| name.to_string();
+        assert_eq!(
+            beats,
+            [
+                Beat::Thinking {
+                    who: who("Player 10")
+                },
+                Beat::Thinking {
+                    who: who("Player 2")
+                },
+                Beat::Thought {
+                    who: who("Player 2")
+                },
+                Beat::Thought {
+                    who: who("Player 10")
+                },
+            ]
+        );
+        let mut stage = Stage::<Avalon>::default();
+        assert!(stage.close(5).is_empty());
     }
 
     #[test]

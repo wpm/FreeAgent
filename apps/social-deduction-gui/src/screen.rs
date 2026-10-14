@@ -6,11 +6,15 @@
 
 use leptos_rich_chat::{Look, Names, Position};
 use social_deduction_stage::{
-    AvalonPanel, Beat, Cue, GameName, Outcome, Panel, PlayerId, Role, Seat, Side,
+    AvalonPanel, Beat, Cue, GameName, Millis, Outcome, Panel, PlayerId, Role, Seat, Side,
 };
 
 /// The name narration is posted under, centered between the sides.
 pub const NARRATOR: &str = "Narrator";
+
+/// How long, in log time, a model call is out before its dots show, so
+/// that a call that ends at once does not flicker.
+pub const THINKING_DELAY: Millis = 300;
 
 /// One message in the chat.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +34,17 @@ pub enum Body {
     Heading(String),
     /// Markdown, drawn as a bubble.
     Text(String),
+    /// Markdown said too late to be sent, drawn as a faded bubble.
+    Late(String),
+}
+
+/// A player's thinking dots, pinned below the chat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Thinker {
+    /// The player.
+    pub who: PlayerId,
+    /// The player's label.
+    pub name: String,
 }
 
 /// A choice on the board that has just been made, which flashes as it
@@ -72,6 +87,13 @@ pub struct Screen {
     pub panel: Option<Panel>,
     /// The choices flashing now, each with the cue that landed it.
     pub landed: Vec<(usize, Landed)>,
+    /// The dots of every call out longer than [`THINKING_DELAY`], in the
+    /// order they showed.
+    pub thinkers: Vec<Thinker>,
+    /// Log milliseconds per viewer millisecond.
+    pub rate: f64,
+    /// Every call out whose dots have not shown, with when it went out.
+    thinking: Vec<(PlayerId, Millis)>,
     /// How many cues have been applied.
     applied: usize,
 }
@@ -87,6 +109,9 @@ impl Default for Screen {
             outcome: None,
             panel: None,
             landed: Vec::new(),
+            thinkers: Vec::new(),
+            rate: 1.0,
+            thinking: Vec::new(),
             applied: 0,
         }
     }
@@ -96,8 +121,10 @@ impl Screen {
     /// Show `cue`. With `flash`, every choice a new board makes lands, and
     /// the cue's number comes back for [`Screen::expire`] to end the
     /// flash; without it, as for a saved game shown at once, nothing
-    /// lands.
+    /// lands. Every call out longer than [`THINKING_DELAY`] by the cue's
+    /// time shows its dots.
     pub fn apply(&mut self, cue: &Cue, flash: bool) -> Option<usize> {
+        self.reveal(cue.at);
         self.applied += 1;
         let number = self.applied;
         match &cue.beat {
@@ -112,6 +139,13 @@ impl Screen {
             }
             Beat::Told(lines) => self.post(NARRATOR.to_string(), Body::Text(lines.join("  \n"))),
             Beat::Said { who, text } => self.post(self.label(who), Body::Text(text.clone())),
+            Beat::Late { who, text } => self.post(self.label(who), Body::Late(text.clone())),
+            Beat::Thinking { who } => self.thinking.push((who.clone(), cue.at)),
+            Beat::Thought { who } => {
+                self.thinking.retain(|(thinker, _)| thinker != who);
+                self.thinkers.retain(|thinker| thinker.who != *who);
+            }
+            Beat::Clock { rate } => self.rate = *rate,
             Beat::Panel(panel) => {
                 let landed = match (flash, &self.panel, panel) {
                     (true, before, Panel::Avalon(after)) => {
@@ -130,13 +164,29 @@ impl Screen {
                     return Some(number);
                 }
             }
-            Beat::Over { outcome, .. } => self.outcome = Some(outcome.clone()),
-            Beat::Clock { .. }
-            | Beat::Late { .. }
-            | Beat::Thinking { .. }
-            | Beat::Thought { .. } => {}
+            Beat::Over { outcome, .. } => {
+                self.outcome = Some(outcome.clone());
+                self.thinking.clear();
+                self.thinkers.clear();
+            }
         }
         None
+    }
+
+    /// Show the dots of every call out longer than [`THINKING_DELAY`] at
+    /// log time `now`.
+    pub fn reveal(&mut self, now: Millis) {
+        let (due, waiting) = std::mem::take(&mut self.thinking)
+            .into_iter()
+            .partition(|(_, at)| at + THINKING_DELAY <= now);
+        self.thinking = waiting;
+        for (who, _) in due {
+            let thinker = Thinker {
+                name: self.label(&who),
+                who,
+            };
+            self.thinkers.push(thinker);
+        }
     }
 
     /// End the flash of what the cue numbered `number` landed.
@@ -197,6 +247,12 @@ impl Board {
     pub fn seat(&self, player: &str) -> Option<&Seat> {
         self.seats.iter().find(|seat| seat.name == player)
     }
+}
+
+/// When the dots of the call `cue` sends out are due, in log time, if it
+/// sends one out.
+pub fn dots_due(cue: &Cue) -> Option<Millis> {
+    matches!(cue.beat, Beat::Thinking { .. }).then_some(cue.at + THINKING_DELAY)
 }
 
 /// `player`'s choice in `entries`, if made.
@@ -561,6 +617,122 @@ mod tests {
             replayed.expire(number);
         }
         assert_eq!(replayed, shown(&cues));
+    }
+
+    /// `beat` at log time `at`.
+    fn cue_at(at: Millis, beat: Beat) -> Cue {
+        Cue { at, beat }
+    }
+
+    /// Player 2's call going out at `at`.
+    fn thinking(at: Millis) -> Cue {
+        cue_at(
+            at,
+            Beat::Thinking {
+                who: "Player 2".to_string(),
+            },
+        )
+    }
+
+    /// Player 2's call coming back at `at`.
+    fn thought(at: Millis) -> Cue {
+        cue_at(
+            at,
+            Beat::Thought {
+                who: "Player 2".to_string(),
+            },
+        )
+    }
+
+    /// The thinker Player 2's dots are.
+    fn thinker() -> Thinker {
+        Thinker {
+            who: "Player 2".to_string(),
+            name: "Player 2 · Assassin".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_call_that_comes_back_within_its_delay_shows_no_dots() {
+        let mut screen = shown(&[cast(), thinking(1_000)]);
+        assert_eq!(dots_due(&thinking(1_000)), Some(1_300));
+        screen.apply(&thought(1_299), true);
+        screen.reveal(1_300);
+        assert!(screen.thinkers.is_empty());
+    }
+
+    #[test]
+    fn a_call_held_past_its_delay_shows_dots_until_it_comes_back() {
+        let mut screen = shown(&[cast(), thinking(1_000)]);
+        screen.reveal(1_299);
+        assert!(screen.thinkers.is_empty());
+        screen.reveal(1_300);
+        assert_eq!(screen.thinkers, [thinker()]);
+        screen.reveal(1_400);
+        assert_eq!(screen.thinkers, [thinker()]);
+        screen.apply(&thought(2_000), true);
+        assert!(screen.thinkers.is_empty());
+    }
+
+    #[test]
+    fn a_later_cue_shows_the_dots_of_every_call_held_past_its_delay() {
+        let said = cue_at(
+            1_500,
+            Beat::Said {
+                who: "Player 1".to_string(),
+                text: "Hm.".to_string(),
+            },
+        );
+        let screen = shown(&[cast(), thinking(1_000), said]);
+        assert_eq!(screen.thinkers, [thinker()]);
+        assert_eq!(screen.posts.len(), 1);
+    }
+
+    #[test]
+    fn the_end_clears_every_thinker() {
+        let mut cues = vec![cast(), thinking(0), cue_at(500, Beat::Told(vec![]))];
+        cues.extend(game().into_iter().skip(1));
+        let mut screen = shown(&cues[..3]);
+        assert_eq!(screen.thinkers.len(), 1);
+        screen = shown(&cues);
+        assert!(screen.thinkers.is_empty());
+        screen.reveal(10_000);
+        assert!(screen.thinkers.is_empty());
+    }
+
+    #[test]
+    fn only_a_call_going_out_waits_to_show_its_dots() {
+        assert_eq!(dots_due(&cast()), None);
+    }
+
+    #[test]
+    fn late_speech_is_posted_from_its_speaker_as_late() {
+        let late = cue(Beat::Late {
+            who: "Player 2".to_string(),
+            text: "Wait!".to_string(),
+        });
+        let screen = shown(&[cast(), late]);
+        assert_eq!(
+            screen.posts,
+            [Post {
+                id: "m1".to_string(),
+                name: "Player 2 · Assassin".to_string(),
+                body: Body::Late("Wait!".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn the_clock_sets_the_rate() {
+        assert_eq!(Screen::default().rate, 1.0);
+        let screen = shown(&[cue(Beat::Clock { rate: 4.0 })]);
+        assert_eq!(screen.rate, 4.0);
+    }
+
+    #[test]
+    fn late_bubbles_are_styled() {
+        let css = include_str!("../style.css");
+        assert!(css.contains(".sd-late"));
     }
 
     #[test]
