@@ -142,24 +142,36 @@ impl<G: Staged> Stage<G> {
 }
 
 /// The cues a game's log folds into, the log written as JSON Lines by a
-/// game of either kind. Calls still out at the end of the log are closed
-/// there.
+/// game of either kind, which its first line says. Calls still out at the
+/// end of the log are closed there.
 ///
 /// # Errors
 ///
-/// A line that is an event of neither game.
+/// A first line that is an event of neither game, or a later line that
+/// is no event of the first line's game, named by its number.
 pub fn cues(log: &str) -> anyhow::Result<Vec<Cue>> {
-    read::<Avalon>(log)
-        .or_else(|_| read::<Werewolf>(log))
-        .context("the log is of neither Avalon nor Werewolf")
+    let Some(first) = log.lines().find(|line| !line.trim().is_empty()) else {
+        return Ok(Vec::new());
+    };
+    if serde_json::from_str::<Event<Entry<Avalon>>>(first).is_ok() {
+        read::<Avalon>(log, "Avalon")
+    } else if serde_json::from_str::<Event<Entry<Werewolf>>>(first).is_ok() {
+        read::<Werewolf>(log, "Werewolf")
+    } else {
+        anyhow::bail!("the log is of neither Avalon nor Werewolf")
+    }
 }
 
-/// The cues the log of a game of `G` folds into.
-fn read<G: Staged>(log: &str) -> serde_json::Result<Vec<Cue>> {
+/// The cues the log of a game of `G`, named `game`, folds into.
+fn read<G: Staged>(log: &str, game: &str) -> anyhow::Result<Vec<Cue>> {
     let mut stage = Stage::<G>::default();
     let mut cues = Vec::new();
-    for line in log.lines().filter(|line| !line.trim().is_empty()) {
-        let event: Event<Entry<G>> = serde_json::from_str(line)?;
+    for (index, line) in log.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event: Event<Entry<G>> = serde_json::from_str(line)
+            .with_context(|| format!("the {game} log is bad at line {}", index + 1))?;
         cues.extend(stage.fold(&event));
     }
     let at = cues.last().map_or(0, |cue| cue.at);
@@ -603,6 +615,34 @@ pub(crate) mod tests {
         assert_eq!(
             error.to_string(),
             "the log is of neither Avalon nor Werewolf"
+        );
+    }
+
+    #[test]
+    fn an_empty_log_folds_into_no_cues() {
+        assert_eq!(cues("\n").unwrap(), []);
+    }
+
+    #[tokio::test]
+    async fn a_bad_line_in_a_log_is_an_error_of_its_game_naming_the_line() {
+        let events = random_game::<Avalon>(avalon::tests::five(), avalon::Rules::default()).await;
+        let log = written(&events);
+        let lines = log.lines().count();
+        let truncated = &log[..log.len() - 10];
+        let error = format!("{:#}", cues(truncated).unwrap_err());
+        assert!(
+            error.starts_with(&format!("the Avalon log is bad at line {lines}: ")),
+            "{error}"
+        );
+        let roles = werewolf::tests::one_wolf_against(&["Player 1", "Player 2", "Player 3"]);
+        let events = random_game::<Werewolf>(roles, werewolf::Rules::default()).await;
+        let log = format!("{}\n{{}}\n", written(&events));
+        let error = format!("{:#}", cues(&log).unwrap_err());
+        // The blank line counts as a line.
+        let bad = events.len() + 2;
+        assert!(
+            error.starts_with(&format!("the Werewolf log is bad at line {bad}: ")),
+            "{error}"
         );
     }
 

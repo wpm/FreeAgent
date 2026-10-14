@@ -71,7 +71,7 @@ fn Web() -> impl IntoView {
     Effect::new(move |_| {
         let name = address.get().game;
         stop();
-        screen.set(Screen::default());
+        live.reset();
         replayed.set(false);
         failure.set(None);
         spawn_local(async move {
@@ -97,7 +97,7 @@ fn Web() -> impl IntoView {
         stop();
         let pace = address.get_untracked().pace;
         live.set_pace(pace);
-        screen.set(Screen::default());
+        live.reset();
         replayed.set(true);
         let next = StoredValue::new(0usize);
         let handle = set_interval_with_handle(
@@ -178,9 +178,15 @@ impl Live {
         self.arrived.set_value(self.now());
     }
 
+    /// Clear the screen for a new game. What the last game's cues left to
+    /// do later, they leave undone.
+    pub fn reset(self) {
+        self.screen.update(Screen::reset);
+    }
+
     /// Show `cue` as it arrives: the clocks run on to it, what it lands
     /// flashes, and the dots of a call it sends out show once the call
-    /// has been out a while.
+    /// has been out a while, unless the screen is reset first.
     pub fn show(self, cue: &Cue) {
         let screen = self.screen;
         let at = self.now();
@@ -190,14 +196,16 @@ impl Live {
             screen.advance(waited);
             screen.apply(cue, true)
         });
+        let era = screen.try_with_untracked(Screen::era).unwrap_or_default();
         if let Some(Some(number)) = applied {
-            let flash = self.paced(FLASH);
-            set_timeout(move || screen.update(|screen| screen.expire(number)), flash);
+            let expire = move || screen.update(|screen| screen.within(era, |s| s.expire(number)));
+            set_timeout(expire, self.paced(FLASH));
         }
         if let Some(due) = dots_due(cue) {
             let rate = screen.with_untracked(|screen| screen.clock.rate);
             let delay = self.paced(Duration::from_millis(THINKING_DELAY).div_f64(rate));
-            set_timeout(move || screen.update(|screen| screen.reveal(due)), delay);
+            let reveal = move || screen.update(|screen| screen.within(era, |s| s.reveal(due)));
+            set_timeout(reveal, delay);
         }
     }
 }
@@ -216,7 +224,9 @@ pub(crate) fn Viewer(
     let screen = live.screen;
     // The viewer's time, now.
     let tick = RwSignal::new(live.now());
-    let _ = set_interval_with_handle(move || tick.set(live.now()), TICK);
+    if let Ok(ticking) = set_interval_with_handle(move || tick.set(live.now()), TICK) {
+        on_cleanup(move || ticking.clear());
+    }
     // A memo, so that a stopped clock redraws nothing as it ticks.
     let now = Signal::from(Memo::new(move |_| {
         let waited = tick.get() - live.arrived.get_value();

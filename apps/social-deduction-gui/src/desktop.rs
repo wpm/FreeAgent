@@ -1,11 +1,10 @@
-//! The desktop app: the settings screen until a game's first cue, then the
-//! game as it plays, with **Stop**, and once it is over, **New game** and
-//! **Show log file**.
+//! The desktop app: the settings screen until a game's first cue, with
+//! **Stop** while the game is prepared, then the game as it plays, with
+//! **Stop**, and once it is over, **New game** and **Show log file**.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::screen::Screen;
 use crate::settings::Settings;
 use crate::tauri::{self, Cues, Preset};
 use crate::view::{Live, Viewer};
@@ -32,7 +31,7 @@ pub fn Desktop() -> impl IntoView {
     let run = Callback::new(move |()| {
         error.set(None);
         pending.set(true);
-        screen.set(Screen::default());
+        live.reset();
         let channel = Cues::new(move |cue| {
             watching.set(true);
             live.show(&cue);
@@ -50,10 +49,12 @@ pub fn Desktop() -> impl IntoView {
         });
     });
 
+    let stop = Callback::new(|()| tauri::stop());
+
     let over = move || screen.with(|screen| screen.outcome.is_some());
     let new_game = move |_| {
         watching.set(false);
-        screen.set(Screen::default());
+        live.reset();
         // The settings screen follows the system's theme, not the game's.
         if let Some(root) = document().document_element() {
             let _ = root.remove_attribute("data-theme");
@@ -69,7 +70,7 @@ pub fn Desktop() -> impl IntoView {
             when=move || watching.get()
             fallback=move || {
                 view! {
-                    <Settings presets=presets pending=pending error=error run=run />
+                    <Settings presets=presets pending=pending error=error run=run stop=stop />
                 }
             }
         >
