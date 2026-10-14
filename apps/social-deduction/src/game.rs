@@ -47,6 +47,8 @@ impl<T: Clone + Debug + PartialEq + Serialize + DeserializeOwned + Send + Sync +
 /// shared actors ask of it. A game is a type with no values, which names
 /// the rest.
 pub trait Game: Debug + Clone + PartialEq + Send + Sync + 'static {
+    /// The game's name, as a player is told it.
+    const NAME: &'static str;
     /// What a player is. The roles are ordered as they are dealt.
     type Role: Copy + Eq + Ord + Hash + Display + Carried;
     /// The sides, one of which wins.

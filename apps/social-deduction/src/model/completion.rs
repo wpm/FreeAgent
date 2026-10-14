@@ -51,8 +51,9 @@ impl Request {
 }
 
 /// Whether a request makes the model call a tool, written as the
-/// protocol's `tool_choice` writes it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// protocol's `tool_choice` writes it. `Required` comes before `Auto`, so
+/// the later of two is the one both allow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ToolChoice {
     /// The model must call one of the tools offered.

@@ -64,6 +64,7 @@ pub type Seat = crate::game::Seat<Avalon>;
 pub type Dealt = crate::seat::Dealt<Role>;
 
 impl Game for Avalon {
+    const NAME: &'static str = "Avalon";
     type Role = Role;
     type Team = Team;
     type Rules = Rules;

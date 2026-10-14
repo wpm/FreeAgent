@@ -10,7 +10,8 @@ use social_deduction::game::{self, Game};
 use social_deduction::model::ToolChoice;
 use social_deduction::model::canned::{
     day_refusal, playing, playing_only, playing_within, recording, refusal, refusing,
-    refusing_days, refusing_required, reported, retracting, serving, unreachable, wanting_a_key,
+    refusing_days, refusing_offers_of, refusing_required, reported, retracting, serving,
+    unreachable, wanting_a_key,
 };
 use social_deduction::model::window::{ContextWindow, Source};
 use social_deduction::seat::PlayerId;
@@ -292,7 +293,7 @@ fn example(game: &str, name: &str) -> String {
 /// A game as these tests play it.
 trait Tested: Game {
     /// The game's name, as a configuration file's `game` key gives it.
-    const NAME: &str;
+    const KEY: &str;
     /// How many players the default table seats.
     const SEATS: usize;
     /// The `[phases]` a prompted game is played under: short ones, so
@@ -305,7 +306,7 @@ trait Tested: Game {
 }
 
 impl Tested for Werewolf {
-    const NAME: &str = "werewolf";
+    const KEY: &str = "werewolf";
     const SEATS: usize = 7;
     const PHASES: &[&str] = &QUICK;
     // One request as by night, and one as by day.
@@ -314,7 +315,7 @@ impl Tested for Werewolf {
 }
 
 impl Tested for Avalon {
-    const NAME: &str = "avalon";
+    const KEY: &str = "avalon";
     const SEATS: usize = 5;
     // Avalon's phases end once the players they wait on have acted, which
     // the models these tests play do at once.
@@ -351,7 +352,7 @@ fn rephased(path: &str, phases: &[&str]) {
 /// tests do not collide.
 fn configured<G: Tested>(test: &str, base_url: &str, id: &str, lines: &[&str]) -> String {
     let path = format!("{}/{test}.toml", env!("CARGO_TARGET_TMPDIR"));
-    std::fs::copy(example(G::NAME, "prompted.toml"), &path).unwrap();
+    std::fs::copy(example(G::KEY, "prompted.toml"), &path).unwrap();
     edited(&path, |file| {
         let qwen = file["models"]["qwen"].as_table_mut().unwrap();
         for key in ["base_url", "id"] {
@@ -895,6 +896,7 @@ fn the_models_command_with_check_asks_each_model_to_play_and_marks_its_answer() 
         reasons,
         [
             "! zephyr-7b".to_string(),
+            "  zephyr-7b did not play Werewolf".to_string(),
             "  zephyr-7b did not answer a night's request".to_string(),
             format!("  made to call a tool: {refused}"),
             format!("  asked to call one: {refused}"),
@@ -916,11 +918,37 @@ fn the_models_command_with_check_marks_a_model_that_plays_by_night_alone_as_not_
         reasons,
         [
             "! qwen2.5-7b-instruct",
+            "  qwen2.5-7b-instruct did not play Werewolf",
             "  qwen2.5-7b-instruct did not answer a day's request",
             &format!(
                 "  POST {base_url}/chat/completions was answered 400 Bad Request. \
                  The provider said: {}",
                 day_refusal(EXAMPLE_MODEL)
+            ),
+        ],
+        "{stderr}"
+    );
+}
+
+#[test]
+fn the_models_command_with_check_marks_a_model_that_plays_werewolf_but_not_avalon_as_not_playing() {
+    let base_url = refusing_offers_of("vote", &[EXAMPLE_MODEL]);
+    let output = succeeded(&["models", &base_url, "--check"]);
+    let printed = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines, ["! qwen2.5-7b-instruct", "", LEGEND], "{printed}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let reasons: Vec<&str> = stderr.lines().collect();
+    assert_eq!(
+        reasons,
+        [
+            "! qwen2.5-7b-instruct",
+            "  qwen2.5-7b-instruct did not play Avalon",
+            "  qwen2.5-7b-instruct did not answer as a voter",
+            &format!(
+                "  POST {base_url}/chat/completions was answered 400 Bad Request. \
+                 The provider said: {}",
+                refusal(EXAMPLE_MODEL)
             ),
         ],
         "{stderr}"
@@ -1179,7 +1207,7 @@ fn avalon_plays_a_table_of_random_evil_and_prompted_good_to_the_end() {
 /// ends logs nothing either.
 fn assert_every_call_logs_its_usage_and_the_probe_none<G: Tested>() {
     let (base_url, requests) = recording(&[EXAMPLE_MODEL]);
-    let test = format!("{}-usage", G::NAME);
+    let test = format!("{}-usage", G::KEY);
     let config = configured::<G>(&test, &base_url, EXAMPLE_MODEL, &[]);
     let (events, _) = played::<game::Entry<G>>(&[&config]);
     let (roles, _) = start(&events);
@@ -1212,7 +1240,7 @@ fn every_call_a_player_makes_logs_its_usage_and_the_probe_logs_none_in_avalon() 
 /// error is left empty and the game is still told; and that `--log`, given
 /// after it, puts the log back.
 fn assert_no_log_leaves_standard_error_empty<G: Tested>() {
-    let random = example(G::NAME, "random.toml");
+    let random = example(G::KEY, "random.toml");
     let output = succeeded(&["play", &random, "--no-log"]);
     assert!(output.stderr.is_empty(), "{output:?}");
     let printed = String::from_utf8(output.stdout).unwrap();
@@ -1237,7 +1265,7 @@ fn no_log_leaves_standard_error_empty_and_the_game_is_still_told_in_avalon() {
 /// the request and the provider's words.
 fn assert_refuses_a_model_that_does_not_play<G: Tested>() {
     let base_url = refusing(&[EXAMPLE_MODEL]);
-    let test = format!("{}-refused", G::NAME);
+    let test = format!("{}-refused", G::KEY);
     let config = configured::<G>(&test, &base_url, EXAMPLE_MODEL, &[]);
     let stderr = refused(&["play", &config]);
     assert!(
@@ -1273,8 +1301,8 @@ fn assert_takes_the_role_counts_and_the_limits_from_the_file<G: Tested>(
     limits: G::Limits,
     told: &str,
 ) {
-    let test = format!("{}-counted", G::NAME);
-    let config = written(&test, &format!("game = \"{}\"\n{file}", G::NAME));
+    let test = format!("{}-counted", G::KEY);
+    let config = written(&test, &format!("game = \"{}\"\n{file}", G::KEY));
     let (events, printed) = played::<game::Entry<G>>(&[&config]);
     let (roles, _) = start(&events);
     for (role, count) in counts {

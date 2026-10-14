@@ -6,6 +6,7 @@
 use clap::{Args, Parser};
 use free_agent::{Behavior, Episode, Event, Logger};
 use serde::Serialize;
+use social_deduction::avalon::Avalon;
 use social_deduction::config::{self, Settings, Settled};
 use social_deduction::game::{self, Game, Narrate};
 use social_deduction::model::spec::Probed;
@@ -36,9 +37,9 @@ enum CommandLine {
         /// for the provider
         #[arg(long)]
         api_key_env: Option<String>,
-        /// Ask every model listed, or only the IDs given, to play as a
-        /// player does by night and by day, and mark those that do. End the
-        /// IDs with -- when the base URL follows them
+        /// Ask every model listed, or only the IDs given, to play each
+        /// game as a player does, and mark those that do. End the IDs with
+        /// -- when the base URL follows them
         #[arg(long, num_args = 0.., value_name = "ID", value_terminator = "--")]
         check: Option<Vec<String>>,
     },
@@ -101,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
                     for id in &check {
                         served(&base_url, &listed, id)?;
                     }
-                    checked::<Werewolf>(&provider, ids, &check, &mut io::stderr()).await?
+                    checked(&provider, ids, &check, &mut io::stderr()).await?
                 }
             };
             print!("{}", listing(&models));
@@ -133,21 +134,21 @@ fn known_providers_help() -> String {
 /// played when asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mark {
-    /// Asked as by night and as by day, it answered both requests well,
-    /// under the tool choice the probe settled.
+    /// Asked to play each game, it answered every request well, under the
+    /// tool choice every game allows.
     Played(ToolChoice),
-    /// Asked as by night and as by day, it did not answer one of them well.
+    /// Asked to play each game, it did not answer one request well.
     DidNotPlay,
 }
 
 /// Each of `ids`, in order, with its mark: those in `check`, or every one
-/// of them when `check` is empty, are asked by `model` to play `G`, one model
-/// at a time, since a local server loads each model it is asked for, and
-/// the rest are unmarked. Why a model that did not play failed goes to
-/// `reasons`, as [`reason`] writes it. A model that could not be asked
-/// stops the listing with the error, since nothing it would say about
-/// the rest would be true.
-async fn checked<G: Game>(
+/// of them when `check` is empty, are asked by `model` to play each game,
+/// one model at a time, since a local server loads each model it is asked
+/// for, and the rest are unmarked. Why a model that did not play failed
+/// goes to `reasons`, as [`reason`] writes it. A model that could not be
+/// asked stops the listing with the error, since nothing it would say
+/// about the rest would be true.
+async fn checked(
     model: &dyn Model,
     ids: Vec<String>,
     check: &[String],
@@ -156,7 +157,9 @@ async fn checked<G: Game>(
     let mut marked = Vec::new();
     for id in ids {
         let mark = if check.is_empty() || check.contains(&id) {
-            match G::check_plays(model, &id).await? {
+            let probed = Probed::Played(ToolChoice::Required);
+            let probed = and_plays::<Werewolf>(probed, model, &id).await?;
+            match and_plays::<Avalon>(probed, model, &id).await? {
                 Probed::Played(tool_choice) => Some(Mark::Played(tool_choice)),
                 Probed::DidNotPlay(error) => {
                     reason(reasons, &id, &error)?;
@@ -169,6 +172,22 @@ async fn checked<G: Game>(
         marked.push((id, mark));
     }
     Ok(marked)
+}
+
+/// What probing the model `id` finds, given what `so_far` found of the
+/// games before `G`: a model that did not play one of them is not asked to
+/// play `G`; one that did is asked, and plays under the tool choice every
+/// game allows, or did not play, its error naming `G`.
+async fn and_plays<G: Game>(so_far: Probed, model: &dyn Model, id: &str) -> anyhow::Result<Probed> {
+    let Probed::Played(so_far) = so_far else {
+        return Ok(so_far);
+    };
+    Ok(match G::check_plays(model, id).await? {
+        Probed::Played(tool_choice) => Probed::Played(so_far.max(tool_choice)),
+        Probed::DidNotPlay(error) => {
+            Probed::DidNotPlay(error.context(format!("{id} did not play {}", G::NAME)))
+        }
+    })
 }
 
 /// Write why the model `id` did not play: a line `! id` naming it as
@@ -567,7 +586,7 @@ mod tests {
         let ids = ["gpt-0", "llama", "qwen2.5-7b-instruct"].map(String::from);
         let model = playing_only_as("qwen2.5-7b-instruct");
         let mut reasons = Vec::new();
-        let marked = checked::<Werewolf>(&model, ids.to_vec(), &[], &mut reasons)
+        let marked = checked(&model, ids.to_vec(), &[], &mut reasons)
             .await
             .unwrap();
         assert_eq!(
@@ -581,30 +600,28 @@ mod tests {
                 ),
             ]
         );
-        // A model that plays by night is asked again as by day.
+        // A model that plays Werewolf by night is asked again as by day,
+        // then as each of the four Avalon asks after.
         let asked: Vec<String> = model.requests().into_iter().map(|r| r.model).collect();
         assert_eq!(
             asked,
-            [
-                "gpt-0",
-                "llama",
-                "qwen2.5-7b-instruct",
-                "qwen2.5-7b-instruct"
-            ]
+            [&["gpt-0", "llama"][..], &["qwen2.5-7b-instruct"; 6][..]].concat()
         );
         // Each reason under a line naming its model as the listing marks
         // it, the error's causes one per indented line, a cause of several
         // lines indented on each.
         assert_eq!(
             String::from_utf8(reasons).unwrap(),
-            "! gpt-0\n  gpt-0 did not answer a night's request\n  gpt-0 does not support tools\n  in two lines\n\
-             ! llama\n  llama did not answer a night's request\n  llama does not support tools\n  in two lines\n"
+            "! gpt-0\n  gpt-0 did not play Werewolf\n  gpt-0 did not answer a night's request\n  \
+             gpt-0 does not support tools\n  in two lines\n\
+             ! llama\n  llama did not play Werewolf\n  llama did not answer a night's request\n  \
+             llama does not support tools\n  in two lines\n"
         );
         // Only the ids given, in the listing's order.
         let model = playing_only_as("qwen2.5-7b-instruct");
         let check = ["qwen2.5-7b-instruct", "gpt-0"].map(String::from);
         let mut reasons = Vec::new();
-        let marked = checked::<Werewolf>(&model, ids.to_vec(), &check, &mut reasons)
+        let marked = checked(&model, ids.to_vec(), &check, &mut reasons)
             .await
             .unwrap();
         assert_eq!(
@@ -621,9 +638,24 @@ mod tests {
         let asked: Vec<String> = model.requests().into_iter().map(|r| r.model).collect();
         assert_eq!(
             asked,
-            ["gpt-0", "qwen2.5-7b-instruct", "qwen2.5-7b-instruct"]
+            [&["gpt-0"][..], &["qwen2.5-7b-instruct"; 6][..]].concat()
         );
         assert!(String::from_utf8(reasons).unwrap().starts_with("! gpt-0\n"));
+    }
+
+    #[tokio::test]
+    async fn a_model_made_to_call_a_tool_in_one_game_but_not_the_other_is_marked_as_not_made_to() {
+        let base_url = canned::refusing_required_offering("propose", &["llama"]);
+        let provider = Provider::new(base_url, None, REQUEST_TIMEOUT).unwrap();
+        let mut reasons = Vec::new();
+        let marked = checked(&provider, vec!["llama".to_string()], &[], &mut reasons)
+            .await
+            .unwrap();
+        assert_eq!(
+            marked,
+            [("llama".to_string(), Some(Mark::Played(ToolChoice::Auto)))]
+        );
+        assert!(reasons.is_empty());
     }
 
     #[tokio::test]
@@ -631,7 +663,7 @@ mod tests {
         let base_url = canned::refusing_required(&["sonnet"]);
         let provider = Provider::new(base_url, None, REQUEST_TIMEOUT).unwrap();
         let mut reasons = Vec::new();
-        let marked = checked::<Werewolf>(&provider, vec!["sonnet".to_string()], &[], &mut reasons)
+        let marked = checked(&provider, vec!["sonnet".to_string()], &[], &mut reasons)
             .await
             .unwrap();
         assert_eq!(
@@ -649,7 +681,7 @@ mod tests {
         let provider = Provider::new(base_url.clone(), None, REQUEST_TIMEOUT).unwrap();
         let ids = ["gpt-0", "llama"].map(String::from);
         let mut reasons = Vec::new();
-        let error = checked::<Werewolf>(&provider, ids.to_vec(), &[], &mut reasons)
+        let error = checked(&provider, ids.to_vec(), &[], &mut reasons)
             .await
             .unwrap_err();
         let shown = format!("{error:#}");
