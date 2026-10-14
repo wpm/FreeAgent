@@ -145,6 +145,10 @@ workflow takes a version's notes from here.
 
 ### Changed
 
+- Each game's narrator tells its story in lines that say what they are:
+  a phase heading, a player's vote or selection, a player's utterance with
+  who spoke, a blank line, or anything else told. The console prints them
+  as before.
 - `social-deduction models --check` asks each model to play Werewolf, then
   Avalon, and marks it as playing when it plays both. A model that refuses
   to be made to call a tool in Werewolf is asked to call one in Avalon. The

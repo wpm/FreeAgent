@@ -20,6 +20,7 @@ use crate::model::spec::Probed;
 use crate::model::{Model, ToolChoice};
 use crate::prompted::{self, Account};
 use crate::random;
+use crate::report::Line;
 use crate::seat::{Dealt, ENVIRONMENT, PlayerId, to_everyone_but};
 use async_trait::async_trait;
 use free_agent::{ActorId, ActorInit, Behavior, Context, Episode, Logger};
@@ -150,7 +151,7 @@ pub trait Game: Debug + Clone + PartialEq + Send + Sync + 'static {
 /// Turns the events of a game, one at a time, into lines of prose.
 pub trait Narrate<G: Game>: Default + Send + 'static {
     /// The lines the log's `event` adds to the account, often none.
-    fn narrate(&mut self, event: &free_agent::Event<Entry<G>>) -> Vec<String>;
+    fn narrate(&mut self, event: &free_agent::Event<Entry<G>>) -> Vec<Line>;
 }
 
 /// What the shared [`Message`] asks of a game's own moves: each one's

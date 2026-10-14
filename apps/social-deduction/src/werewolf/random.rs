@@ -386,6 +386,7 @@ mod tests {
         let told: Vec<String> = entries
             .into_iter()
             .flat_map(|entry| narrator.narrate(&logged(entry)))
+            .map(|line| line.to_string())
             .collect();
         assert!(
             !told.contains(&"wolf (werewolf) votes against ann (villager).".to_string()),

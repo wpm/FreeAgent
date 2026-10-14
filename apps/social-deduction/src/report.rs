@@ -1,7 +1,7 @@
-//! What every game shares in telling its story: the order the seats are
-//! told in, how a player is named, lists in prose, how long something took, the models in play,
-//! whether a message comes late, and how a player's story forgets talk to
-//! fit a budget.
+//! What every game shares in telling its story: the lines it is told in,
+//! the order the seats are told in, how a player is named, lists in prose,
+//! how long something took, the models in play, whether a message comes
+//! late, and how a player's story forgets talk to fit a budget.
 
 use crate::model::spec::Models;
 use crate::model::window::{ContextWindow, Source};
@@ -12,6 +12,61 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::time::Duration;
+
+/// A line of a game's story, as its narrator tells it. The console prints
+/// each line as it displays; a viewer tells speech, headings, votes and
+/// blank lines apart by what they are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Line {
+    /// A phase heading: `Night 1.`, `Day 2.`, `Quest 1, proposal 1 of 5.
+    /// Player 1 (Assassin) leads and needs a team of 2.`
+    Heading(String),
+    /// One player's vote or selection, or its withdrawal: `Player 4
+    /// (werewolf) votes to kill Player 3 (seer).`
+    Vote(String),
+    /// Anything else the narrator tells: `Player 6 dies.`
+    Told(String),
+    /// An utterance. `speaker` is the subject as the narrator renders it,
+    /// `Player 3 (seer)`, so the role comes from the narrator's own table.
+    Said {
+        /// Who spoke.
+        who: PlayerId,
+        /// The speaker as the narrator names it.
+        speaker: String,
+        /// What was said.
+        text: String,
+    },
+    /// A blank line between paragraphs of the story.
+    Blank,
+}
+
+impl fmt::Display for Line {
+    /// The console's words: a heading, vote or told line as is; `{speaker}
+    /// says, "{text}"`; and nothing for a blank line.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Line::Heading(line) | Line::Vote(line) | Line::Told(line) => f.write_str(line),
+            Line::Said { speaker, text, .. } => write!(f, "{speaker} says, \"{text}\""),
+            Line::Blank => Ok(()),
+        }
+    }
+}
+
+/// A line compares with the words the console prints for it.
+#[cfg(test)]
+impl PartialEq<&str> for Line {
+    fn eq(&self, other: &&str) -> bool {
+        self.to_string().as_str() == *other
+    }
+}
+
+/// A line compares with the words the console prints for it.
+#[cfg(test)]
+impl PartialEq<String> for Line {
+    fn eq(&self, other: &String) -> bool {
+        self == &other.as_str()
+    }
+}
 
 /// `elapsed` to the nearest whole second, as `humantime` writes it: `40s`,
 /// `1m 5s`.
@@ -74,14 +129,14 @@ pub(crate) fn in_prose(named: impl IntoIterator<Item = impl fmt::Display>) -> St
 /// What a game's configuration tells of `models`, the models in play: each
 /// one's context window and where it came from, and, for a model that does
 /// not accept a required tool call, that its players are asked to call one.
-pub(crate) fn configured(models: &Models) -> Vec<String> {
+pub(crate) fn configured(models: &Models) -> Vec<Line> {
     let mut lines = Vec::new();
     for (name, model) in models {
-        lines.push(context_window(name, model.context_window));
+        lines.push(Line::Told(context_window(name, model.context_window)));
         if model.tool_choice == ToolChoice::Auto {
-            lines.push(format!(
+            lines.push(Line::Told(format!(
                 "{name} does not accept a required tool call, so its players are asked to call one."
-            ));
+            )));
         }
     }
     lines
@@ -154,6 +209,26 @@ pub(crate) mod tests {
     use super::*;
     use crate::model::estimate;
     use crate::model::spec::ModelInPlay;
+
+    #[test]
+    fn a_line_displays_as_the_console_prints_it() {
+        let shown = |line: Line| line.to_string();
+        assert_eq!(shown(Line::Heading("Night 1.".to_string())), "Night 1.");
+        assert_eq!(
+            shown(Line::Vote("ann votes against bob.".to_string())),
+            "ann votes against bob."
+        );
+        assert_eq!(shown(Line::Told("bob dies.".to_string())), "bob dies.");
+        assert_eq!(
+            shown(Line::Said {
+                who: "ann".to_string(),
+                speaker: "ann (seer)".to_string(),
+                text: "Hello.".to_string(),
+            }),
+            "ann (seer) says, \"Hello.\""
+        );
+        assert_eq!(shown(Line::Blank), "");
+    }
 
     #[test]
     fn players_come_in_seat_order_with_player_2_before_player_10() {
