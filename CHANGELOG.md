@@ -147,6 +147,11 @@ workflow takes a version's notes from here.
   shows how long every call took and whose call is out. A call cut off by
   the player's stopping ends at its death, at the game's end, or at the
   end of the log. The narration leaves both out.
+- `social_deduction::run::prepare` makes a game ready from a
+  configuration's text, with its API keys looked up in the `Keys` the
+  caller gives, and the episode it builds logs to the caller's logger.
+  `config::parse` settles a configuration's text, and the command line
+  looks keys up in the process `Environment`.
 
 ### Changed
 

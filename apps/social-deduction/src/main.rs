@@ -6,19 +6,19 @@
 use clap::{Args, Parser};
 use free_agent::{Behavior, Episode, Event, Logger};
 use serde::Serialize;
-use social_deduction::config::{self, Name, Settings, Settled};
-use social_deduction::game::{self, Game, Narrate};
-use social_deduction::model::spec::Probed;
+use social_deduction::config::{self, Name};
+use social_deduction::game::{Game, Narrate};
+use social_deduction::model::spec::{Environment, Probed, required};
 use social_deduction::model::{
-    Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
+    Model, Provider, REQUEST_TIMEOUT, ToolChoice, key_variable, known_providers, served,
 };
 use social_deduction::report::Line;
+use social_deduction::run::{Prepared, Ready};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
-use tokio::sync::oneshot;
 
 /// The command line: a game to play, or a command that belongs to no game.
 #[derive(Parser, Debug, PartialEq)]
@@ -80,17 +80,21 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match CommandLine::parse() {
-        CommandLine::Play(Play { config, logging }) => match config::load(&config)? {
-            Settled::Werewolf(settings) => run(*settings, logging.enabled()).await,
-            Settled::Avalon(settings) => run(*settings, logging.enabled()).await,
-        },
+        CommandLine::Play(Play { config, logging }) => {
+            match Prepared::new(config::load(&config)?, &Environment).await? {
+                Prepared::Werewolf(ready) => run(*ready, logging.enabled()).await,
+                Prepared::Avalon(ready) => run(*ready, logging.enabled()).await,
+            }
+        }
         CommandLine::Models {
             base_url,
             api_key_env,
             check,
         } => {
             let variable = key_variable(&base_url, api_key_env.as_deref());
-            let api_key = variable.map(api_key).transpose()?;
+            let api_key = variable
+                .map(|variable| required(&Environment, variable))
+                .transpose()?;
             let provider = Provider::new(&base_url, api_key, REQUEST_TIMEOUT)?;
             let listed = provider.listing().await?;
             let mut ids: Vec<String> = listed.iter().map(|model| model.id.clone()).collect();
@@ -221,25 +225,13 @@ fn listing(models: &[(String, Option<Mark>)]) -> String {
     listing
 }
 
-/// Play one game of `G` under `settings`, logged when `logging` is on.
-/// Every prompt is rendered, and every model in play set up, before any
-/// actor is built, so that a template that is broken or a model that does
-/// not play fails before anything else.
-async fn run<G: Game>(settings: Settings<G>, logging: bool) -> anyhow::Result<()> {
-    let prompts = settings.prompts()?;
-    let (models, handles) = settings.set_up(&prompts).await?;
-    let deal = settings.lineup.deal();
-    let configuration = settings.configuration(&deal, &prompts, models)?;
-    let players = config::players(&configuration, &deal, &handles);
-    let rules = settings.rules();
+/// Play the game of `G` that is `ready`, logged when `logging` is on.
+async fn run<G: Game>(ready: Ready<G>, logging: bool) -> anyhow::Result<()> {
     let mut narrator = G::Narrator::default();
     play(
         logging,
         move |event| narrator.narrate(event),
-        |logger| {
-            let (winner, _) = oneshot::channel();
-            game::game(deal, rules, configuration, winner, players, logger)
-        },
+        |logger| ready.episode(logger),
     )
     .await
 }

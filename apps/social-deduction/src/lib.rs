@@ -11,6 +11,7 @@ pub mod model;
 pub mod prompted;
 pub mod random;
 pub mod report;
+pub mod run;
 pub mod seat;
 pub mod strategy;
 pub mod werewolf;

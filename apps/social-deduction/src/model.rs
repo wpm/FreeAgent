@@ -32,7 +32,6 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::fmt;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -191,22 +190,6 @@ pub fn known_context_window(base_url: &str) -> Option<u64> {
 /// expects.
 pub fn key_variable<'a>(base_url: &str, named: Option<&'a str>) -> Option<&'a str> {
     named.or_else(|| known_key_variable(base_url))
-}
-
-/// The API key the environment variable `name` holds. A variable that is
-/// not set, or is set to something that is not UTF-8, is an error naming
-/// it.
-pub fn api_key(name: &str) -> anyhow::Result<SecretString> {
-    key(name, std::env::var_os(name))
-}
-
-/// The key the environment variable `name` holds as `value`.
-fn key(name: &str, value: Option<OsString>) -> anyhow::Result<SecretString> {
-    let value = value.ok_or_else(|| anyhow!("{name} is not set"))?;
-    let value = value
-        .into_string()
-        .map_err(|_| anyhow!("{name} is set to something that is not UTF-8"))?;
-    Ok(SecretString::from(value))
 }
 
 /// A request the provider answered with anything but success: the status,
@@ -650,34 +633,6 @@ mod tests {
         assert_eq!(key_variable(openai, None), Some("OPENAI_API_KEY"));
         assert_eq!(key_variable(openai, Some("MY_KEY")), Some("MY_KEY"));
         assert_eq!(key_variable("http://localhost:1234/v1", None), None);
-    }
-
-    #[test]
-    fn a_key_variable_that_is_not_set_is_an_error_naming_it() {
-        let error = api_key("SOCIAL_DEDUCTION_NO_SUCH_KEY").unwrap_err();
-        let shown = format!("{error:#}");
-        assert!(shown.contains("SOCIAL_DEDUCTION_NO_SUCH_KEY"), "{shown}");
-        assert!(shown.contains("not set"), "{shown}");
-    }
-
-    #[test]
-    fn the_key_is_read_from_the_named_variable_and_never_shown() {
-        // A variable Cargo sets for every test, since setting one is unsafe.
-        let name = "CARGO_MANIFEST_DIR";
-        let value = std::env::var(name).unwrap();
-        let key = api_key(name).unwrap();
-        assert_eq!(key.expose_secret(), value);
-        assert!(!format!("{key:?}").contains(&value));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_key_variable_whose_value_is_not_utf_8_is_an_error_naming_it() {
-        use std::os::unix::ffi::OsStringExt;
-        let error = key("SOCIAL_DEDUCTION_KEY", Some(OsString::from_vec(vec![0xff]))).unwrap_err();
-        let shown = format!("{error:#}");
-        assert!(shown.contains("SOCIAL_DEDUCTION_KEY"), "{shown}");
-        assert!(!shown.contains("not set"), "{shown}");
     }
 
     #[tokio::test]
