@@ -289,10 +289,7 @@ impl Narrator {
     ) -> Vec<Line> {
         let mut lines = self.outcome(survivors, false, time);
         lines.push(Line::Blank);
-        lines.push(Line::Told(format!(
-            "The {winner} win after {days} {}.",
-            if days == 1 { "day" } else { "days" }
-        )));
+        lines.push(Line::Told(won(winner, days)));
         lines.push(Line::Told(format!(
             "The game took {}.",
             whole_seconds(took)
@@ -798,6 +795,15 @@ fn ordinal((round, phase): &(NonZero<u8>, Phase)) -> u16 {
         Phase::Day => 1,
     };
     u16::from(round.get()) * 2 + half
+}
+
+/// That `winner` won after `days` days, as the account tells it: "The
+/// villagers win after 1 day."
+pub(crate) fn won(winner: Team, days: u8) -> String {
+    format!(
+        "The {winner} win after {days} {}.",
+        if days == 1 { "day" } else { "days" }
+    )
 }
 
 #[cfg(test)]

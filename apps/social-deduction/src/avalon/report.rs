@@ -227,15 +227,7 @@ impl Narrator {
     fn end(&mut self, by: Victory, took: Duration, time: SystemTime) -> Vec<Line> {
         let mut lines = self.finish(time);
         lines.push(Line::Blank);
-        lines.push(Line::Told(
-            match by {
-                Victory::Quests => "Good wins with three successful quests.",
-                Victory::Sabotage => "Evil wins with three failed quests.",
-                Victory::Rejections => "Evil wins with five failed proposals in a row.",
-                Victory::Assassination => "Evil wins by naming Merlin.",
-            }
-            .to_string(),
-        ));
+        lines.push(Line::Told(won(by).to_string()));
         lines.push(Line::Told(format!(
             "The game took {}.",
             whole_seconds(took)
@@ -264,6 +256,17 @@ impl Narrator {
             Phase::Quest => format!("quest {}", view.quest),
             Phase::Assassinate => "the assassination".to_string(),
         })
+    }
+}
+
+/// How a game was won `by`, as the account tells it: "Evil wins by naming
+/// Merlin."
+pub(crate) fn won(by: Victory) -> &'static str {
+    match by {
+        Victory::Quests => "Good wins with three successful quests.",
+        Victory::Sabotage => "Evil wins with three failed quests.",
+        Victory::Rejections => "Evil wins with five failed proposals in a row.",
+        Victory::Assassination => "Evil wins by naming Merlin.",
     }
 }
 
@@ -530,7 +533,9 @@ impl Account<Avalon> for Story {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::avalon::tests::{announcement, dealt, five, logged, seated, utterance, view_of};
+    use crate::avalon::tests::{
+        announcement, dealt, five, logged, logged_at, seated, utterance, view_of,
+    };
     use crate::avalon::{Rules, State};
     use crate::report::FORGOTTEN;
     use crate::report::tests::estimated;
@@ -538,15 +543,6 @@ mod tests {
     use crate::seat::id;
     use crate::strategy::RANDOM;
     use std::collections::HashSet;
-    use std::time::UNIX_EPOCH;
-
-    /// `entry`, logged `seconds` into the game.
-    fn at(seconds: u64, entry: Entry) -> Event<Entry> {
-        Event {
-            time: UNIX_EPOCH + Duration::from_secs(seconds),
-            ..logged(entry)
-        }
-    }
 
     /// A narrator that has been told the deal of the default table.
     fn dealt_five() -> Narrator {
@@ -580,7 +576,7 @@ mod tests {
     /// quest with `team` on the table, to the first seat, `seconds` into
     /// the game.
     fn opens(seconds: u64, seq: u64, phase: Phase, team: &[&str]) -> Event<Entry> {
-        at(
+        logged_at(
             seconds,
             announced("Player 1", seq, view_of("Player 1", phase, team)),
         )
@@ -625,7 +621,7 @@ mod tests {
         );
         // The same phase announced to another player adds nothing.
         let again = announced("Player 2", 1, view_of("Player 2", Phase::Propose, &[]));
-        assert!(narrator.narrate(&at(0, again)).is_empty());
+        assert!(narrator.narrate(&logged_at(0, again)).is_empty());
         assert_eq!(
             narrator.narrate(&opens(3, 2, Phase::Vote, &["Player 1", "Player 3"])),
             ["The proposal took 3s.", "", "Everyone votes on the team."]
@@ -647,7 +643,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            narrator.narrate(&at(
+            narrator.narrate(&logged_at(
                 70,
                 Entry::Event(Outcome::End {
                     winner: crate::avalon::Team::Good,

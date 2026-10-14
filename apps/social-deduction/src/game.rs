@@ -607,17 +607,23 @@ pub(crate) mod tests {
     >(
         episode: Episode<A>,
         won: oneshot::Receiver<G::Team>,
-        mut log: UnboundedReceiver<Event<Entry<G>>>,
+        log: UnboundedReceiver<Event<Entry<G>>>,
     ) -> anyhow::Result<Played<G>> {
         let started = Instant::now();
         episode.run(Duration::from_secs(60 * 60)).await?;
         let took = started.elapsed();
-
-        let mut logged = Vec::new();
-        while let Some(event) = log.recv().await {
-            logged.push(event.payload);
-        }
+        let logged = drained(log).await;
+        let logged = logged.into_iter().map(|event| event.payload).collect();
         Ok((won.await?, logged, took))
+    }
+
+    /// Every event `log` holds once the episode that writes it is over.
+    pub(crate) async fn drained<L>(mut log: UnboundedReceiver<Event<L>>) -> Vec<Event<L>> {
+        let mut events = Vec::new();
+        while let Some(event) = log.recv().await {
+            events.push(event);
+        }
+        events
     }
 
     /// Run a game of `roles` under `rules`, each player choosing at random
@@ -625,8 +631,26 @@ pub(crate) mod tests {
     pub(crate) async fn play<G: Fixture>(
         roles: HashMap<PlayerId, G::Role>,
         rules: G::Rules,
-        mut puppets: HashMap<&str, Seat<G>>,
+        puppets: HashMap<&str, Seat<G>>,
     ) -> anyhow::Result<Played<G>> {
+        let (episode, won, log) = episode(roles, rules, puppets);
+        run(episode, won, log).await
+    }
+
+    /// A game ready to run, with where its winner and its log come.
+    pub(crate) type Started<G> = (
+        Episode<Actor<G>>,
+        oneshot::Receiver<<G as Game>::Team>,
+        UnboundedReceiver<Event<Entry<G>>>,
+    );
+
+    /// A game of `roles` under `rules` as [`play`] plays it, with where its
+    /// winner and its log come.
+    pub(crate) fn episode<G: Fixture>(
+        roles: HashMap<PlayerId, G::Role>,
+        rules: G::Rules,
+        mut puppets: HashMap<&str, Seat<G>>,
+    ) -> Started<G> {
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
         let player = |id: &PlayerId| {
@@ -643,7 +667,16 @@ pub(crate) mod tests {
             player,
             logger,
         );
-        run(episode, won, log).await
+        (episode, won, log)
+    }
+
+    /// `roles` seated in order, `Player 1` onward.
+    pub(crate) fn seated<R: Copy>(roles: &[R]) -> HashMap<PlayerId, R> {
+        roles
+            .iter()
+            .enumerate()
+            .map(|(seat, role)| (format!("Player {}", seat + 1), *role))
+            .collect()
     }
 
     /// `payload`, an entry or a memory, as an event logged or remembered
@@ -653,6 +686,14 @@ pub(crate) mod tests {
             time: std::time::UNIX_EPOCH,
             episode: Default::default(),
             payload,
+        }
+    }
+
+    /// `payload`, logged `seconds` into the game.
+    pub(crate) fn logged_at<L>(seconds: u64, payload: L) -> Event<L> {
+        Event {
+            time: std::time::UNIX_EPOCH + Duration::from_secs(seconds),
+            ..logged(payload)
         }
     }
 

@@ -9,6 +9,12 @@ workflow takes a version's notes from here.
 
 ### Added
 
+- A viewer for social deduction games, in the browser: the game as a group
+  chat beside a live Avalon board, built with Leptos and Rich-Chat. Every
+  push to `main` plays a random game of Avalon and deploys it to
+  <https://wpm.github.io/FreeAgent/viewer/>.
+- `social_deduction::stage`, which folds a game's log into the viewer's
+  cues, and the `stage` example, which folds a log file.
 - The release archives hold the example configurations in `configs/`,
   beside the binary.
 - The `free-agent` library: episodes of actors that talk to each other by
