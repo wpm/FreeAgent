@@ -13,6 +13,8 @@ workflow takes a version's notes from here.
   beside the binary.
 - The `free-agent` library: episodes of actors that talk to each other by
   sending messages on the Tokio runtime.
+- `Episode::stopper`, a `Stopper` that ends a running episode from outside
+  it, think loops included. A stopped episode returns `Ok(())`.
 - The `social-deduction` application, which plays Werewolf with the roles
   dealt at random.
 - `social-deduction werewolf llm`, in which every player is a language
