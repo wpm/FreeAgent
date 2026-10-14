@@ -234,7 +234,7 @@ pub async fn play(text: &str, cues: &Cues) -> Result<(), String> {
     invoke("play", args).await.map(drop).map_err(error)
 }
 
-/// Stop the game playing.
+/// Stop the game being prepared or playing.
 pub fn stop() {
     command("stop", object(&[]));
 }

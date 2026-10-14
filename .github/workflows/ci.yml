@@ -190,9 +190,10 @@ jobs:
           tool: cargo-llvm-cov
       # Without --workspace the tests of the applications still run, but the
       # report leaves their source files out. The viewer's frontend is the
-      # browser's, and the Viewer job tests it. The desktop shell is the
-      # Tauri glue around social_deduction::live, which is measured here,
-      # and needs a webview to build, so the Desktop jobs test it.
+      # browser's, and the Viewer job tests it. The desktop shell is wiring:
+      # Tauri commands around social_deduction's live, editing and secret
+      # modules, which are measured here, the keyring store and the macOS
+      # dev bundle. It needs a webview to build, so the Desktop jobs test it.
       - run: cargo llvm-cov --workspace --exclude social-deduction-gui --exclude social-deduction-desktop --lcov --output-path lcov.info
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v7

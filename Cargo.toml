@@ -51,6 +51,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.2", features = ["macros", "rt", "sync", "time"] }
 tokio-util = { version = "0.7.20", features = ["time"] }
+tracing = "0.1.44"
+# The key-leak tests capture every event at TRACE.
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 # Only parsing: nothing writes TOML.
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 # Editing a configuration file keeps its comments and order.

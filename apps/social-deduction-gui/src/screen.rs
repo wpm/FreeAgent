@@ -170,6 +170,8 @@ pub struct Screen {
     pub clock: Clock,
     /// How many cues have been applied.
     applied: usize,
+    /// How many times the screen has been reset.
+    era: u64,
 }
 
 impl Default for Screen {
@@ -187,6 +189,7 @@ impl Default for Screen {
             thinking: Vec::new(),
             clock: Clock::default(),
             applied: 0,
+            era: 0,
         }
     }
 }
@@ -270,6 +273,28 @@ impl Screen {
                 who,
             };
             self.thinkers.push(thinker);
+        }
+    }
+
+    /// Clear the screen for a new game, in a new era.
+    pub fn reset(&mut self) {
+        *self = Screen {
+            era: self.era + 1,
+            ..Screen::default()
+        };
+    }
+
+    /// Which era the screen is in. Each [`Screen::reset`] starts another.
+    pub fn era(&self) -> u64 {
+        self.era
+    }
+
+    /// Do `act` to the screen if it is still in `era`, and nothing once it
+    /// has been reset: what a timer set for one game does, kept from the
+    /// next.
+    pub fn within(&mut self, era: u64, act: impl FnOnce(&mut Screen)) {
+        if self.era == era {
+            act(self);
         }
     }
 
@@ -815,6 +840,35 @@ mod tests {
         // The same board again lands nothing more.
         assert_eq!(screen.apply(&panel(&next), true), None);
         screen.expire(number);
+        assert!(screen.landed.is_empty());
+    }
+
+    #[test]
+    fn a_reset_clears_the_screen_and_what_was_asked_before_it_is_ignored() {
+        let mut screen = Screen::default();
+        screen.apply(&cast(), true);
+        screen.apply(&panel(&board()), true);
+        let mut next = board();
+        next.team = Some(vec!["Player 1".to_string(), "Player 3".to_string()]);
+        let before = screen.era();
+        let expired = screen.apply(&panel(&next), true).unwrap();
+        screen.reset();
+        assert_ne!(screen.era(), before);
+        assert_eq!(
+            Screen {
+                era: 0,
+                ..screen.clone()
+            },
+            Screen::default()
+        );
+        screen.apply(&cast(), true);
+        screen.apply(&panel(&board()), true);
+        let number = screen.apply(&panel(&next), true).unwrap();
+        assert_eq!(number, expired);
+        screen.within(before, |screen| screen.expire(expired));
+        assert_eq!(screen.landed, [(number, Landed::Team)]);
+        let now = screen.era();
+        screen.within(now, |screen| screen.expire(number));
         assert!(screen.landed.is_empty());
     }
 

@@ -13,17 +13,28 @@ fails() { ! "$@" 2> /dev/null; }
 generated=$'## Install social-deduction 1.2.3\n\nThe notes from CHANGELOG.md.'
 notes=$(./release-notes.sh 1.2.3)
 
-# The notes go on top of what dist wrote, with a blank line between.
+section=$'<!-- desktop-app -->\n'"$notes"$'\n<!-- /desktop-app -->'
+
+# The notes go on top of what dist wrote, between markers, with a blank
+# line after them.
 body=$(./release-body.sh 1.2.3 <<< "$generated")
-check "notes come first" test "$body" = "$notes"$'\n\n'"$generated"
+check "notes come first" test "$body" = "$section"$'\n\n'"$generated"
 
 # A rerun finds the notes already there and leaves the body alone.
 again=$(./release-body.sh 1.2.3 <<< "$body")
 check "a rerun changes nothing" test "$again" = "$body"
 
+# A rerun with different notes replaces the old ones, however they read.
+resigned=$(MACOS_SIGNED=true ./release-body.sh 1.2.3 <<< "$body")
+fresh=$(MACOS_SIGNED=true ./release-body.sh 1.2.3 <<< "$generated")
+check "a rerun with new notes replaces the old" test "$resigned" = "$fresh"
+check "a rerun leaves one table" test "$(grep -c '^## Desktop app' <<< "$resigned")" = 1
+crlf=$(MACOS_SIGNED=true ./release-body.sh 1.2.3 <<< "${body//$'\n'/$'\r\n'}")
+check "markers that end in a carriage return are found" test "$(grep -c '^## Desktop app' <<< "$crlf")" = 1
+
 # An empty body is just the notes.
 empty=$(./release-body.sh 1.2.3 < /dev/null)
-check "an empty body gets the notes alone" test "$empty" = "$notes"
+check "an empty body gets the notes alone" test "$empty" = "$section"
 
 # The macOS signing status follows the environment.
 check "an unsigned build says how to open it" grep -q "xattr -d com.apple.quarantine" <<< "$notes"

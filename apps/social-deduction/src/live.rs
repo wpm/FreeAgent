@@ -1,21 +1,25 @@
 //! A game played live for a viewer. [`play`] starts a [`Prepared`] game in
 //! the background, saves its log as JSON Lines, and folds each event
 //! through the game's [`Stage`] into cues as it happens, ending with
-//! [`Beat::Over`].
+//! [`Beat::Over`]. A [`Session`] plays one game at a time, from
+//! preparing it to its end.
 
 use crate::config::Name;
 use crate::game::{Actor, Entry};
 use crate::run::{Prepared, Ready};
 use crate::stage::{Stage, Staged, millis};
+use anyhow::{Context as _, anyhow};
 use free_agent::{Event, Stopper};
 use social_deduction_stage::{Beat, Cue, Outcome};
 use std::fs::{self, File};
 use std::future::Future;
 use std::io::{self, LineWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 /// How long a game may take before it is abandoned.
 pub const PATIENCE: Duration = Duration::from_secs(60 * 60);
@@ -44,6 +48,115 @@ impl Playing {
     /// Wait until the game has ended and its last cue is sent.
     pub async fn finished(self) {
         let _ = self.task.await;
+    }
+}
+
+/// Why a session refuses a game: it has one already.
+pub const BUSY: &str = "A game is already playing.";
+
+/// Why a game stopped before it started never does.
+pub const STOPPED: &str = "The game was stopped before it started.";
+
+/// The one game an app plays at a time, from the moment it is asked for:
+/// prepared, then played, and stopped at either stage. The log of the
+/// last game started is kept.
+#[derive(Default)]
+pub struct Session(Mutex<Held>);
+
+/// What a [`Session`] holds.
+#[derive(Default)]
+struct Held {
+    /// The game.
+    now: Now,
+    /// The log of the last game started.
+    log: Option<PathBuf>,
+}
+
+/// Where a [`Session`]'s game is.
+#[derive(Default)]
+enum Now {
+    /// There is none, or it was stopped before it started.
+    #[default]
+    Idle,
+    /// It is being prepared, until the token is cancelled.
+    Preparing(CancellationToken),
+    /// It is playing, or has ended.
+    Playing(Playing),
+}
+
+impl Held {
+    /// Whether a game is being prepared or playing.
+    fn busy(&self) -> bool {
+        match &self.now {
+            Now::Idle => false,
+            Now::Preparing(_) => true,
+            Now::Playing(playing) => !playing.is_finished(),
+        }
+    }
+}
+
+impl Session {
+    /// What the session holds.
+    fn held(&self) -> MutexGuard<'_, Held> {
+        self.0.lock().unwrap()
+    }
+
+    /// Prepare a game with `prepare`, create its log in `dir` as
+    /// [`create_log`] does, and [`play`] it, its cues passed to `show`. It
+    /// returns once the game has started.
+    ///
+    /// # Errors
+    ///
+    /// [`BUSY`] while another game is being prepared or playing, and
+    /// [`STOPPED`] when [`Session::stop`] comes first. When the game
+    /// cannot be prepared or its log created, why. A game that does not
+    /// start leaves no log.
+    pub async fn play(
+        &self,
+        prepare: impl Future<Output = anyhow::Result<Prepared>>,
+        dir: &Path,
+        show: impl FnMut(Cue) -> anyhow::Result<()> + Send + 'static,
+    ) -> anyhow::Result<()> {
+        let stopped = self.claim()?;
+        let prepared = tokio::select! {
+            biased;
+            () = stopped.cancelled() => Err(anyhow!(STOPPED)),
+            prepared = prepare => prepared,
+        };
+        let mut held = self.held();
+        held.now = Now::Idle;
+        let prepared = prepared?;
+        anyhow::ensure!(!stopped.is_cancelled(), STOPPED);
+        let (file, path) = create_log(dir, prepared.game(), SystemTime::now())
+            .context("The log could not be created")?;
+        let shown = Some(path.display().to_string());
+        held.now = Now::Playing(play(prepared, file, shown, show));
+        held.log = Some(path);
+        Ok(())
+    }
+
+    /// Mark the session as preparing a game, and give back what stops it.
+    fn claim(&self) -> anyhow::Result<CancellationToken> {
+        let mut held = self.held();
+        anyhow::ensure!(!held.busy(), BUSY);
+        let stopped = CancellationToken::new();
+        held.now = Now::Preparing(stopped.clone());
+        Ok(stopped)
+    }
+
+    /// Stop the game being prepared, so that it never starts, or the game
+    /// playing.
+    pub fn stop(&self) {
+        match &self.held().now {
+            Now::Idle => {}
+            Now::Preparing(stopped) => stopped.cancel(),
+            Now::Playing(playing) => playing.stop(),
+        }
+    }
+
+    /// The log of the last game started, if one has.
+    pub fn log(&self) -> Option<PathBuf> {
+        self.held().log.clone()
     }
 }
 
@@ -171,7 +284,9 @@ where
 
 /// Create the log of a game of `game` started at `time`:
 /// `<dir>/games/<YYYY-MM-DDTHH-MM-SS>-<game>.jsonl`, with the time in UTC.
-/// The file comes back, written a line at a time, with its path.
+/// A log of that name already there is kept, and the new one numbered
+/// `-2`, `-3` and on. The file comes back, written a line at a time, with
+/// its path.
 ///
 /// # Errors
 ///
@@ -191,8 +306,18 @@ pub fn create_log(
         Name::Werewolf => "werewolf",
         Name::Avalon => "avalon",
     };
-    let path = games.join(format!("{stamp}-{game}.jsonl"));
-    Ok((LineWriter::new(File::create(&path)?), path))
+    let mut number = 1;
+    loop {
+        let suffix = match number {
+            1 => String::new(),
+            n => format!("-{n}"),
+        };
+        let path = games.join(format!("{stamp}-{game}{suffix}.jsonl"));
+        match File::create_new(&path) {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => number += 1,
+            file => return Ok((LineWriter::new(file?), path)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -398,6 +523,127 @@ mod tests {
         );
     }
 
+    /// The random game `name`, to prepare.
+    async fn preparing(name: &str) -> anyhow::Result<Prepared> {
+        Ok(prepared(name).await)
+    }
+
+    /// Whether `session` has a game being prepared or playing.
+    fn busy(session: &Session) -> bool {
+        session.held().busy()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_session_plays_one_game_at_a_time_and_keeps_its_log() {
+        let session = Session::default();
+        let dir = scratch("session");
+        let (sender, receiver) = unbounded_channel();
+        let preparing_avalon = preparing("avalon/random.toml");
+        session
+            .play(preparing_avalon, &dir, sending(sender))
+            .await
+            .unwrap();
+        let path = session.log().unwrap();
+        assert!(path.starts_with(dir.join("games")), "{}", path.display());
+        let (refused, _) = unbounded_channel();
+        let error = session
+            .play(preparing("avalon/random.toml"), &dir, sending(refused))
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), BUSY);
+        assert_eq!(fs::read_dir(dir.join("games")).unwrap().count(), 1);
+        session.stop();
+        let cues = received(receiver).await;
+        assert!(matches!(
+            cues.last().map(|cue| &cue.beat),
+            Some(Beat::Over {
+                outcome: Outcome::Stopped,
+                ..
+            })
+        ));
+        assert!(!busy(&session));
+        let (sender, receiver) = unbounded_channel();
+        session
+            .play(preparing("werewolf/random.toml"), &dir, sending(sender))
+            .await
+            .unwrap();
+        assert_ne!(session.log().unwrap(), path);
+        received(receiver).await;
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_game_stopped_while_it_is_prepared_never_starts() {
+        let session = Session::default();
+        let dir = scratch("stopped-preparing");
+        let (sender, receiver) = unbounded_channel();
+        let (refused, _) = unbounded_channel();
+        let hanging = std::future::pending();
+        let (played, ()) = tokio::join!(session.play(hanging, &dir, sending(sender)), async {
+            tokio::task::yield_now().await;
+            assert!(busy(&session));
+            let error = session
+                .play(std::future::pending(), &dir, sending(refused))
+                .await
+                .unwrap_err();
+            assert_eq!(error.to_string(), BUSY);
+            session.stop();
+        });
+        assert_eq!(played.unwrap_err().to_string(), STOPPED);
+        assert!(received(receiver).await.is_empty());
+        assert!(!dir.join("games").exists());
+        assert!(session.log().is_none());
+        assert!(!busy(&session));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_game_stopped_just_as_it_is_prepared_never_starts() {
+        let session = Session::default();
+        let dir = scratch("stopped-prepared");
+        let ready = prepared("avalon/random.toml").await;
+        let (sender, receiver) = unbounded_channel();
+        let stopping = async {
+            session.stop();
+            Ok(ready)
+        };
+        let error = session
+            .play(stopping, &dir, sending(sender))
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), STOPPED);
+        assert!(received(receiver).await.is_empty());
+        assert!(!dir.join("games").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_game_that_cannot_be_prepared_or_logged_is_an_error_and_frees_the_session() {
+        let session = Session::default();
+        session.stop();
+        let dir = scratch("unprepared");
+        let (sender, _) = unbounded_channel();
+        let failing = async { Err(anyhow::anyhow!("no model")) };
+        let error = session
+            .play(failing, &dir, sending(sender.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "no model");
+        assert!(!busy(&session));
+        fs::write(dir.join("games"), "").unwrap();
+        let error = session
+            .play(preparing("avalon/random.toml"), &dir, sending(sender))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").starts_with("The log could not be created: "),
+            "{error:#}"
+        );
+        assert!(!busy(&session));
+        assert!(session.log().is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn a_log_is_named_for_when_its_game_started_and_which_game_it_is() {
         let dir = scratch("named");
@@ -407,6 +653,20 @@ mod tests {
         assert!(path.exists());
         let (_, path) = create_log(&dir, Name::Avalon, time).unwrap();
         assert!(path.ends_with("2026-10-13T14-00-00-avalon.jsonl"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_second_log_started_the_same_second_is_numbered_and_the_first_is_kept() {
+        let dir = scratch("same-second");
+        let time = UNIX_EPOCH + Duration::from_secs(1_791_900_000);
+        let (mut first, path) = create_log(&dir, Name::Avalon, time).unwrap();
+        writeln!(first, "first").unwrap();
+        let (_, second) = create_log(&dir, Name::Avalon, time).unwrap();
+        let (_, third) = create_log(&dir, Name::Avalon, time).unwrap();
+        assert!(second.ends_with("2026-10-13T14-00-00-avalon-2.jsonl"));
+        assert!(third.ends_with("2026-10-13T14-00-00-avalon-3.jsonl"));
+        assert_eq!(fs::read_to_string(path).unwrap(), "first\n");
         fs::remove_dir_all(dir).unwrap();
     }
 

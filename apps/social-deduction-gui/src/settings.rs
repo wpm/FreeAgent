@@ -57,7 +57,8 @@ enum Tab {
 }
 
 /// The settings screen: the configuration as a form or as TOML, and
-/// **Run**, with an error under it, in full.
+/// **Run**, with an error under it, in full. While a game is starting,
+/// **Stop** stops it.
 #[component]
 pub fn Settings(
     /// The presets **Preset** lists.
@@ -71,6 +72,8 @@ pub fn Settings(
     error: Signal<Option<String>>,
     /// What **Run** calls.
     run: Callback<()>,
+    /// What **Stop**, shown while a game is starting, calls.
+    stop: Callback<()>,
 ) -> impl IntoView {
     let view = RwSignal::new(FormView::default());
     let problem = RwSignal::new(None::<String>);
@@ -224,6 +227,11 @@ pub fn Settings(
                         {move || pending.get().then(|| view! { <span class="sd-spinner"></span> })}
                         "Run"
                     </button>
+                    {move || {
+                        pending
+                            .get()
+                            .then(|| view! { <button on:click=move |_| stop.run(())>"Stop"</button> })
+                    }}
                 </div>
                 {error_shown}
             </main>
