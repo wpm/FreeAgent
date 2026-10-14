@@ -66,6 +66,7 @@ pub type Seat = crate::game::Seat<Werewolf>;
 pub type Dealt = crate::seat::Dealt<Role>;
 
 impl Game for Werewolf {
+    const NAME: &'static str = "Werewolf";
     type Role = Role;
     type Team = Team;
     type Rules = Rules;

@@ -141,6 +141,9 @@ workflow takes a version's notes from here.
 
 ### Changed
 
+- `social-deduction models --check` asks each model to play Werewolf, then
+  Avalon, and marks it as playing when it plays both. The reason a model
+  did not play names the game and the request it did not answer.
 - Werewolf lists three or more players as Avalon does, "a, b and c": a
   pack of werewolves, the doctors protecting one player, the dead, and the
   table, `2 werewolves, 3 villagers, 1 doctor and 1 seer`.

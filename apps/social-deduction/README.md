@@ -509,14 +509,16 @@ random = 1
 The `models` command belongs to no game. It asks a provider, named by the
 root of its OpenAI-compatible API, for the models it serves and lists them,
 one id per line in sorted order. With `--check`, it asks each model listed
-to play as a player would, once as by night and once as by day, one model
-at a time, and marks with `*` those that answer both requests well, with
-`~` those that answer them well only when asked to call a tool and not made
-to, and with `!` those that do not, with a line at the end saying so. Why each `!`
-model failed goes to standard error, so the listing stays readable: a line
-`! id` naming the model as the listing marks it, then the error's causes,
-each on its own indented line, so a provider's words may run to several
-lines and still be read as one model's. A model that could not be asked at
+to play each game as a player would, Werewolf once as by night and once as
+by day, then Avalon once as each player its phases wait on, one model at a
+time, and marks with `*` those that answer every request well, with `~`
+those that answer them well only when asked to call a tool and not made to
+in some game, and with `!` those that do not, with a line at the end saying
+so. Why each `!` model failed goes to standard error, so the listing stays
+readable: a line `! id` naming the model as the listing marks it, then the
+error's causes, each on its own indented line, the first naming the game
+and the next the request it did not answer, so a provider's words may run
+to several lines and still be read as one model's. A model that could not be asked at
 all, because the provider was not reached or answered with anything but the
 model's answer, such as a missing key or a rate limit, stops the listing
 with the error, since nothing it would say about the rest would be true.
