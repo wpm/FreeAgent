@@ -323,12 +323,13 @@ mod tests {
     use crate::run::prepare;
     use std::path::Path;
 
-    /// The text of the example file `name` in `configs/`.
+    /// The text of the example file `name` in `configs/`, with Unix line
+    /// endings, as a Windows checkout may not give it.
     fn example(name: &str) -> String {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("configs")
             .join(name);
-        std::fs::read_to_string(path).unwrap()
+        std::fs::read_to_string(path).unwrap().replace("\r\n", "\n")
     }
 
     /// The examples, by name.

@@ -192,13 +192,24 @@ mod tests {
         dir
     }
 
+    /// `text` with Unix line endings. A Windows checkout gives the presets
+    /// CRLF, which the document writes as LF outside its strings.
+    fn unix(text: &str) -> String {
+        text.replace("\r\n", "\n")
+    }
+
+    /// The text of the document `editing` holds, with Unix line endings.
+    fn text(editing: &Editing) -> String {
+        unix(&editing.document().text())
+    }
+
     #[test]
     fn every_preset_is_edited_as_it_is_written() {
         for preset in PRESETS {
             let editing = Editing::new(preset.text).unwrap();
-            assert_eq!(editing.document().text(), preset.text, "{}", preset.name);
+            assert_eq!(text(&editing), unix(preset.text), "{}", preset.name);
         }
-        assert_eq!(Editing::default().document().text(), PRESETS[0].text);
+        assert_eq!(text(&Editing::default()), unix(PRESETS[0].text));
     }
 
     #[test]
@@ -226,11 +237,8 @@ mod tests {
         let dir = scratch("saved");
         let path = last(&dir.join("config"));
         write(&path, PRESETS[1].text).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(
-            Editing::new(&text).unwrap().document().text(),
-            PRESETS[1].text
-        );
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text(&Editing::new(&saved).unwrap()), unix(PRESETS[1].text));
         let error = write(&dir.join("config"), "x").unwrap_err();
         assert!(error.contains("could not be saved"), "{error}");
         std::fs::remove_dir_all(dir).unwrap();
