@@ -16,7 +16,7 @@ dist = false
 leptos = { version = "0.8", features = ["csr"] }
 # Pinned to the commit that adds Transcript, ahead of the crate's first
 # release. Game talk needs no code highlighting or math fonts.
-leptos-rich-chat = { git = "https://github.com/wpm/Rich-Chat", rev = "9388aead651e2db11b26cc0d21b2a6547eb60fdd", default-features = false }
+leptos-rich-chat = { version = "0.1.0", default-features = false }
 social-deduction-stage = { path = "../social-deduction-stage" }
 console_error_panic_hook = "0.1"
 serde.workspace = true
