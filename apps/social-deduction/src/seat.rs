@@ -1,12 +1,30 @@
 //! What every game shares about its seats: a player's name, the
-//! environment's, and whom an actor sends to.
+//! environment's, whom an actor sends to, what a seat is dealt, and how
+//! its player is built.
 
-use free_agent::ActorId;
+use free_agent::{ActorId, Behavior, Builder, ThinkBuilder};
 use std::collections::HashSet;
 use std::fmt;
 
 /// A player is an actor, named as the episode names it.
 pub type PlayerId = ActorId;
+
+/// How a seat is built: its player's behavior, an actor `A`, and its think
+/// loop if it has one.
+pub type Seat<A> = (
+    Builder<A>,
+    Option<ThinkBuilder<<A as Behavior>::Message, <A as Behavior>::Log>>,
+);
+
+/// What a seat is dealt: a role of the game's `R`, and the strategy its
+/// player plays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dealt<R> {
+    /// The role.
+    pub role: R,
+    /// The name of the strategy.
+    pub strategy: String,
+}
 
 /// A player's name as seat order reads it: a word, and the number it ends
 /// in, if any. Names order alphabetically by the word, whatever its case,
@@ -87,6 +105,12 @@ pub fn to_everyone_but<'a>(
     let mut to = to_the_players_but(me, players);
     to.insert(ENVIRONMENT.to_string());
     to
+}
+
+/// The player named `name`, as a test names it.
+#[cfg(test)]
+pub(crate) fn id(name: &str) -> PlayerId {
+    name.to_string()
 }
 
 #[cfg(test)]

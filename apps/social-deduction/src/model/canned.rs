@@ -189,15 +189,11 @@ pub fn playing_only(ids: &[&str], selecting: &[&str]) -> String {
 /// day's does, 400 Bad Request saying what [`day_refusal`] says, as a
 /// server that takes one tool at a time does.
 pub fn refusing_days(ids: &[&str]) -> String {
-    serving_and(listing(ids, None), |request| {
-        let offered = request["tools"].as_array().map_or(0, Vec::len);
-        if offered > 1 {
-            let model = request["model"].as_str().unwrap_or_default();
-            response("400 Bad Request", &error(&day_refusal(model)))
-        } else {
-            played(request)
-        }
-    })
+    refusing_when(
+        ids,
+        |request| request["tools"].as_array().map_or(0, Vec::len) > 1,
+        day_refusal,
+    )
 }
 
 /// A provider that serves `ids` and plays each only when not made to call
@@ -206,10 +202,54 @@ pub fn refusing_days(ids: &[&str]) -> String {
 /// [`required_refusal`] says, as a model that refuses to be made to call a
 /// tool is; any other is answered as [`playing`] answers it.
 pub fn refusing_required(ids: &[&str]) -> String {
-    serving_and(listing(ids, None), |request| {
-        if request["tool_choice"] == "required" {
+    refusing_when(
+        ids,
+        |request| request["tool_choice"] == "required",
+        required_refusal,
+    )
+}
+
+/// Whether the completion `request` offers the tool named `tool`.
+fn offers(request: &serde_json::Value, tool: &str) -> bool {
+    request["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|offered| offered["function"]["name"] == tool)
+}
+
+/// A provider that serves `ids` and plays each as [`playing`] does, except
+/// that a completion request offering the tool `tool` is answered 400 Bad
+/// Request, saying what [`refusal`] says, kept for the rest of the process.
+pub fn refusing_offers_of(tool: &'static str, ids: &[&str]) -> String {
+    refusing_when(ids, move |request| offers(request, tool), refusal)
+}
+
+/// A provider that serves `ids` and plays each as [`playing`] does, except
+/// that a completion request offering the tool `tool` whose `tool_choice` is
+/// `"required"` is refused as [`refusing_required`] refuses it, kept for
+/// the rest of the process.
+pub fn refusing_required_offering(tool: &'static str, ids: &[&str]) -> String {
+    refusing_when(
+        ids,
+        move |request| offers(request, tool) && request["tool_choice"] == "required",
+        required_refusal,
+    )
+}
+
+/// A provider that serves `ids` and plays each as [`playing`] does, except
+/// that a completion request `refused` picks out is answered 400 Bad
+/// Request, saying what `said` says of the model asked, kept for the rest
+/// of the process.
+fn refusing_when(
+    ids: &[&str],
+    refused: impl Fn(&serde_json::Value) -> bool + Send + 'static,
+    said: fn(&str) -> String,
+) -> String {
+    serving_and(listing(ids, None), move |request| {
+        if refused(request) {
             let model = request["model"].as_str().unwrap_or_default();
-            response("400 Bad Request", &error(&required_refusal(model)))
+            response("400 Bad Request", &error(&said(model)))
         } else {
             played(request)
         }

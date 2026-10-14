@@ -95,7 +95,7 @@ pub enum Probed {
     Played(ToolChoice),
     /// One of the requests the model did not answer as a player must: the
     /// provider refused it as bad, or the answer was not well formed. The
-    /// error names the model and the request, and carries the cause
+    /// error names the model, the game and the request, and carries the cause
     /// beneath it.
     DidNotPlay(anyhow::Error),
 }

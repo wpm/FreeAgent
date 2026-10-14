@@ -6,15 +6,12 @@
 use clap::{Args, Parser};
 use free_agent::{Behavior, Episode, Event, Logger};
 use serde::Serialize;
-use social_deduction::avalon;
-use social_deduction::config::{self, Game};
+use social_deduction::config::{self, Name, Settings, Settled};
+use social_deduction::game::{self, Game, Narrate};
 use social_deduction::model::spec::Probed;
 use social_deduction::model::{
     Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
 };
-use social_deduction::werewolf::prompted;
-use social_deduction::werewolf::report::Narrator;
-use social_deduction::werewolf::{self, Team};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -38,9 +35,9 @@ enum CommandLine {
         /// for the provider
         #[arg(long)]
         api_key_env: Option<String>,
-        /// Ask every model listed, or only the IDs given, to play as a
-        /// player does by night and by day, and mark those that do. End the
-        /// IDs with -- when the base URL follows them
+        /// Ask every model listed, or only the IDs given, to play each
+        /// game as a player does, and mark those that do. End the IDs with
+        /// -- when the base URL follows them
         #[arg(long, num_args = 0.., value_name = "ID", value_terminator = "--")]
         check: Option<Vec<String>>,
     },
@@ -83,48 +80,8 @@ const PATIENCE: Duration = Duration::from_secs(60 * 60);
 async fn main() -> anyhow::Result<()> {
     match CommandLine::parse() {
         CommandLine::Play(Play { config, logging }) => match config::load(&config)? {
-            Game::Werewolf(settings) => {
-                // Every prompt is rendered, and every model in play set
-                // up, before any actor is built, so that a template that is
-                // broken or a model that does not play fails before
-                // anything else.
-                let prompts = settings.prompts()?;
-                let (models, handles) = settings.set_up(&prompts).await?;
-                let deal = settings.deal();
-                let configuration = settings.configuration(&deal, &prompts, models)?;
-                let players = werewolf::config::players(&configuration, &deal, &handles);
-                let rules = settings.rules();
-                let mut narrator = Narrator::default();
-                play(
-                    logging.enabled(),
-                    move |event| narrator.narrate(event),
-                    |logger| {
-                        let (winner, _) = oneshot::channel::<Team>();
-                        werewolf::game(deal, rules, configuration, winner, players, logger)
-                    },
-                )
-                .await
-            }
-            Game::Avalon(settings) => {
-                // As in Werewolf, every prompt is rendered and every model
-                // in play set up before any actor is built.
-                let prompts = settings.prompts()?;
-                let (models, handles) = settings.set_up(&prompts).await?;
-                let deal = settings.deal();
-                let configuration = settings.configuration(&deal, &prompts, models)?;
-                let players = avalon::config::players(&configuration, &deal, &handles);
-                let rules = settings.rules;
-                let mut narrator = avalon::report::Narrator::default();
-                play(
-                    logging.enabled(),
-                    move |event| narrator.narrate(event),
-                    |logger| {
-                        let (winner, _) = oneshot::channel();
-                        avalon::game(deal, rules, configuration, winner, players, logger)
-                    },
-                )
-                .await
-            }
+            Settled::Werewolf(settings) => run(*settings, logging.enabled()).await,
+            Settled::Avalon(settings) => run(*settings, logging.enabled()).await,
         },
         CommandLine::Models {
             base_url,
@@ -175,20 +132,21 @@ fn known_providers_help() -> String {
 /// played when asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mark {
-    /// Asked as by night and as by day, it answered both requests well,
-    /// under the tool choice the probe settled.
+    /// Asked to play each game, it answered every request well, under the
+    /// tool choice every game allows.
     Played(ToolChoice),
-    /// Asked as by night and as by day, it did not answer one of them well.
+    /// Asked to play each game, it did not answer one request well.
     DidNotPlay,
 }
 
 /// Each of `ids`, in order, with its mark: those in `check`, or every one
-/// of them when `check` is empty, are asked by `model` to play, one model
-/// at a time, since a local server loads each model it is asked for, and
-/// the rest are unmarked. Why a model that did not play failed goes to
-/// `reasons`, as [`reason`] writes it. A model that could not be asked
-/// stops the listing with the error, since nothing it would say about
-/// the rest would be true.
+/// of them when `check` is empty, are asked by `model` to play each game in
+/// [`Name::ALL`], one model at a time, since a local server loads each
+/// model it is asked for, and the rest are unmarked. Each game's probe
+/// starts from the tool choice the games before it settled. Why a model that did not play failed
+/// goes to `reasons`, as [`reason`] writes it. A model that could not be
+/// asked stops the listing with the error, since nothing it would say
+/// about the rest would be true.
 async fn checked(
     model: &dyn Model,
     ids: Vec<String>,
@@ -198,7 +156,14 @@ async fn checked(
     let mut marked = Vec::new();
     for id in ids {
         let mark = if check.is_empty() || check.contains(&id) {
-            match prompted::check_plays(model, &id).await? {
+            let mut probed = Probed::Played(ToolChoice::Required);
+            for game in Name::ALL {
+                let Probed::Played(from) = probed else {
+                    break;
+                };
+                probed = game.check_plays(model, &id, from).await?;
+            }
+            match probed {
                 Probed::Played(tool_choice) => Some(Mark::Played(tool_choice)),
                 Probed::DidNotPlay(error) => {
                     reason(reasons, &id, &error)?;
@@ -253,6 +218,29 @@ fn listing(models: &[(String, Option<Mark>)]) -> String {
         .unwrap();
     }
     listing
+}
+
+/// Play one game of `G` under `settings`, logged when `logging` is on.
+/// Every prompt is rendered, and every model in play set up, before any
+/// actor is built, so that a template that is broken or a model that does
+/// not play fails before anything else.
+async fn run<G: Game>(settings: Settings<G>, logging: bool) -> anyhow::Result<()> {
+    let prompts = settings.prompts()?;
+    let (models, handles) = settings.set_up(&prompts).await?;
+    let deal = settings.lineup.deal();
+    let configuration = settings.configuration(&deal, &prompts, models)?;
+    let players = config::players(&configuration, &deal, &handles);
+    let rules = settings.rules();
+    let mut narrator = G::Narrator::default();
+    play(
+        logging,
+        move |event| narrator.narrate(event),
+        |logger| {
+            let (winner, _) = oneshot::channel();
+            game::game(deal, rules, configuration, winner, players, logger)
+        },
+    )
+    .await
 }
 
 /// Play one game, the episode `game` builds once given the logger the
@@ -600,24 +588,22 @@ mod tests {
                 ),
             ]
         );
-        // A model that plays by night is asked again as by day.
+        // A model that plays Werewolf by night is asked again as by day,
+        // then as each of the four Avalon asks after.
         let asked: Vec<String> = model.requests().into_iter().map(|r| r.model).collect();
         assert_eq!(
             asked,
-            [
-                "gpt-0",
-                "llama",
-                "qwen2.5-7b-instruct",
-                "qwen2.5-7b-instruct"
-            ]
+            [&["gpt-0", "llama"][..], &["qwen2.5-7b-instruct"; 6][..]].concat()
         );
         // Each reason under a line naming its model as the listing marks
         // it, the error's causes one per indented line, a cause of several
         // lines indented on each.
         assert_eq!(
             String::from_utf8(reasons).unwrap(),
-            "! gpt-0\n  gpt-0 did not answer a night's request\n  gpt-0 does not support tools\n  in two lines\n\
-             ! llama\n  llama did not answer a night's request\n  llama does not support tools\n  in two lines\n"
+            "! gpt-0\n  gpt-0 did not play Werewolf\n  did not answer a night's request\n  \
+             gpt-0 does not support tools\n  in two lines\n\
+             ! llama\n  llama did not play Werewolf\n  did not answer a night's request\n  \
+             llama does not support tools\n  in two lines\n"
         );
         // Only the ids given, in the listing's order.
         let model = playing_only_as("qwen2.5-7b-instruct");
@@ -640,9 +626,24 @@ mod tests {
         let asked: Vec<String> = model.requests().into_iter().map(|r| r.model).collect();
         assert_eq!(
             asked,
-            ["gpt-0", "qwen2.5-7b-instruct", "qwen2.5-7b-instruct"]
+            [&["gpt-0"][..], &["qwen2.5-7b-instruct"; 6][..]].concat()
         );
         assert!(String::from_utf8(reasons).unwrap().starts_with("! gpt-0\n"));
+    }
+
+    #[tokio::test]
+    async fn a_model_made_to_call_a_tool_in_one_game_but_not_the_other_is_marked_as_not_made_to() {
+        let base_url = canned::refusing_required_offering("propose", &["llama"]);
+        let provider = Provider::new(base_url, None, REQUEST_TIMEOUT).unwrap();
+        let mut reasons = Vec::new();
+        let marked = checked(&provider, vec!["llama".to_string()], &[], &mut reasons)
+            .await
+            .unwrap();
+        assert_eq!(
+            marked,
+            [("llama".to_string(), Some(Mark::Played(ToolChoice::Auto)))]
+        );
+        assert!(reasons.is_empty());
     }
 
     #[tokio::test]
@@ -658,6 +659,49 @@ mod tests {
             [("sonnet".to_string(), Some(Mark::Played(ToolChoice::Auto)))]
         );
         assert!(reasons.is_empty());
+    }
+
+    /// A model asked through a provider, remembering the tool choice each
+    /// request to it was made under.
+    struct Watched {
+        provider: Provider,
+        asked: std::sync::Mutex<Vec<ToolChoice>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Model for Watched {
+        async fn complete(
+            &self,
+            request: &social_deduction::model::Request,
+        ) -> anyhow::Result<social_deduction::model::Response> {
+            self.asked.lock().unwrap().push(request.tool_choice);
+            self.provider.complete(request).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_model_that_refuses_to_be_made_to_call_a_tool_is_not_made_to_again_in_the_next_game()
+    {
+        let base_url = canned::refusing_required(&["sonnet"]);
+        let model = Watched {
+            provider: Provider::new(base_url, None, REQUEST_TIMEOUT).unwrap(),
+            asked: Default::default(),
+        };
+        let mut reasons = Vec::new();
+        let marked = checked(&model, vec!["sonnet".to_string()], &[], &mut reasons)
+            .await
+            .unwrap();
+        assert_eq!(
+            marked,
+            [("sonnet".to_string(), Some(Mark::Played(ToolChoice::Auto)))]
+        );
+        // Refused once by night in Werewolf, then asked to call a tool but
+        // not made to: by night again, by day, and as each of Avalon's four.
+        let asked = model.asked.into_inner().unwrap();
+        assert_eq!(
+            asked,
+            [&[ToolChoice::Required][..], &[ToolChoice::Auto; 6][..]].concat()
+        );
     }
 
     #[tokio::test]

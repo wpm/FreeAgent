@@ -3,16 +3,19 @@
 //! lines.
 
 use free_agent::Event;
-use social_deduction::avalon;
+use serde::de::DeserializeOwned;
+use social_deduction::avalon::{self, Avalon};
+use social_deduction::config::Configuration;
+use social_deduction::game::{self, Game};
 use social_deduction::model::ToolChoice;
 use social_deduction::model::canned::{
     day_refusal, playing, playing_only, playing_within, recording, refusal, refusing,
-    refusing_days, refusing_required, reported, retracting, serving, unreachable, wanting_a_key,
+    refusing_days, refusing_offers_of, refusing_required, reported, retracting, serving,
+    unreachable, wanting_a_key,
 };
 use social_deduction::model::window::{ContextWindow, Source};
 use social_deduction::seat::PlayerId;
-use social_deduction::werewolf::config::Configuration;
-use social_deduction::werewolf::{Ending, Entry, Message, Role};
+use social_deduction::werewolf::{Ending, Entry, Limits, Message, Move, Outcome, Role, Werewolf};
 use std::collections::{HashMap, HashSet};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -45,9 +48,9 @@ fn refused(args: &[&str]) -> String {
     String::from_utf8(output.stderr).unwrap()
 }
 
-/// Play Werewolf with `args` after the game: the events on standard error,
-/// parsed, and what was printed.
-fn played(args: &[&str]) -> (Vec<Event<Entry>>, String) {
+/// Play a game with `args` after `play`: the events on standard error,
+/// parsed as entries of `E`, and what was printed.
+fn played<E: DeserializeOwned>(args: &[&str]) -> (Vec<Event<E>>, String) {
     let output = succeeded(&[&["play"], args].concat());
     let stderr = String::from_utf8(output.stderr).unwrap();
     let events = stderr
@@ -66,9 +69,11 @@ fn assert_invalid(stderr: &str, path: &str) {
 }
 
 /// The deal the log opens with: every player's role and strategy.
-fn start(events: &[Event<Entry>]) -> (&HashMap<PlayerId, Role>, &HashMap<PlayerId, String>) {
+fn start<G: Game>(
+    events: &[Event<game::Entry<G>>],
+) -> (&HashMap<PlayerId, G::Role>, &HashMap<PlayerId, String>) {
     match events.first().map(|event| &event.payload) {
-        Some(Entry::Start {
+        Some(game::Entry::Start {
             roles, strategies, ..
         }) => (roles, strategies),
         first => panic!("{first:?}"),
@@ -97,7 +102,8 @@ fn assert_plays_the_default_table(args: &[&str], notes: &[&str]) -> (Vec<Event<E
     // The default table seats seven.
     assert_eq!(roles.len(), 7);
     assert_eq!(strategies.len(), 7);
-    let Some(Entry::End { winner, .. }) = events.last().map(|event| &event.payload) else {
+    let Some(Entry::Event(Outcome::End { winner, .. })) = events.last().map(|event| &event.payload)
+    else {
         panic!("{events:?}");
     };
     // The account opens with the table, a player to a line with its role
@@ -145,17 +151,25 @@ fn assert_plays_the_default_table(args: &[&str], notes: &[&str]) -> (Vec<Event<E
     (events, printed)
 }
 
+/// The limits the deal the log opens with gives each phase.
+fn started<G: Game>(events: &[Event<game::Entry<G>>]) -> &G::Limits {
+    match events.first().map(|event| &event.payload) {
+        Some(game::Entry::Start { limits, .. }) => limits,
+        first => panic!("{first:?}"),
+    }
+}
+
 /// The configuration the log of `events` has right after the deal.
-fn configuration(events: &[Event<Entry>]) -> &Configuration {
+fn configuration<G: Game>(events: &[Event<game::Entry<G>>]) -> &Configuration<G> {
     match events.get(1).map(|event| &event.payload) {
-        Some(Entry::Configuration(configuration)) => configuration,
+        Some(game::Entry::Configuration(configuration)) => configuration,
         second => panic!("{second:?}"),
     }
 }
 
 #[test]
 fn the_random_config_plays_every_player_random_and_is_logged_from_the_deal_to_the_result() {
-    let (events, _) = assert_plays_the_default_table(&[&example("random.toml")], &[]);
+    let (events, _) = assert_plays_the_default_table(&[&example("werewolf", "random.toml")], &[]);
     let (_, strategies) = start(&events);
     assert!(strategies.values().all(|strategy| strategy == "random"));
     // The configuration is logged, with no models.
@@ -165,62 +179,8 @@ fn the_random_config_plays_every_player_random_and_is_logged_from_the_deal_to_th
 }
 
 #[test]
-fn no_log_leaves_standard_error_empty_and_the_game_is_still_told() {
-    let random = example("random.toml");
-    let output = succeeded(&["play", &random, "--no-log"]);
-    assert!(output.stderr.is_empty(), "{output:?}");
-    let printed = String::from_utf8(output.stdout).unwrap();
-    assert!(printed.starts_with("7 players:\n"), "{printed}");
-    assert!(printed.contains("\nSurvivors:\n"), "{printed}");
-    // Given after --no-log, --log puts the log back.
-    let (events, _) = played(&[&random, "--no-log", "--log"]);
-    assert!(
-        matches!(events[0].payload, Entry::Start { .. }),
-        "{events:?}"
-    );
-}
-
-#[test]
-fn the_table_is_dealt_as_the_file_asks() {
-    let config = written(
-        "table",
-        "game = \"werewolf\"\n[roles.werewolf]\ncount = 1\n[roles.villager]\ncount = 2\n\
-         [roles.doctor]\ncount = 0\n[roles.seer]\ncount = 0\n",
-    );
-    let (events, _) = played(&[&config]);
-
-    let (roles, _) = start(&events);
-    let count = |role| roles.values().filter(|r| **r == role).count();
-    assert_eq!(roles.len(), 3);
-    assert_eq!(count(Role::Werewolf), 1);
-    assert_eq!(count(Role::Villager), 2);
-}
-
-#[test]
-fn werewolf_takes_the_limits_from_the_file() {
-    let config = written(
-        "limits",
-        "game = \"werewolf\"\n[phases]\nnight_limit = \"5s\"\nday_limit = \"1m\"\n",
-    );
-    let (events, _) = played(&[&config]);
-    let Some(Entry::Start {
-        night_limit,
-        day_limit,
-        ratify_limit,
-        ..
-    }) = events.first().map(|event| &event.payload)
-    else {
-        panic!("{events:?}");
-    };
-    assert_eq!(*night_limit, Duration::from_secs(5));
-    assert_eq!(*day_limit, Duration::from_secs(60));
-    // The day is not ratified unless something says so.
-    assert_eq!(*ratify_limit, Duration::ZERO);
-}
-
-#[test]
 fn an_unratified_day_ends_once_everyone_has_voted_and_is_logged_as_such() {
-    let (events, printed) = played(&[&example("random.toml")]);
+    let (events, printed) = played(&[&example("werewolf", "random.toml")]);
     let endings = endings(&events);
     assert!(
         endings.iter().all(|by| *by == Ending::AllSelected),
@@ -246,7 +206,7 @@ fn play_without_a_configuration_file_is_a_usage_error_naming_it() {
 #[test]
 fn the_games_are_unrecognized_subcommands() {
     for game in ["werewolf", "avalon"] {
-        let stderr = assert_usage_error(&[game, &example("random.toml")]);
+        let stderr = assert_usage_error(&[game, &example("werewolf", "random.toml")]);
         assert!(
             stderr.contains(&format!("unrecognized subcommand '{game}'")),
             "{stderr}"
@@ -256,7 +216,7 @@ fn the_games_are_unrecognized_subcommands() {
 
 #[test]
 fn the_settings_the_file_holds_are_unknown_arguments() {
-    let config = example("random.toml");
+    let config = example("werewolf", "random.toml");
     for flag in [
         "--werewolves",
         "--vote-limit",
@@ -324,9 +284,45 @@ fn a_malformed_file_is_an_invalid_configuration_before_any_game_output() {
 /// The model the tests' configuration files name.
 const EXAMPLE_MODEL: &str = "qwen2.5-7b-instruct";
 
-/// A Werewolf configuration file, by its name in the configs directory.
-fn example(name: &str) -> String {
-    format!("{}/configs/werewolf/{name}", env!("CARGO_MANIFEST_DIR"))
+/// A configuration file of `game`, by its name in the game's configs
+/// directory.
+fn example(game: &str, name: &str) -> String {
+    format!("{}/configs/{game}/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
+/// A game as these tests play it.
+trait Tested: Game {
+    /// The game's name, as a configuration file's `game` key gives it.
+    const KEY: &str;
+    /// How many players the default table seats.
+    const SEATS: usize;
+    /// The `[phases]` a prompted game is played under: short ones, so
+    /// that a phase nobody acts in ends soon.
+    const PHASES: &[&str];
+    /// How many requests the probe makes of a model.
+    const PROBED: usize;
+    /// What a model that does not play is said to have failed.
+    const REFUSED: &str;
+}
+
+impl Tested for Werewolf {
+    const KEY: &str = "werewolf";
+    const SEATS: usize = 7;
+    const PHASES: &[&str] = &QUICK;
+    // One request as by night, and one as by day.
+    const PROBED: usize = 2;
+    const REFUSED: &str = "did not play Werewolf\n    1: did not answer a night's request";
+}
+
+impl Tested for Avalon {
+    const KEY: &str = "avalon";
+    const SEATS: usize = 5;
+    // Avalon's phases end once the players they wait on have acted, which
+    // the models these tests play do at once.
+    const PHASES: &[&str] = &[];
+    // One request for each kind of phase.
+    const PROBED: usize = 4;
+    const REFUSED: &str = "did not play Avalon\n    1: did not answer as the leader";
 }
 
 /// The TOML table `lines` make.
@@ -349,14 +345,14 @@ fn rephased(path: &str, phases: &[&str]) {
     });
 }
 
-/// A configuration file written for this test: the prompted example with
-/// the `[models.qwen]` table's provider replaced by one at `base_url`, its
-/// model by `id`, and `lines` added to it, and the [`QUICK`] limits for its
-/// phases, in the target directory, at a path of its own so the tests do
-/// not collide.
-fn configured(test: &str, base_url: &str, id: &str, lines: &[&str]) -> String {
+/// A configuration file written for this test: the prompted example of
+/// `G` with the `[models.qwen]` table's provider replaced by one at
+/// `base_url`, its model by `id`, and `lines` added to it, and the game's
+/// [`Tested::PHASES`], in the target directory, at a path of its own so the
+/// tests do not collide.
+fn configured<G: Tested>(test: &str, base_url: &str, id: &str, lines: &[&str]) -> String {
     let path = format!("{}/{test}.toml", env!("CARGO_TARGET_TMPDIR"));
-    std::fs::copy(example("prompted.toml"), &path).unwrap();
+    std::fs::copy(example(G::KEY, "prompted.toml"), &path).unwrap();
     edited(&path, |file| {
         let qwen = file["models"]["qwen"].as_table_mut().unwrap();
         for key in ["base_url", "id"] {
@@ -368,7 +364,7 @@ fn configured(test: &str, base_url: &str, id: &str, lines: &[&str]) -> String {
         qwen.insert("base_url".to_string(), base_url.into());
         qwen.insert("id".to_string(), id.into());
         qwen.extend(table(lines));
-        file.insert("phases".to_string(), table(&QUICK).into());
+        file.insert("phases".to_string(), table(G::PHASES).into());
     });
     path
 }
@@ -378,7 +374,7 @@ fn endings(events: &[Event<Entry>]) -> Vec<Ending> {
     let endings: Vec<Ending> = events
         .iter()
         .filter_map(|event| match &event.payload {
-            Entry::Voted { by, .. } => Some(*by),
+            Entry::Event(Outcome::Voted { by, .. }) => Some(*by),
             _ => None,
         })
         .collect();
@@ -401,7 +397,7 @@ const QUICK: [&str; 3] = [
 #[test]
 fn the_context_window_the_provider_reports_is_used_unless_the_file_gives_one() {
     let base_url = playing_within(&[EXAMPLE_MODEL], 32768);
-    let config = configured("window", &base_url, EXAMPLE_MODEL, &[]);
+    let config = configured::<Werewolf>("window", &base_url, EXAMPLE_MODEL, &[]);
     let args = [config.as_str()];
     let told = "qwen's context window is 32768 tokens, as the provider reports.";
     let (events, _) = assert_plays_the_default_table(&args, &[told]);
@@ -412,7 +408,7 @@ fn the_context_window_the_provider_reports_is_used_unless_the_file_gives_one() {
             source: Source::Provider,
         }
     );
-    let config = configured(
+    let config = configured::<Werewolf>(
         "window-file",
         &base_url,
         EXAMPLE_MODEL,
@@ -438,7 +434,7 @@ const SMALL_WINDOW: &str = "1900";
 fn in_a_small_context_window_the_game_plays_to_the_end() {
     let base_url = playing(&[EXAMPLE_MODEL]);
     let window = format!("context_window = {SMALL_WINDOW}");
-    let config = configured("forgetting", &base_url, EXAMPLE_MODEL, &[&window]);
+    let config = configured::<Werewolf>("forgetting", &base_url, EXAMPLE_MODEL, &[&window]);
     let args = [config.as_str()];
     let told =
         format!("qwen's context window is {SMALL_WINDOW} tokens, as the configuration file says.");
@@ -461,7 +457,7 @@ fn in_a_small_context_window_the_game_plays_to_the_end() {
 #[test]
 fn a_context_window_with_no_room_for_a_story_is_refused_before_anything_is_printed() {
     let base_url = playing(&[EXAMPLE_MODEL]);
-    let config = configured(
+    let config = configured::<Werewolf>(
         "window-small",
         &base_url,
         EXAMPLE_MODEL,
@@ -477,7 +473,7 @@ fn a_context_window_with_no_room_for_a_story_is_refused_before_anything_is_print
 #[test]
 fn a_context_window_of_0_is_refused_before_anything_is_printed() {
     let base_url = playing(&[EXAMPLE_MODEL]);
-    let config = configured(
+    let config = configured::<Werewolf>(
         "window-0",
         &base_url,
         EXAMPLE_MODEL,
@@ -494,22 +490,19 @@ fn a_context_window_of_0_is_refused_before_anything_is_printed() {
 #[test]
 fn a_game_of_model_players_is_logged_from_the_configuration_to_the_result() {
     let base_url = playing(&[EXAMPLE_MODEL]);
-    let config = configured("plays", &base_url, EXAMPLE_MODEL, &[]);
+    let config = configured::<Werewolf>("plays", &base_url, EXAMPLE_MODEL, &[]);
     let args = [config.as_str()];
     let (events, printed) = assert_plays_the_default_table(&args, &[DEFAULT_WINDOW]);
     let (roles, strategies) = start(&events);
     assert!(strategies.values().all(|strategy| strategy == "everyone"));
-    let Entry::Start { ratify_limit, .. } = &events[0].payload else {
-        panic!("{events:?}");
-    };
-    assert_eq!(*ratify_limit, Duration::from_secs(1));
+    assert_eq!(started(&events).ratify_limit, Duration::from_secs(1));
     let configuration = configuration(&events);
     let model = &configuration.models["qwen"];
     assert_eq!(model.base_url, base_url);
     assert_eq!(model.id, EXAMPLE_MODEL);
     assert_eq!(model.tool_choice, ToolChoice::Required);
-    assert_eq!(configuration.night_limit, Duration::from_secs(1));
-    assert_eq!(configuration.ratify_limit, Duration::from_secs(1));
+    assert_eq!(configuration.limits.night_limit, Duration::from_secs(1));
+    assert_eq!(configuration.limits.ratify_limit, Duration::from_secs(1));
     // Everyone votes at once, so each day's votes stand after the ratify
     // limit and the selected player is voted out.
     let endings = endings(&events);
@@ -574,30 +567,6 @@ fn a_game_of_model_players_is_logged_from_the_configuration_to_the_result() {
 }
 
 #[test]
-fn every_call_a_player_makes_logs_its_usage_and_the_probe_logs_none() {
-    let (base_url, requests) = recording(&[EXAMPLE_MODEL]);
-    let config = configured("usage", &base_url, EXAMPLE_MODEL, &[]);
-    let (events, _) = played(&[config.as_str()]);
-    let (roles, _) = start(&events);
-    let usages: Vec<(&PlayerId, &serde_json::Value)> = events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            Entry::Usage { player, usage, .. } => Some((player, usage)),
-            _ => None,
-        })
-        .collect();
-    assert!(!usages.is_empty(), "{events:?}");
-    for (player, usage) in &usages {
-        assert!(roles.contains_key(*player), "{player}");
-        assert_eq!(*usage, &reported());
-    }
-    // The probe's two requests are logged nowhere. A call still underway
-    // when the game ends logs nothing either.
-    let probed = 2;
-    assert!(usages.len() <= requests.lock().unwrap().len() - probed);
-}
-
-#[test]
 fn a_table_of_random_werewolves_and_prompted_villagers_plays_to_the_end() {
     let base_url = playing(&[EXAMPLE_MODEL]);
     let path = format!("{}/mixed.toml", env!("CARGO_TARGET_TMPDIR"));
@@ -644,7 +613,7 @@ strategy = \"plain\"
 #[test]
 fn a_model_player_retracts_its_vote_and_everyone_hears_it() {
     let base_url = retracting(&[EXAMPLE_MODEL]);
-    let config = configured("retracts", &base_url, EXAMPLE_MODEL, &[]);
+    let config = configured::<Werewolf>("retracts", &base_url, EXAMPLE_MODEL, &[]);
     // Each change of the tentative decision early in a day restarts the
     // ratify timer, and on a slow machine the model calls behind them take
     // a while, so the day limit leaves the votes ample time to stand.
@@ -672,7 +641,7 @@ fn a_model_player_retracts_its_vote_and_everyone_hears_it() {
                 from,
                 n,
                 to,
-                message: Message::Retract { .. },
+                message: Message::Move(Move::Retract { .. }),
                 ..
             } => Some((from, *n, to)),
             _ => None,
@@ -705,7 +674,7 @@ fn a_model_player_retracts_its_vote_and_everyone_hears_it() {
 #[test]
 fn a_model_that_refuses_to_be_made_to_call_a_tool_plays_when_asked_to_call_one() {
     let base_url = refusing_required(&[EXAMPLE_MODEL]);
-    let config = configured("auto", &base_url, EXAMPLE_MODEL, &[]);
+    let config = configured::<Werewolf>("auto", &base_url, EXAMPLE_MODEL, &[]);
     let args = [config.as_str()];
     let note = "qwen does not accept a required tool call, so its players are asked to call one.";
     let (events, _) = assert_plays_the_default_table(&args, &[DEFAULT_WINDOW, note]);
@@ -738,34 +707,14 @@ fn a_template_that_cannot_render_is_an_error_before_anything_is_printed() {
 }
 
 #[test]
-fn werewolf_takes_the_role_counts_and_the_limits_from_the_file() {
-    let base_url = playing(&[EXAMPLE_MODEL]);
-    let config = configured("counted", &base_url, EXAMPLE_MODEL, &[]);
-    edited(&config, |file| {
-        file.insert("roles".to_string(), table(&["werewolf.count = 1"]).into());
-    });
-    let (events, _) = played(&[&config]);
-    let (roles, _) = start(&events);
-    assert_eq!(roles.len(), 6);
-    let configuration = configuration(&events);
-    assert_eq!(configuration.role_counts[&Role::Werewolf], 1);
-    assert_eq!(configuration.role_counts[&Role::Villager], 3);
-    assert_eq!(configuration.day_limit, Duration::from_secs(2));
-    assert_eq!(configuration.ratify_limit, Duration::from_secs(1));
-}
-
-#[test]
 fn a_file_without_a_ratify_limit_plays_days_that_are_not_ratified() {
     let base_url = playing(&[EXAMPLE_MODEL]);
-    let config = configured("unratified", &base_url, EXAMPLE_MODEL, &[]);
+    let config = configured::<Werewolf>("unratified", &base_url, EXAMPLE_MODEL, &[]);
     rephased(&config, &["night_limit = \"1s\"", "day_limit = \"2s\""]);
     let args = [config.as_str()];
     let (events, printed) = assert_plays_the_default_table(&args, &[DEFAULT_WINDOW]);
-    let Entry::Start { ratify_limit, .. } = &events[0].payload else {
-        panic!("{events:?}");
-    };
-    assert_eq!(*ratify_limit, Duration::ZERO);
-    assert_eq!(configuration(&events).ratify_limit, Duration::ZERO);
+    assert_eq!(started(&events).ratify_limit, Duration::ZERO);
+    assert_eq!(configuration(&events).limits.ratify_limit, Duration::ZERO);
     let endings = endings(&events);
     assert!(
         endings.iter().all(|by| *by == Ending::AllSelected),
@@ -778,7 +727,7 @@ fn a_file_without_a_ratify_limit_plays_days_that_are_not_ratified() {
 #[test]
 fn a_ratify_limit_longer_than_the_day_limit_is_refused_before_anything_is_printed() {
     let base_url = playing(&[EXAMPLE_MODEL]);
-    let config = configured("ratify", &base_url, EXAMPLE_MODEL, &[]);
+    let config = configured::<Werewolf>("ratify", &base_url, EXAMPLE_MODEL, &[]);
     rephased(&config, &["day_limit = \"10s\"", "ratify_limit = \"20s\""]);
     let stderr = refused(&["play", &config]);
     assert_invalid(&stderr, &config);
@@ -795,42 +744,20 @@ fn a_configuration_file_that_cannot_be_read_is_an_error_naming_it() {
 }
 
 #[test]
-fn a_model_that_does_not_play_when_asked_is_refused_in_the_provider_s_words() {
-    // A provider refusing the night's request, and one that plays by night
-    // alone and refuses the day's.
-    let refusals = [
-        (
-            "unselecting",
-            refusing(&[EXAMPLE_MODEL]),
-            "night",
-            refusal(EXAMPLE_MODEL),
-        ),
-        (
-            "nights-only",
-            refusing_days(&[EXAMPLE_MODEL]),
-            "day",
-            day_refusal(EXAMPLE_MODEL),
-        ),
-    ];
-    for (name, base_url, phase, said) in refusals {
-        let config = configured(name, &base_url, EXAMPLE_MODEL, &[]);
-        let stderr = refused(&["play", &config]);
-        assert!(
-            stderr.starts_with("Error: setting up the model qwen"),
-            "{stderr}"
-        );
-        assert!(
-            stderr.contains(&format!(
-                "{EXAMPLE_MODEL} did not answer a {phase}'s request"
-            )),
-            "{stderr}"
-        );
-        assert!(
-            stderr.contains(&format!(
-                "POST {base_url}/chat/completions was answered 400"
-            )),
-            "{stderr}"
-        );
+fn a_model_that_plays_by_night_alone_is_refused_in_the_provider_s_words() {
+    let base_url = refusing_days(&[EXAMPLE_MODEL]);
+    let config = configured::<Werewolf>("nights-only", &base_url, EXAMPLE_MODEL, &[]);
+    let stderr = refused(&["play", &config]);
+    assert!(
+        stderr.starts_with("Error: setting up the model qwen"),
+        "{stderr}"
+    );
+    for said in [
+        format!("{EXAMPLE_MODEL} did not play Werewolf"),
+        "did not answer a day's request".to_string(),
+        format!("POST {base_url}/chat/completions was answered 400"),
+        day_refusal(EXAMPLE_MODEL),
+    ] {
         assert!(stderr.contains(&said), "{stderr}");
     }
 }
@@ -838,7 +765,7 @@ fn a_model_that_does_not_play_when_asked_is_refused_in_the_provider_s_words() {
 #[test]
 fn a_model_its_provider_does_not_serve_is_refused() {
     let base_url = serving(&["llama-3.1-8b-instruct"]);
-    let config = configured("unserved", &base_url, EXAMPLE_MODEL, &[]);
+    let config = configured::<Werewolf>("unserved", &base_url, EXAMPLE_MODEL, &[]);
     let stderr = refused(&["play", &config]);
     assert!(stderr.contains("the model qwen"), "{stderr}");
     assert!(stderr.contains(&base_url), "{stderr}");
@@ -856,7 +783,7 @@ fn two_models(
     claude_url: &str,
     claude_id: &str,
 ) -> String {
-    let config = configured(test, qwen_url, qwen_id, &[]);
+    let config = configured::<Werewolf>(test, qwen_url, qwen_id, &[]);
     let file = std::fs::read_to_string(&config).unwrap();
     let file = format!(
         "{file}
@@ -970,7 +897,8 @@ fn the_models_command_with_check_asks_each_model_to_play_and_marks_its_answer() 
         reasons,
         [
             "! zephyr-7b".to_string(),
-            "  zephyr-7b did not answer a night's request".to_string(),
+            "  zephyr-7b did not play Werewolf".to_string(),
+            "  did not answer a night's request".to_string(),
             format!("  made to call a tool: {refused}"),
             format!("  asked to call one: {refused}"),
         ],
@@ -991,11 +919,37 @@ fn the_models_command_with_check_marks_a_model_that_plays_by_night_alone_as_not_
         reasons,
         [
             "! qwen2.5-7b-instruct",
-            "  qwen2.5-7b-instruct did not answer a day's request",
+            "  qwen2.5-7b-instruct did not play Werewolf",
+            "  did not answer a day's request",
             &format!(
                 "  POST {base_url}/chat/completions was answered 400 Bad Request. \
                  The provider said: {}",
                 day_refusal(EXAMPLE_MODEL)
+            ),
+        ],
+        "{stderr}"
+    );
+}
+
+#[test]
+fn the_models_command_with_check_marks_a_model_that_plays_werewolf_but_not_avalon_as_not_playing() {
+    let base_url = refusing_offers_of("vote", &[EXAMPLE_MODEL]);
+    let output = succeeded(&["models", &base_url, "--check"]);
+    let printed = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines, ["! qwen2.5-7b-instruct", "", LEGEND], "{printed}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let reasons: Vec<&str> = stderr.lines().collect();
+    assert_eq!(
+        reasons,
+        [
+            "! qwen2.5-7b-instruct",
+            "  qwen2.5-7b-instruct did not play Avalon",
+            "  did not answer as a voter",
+            &format!(
+                "  POST {base_url}/chat/completions was answered 400 Bad Request. \
+                 The provider said: {}",
+                refusal(EXAMPLE_MODEL)
             ),
         ],
         "{stderr}"
@@ -1068,26 +1022,10 @@ fn the_models_command_refuses_a_key_variable_that_is_not_set_before_asking_anyon
     assert!(!stderr.contains(&base_url), "{stderr}");
 }
 
-/// Play Avalon with `args` after the game: the events on standard error,
-/// parsed, and what was printed.
-fn played_avalon(args: &[&str]) -> (Vec<Event<avalon::Entry>>, String) {
-    let output = succeeded(&[&["play"], args].concat());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    let events = stderr
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    (events, String::from_utf8(output.stdout).unwrap())
-}
-
-/// Every role the deal Avalon's log opens with seats, in seat order.
+/// Every role the deal Avalon's log opens with seats, in seat order, each
+/// played by the random strategy.
 fn avalon_roles(events: &[Event<avalon::Entry>]) -> Vec<avalon::Role> {
-    let Some(avalon::Entry::Start {
-        roles, strategies, ..
-    }) = events.first().map(|event| &event.payload)
-    else {
-        panic!("{events:?}");
-    };
+    let (roles, strategies) = start(events);
     assert!(strategies.values().all(|strategy| strategy == "random"));
     let mut roles: Vec<avalon::Role> = roles.values().copied().collect();
     roles.sort_unstable();
@@ -1096,7 +1034,7 @@ fn avalon_roles(events: &[Event<avalon::Entry>]) -> Vec<avalon::Role> {
 
 #[test]
 fn avalon_plays_the_default_table_to_the_end_and_tells_it() {
-    let (events, printed) = played_avalon(&[&avalon_example("random.toml")]);
+    let (events, printed) = played::<avalon::Entry>(&[&example("avalon", "random.toml")]);
     let episode = events[0].episode;
     assert!(events.iter().all(|event| event.episode == episode));
     use avalon::Role::{Assassin, Merlin, Minion, Servant};
@@ -1104,7 +1042,9 @@ fn avalon_plays_the_default_table_to_the_end_and_tells_it() {
         avalon_roles(&events),
         [Merlin, Servant, Servant, Assassin, Minion]
     );
-    let Some(avalon::Entry::End { winner, .. }) = events.last().map(|event| &event.payload) else {
+    let Some(avalon::Entry::Event(avalon::Outcome::End { winner, .. })) =
+        events.last().map(|event| &event.payload)
+    else {
         panic!("{events:?}");
     };
     // The account opens with the table, a player to a line, then the
@@ -1140,7 +1080,7 @@ fn avalon_plays_any_valid_table_under_the_limits_the_file_gives() {
         "game = \"avalon\"\n[phases]\nvote_limit = \"90s\"\n[roles.servant]\ncount = 3\n[roles.minion]\ncount = 2\n\
          [roles.percival]\ncount = 1\n[roles.morgana]\ncount = 1\n",
     );
-    let (events, printed) = played_avalon(&[&config]);
+    let (events, printed) = played::<avalon::Entry>(&[&config]);
     use avalon::Role::{Assassin, Merlin, Minion, Morgana, Percival, Servant};
     assert_eq!(
         avalon_roles(&events),
@@ -1152,17 +1092,6 @@ fn avalon_plays_any_valid_table_under_the_limits_the_file_gives() {
     assert!(
         printed.contains("A proposal waits 1m, a vote 1m 30s, a quest 1m"),
         "{printed}"
-    );
-}
-
-#[test]
-fn avalon_no_log_leaves_standard_error_empty() {
-    let output = succeeded(&["play", &avalon_example("random.toml"), "--no-log"]);
-    assert!(output.stderr.is_empty(), "{output:?}");
-    assert!(
-        String::from_utf8(output.stdout)
-            .unwrap()
-            .starts_with("5 players:\n")
     );
 }
 
@@ -1187,35 +1116,22 @@ fn avalon_refuses_an_invalid_table_saying_what_is_wrong() {
     assert_usage_error(&["play", "game.toml", "other.toml"]);
 }
 
-/// The configuration Avalon's log has right after the deal.
-fn avalon_configuration(events: &[Event<avalon::Entry>]) -> &avalon::config::Configuration {
-    match events.get(1).map(|event| &event.payload) {
-        Some(avalon::Entry::Configuration(configuration)) => configuration,
-        second => panic!("{second:?}"),
-    }
-}
-
-/// An Avalon configuration file, by its name in the configs directory.
-fn avalon_example(name: &str) -> String {
-    format!("{}/configs/avalon/{name}", env!("CARGO_MANIFEST_DIR"))
-}
-
 #[test]
 fn avalon_logs_the_configuration_of_the_random_config_s_players() {
-    let (events, printed) = played_avalon(&[&avalon_example("random.toml")]);
+    let (events, printed) = played::<avalon::Entry>(&[&example("avalon", "random.toml")]);
     use avalon::Role::{Assassin, Merlin, Minion, Servant};
     assert_eq!(
         avalon_roles(&events),
         [Merlin, Servant, Servant, Assassin, Minion]
     );
-    let configuration = avalon_configuration(&events);
+    let configuration = configuration(&events);
     assert!(configuration.models.is_empty(), "{configuration:?}");
     assert!(configuration.prompts.is_empty(), "{configuration:?}");
     assert_eq!(configuration.role_counts[&Servant], 2);
     assert!(
         matches!(
             events.last().map(|event| &event.payload),
-            Some(avalon::Entry::End { .. })
+            Some(avalon::Entry::Event(avalon::Outcome::End { .. }))
         ),
         "{events:?}"
     );
@@ -1231,57 +1147,18 @@ fn written(test: &str, file: &str) -> String {
 }
 
 #[test]
-fn avalon_takes_the_role_counts_and_the_limits_from_the_file() {
-    let config = written(
-        "avalon-counted",
-        "game = \"avalon\"\n[phases]\nvote_limit = \"2m\"\nquest_limit = \"3m\"\n[roles.servant]\ncount = 3\n[roles.minion]\ncount = 2\n",
-    );
-    let (events, printed) = played_avalon(&[&config]);
-    let configuration = avalon_configuration(&events);
-    assert_eq!(configuration.role_counts[&avalon::Role::Servant], 3);
-    assert_eq!(configuration.role_counts[&avalon::Role::Minion], 2);
-    assert_eq!(configuration.vote_limit, Duration::from_secs(120));
-    assert_eq!(configuration.quest_limit, Duration::from_secs(180));
-    assert!(printed.starts_with("7 players:\n"), "{printed}");
-    assert!(
-        printed.contains("A proposal waits 1m, a vote 2m, a quest 3m"),
-        "{printed}"
-    );
-}
-
-/// A configuration file written for this test: Avalon's prompted example,
-/// its model served at `base_url` as [`EXAMPLE_MODEL`], with `rest` after
-/// it.
-fn avalon_prompted(test: &str, base_url: &str, rest: &str) -> String {
-    let example = std::fs::read_to_string(avalon_example("prompted.toml")).unwrap();
-    let file = example
-        .replace("http://localhost:1234/v1", base_url)
-        .replace(
-            "id = \"qwen2.5-7b-instruct-1m\"",
-            &format!("id = \"{EXAMPLE_MODEL}\""),
-        );
-    assert!(
-        file.contains(base_url) && file.contains(EXAMPLE_MODEL),
-        "{file}"
-    );
-    written(test, &format!("{file}{rest}"))
-}
-
-#[test]
 fn avalon_plays_a_table_of_random_evil_and_prompted_good_to_the_end() {
     let base_url = playing(&[EXAMPLE_MODEL]);
-    let config = avalon_prompted(
-        "avalon-mixed",
-        &base_url,
-        "[roles.assassin]\nstrategy = \"random\"\n[roles.minion]\nstrategy = \"random\"\n",
-    );
-    let (events, printed) = played_avalon(&[&config]);
-    let Some(avalon::Entry::Start {
-        roles, strategies, ..
-    }) = events.first().map(|event| &event.payload)
-    else {
-        panic!("{events:?}");
-    };
+    let config = configured::<Avalon>("avalon-mixed", &base_url, EXAMPLE_MODEL, &[]);
+    edited(&config, |file| {
+        let roles = [
+            "assassin.strategy = \"random\"",
+            "minion.strategy = \"random\"",
+        ];
+        file.insert("roles".to_string(), table(&roles).into());
+    });
+    let (events, printed) = played::<avalon::Entry>(&[&config]);
+    let (roles, strategies) = start(&events);
     for (seat, role) in roles {
         let expected = match role.team() {
             avalon::Team::Good => "everyone",
@@ -1290,7 +1167,7 @@ fn avalon_plays_a_table_of_random_evil_and_prompted_good_to_the_end() {
         assert_eq!(strategies[seat], expected, "{seat}");
     }
     // Only the good players are told prompts, each its own.
-    let configuration = avalon_configuration(&events);
+    let configuration = configuration(&events);
     assert_eq!(configuration.models["qwen"].id, EXAMPLE_MODEL);
     let prompted: HashSet<&PlayerId> = configuration.prompts.keys().collect();
     let good: HashSet<&PlayerId> = roles
@@ -1311,35 +1188,34 @@ fn avalon_plays_a_table_of_random_evil_and_prompted_good_to_the_end() {
     // A player stopped in the middle of a step may log after the end, so
     // the end is somewhere in the log rather than last.
     assert!(
-        events
-            .iter()
-            .any(|event| matches!(event.payload, avalon::Entry::End { .. })),
+        events.iter().any(|event| matches!(
+            event.payload,
+            avalon::Entry::Event(avalon::Outcome::End { .. })
+        )),
         "{events:?}"
     );
     // The prompted players talk, and the account tells it.
-    assert!(
-        printed.contains("qwen's context window is 4096 tokens, the default."),
-        "{printed}"
-    );
+    assert!(printed.contains(DEFAULT_WINDOW), "{printed}");
     assert!(
         printed.contains("says, \"I have nothing to add.\""),
         "{printed}"
     );
 }
 
-#[test]
-fn every_call_an_avalon_player_makes_logs_its_usage_and_the_probe_logs_none() {
+/// Play a game of `G` whose players all ask one model, and check that
+/// every call a player makes logs the usage the provider reported, and
+/// that the probe's requests log none. A call still underway when the game
+/// ends logs nothing either.
+fn assert_every_call_logs_its_usage_and_the_probe_none<G: Tested>() {
     let (base_url, requests) = recording(&[EXAMPLE_MODEL]);
-    let config = avalon_prompted("avalon-usage", &base_url, "");
-    let (events, _) = played_avalon(&[&config]);
-    let Some(avalon::Entry::Start { roles, .. }) = events.first().map(|event| &event.payload)
-    else {
-        panic!("{events:?}");
-    };
+    let test = format!("{}-usage", G::KEY);
+    let config = configured::<G>(&test, &base_url, EXAMPLE_MODEL, &[]);
+    let (events, _) = played::<game::Entry<G>>(&[&config]);
+    let (roles, _) = start(&events);
     let usages: Vec<(&PlayerId, &serde_json::Value)> = events
         .iter()
         .filter_map(|event| match &event.payload {
-            avalon::Entry::Usage { player, usage, .. } => Some((player, usage)),
+            game::Entry::Usage { player, usage, .. } => Some((player, usage)),
             _ => None,
         })
         .collect();
@@ -1348,23 +1224,140 @@ fn every_call_an_avalon_player_makes_logs_its_usage_and_the_probe_logs_none() {
         assert!(roles.contains_key(*player), "{player}");
         assert_eq!(*usage, &reported());
     }
-    // The probe's four requests, one for each kind of phase, are logged
-    // nowhere. A call still underway when the game ends logs nothing
-    // either.
-    let probed = 4;
-    assert!(usages.len() <= requests.lock().unwrap().len() - probed);
+    assert!(usages.len() <= requests.lock().unwrap().len() - G::PROBED);
 }
 
 #[test]
-fn avalon_refuses_a_model_that_does_not_play_naming_it_before_anything_is_printed() {
+fn every_call_a_player_makes_logs_its_usage_and_the_probe_logs_none_in_werewolf() {
+    assert_every_call_logs_its_usage_and_the_probe_none::<Werewolf>();
+}
+
+#[test]
+fn every_call_a_player_makes_logs_its_usage_and_the_probe_logs_none_in_avalon() {
+    assert_every_call_logs_its_usage_and_the_probe_none::<Avalon>();
+}
+
+/// Play the random example of `G` with `--no-log`, and check that standard
+/// error is left empty and the game is still told; and that `--log`, given
+/// after it, puts the log back.
+fn assert_no_log_leaves_standard_error_empty<G: Tested>() {
+    let random = example(G::KEY, "random.toml");
+    let output = succeeded(&["play", &random, "--no-log"]);
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let printed = String::from_utf8(output.stdout).unwrap();
+    let seated = format!("{} players:\n", G::SEATS);
+    assert!(printed.starts_with(&seated), "{printed}");
+    let (events, _) = played::<game::Entry<G>>(&[&random, "--no-log", "--log"]);
+    assert_eq!(start(&events).0.len(), G::SEATS);
+}
+
+#[test]
+fn no_log_leaves_standard_error_empty_and_the_game_is_still_told_in_werewolf() {
+    assert_no_log_leaves_standard_error_empty::<Werewolf>();
+}
+
+#[test]
+fn no_log_leaves_standard_error_empty_and_the_game_is_still_told_in_avalon() {
+    assert_no_log_leaves_standard_error_empty::<Avalon>();
+}
+
+/// Check that a game of `G` whose model does not play when asked is
+/// refused before anything is printed, naming the model, what it failed,
+/// the request and the provider's words.
+fn assert_refuses_a_model_that_does_not_play<G: Tested>() {
     let base_url = refusing(&[EXAMPLE_MODEL]);
-    let config = avalon_prompted("avalon-refused", &base_url, "");
+    let test = format!("{}-refused", G::KEY);
+    let config = configured::<G>(&test, &base_url, EXAMPLE_MODEL, &[]);
     let stderr = refused(&["play", &config]);
+    assert!(
+        stderr.starts_with("Error: setting up the model qwen"),
+        "{stderr}"
+    );
     for said in [
-        "setting up the model qwen".to_string(),
-        format!("{EXAMPLE_MODEL} did not answer as the leader"),
+        format!("{EXAMPLE_MODEL} {}", G::REFUSED),
+        format!("POST {base_url}/chat/completions was answered 400"),
+        refusal(EXAMPLE_MODEL),
     ] {
         assert!(stderr.contains(&said), "{stderr}");
     }
-    assert!(stderr.contains(&refusal(EXAMPLE_MODEL)), "{stderr}");
+}
+
+#[test]
+fn a_model_that_does_not_play_when_asked_is_refused_in_the_provider_s_words_in_werewolf() {
+    assert_refuses_a_model_that_does_not_play::<Werewolf>();
+}
+
+#[test]
+fn a_model_that_does_not_play_when_asked_is_refused_in_the_provider_s_words_in_avalon() {
+    assert_refuses_a_model_that_does_not_play::<Avalon>();
+}
+
+/// Play a game of `G` from a random file holding `file` after its `game`
+/// key, and check that it is dealt `counts` and logs `limits`, in its
+/// start and in its configuration, and that the account tells the table
+/// and `told`.
+fn assert_takes_the_role_counts_and_the_limits_from_the_file<G: Tested>(
+    file: &str,
+    counts: &[(G::Role, usize)],
+    limits: G::Limits,
+    told: &str,
+) {
+    let test = format!("{}-counted", G::KEY);
+    let config = written(&test, &format!("game = \"{}\"\n{file}", G::KEY));
+    let (events, printed) = played::<game::Entry<G>>(&[&config]);
+    let (roles, _) = start(&events);
+    for (role, count) in counts {
+        let dealt = roles.values().filter(|dealt| *dealt == role).count();
+        assert_eq!(dealt, *count, "{role}");
+    }
+    let seats: usize = counts.iter().map(|(_, count)| count).sum();
+    assert_eq!(roles.len(), seats);
+    assert_eq!(*started(&events), limits);
+    let configuration = configuration(&events);
+    assert_eq!(configuration.limits, limits);
+    for (role, count) in counts {
+        assert_eq!(configuration.role_counts[role], *count, "{role}");
+    }
+    assert!(
+        printed.starts_with(&format!("{seats} players:\n")),
+        "{printed}"
+    );
+    assert!(printed.contains(told), "{printed}");
+}
+
+#[test]
+fn werewolf_takes_the_role_counts_and_the_limits_from_the_file() {
+    // The day is not ratified unless something says so.
+    assert_takes_the_role_counts_and_the_limits_from_the_file::<Werewolf>(
+        "[phases]\nnight_limit = \"5s\"\nday_limit = \"1m\"\n[roles.werewolf]\ncount = 1\n\
+         [roles.villager]\ncount = 2\n[roles.doctor]\ncount = 0\n[roles.seer]\ncount = 0\n",
+        &[
+            (Role::Werewolf, 1),
+            (Role::Villager, 2),
+            (Role::Doctor, 0),
+            (Role::Seer, 0),
+        ],
+        Limits {
+            night_limit: Duration::from_secs(5),
+            day_limit: Duration::from_secs(60),
+            ratify_limit: Duration::ZERO,
+        },
+        "A night waits 5s and a day 1m.",
+    );
+}
+
+#[test]
+fn avalon_takes_the_role_counts_and_the_limits_from_the_file() {
+    use avalon::Role::{Assassin, Merlin, Minion, Servant};
+    assert_takes_the_role_counts_and_the_limits_from_the_file::<Avalon>(
+        "[phases]\nvote_limit = \"2m\"\nquest_limit = \"3m\"\n[roles.servant]\ncount = 3\n\
+         [roles.minion]\ncount = 2\n",
+        &[(Merlin, 1), (Servant, 3), (Assassin, 1), (Minion, 2)],
+        avalon::Rules {
+            vote_limit: Duration::from_secs(120),
+            quest_limit: Duration::from_secs(180),
+            ..avalon::Rules::default()
+        },
+        "A proposal waits 1m, a vote 2m, a quest 3m",
+    );
 }

@@ -1,83 +1,14 @@
-//! The random policy: a player who answers each announcement of a phase
-//! that awaits it at once with a choice made uniformly at random among the
-//! legal ones, observes the rest, and never speaks. A player logs an
-//! [`Entry::Observation`] for each message it receives, in the latest
-//! phase it was announced, and an [`Entry::Action`] for each choice it
-//! sends, numbering its choices from 1; no model made them, so `seen` is
-//! `None`.
+//! The random policy in Avalon: a player who answers each announcement of
+//! a phase that [awaits](super::awaited) it at once with a choice made
+//! uniformly at random among the legal ones, observes the rest, and never
+//! speaks. Its choice goes to the environment alone.
 
-use super::{
-    Actor, Ballot, Choice, Deed, Entry, Message, Phase, PlayerId, Seat, Team, View, act, awaited,
-    candidates, observe, receivers,
-};
+use super::{Avalon, Ballot, Choice, Deed, Phase, PlayerId, Team, View, candidates};
 use crate::report::seat_order;
-use async_trait::async_trait;
-use free_agent::{Behavior, Builder, Context};
 use rand::seq::IndexedRandom;
 
-/// A player who answers each announcement of a phase that [awaits](awaited)
-/// it at once, with a choice drawn uniformly from the legal ones, and does
-/// nothing about one that does not. Its choice goes to the [`receivers`]
-/// of a choice: the environment alone. It has no think loop.
-pub struct Player {
-    context: Context<Message, Entry>,
-    /// The number of the last choice it sent.
-    n: u64,
-    /// The number of the latest phase it was announced, and 0 before any.
-    seq: u64,
-}
-
-impl Player {
-    /// Builds a player once the episode has made its context. It has no
-    /// think loop.
-    pub fn init() -> Seat {
-        let behavior: Builder<Actor> = Box::new(|context| {
-            Actor::Random(Player {
-                context,
-                n: 0,
-                seq: 0,
-            })
-        });
-        (behavior, None)
-    }
-}
-
-#[async_trait]
-impl Behavior for Player {
-    type Message = Message;
-    type Log = Entry;
-
-    fn context(&self) -> &Context<Message, Entry> {
-        &self.context
-    }
-
-    /// Log a message from another actor, which is any numbered one, as
-    /// observed in the latest phase announced. Announced a phase that
-    /// awaits it, choose at once; otherwise, or with nothing to choose, say
-    /// nothing. Anything else, another player's utterance above all, is
-    /// observed and nothing more, whatever phase it is tagged with: the
-    /// player keeps nothing it could put it in.
-    async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
-        let Some(n) = message.number() else {
-            return Ok(());
-        };
-        if let Message::Announce { seq, .. } = message {
-            self.seq = *seq;
-        }
-        observe(&self.context, message.sender(), n, self.seq);
-        let me = &self.context.id;
-        if let Message::Announce { seq, view, .. } = message
-            && awaited(me, view)
-            && let Some(choice) = choose(me, view)
-        {
-            self.n += 1;
-            let message = choice.message(*seq, me.clone(), self.n);
-            let to = receivers(&message, me, view);
-            act(&self.context, message, to, None, None)?;
-        }
-        Ok(())
-    }
-}
+/// A player who chooses at random.
+pub type Player = crate::random::Player<Avalon>;
 
 /// A choice `me` may make in the phase `view` shows, drawn uniformly from
 /// the legal ones: a team of the size the quest needs from every team of
@@ -85,7 +16,7 @@ impl Behavior for Player {
 /// with even odds; support from a good player, and support or sabotage
 /// with even odds from an evil one; and one of the [`candidates`] to name
 /// as Merlin. None when there is nobody to name.
-fn choose(me: &PlayerId, view: &View) -> Option<Choice> {
+pub(super) fn choose(me: &PlayerId, view: &View) -> Option<Choice> {
     let even = || rand::random_bool(0.5);
     match view.phase {
         Phase::Propose => {
@@ -116,14 +47,19 @@ fn choose(me: &PlayerId, view: &View) -> Option<Choice> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::avalon::config::{Config, Roles};
+    use crate::avalon::config::{self, Roles};
     use crate::avalon::report::Narrator;
     use crate::avalon::tests::{
         Script, configured, dealt, five, logged, mute, observed_by, outcomes, play, quick, run,
         utterance, view_of,
     };
-    use crate::avalon::{PROPOSALS, Role, Rules, Table, game, sabotages_needed, team_size};
+    use crate::avalon::{
+        Actor, Entry, Message, Outcome, PROPOSALS, Role, Rules, Table, sabotages_needed, team_size,
+    };
+    use crate::game::Narrate;
+    use crate::game::game;
     use crate::model::spec::Models;
+    use crate::seat::id;
     use crate::seat::{ENVIRONMENT, to_the_environment};
     use crate::strategy::{RANDOM, RoleConfig};
     use free_agent::ActorId;
@@ -132,10 +68,6 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::sync::oneshot;
-
-    fn id(name: &str) -> PlayerId {
-        name.to_string()
-    }
 
     #[tokio::test(start_paused = true)]
     async fn a_game_is_logged_from_the_deal_to_the_end_and_told() {
@@ -168,7 +100,7 @@ mod tests {
         );
         let last = entries.last();
         assert!(
-            matches!(last, Some(Entry::End { winner: won, .. }) if *won == winner),
+            matches!(last, Some(Entry::Event(Outcome::End { winner: won, .. })) if *won == winner),
             "{last:?}"
         );
         let between = &entries[2..entries.len() - 1];
@@ -195,7 +127,7 @@ mod tests {
                             assert_eq!(to.len(), 1, "{to:?}");
                         }
                         message => {
-                            assert!(message.choice().is_some(), "{message:?}");
+                            assert!(matches!(message, Message::Move(_)), "{message:?}");
                             assert_eq!(message.sender(), *from);
                             assert_eq!(*to, to_the_environment());
                         }
@@ -277,7 +209,8 @@ mod tests {
             .collect();
         assert!(!sent.is_empty());
         assert!(
-            sent.iter().all(|message| message.choice().is_some()),
+            sent.iter()
+                .all(|message| matches!(message, Message::Move(_))),
             "{sent:?}"
         );
     }
@@ -449,19 +382,19 @@ mod tests {
             oberon: count(table.oberon),
             minion: count(table.minions),
         };
-        let mut config = Config::parse("").unwrap();
+        let mut config = config::parse("").unwrap();
         config.roles = roles;
         let settings = config.settle().unwrap();
         let configuration = settings
-            .configuration(&settings.deal(), &[], Models::new())
+            .configuration(&settings.lineup.deal(), &[], Models::new())
             .unwrap();
         let mut won = 0;
         for _ in 0..games {
             let (winner, result) = oneshot::channel();
             let (logger, _) = unbounded_channel();
             let episode = game(
-                settings.deal(),
-                settings.rules.clone(),
+                settings.lineup.deal(),
+                settings.rules(),
                 configuration.clone(),
                 winner,
                 |_| Player::init(),
