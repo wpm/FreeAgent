@@ -20,6 +20,13 @@ workflow takes a version's notes from here.
 - Installers for the desktop app on each release: a `.dmg` for macOS, a
   setup `.exe` and an `.msi` for Windows, and an `.AppImage`, a `.deb` and
   an `.rpm` for Linux. The website links to the newest of each.
+- The desktop app's settings screen edits a configuration file as a form
+  or as TOML, with **Open** and **Save**, and keeps its comments and order.
+  Each model has a **Check**, and the Keys section stores and removes API
+  keys in the OS keychain. The configuration last run opens at the start.
+- `social_deduction::document`, a configuration file edited one value at a
+  time, and `social_deduction::model::check`, the probe `models --check`
+  runs, which the desktop app's **Check** runs too.
 - `social_deduction::live`, which plays a prepared game in the background,
   saving its log and folding it into cues as it happens.
 - `social_deduction::stage`, which folds a game's log into the viewer's

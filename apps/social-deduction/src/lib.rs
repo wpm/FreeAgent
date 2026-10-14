@@ -6,6 +6,7 @@
 pub mod announced;
 pub mod avalon;
 pub mod config;
+pub mod document;
 pub mod game;
 pub mod live;
 pub mod model;

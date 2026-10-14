@@ -27,5 +27,11 @@ serde.workspace = true
 social-deduction = { path = "../../social-deduction" }
 social-deduction-stage = { path = "../../social-deduction-stage" }
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tracing = "0.1"
+
+[dev-dependencies]
+serde_json.workspace = true
+# The key-leak test captures every event at TRACE.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
