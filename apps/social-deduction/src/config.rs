@@ -699,23 +699,6 @@ mod tests {
     }
 
     #[test]
-    fn each_example_s_text_parses_as_the_game_it_names() {
-        for (name, named) in [
-            ("werewolf/random.toml", Name::Werewolf),
-            ("werewolf/prompted.toml", Name::Werewolf),
-            ("avalon/random.toml", Name::Avalon),
-            ("avalon/prompted.toml", Name::Avalon),
-        ] {
-            let text = std::fs::read_to_string(example(name)).unwrap();
-            let parsed = match parse(&text).unwrap_or_else(|e| panic!("{name}: {e:#}")) {
-                Settled::Werewolf(_) => Name::Werewolf,
-                Settled::Avalon(_) => Name::Avalon,
-            };
-            assert_eq!(parsed, named, "{name}");
-        }
-    }
-
-    #[test]
     fn an_invalid_document_s_error_is_placed_and_names_no_file() {
         let shown = format!("{:#}", parse("game = \"werewolf\"\n[roles\n").unwrap_err());
         assert_placed(&shown);

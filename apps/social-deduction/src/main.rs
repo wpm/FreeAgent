@@ -8,9 +8,9 @@ use free_agent::{Behavior, Episode, Event, Logger};
 use serde::Serialize;
 use social_deduction::config::{self, Name};
 use social_deduction::game::{Game, Narrate};
-use social_deduction::model::spec::{Environment, Probed};
+use social_deduction::model::spec::{Environment, Probed, required};
 use social_deduction::model::{
-    Model, Provider, REQUEST_TIMEOUT, ToolChoice, api_key, key_variable, known_providers, served,
+    Model, Provider, REQUEST_TIMEOUT, ToolChoice, key_variable, known_providers, served,
 };
 use social_deduction::report::Line;
 use social_deduction::run::{Prepared, Ready};
@@ -92,7 +92,9 @@ async fn main() -> anyhow::Result<()> {
             check,
         } => {
             let variable = key_variable(&base_url, api_key_env.as_deref());
-            let api_key = variable.map(api_key).transpose()?;
+            let api_key = variable
+                .map(|variable| required(&Environment, variable))
+                .transpose()?;
             let provider = Provider::new(&base_url, api_key, REQUEST_TIMEOUT)?;
             let listed = provider.listing().await?;
             let mut ids: Vec<String> = listed.iter().map(|model| model.id.clone()).collect();

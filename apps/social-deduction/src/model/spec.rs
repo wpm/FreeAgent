@@ -9,11 +9,12 @@
 //! [`SecretString`], which is redacted wherever it is shown.
 
 use super::window::{self, ContextWindow};
-use super::{Model, Provider, REQUEST_TIMEOUT, ToolChoice, key, key_variable};
+use super::{Model, Provider, REQUEST_TIMEOUT, ToolChoice, key_variable};
 use anyhow::{Context as _, anyhow};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,6 +33,18 @@ impl Keys for Environment {
     fn key(&self, variable: &str) -> anyhow::Result<Option<SecretString>> {
         key(variable, std::env::var_os(variable))
     }
+}
+
+/// The key the environment variable `name` holds as `value`, if it is set.
+fn key(name: &str, value: Option<OsString>) -> anyhow::Result<Option<SecretString>> {
+    value
+        .map(|value| {
+            value
+                .into_string()
+                .map(SecretString::from)
+                .map_err(|_| anyhow!("{name} is set to something that is not UTF-8"))
+        })
+        .transpose()
 }
 
 /// The key `variable` names in `keys`. A variable with no key is an error
@@ -216,9 +229,36 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_key_variable_that_is_not_set_is_an_error_naming_it() {
+        let error = required(&Environment, "SOCIAL_DEDUCTION_NO_SUCH_KEY").unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("SOCIAL_DEDUCTION_NO_SUCH_KEY"), "{shown}");
+        assert!(shown.contains("not set"), "{shown}");
+    }
+
+    #[test]
+    fn the_environment_s_key_is_read_from_the_named_variable_and_never_shown() {
+        // A variable Cargo sets for every test, since setting one is unsafe.
+        let name = "CARGO_MANIFEST_DIR";
+        let value = std::env::var(name).unwrap();
+        let key = required(&Environment, name).unwrap();
+        assert_eq!(key.expose_secret(), value);
+        assert!(!format!("{key:?}").contains(&value));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_key_variable_whose_value_is_not_utf_8_is_an_error_naming_it() {
+        use std::os::unix::ffi::OsStringExt;
+        let error = key("SOCIAL_DEDUCTION_KEY", Some(OsString::from_vec(vec![0xff]))).unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("SOCIAL_DEDUCTION_KEY"), "{shown}");
+        assert!(!shown.contains("not set"), "{shown}");
+    }
+
+    #[test]
     fn an_omitted_key_variable_means_no_key() {
         assert!(qwen(LOCAL, "").api_key(&Environment).unwrap().is_none());
-        assert!(qwen(LOCAL, "").api_key(&Holding(None)).unwrap().is_none());
     }
 
     /// Keys holding the one given, if any, for `OPENAI_API_KEY`, the only
