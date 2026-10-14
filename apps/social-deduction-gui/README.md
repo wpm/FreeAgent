@@ -21,13 +21,17 @@ cargo run -q -p social-deduction -- play apps/social-deduction/configs/avalon/ra
 cargo run -q -p social-deduction --example stage < avalon.jsonl > apps/social-deduction-gui/game/avalon.json
 cargo run -q -p social-deduction -- play apps/social-deduction/configs/werewolf/random.toml 2> werewolf.jsonl > /dev/null
 cargo run -q -p social-deduction --example stage < werewolf.jsonl > apps/social-deduction-gui/game/werewolf.json
+for game in avalon werewolf; do
+  cargo run -q -p social-deduction --example stage < apps/social-deduction-gui/fixtures/$game-prompted.jsonl > apps/social-deduction-gui/game/$game-prompted.json
+done
 cd apps/social-deduction-gui
 trunk serve
 ```
 
 The page opens on the finished Avalon game, and `#werewolf` opens the
 Werewolf one. **Play** replays it from the start, a
-cue every quarter second.
+cue every quarter second, and a hash ending in `-fast` replays ten times
+as fast.
 
 ## The desktop app
 
@@ -60,3 +64,20 @@ security add-generic-password -s io.github.wpm.social-deduction -a OPENAI_API_KE
 ```
 
 which asks for the key.
+
+## The screen check
+
+`fixtures/` holds the logs of two prompted games played against a local
+model, with talk, thinking and late speech, which random players never
+produce. `#avalon-prompted` and `#werewolf-prompted` open them. CI's Viewer
+job builds the page with `build-page.sh` and drives it in headless
+Chromium with `e2e/check.mjs`, which checks what each game shows and saves
+screenshots. To run it locally, from the root of a checkout:
+
+```sh
+apps/social-deduction-gui/build-page.sh
+cd apps/social-deduction-gui/e2e
+npm ci
+npx playwright install chromium
+npm test
+```
