@@ -8,7 +8,8 @@
 //! An [`Announced`] game supplies only its rules: what each phase shows
 //! whom and how long it lasts, which moves count, and what a phase comes
 //! to. A move counts only in the phase underway, and the game's own timers
-//! reach it as moves too.
+//! reach it as moves too. A timer that is the last move its phase waits
+//! for ends the phase at once.
 //!
 //! The environment logs the deal, then the configuration; an
 //! [`Entry::Action`] for each announcement and each message of its own it
@@ -251,6 +252,19 @@ impl<G: Announced> Core<G> {
         counted
     }
 
+    /// Count `reminder`, one of the game's own, as [`Core::count`] does,
+    /// and end the phase at once if it was the last move the phase waited
+    /// for. Returns what the environment does about it, and what the phase
+    /// came to if it ended.
+    pub fn remind(&mut self, reminder: &G::Move) -> (Option<Counted<G>>, Option<Resolved<G>>) {
+        let counted = self.count(reminder);
+        let ended = match counted {
+            Some(Counted { last: true, .. }) => self.end(self.seq),
+            _ => None,
+        };
+        (counted, ended)
+    }
+
     /// End the phase numbered `seq`, unless it has already ended. Returns
     /// what it came to, or nothing if it had already.
     pub fn end(&mut self, seq: u64) -> Option<Resolved<G>> {
@@ -357,12 +371,12 @@ impl<G: Announced> Environment<G> {
         (core.seq, core.count(played))
     }
 
-    /// Carry out what a move that counted in the phase numbered `seq`
-    /// calls for, if it counted: send the environment's message, set its
-    /// reminder, and end the phase after the last move it waits for.
-    fn carry_out(&self, seq: u64, counted: Option<Counted<G>>) -> anyhow::Result<()> {
+    /// Carry out what a move calls for, if it `counted`: send the
+    /// environment's message and set its reminder. Returns whether it was
+    /// the last move its phase waited for.
+    fn carry_out(&self, counted: Option<Counted<G>>) -> anyhow::Result<bool> {
         let Some(Counted { last, tell, remind }) = counted else {
-            return Ok(());
+            return Ok(false);
         };
         if let Some((message, to)) = tell {
             act(&self.context, message, to, None, None)?;
@@ -370,10 +384,7 @@ impl<G: Announced> Environment<G> {
         if let Some((after, reminder)) = remind {
             self.context.think_after(after, reminder)?;
         }
-        if last {
-            self.context.think(Message::EndPhase { seq })?;
-        }
-        Ok(())
+        Ok(last)
     }
 
     /// Carry out the end of a phase, if `ended` says it did: stop whoever
@@ -427,15 +438,18 @@ impl<G: Announced> Behavior for Environment<G> {
     }
 
     /// Log a player's move as observed in the current phase, counted or
-    /// not, and carry out what it calls for if it counts. Anything else is
-    /// ignored.
+    /// not, and carry out what it calls for if it counts, ending the phase
+    /// after the last move it waits for. Anything else is ignored.
     async fn receive(&mut self, message: &Message<G>) -> anyhow::Result<()> {
         let (Message::Move(played), Some(n)) = (message, message.number()) else {
             return Ok(());
         };
         let (current, counted) = self.count(played);
         observe(&self.context, played.sender(), n, current);
-        self.carry_out(current, counted)
+        if self.carry_out(counted)? {
+            self.context.think(Message::EndPhase { seq: current })?;
+        }
+        Ok(())
     }
 
     /// Log the deal and the limits, then the configuration, and open the
@@ -453,16 +467,18 @@ impl<G: Announced> Think for Environment<G> {
     type Message = Message<G>;
 
     /// End the phase the message says is over, unless it has ended
-    /// already, and carry out a reminder of the game's own that counts.
-    /// Nothing else is thought about.
+    /// already, and carry out a reminder of the game's own that counts,
+    /// ending its phase at once if it was the last move the phase waited
+    /// for. Nothing else is thought about.
     async fn think(&mut self, message: &Message<G>) -> anyhow::Result<()> {
         if let Message::EndPhase { seq } = message {
             let ended = self.core().end(*seq);
             self.end_phase(ended)?;
         }
         if let Message::Move(reminder) = message {
-            let (current, counted) = self.count(reminder);
-            self.carry_out(current, counted)?;
+            let (counted, ended) = self.core().remind(reminder);
+            self.carry_out(counted)?;
+            self.end_phase(ended)?;
         }
         Ok(())
     }
