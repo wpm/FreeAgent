@@ -178,14 +178,15 @@ pub(crate) fn arguments<T: DeserializeOwned>(call: &model::Call) -> anyhow::Resu
 
 /// The tool choice the probe's first request, which `ask` makes under the
 /// tool choice it is given, is answered under, and how `ask` came out.
-/// The request first requires a tool call. If the provider refuses that as
-/// bad, it is asked again allowing one, and both refusals are given if that
-/// is refused too.
+/// The request is first asked under `from`. If that requires a tool call
+/// and the provider refuses it as bad, it is asked again allowing one, and
+/// both refusals are given if that is refused too.
 pub(crate) async fn first_answered(
+    from: ToolChoice,
     ask: impl AsyncFn(ToolChoice) -> anyhow::Result<()>,
 ) -> (ToolChoice, anyhow::Result<()>) {
-    match ask(ToolChoice::Required).await {
-        Err(required) if model::refused(&required) => {
+    match ask(from).await {
+        Err(required) if from == ToolChoice::Required && model::refused(&required) => {
             let answered = ask(ToolChoice::Auto).await.map_err(|auto| {
                 if model::concerns_the_model(&auto) {
                     anyhow!("made to call a tool: {required:#}\nasked to call one: {auto:#}")
@@ -195,16 +196,16 @@ pub(crate) async fn first_answered(
             });
             (ToolChoice::Auto, answered)
         }
-        answered => (ToolChoice::Required, answered),
+        answered => (from, answered),
     }
 }
 
-/// What the probe of `model_id` found, its requests asked under
+/// What the probe of `model_id` for `G` found, its requests asked under
 /// `tool_choice`: that the model played, if none `failed`; that it did not
-/// play, naming the request it did not answer, as `what` the game words
+/// play `G`, naming the request it did not answer, as `what` the game words
 /// it, if the failure concerns the model; and otherwise an error saying the
 /// model could not be asked, with the cause beneath it.
-pub(crate) fn probed(
+pub(crate) fn probed<G: Game>(
     model_id: &str,
     tool_choice: ToolChoice,
     failed: Option<(String, anyhow::Error)>,
@@ -212,7 +213,9 @@ pub(crate) fn probed(
     match failed {
         None => Ok(Probed::Played(tool_choice)),
         Some((what, error)) if model::concerns_the_model(&error) => Ok(Probed::DidNotPlay(
-            error.context(format!("{model_id} did not answer {what}")),
+            error
+                .context(format!("did not answer {what}"))
+                .context(format!("{model_id} did not play {}", G::NAME)),
         )),
         Some((_, error)) => Err(error.context(format!("{model_id} could not be asked to play"))),
     }

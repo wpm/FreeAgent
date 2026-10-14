@@ -17,9 +17,9 @@
 
 use crate::avalon::{self, Avalon};
 use crate::game;
-use crate::model::Provider;
 use crate::model::spec::{self, Handles, Models, Spec};
 use crate::model::window::{self, ContextWindow};
+use crate::model::{Provider, ToolChoice};
 use crate::seat::{Dealt, PlayerId, seats};
 use crate::strategy::{RANDOM, Random, RoleConfig, Strategy};
 use crate::werewolf::{self, Werewolf};
@@ -54,6 +54,11 @@ pub enum Name {
     Werewolf,
     /// `"avalon"`.
     Avalon,
+}
+
+impl Name {
+    /// Every game, in the order `models --check` probes them.
+    pub const ALL: [Name; 2] = [Name::Werewolf, Name::Avalon];
 }
 
 /// The one key [`load`] reads first, every other key ignored.
@@ -510,7 +515,9 @@ impl<G: game::Game> Settings<G> {
         prompts: &[SystemPrompt<G::Role>],
     ) -> anyhow::Result<(Models, Handles)> {
         let needed = |name: &str| self.needs(name, prompts);
-        let probe = async |provider: &Provider, id: &str| G::check_plays(provider, id).await;
+        let probe = async |provider: &Provider, id: &str| {
+            G::check_plays(provider, id, ToolChoice::Required).await
+        };
         spec::set_up(self.models_in_play(), needed, probe).await
     }
 
@@ -670,6 +677,17 @@ mod tests {
             };
             assert_eq!(loaded, named, "{name}");
         }
+    }
+
+    #[test]
+    fn every_game_is_named_once_in_order() {
+        // A game added to `Name` stops this match compiling until it is
+        // given its place here, and so in `Name::ALL`.
+        let place = |name| match name {
+            Name::Werewolf => 0,
+            Name::Avalon => 1,
+        };
+        assert_eq!(Name::ALL.map(place), [0, 1]);
     }
 
     #[test]

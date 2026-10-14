@@ -514,14 +514,16 @@ by day, then Avalon once as each player its phases wait on, one model at a
 time, and marks with `*` those that answer every request well, with `~`
 those that answer them well only when asked to call a tool and not made to
 in some game, and with `!` those that do not, with a line at the end saying
-so. Why each `!` model failed goes to standard error, so the listing stays
-readable: a line `! id` naming the model as the listing marks it, then the
-error's causes, each on its own indented line, the first naming the game
-and the next the request it did not answer, so a provider's words may run
-to several lines and still be read as one model's. A model that could not be asked at
-all, because the provider was not reached or answered with anything but the
-model's answer, such as a missing key or a rate limit, stops the listing
-with the error, since nothing it would say about the rest would be true.
+so. A model that refuses to be made to call a tool in one game is asked to
+call one in the next. Why each `!` model failed goes to standard error, so
+the listing stays readable: a line `! id` naming the model as the listing
+marks it, then the error's causes, each on its own indented line, the
+first naming the game and the next the request it did not answer, so a
+provider's words may run to several lines and still be read as one
+model's. A model that could not be asked at all, because the provider was
+not reached or answered with anything but the model's answer, such as a
+missing key or a rate limit, stops the listing with the error, since
+nothing it would say about the rest would be true.
 `--check` followed by ids asks only those, each of which must be listed,
 and leaves the rest unmarked; the ids end with `--` when the base URL
 follows them. A provider whose API key variable is known is read with it;

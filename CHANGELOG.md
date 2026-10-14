@@ -142,11 +142,12 @@ workflow takes a version's notes from here.
 ### Changed
 
 - `social-deduction models --check` asks each model to play Werewolf, then
-  Avalon, and marks it as playing when it plays both. The reason a model
-  did not play names the game and the request it did not answer.
+  Avalon, and marks it as playing when it plays both. A model that refuses
+  to be made to call a tool in Werewolf is asked to call one in Avalon. The
+  reason a model did not play names the model once, then the game and the
+  request it did not answer.
 - Werewolf lists three or more players as Avalon does, "a, b and c": a
-  pack of werewolves, the doctors protecting one player, the dead, and the
-  table, `2 werewolves, 3 villagers, 1 doctor and 1 seer`.
+  pack of werewolves, the doctors protecting one player, and the dead.
 - **Breaking:** `social-deduction play CONFIG` replaces
   `social-deduction werewolf CONFIG` and `social-deduction avalon CONFIG`,
   and every configuration file names its game with `game = "werewolf"` or

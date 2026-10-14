@@ -30,8 +30,8 @@ pub mod random;
 pub mod report;
 
 use crate::game::{Game, Tagged};
-use crate::model::Model;
 use crate::model::spec::Probed;
+use crate::model::{Model, ToolChoice};
 use crate::report::in_order;
 use crate::seat::{PlayerId, to_the_environment, to_the_players_but};
 use anyhow::ensure;
@@ -151,8 +151,9 @@ impl Game for Avalon {
     fn check_plays(
         model: &dyn Model,
         model_id: &str,
+        from: ToolChoice,
     ) -> impl Future<Output = anyhow::Result<Probed>> {
-        prompted::check_plays(model, model_id)
+        prompted::check_plays(model, model_id, from)
     }
 }
 
