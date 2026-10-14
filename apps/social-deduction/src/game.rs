@@ -264,13 +264,15 @@ impl<G: Game> Message<G> {
 }
 
 /// What the log holds: the deal, the configuration, every message sent as
-/// the action of its sender and the observation of its receiver, the usage
-/// the provider reported for each model call, each message a model player
+/// the action of its sender and the observation of its receiver, each model
+/// call going out and coming back, the usage the provider reported for each
+/// model call, each message a model player
 /// withheld because its phase had ended, each failure of a model player to
 /// act, and the game's own events, such as how each phase came out and the
 /// result. Every actor logs its own actions and observations: the
 /// environment logs the deal, the configuration and the game's events
-/// besides, and a player its usages, what it withholds and its failures.
+/// besides, and a player its calls, usages, what it withholds and its
+/// failures.
 /// Every entry made during a phase names the phase in a field, so nothing
 /// about phases depends on the order entries reach the log or on their
 /// times.
@@ -357,6 +359,28 @@ pub enum Entry<G: Game> {
         /// What went wrong, as the error says it, causes included.
         error: String,
     },
+    /// `player` called its model in the phase numbered `seq`. Logged by the
+    /// player. Its `Thought` follows unless the player is stopped first,
+    /// as by its death or the end of the game, and then a reader of the log
+    /// ends the call at the player's death, at the game's `End`, or at the
+    /// end of the log.
+    Thinking {
+        /// Who made the call.
+        player: PlayerId,
+        /// The phase the call was made in.
+        seq: u64,
+    },
+    /// The call `player` made in the phase numbered `seq` came back, as
+    /// `ending` says. Logged by the player as soon as the call returns,
+    /// before its usage and before the answer is judged.
+    Thought {
+        /// Who made the call.
+        player: PlayerId,
+        /// The phase the call was made in.
+        seq: u64,
+        /// How the call came back.
+        ending: Ending,
+    },
     /// The model answered a call `player` made in the phase numbered `seq`,
     /// and its provider reported `usage` for it, as sent. Logged by the
     /// player.
@@ -371,6 +395,17 @@ pub enum Entry<G: Game> {
     /// An entry only this game has, written as the game writes it.
     #[serde(untagged)]
     Event(G::Event),
+}
+
+/// How a model call came back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Ending {
+    /// The provider answered. Whatever the answer leads to, an action, a
+    /// withheld message or a failure to act, is logged after it.
+    Answered,
+    /// The call failed, with the error written as it says itself, causes
+    /// included.
+    Failed(String),
 }
 
 impl<G: Game> Entry<G> {

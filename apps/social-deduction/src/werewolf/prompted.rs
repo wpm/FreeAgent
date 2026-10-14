@@ -500,9 +500,10 @@ mod tests {
     use crate::model::window::{ContextWindow, Source};
     use crate::model::{CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT};
     use crate::prompted::tests::{
-        MODEL_ID, Made, PROMPTED, a_failure_logs_its_usage_first, answering, asked_of,
-        every_call_logs_its_usage, failed, forgotten, narrated, received, reporting, sent,
-        situated, speaking, story, told, usages, waiting,
+        MODEL_ID, Made, PROMPTED, a_call_cut_off_logs_no_thought, a_failed_call_logs_its_error,
+        a_failure_logs_its_usage_first, answering, asked_of, calls, every_call_logs_its_usage,
+        every_call_logs_thinking_then_thought, failed, forgotten, narrated, received, reporting,
+        sent, situated, speaking, story, told, usages, waiting,
     };
     use crate::prompted::{ANSWER, Account, Mind, Shown};
     use crate::report::FORGOTTEN;
@@ -1552,6 +1553,41 @@ mod tests {
             assert!(!model.requests().is_empty());
             assert!(usages(&logged).is_empty(), "{logged:?}");
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn every_model_call_logs_thinking_then_thought_then_its_usage_then_what_came_of_it() {
+        let model = reporting(choosing_first);
+        let (_, logged, _) = play(doctored(), quick(), Arc::clone(&model)).await.unwrap();
+        every_call_logs_thinking_then_thought(&model, logged);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_model_call_that_fails_logs_its_thought_failed_with_the_error() {
+        let model = answering(down);
+        let (_, logged, _) = play(at_parity(), quick(), Arc::clone(&model))
+            .await
+            .unwrap();
+        let error = "POST http://localhost:1234/v1/chat/completions failed: connection refused";
+        a_failed_call_logs_its_error(&model, &logged, error);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_player_killed_with_its_call_out_logs_thinking_and_no_thought() {
+        // The werewolf kills ann the first night and bob the second, while
+        // bob's call of the first day is still out.
+        let model = Arc::new(FakeModel::answering(choosing_first).taking(Duration::MAX));
+        let roles = one_wolf_against(&["ann", "bob", "cat"]);
+        let puppets = HashMap::from([("wolf", hunting_after(Duration::ZERO))]);
+        let (winner, logged, _) = play_with(roles, quick(), Arc::clone(&model), puppets)
+            .await
+            .unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        a_call_cut_off_logs_no_thought(&model, &logged);
+        assert_eq!(
+            calls(&logged)["bob"],
+            [[("thinking", Some(2), String::new())]]
+        );
     }
 
     /// The number of the environment's first tentative decision.

@@ -42,7 +42,7 @@
 //! the probe finds the model refuses that, and then every request asks it
 //! to call one, and an answer in prose is a failure like any other.
 
-use crate::game::{Actor, Entry, Game, Message, Seat, act, observe};
+use crate::game::{Actor, Ending, Entry, Game, Message, Seat, act, observe};
 use crate::model::spec::Probed;
 use crate::model::{self, Request, Response, Tool, ToolChoice};
 use crate::seat::PlayerId;
@@ -558,14 +558,30 @@ impl<G: Game> Player<G> {
         Ok(())
     }
 
-    /// Ask the model `request` in the phase numbered `seq`, and log the
-    /// usage its provider reports for the answer, if it reports one, before
-    /// the answer is judged.
+    /// Ask the model `request` in the phase numbered `seq`, logging the
+    /// call as it goes out and as it comes back, and then the usage its
+    /// provider reports for the answer, if it reports one, before the
+    /// answer is judged.
     pub(crate) async fn complete(&self, seq: u64, request: &Request) -> anyhow::Result<Response> {
-        let mut response = self.mind.model.complete(request).await?;
+        let player = &self.context.id;
+        self.context.log(Entry::Thinking {
+            player: player.clone(),
+            seq,
+        });
+        let answer = self.mind.model.complete(request).await;
+        let ending = match &answer {
+            Ok(_) => Ending::Answered,
+            Err(error) => Ending::Failed(format!("{error:#}")),
+        };
+        self.context.log(Entry::Thought {
+            player: player.clone(),
+            seq,
+            ending,
+        });
+        let mut response = answer?;
         if let Some(usage) = response.usage.take() {
             self.context.log(Entry::Usage {
-                player: self.context.id.clone(),
+                player: player.clone(),
                 seq,
                 usage,
             });
@@ -699,6 +715,7 @@ pub(crate) mod tests {
     use crate::model::Response;
     use crate::model::fake::FakeModel;
     use crate::seat::ENVIRONMENT;
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     /// The id of the model every test's players ask for.
@@ -874,13 +891,7 @@ pub(crate) mod tests {
             came += phases.len();
         }
         assert!(came > 0);
-        // Narration leaves the usages out.
-        let without: Vec<Entry<G>> = logged
-            .iter()
-            .filter(|entry| !matches!(entry, Entry::Usage { .. }))
-            .cloned()
-            .collect();
-        assert_eq!(narrated(logged), narrated(without));
+        narration_leaves_out(logged, |entry| matches!(entry, Entry::Usage { .. }));
     }
 
     /// Check that `logged`, a game in which some response was not well
@@ -905,6 +916,123 @@ pub(crate) mod tests {
             assert_eq!(*called, seq, "{player}");
             assert_eq!(came_of(logged, *i, player), [Some(seq)], "{player}");
         }
+    }
+
+    /// What a player logged of a call or of what came of it: what kind of
+    /// entry, the phase it names, and the error it tells of, if any.
+    pub(crate) type Called = (&'static str, Option<u64>, String);
+
+    /// Every call each player logged, in the log's order: the entries the
+    /// player logged from its `Thinking` up to its next, each told as
+    /// [`Called`].
+    pub(crate) fn calls<G: Game>(logged: &[Entry<G>]) -> BTreeMap<&str, Vec<Vec<Called>>> {
+        let mut calls: BTreeMap<&str, Vec<Vec<Called>>> = BTreeMap::new();
+        for entry in logged {
+            let (player, called): (&str, Called) = match entry {
+                Entry::Thinking { player, seq } => {
+                    let thinking = ("thinking", Some(*seq), String::new());
+                    calls.entry(player).or_default().push(vec![thinking]);
+                    continue;
+                }
+                Entry::Thought {
+                    player,
+                    seq,
+                    ending: Ending::Answered,
+                } => (player, ("answered", Some(*seq), String::new())),
+                Entry::Thought {
+                    player,
+                    seq,
+                    ending: Ending::Failed(error),
+                } => (player, ("failed", Some(*seq), error.clone())),
+                Entry::Usage { player, seq, .. } => (player, ("usage", Some(*seq), String::new())),
+                Entry::Action { from, message, .. } | Entry::Withheld { from, message, .. }
+                    if from != ENVIRONMENT =>
+                {
+                    (from, ("acted", message.seq(), String::new()))
+                }
+                Entry::Failed { player, seq, error } => {
+                    (player, ("could not act", Some(*seq), error.clone()))
+                }
+                _ => continue,
+            };
+            if let Some(call) = calls.get_mut(player).and_then(|calls| calls.last_mut()) {
+                call.push(called);
+            }
+        }
+        calls
+    }
+
+    /// Every call the players logged in `logged`, a game whose players
+    /// asked `model`, checking that there is one for each request.
+    fn every_call<G: Game>(model: &FakeModel, logged: &[Entry<G>]) -> Vec<Vec<Called>> {
+        let all: Vec<Vec<Called>> = calls(logged).into_values().flatten().collect();
+        assert!(!all.is_empty());
+        assert_eq!(all.len(), model.requests().len());
+        all
+    }
+
+    /// Check that narrating `logged` tells the same as narrating it without
+    /// the entries `left_out` picks.
+    fn narration_leaves_out<G: Game>(logged: Vec<Entry<G>>, left_out: fn(&Entry<G>) -> bool) {
+        let without: Vec<Entry<G>> = logged
+            .iter()
+            .filter(|entry| !left_out(entry))
+            .cloned()
+            .collect();
+        assert_eq!(narrated(logged), narrated(without));
+    }
+
+    /// Check what `logged`, a game whose players asked `model`, which
+    /// answered every call and reported a usage for it, says of the calls:
+    /// each one logged as `Thinking`, then `Thought` answered, then its
+    /// usage, then what came of it, all in its phase, and none of it in the
+    /// narration.
+    pub(crate) fn every_call_logs_thinking_then_thought<G: Game>(
+        model: &FakeModel,
+        logged: Vec<Entry<G>>,
+    ) {
+        let mut acted = 0;
+        for call in every_call(model, &logged) {
+            let seq = call[0].1;
+            let kinds: Vec<&str> = call.iter().map(|(kind, _, _)| *kind).collect();
+            assert_eq!(kinds[..3], ["thinking", "answered", "usage"], "{call:?}");
+            assert!(call.iter().all(|(_, phase, _)| *phase == seq), "{call:?}");
+            acted += kinds.iter().filter(|kind| **kind == "acted").count();
+        }
+        assert!(acted > 0);
+        narration_leaves_out(logged, |entry| {
+            matches!(entry, Entry::Thinking { .. } | Entry::Thought { .. })
+        });
+    }
+
+    /// Check what `logged`, a game whose players asked `model`, which
+    /// failed every call, says of the calls: each one logged as `Thinking`,
+    /// then `Thought` failed with the error, causes included, then the
+    /// player's failure to act with the same error, all in its phase.
+    pub(crate) fn a_failed_call_logs_its_error<G: Game>(
+        model: &FakeModel,
+        logged: &[Entry<G>],
+        error: &str,
+    ) {
+        for call in every_call(model, logged) {
+            let seq = call[0].1;
+            assert_eq!(
+                call,
+                [
+                    ("thinking", seq, String::new()),
+                    ("failed", seq, error.to_string()),
+                    ("could not act", seq, error.to_string()),
+                ]
+            );
+        }
+    }
+
+    /// Check what `logged`, a game whose players asked `model`, which never
+    /// answers, says of the calls: each one logged as `Thinking` alone, the
+    /// player stopped before its call came back.
+    pub(crate) fn a_call_cut_off_logs_no_thought<G: Game>(model: &FakeModel, logged: &[Entry<G>]) {
+        let all = every_call(model, logged);
+        assert!(all.iter().all(|call| call.len() == 1), "{all:?}");
     }
 
     #[test]

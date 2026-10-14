@@ -142,6 +142,11 @@ workflow takes a version's notes from here.
   local model.
 - The `social-deduction-stage` crate: the cues a game's viewer is drawn
   from, built natively and for `wasm32-unknown-unknown`.
+- A prompted player logs `Thinking` as each model call goes out and
+  `Thought` as it comes back, answered or failed with its error, so a log
+  shows how long every call took and whose call is out. A call cut off by
+  the player's stopping ends at its death, at the game's end, or at the
+  end of the log. The narration leaves both out.
 
 ### Changed
 
