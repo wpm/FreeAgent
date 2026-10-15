@@ -44,6 +44,9 @@ pub struct Underway {
 }
 
 impl Announced for Werewolf {
+    /// A phase closes, so that every player finishes what it was saying
+    /// before the outcome is told and the next phase begins.
+    const CLOSES: bool = true;
     type State = State;
     type Underway = Underway;
 
@@ -213,8 +216,8 @@ mod tests {
     use crate::seat::id;
     use crate::werewolf::candidates;
     use crate::werewolf::tests::{
-        self, Script, at_once, mute, observed_by_the_environment, one_wolf_against, play, quick,
-        retraction, selection, village,
+        self, Script, at_once, closed, closed_before_it_ended, mute, mute_holding,
+        observed_by_the_environment, one_wolf_against, play, quick, retraction, selection, village,
     };
     use crate::werewolf::{Actor, Entry, Rules, Seat, Team};
     use std::collections::HashSet;
@@ -1036,5 +1039,107 @@ mod tests {
                 (Some("wolf"), living)
             ]
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_night_everyone_awake_has_selected_in_closes_and_ends_once_everyone_has_closed() {
+        // The werewolf kills at once, which brings it to parity, and ann
+        // takes two seconds to close the night: the hunt is logged and the
+        // game ends only then.
+        let roles = one_wolf_against(&["ann", "bob"]);
+        let puppets = HashMap::from([
+            ("wolf", Actor::puppet(hunting())),
+            ("ann", mute_holding(Duration::from_secs(2))),
+        ]);
+        let (winner, logged, took) = play(roles, quick(), puppets).await.unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        assert_eq!(took, Duration::from_secs(2));
+        closed_before_it_ended(&logged, 1, &["ann", "bob", "wolf"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_day_that_runs_out_closes_and_ends_once_everyone_has_closed() {
+        // Cat takes three seconds to close each phase. The werewolf kills
+        // ann at once, and the night ends three seconds in. Nobody votes,
+        // so the day runs out ten seconds after that and ends three seconds
+        // later still. The werewolf then kills at once and wins once the
+        // night has closed, nineteen seconds in.
+        let (winner, logged, took) = play_a_day(mute(), mute_holding(Duration::from_secs(3))).await;
+        assert_eq!(winner, Team::Werewolves);
+        assert_eq!(took, Duration::from_secs(19));
+        assert_eq!(voted(&logged), [(2, None, Ending::DayLimit)]);
+        closed_before_it_ended(&logged, 1, &["ann", "bob", "cat", "wolf"]);
+        closed_before_it_ended(&logged, 2, &["bob", "cat", "wolf"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_day_whose_votes_stand_closes_with_its_outcome_fixed_whatever_comes_while_it_closes()
+    {
+        // Cat takes six seconds to close each phase, so the day opens six
+        // seconds in. Bob votes against the werewolf at once, and the vote
+        // stands five seconds later. Cat votes against bob seven seconds
+        // into the day, which would tie the vote were it counted, and the
+        // day limit comes too while the day closes. The werewolf is voted
+        // out once cat has closed, seventeen seconds in.
+        let bob = voter(Duration::ZERO, &[Some("wolf")], Duration::ZERO);
+        let cat = Actor::holding(
+            Box::new(|me, seq, _| vec![(Duration::from_secs(7), selection(seq, me, 1, "bob"))]),
+            Duration::from_secs(6),
+        );
+        let (winner, logged, took) = play_a_day(bob, cat).await;
+        assert_eq!(winner, Team::Villagers);
+        assert_eq!(took, Duration::from_secs(17));
+        assert_eq!(voted(&logged), [(2, Some("wolf"), Ending::Ratified)]);
+        closed_before_it_ended(&logged, 2, &["bob", "cat", "wolf"]);
+        // The environment observed cat's vote, which told nobody anything.
+        assert!(
+            observed_by_the_environment(&logged).contains(&("cat", 1, 2)),
+            "{logged:?}"
+        );
+        assert_eq!(
+            tentatives(&logged),
+            [(Some("wolf"), vec!["bob", "cat", "wolf"])]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_ratify_timer_that_fires_while_the_day_closes_changes_nothing() {
+        // Cat takes five seconds to close each phase, so the day opens five
+        // seconds in. Bob votes against the werewolf seven seconds into the
+        // day, and the day runs out at ten with nobody voted out. Bob's vote
+        // would have stood at twelve, while cat closes the day. The werewolf
+        // then kills at once and wins once the night has closed.
+        let bob = voter(Duration::from_secs(7), &[Some("wolf")], Duration::ZERO);
+        let (winner, logged, took) = play_a_day(bob, mute_holding(Duration::from_secs(5))).await;
+        assert_eq!(winner, Team::Werewolves);
+        assert_eq!(took, Duration::from_secs(25));
+        assert_eq!(voted(&logged), [(2, None, Ending::DayLimit)]);
+        closed_before_it_ended(&logged, 2, &["bob", "cat", "wolf"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_close_for_another_phase_or_from_a_player_not_waited_on_is_observed_and_ignored() {
+        // The werewolf kills at once and, a second later, closes the night
+        // to come and, as if it were bob, the night underway. Ann takes
+        // three seconds to close the night, and the game ends only then.
+        let wolf: Script = Box::new(|me, seq, view| {
+            let first = &candidates(me, view)[0];
+            vec![
+                (Duration::ZERO, selection(seq, me, seq, first)),
+                (Duration::from_secs(1), closed(seq + 1, me, 50)),
+                (Duration::from_secs(1), closed(seq, "dan", 51)),
+            ]
+        });
+        let roles = one_wolf_against(&["ann", "bob"]);
+        let puppets = HashMap::from([
+            ("wolf", Actor::puppet(wolf)),
+            ("ann", mute_holding(Duration::from_secs(3))),
+        ]);
+        let (winner, logged, took) = play(roles, quick(), puppets).await.unwrap();
+        assert_eq!(winner, Team::Werewolves);
+        assert_eq!(took, Duration::from_secs(3));
+        let observed = tests::observed_by(&logged, super::super::ENVIRONMENT);
+        assert!(observed.contains(&("wolf", 50, 1)), "{observed:?}");
+        assert!(observed.contains(&("dan", 51, 1)), "{observed:?}");
     }
 }

@@ -782,6 +782,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_player_who_dies_with_a_call_out_has_thought() {
+        let thinking = Entry::<Werewolf>::Thinking {
+            player: "bob".to_string(),
+            seq: 2,
+        };
+        let hunted = Entry::<Werewolf>::Event(werewolf::Outcome::Hunted {
+            seq: 3,
+            hunt: werewolf::Hunt {
+                victim: "bob".to_string(),
+                protectors: HashSet::new(),
+            },
+        });
+        let staged = staged(&[thinking, hunted]);
+        let thought = Beat::Thought {
+            who: "bob".to_string(),
+        };
+        assert_eq!(staged[1].last(), Some(&thought));
+    }
+
+    #[test]
     fn calls_still_out_at_the_end_of_a_log_are_closed_there_in_seat_order() {
         let thinking = |player: &str| {
             logged(Entry::<Avalon>::Thinking {

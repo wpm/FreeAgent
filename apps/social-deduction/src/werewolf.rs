@@ -13,9 +13,10 @@
 //! talk.
 //!
 //! Play alternates between night and day, starting with night, until one
-//! [`Team`] has won. The environment numbers its announcements and
-//! tentative decisions, each player its selections and utterances
-//! together. The environment logs the deal, its announcements, the
+//! [`Team`] has won. Each phase closes before it ends, so that every
+//! player finishes what it was saying. The environment numbers its
+//! announcements, closings and tentative decisions, each player its
+//! selections, utterances and closes together. The environment logs the deal, its announcements, the
 //! selections it receives, each night's hunt, and the result; every player
 //! logs what it receives and the selections and utterances it sends.
 //!
@@ -1159,6 +1160,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn closing_and_closed_are_numbered_by_their_senders_and_tagged_with_the_closing_phase() {
+        let closing = closing(2, 9);
+        assert_eq!(closing.number(), Some(9));
+        assert_eq!(closing.seq(), Some(2));
+        assert_eq!(closing.sender(), ENVIRONMENT);
+        let closed = closed(2, "ann", 4);
+        assert_eq!(closed.number(), Some(4));
+        assert_eq!(closed.seq(), Some(2));
+        assert_eq!(closed.sender(), "ann");
+        let json = serde_json::to_value(&closing).unwrap();
+        assert_eq!(json, serde_json::json!({"Closing": {"seq": 2, "n": 9}}));
+        assert_eq!(serde_json::from_value::<Message>(json).unwrap(), closing);
+        let json = serde_json::to_value(&closed).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"Closed": {"seq": 2, "from": "ann", "n": 4}})
+        );
+        assert_eq!(serde_json::from_value::<Message>(json).unwrap(), closed);
+    }
+
+    #[test]
     fn days_are_counted_as_they_are_completed() {
         let mut state = village();
         assert_eq!(state.days(), 0);
@@ -1274,16 +1296,35 @@ pub(crate) mod tests {
     /// if it were the environment, to every other player alive at the
     /// latest announcement; a selection or retraction to the environment,
     /// and by day to the other players too; anything else to the
-    /// environment. It logs each message it sends as its action and each
-    /// message it receives as its observation, in the latest phase
-    /// announced, and does nothing else with what it hears, whatever phase
-    /// it is tagged with. What it says later is said by its think loop, a
-    /// [`Cue`].
+    /// environment. Told a phase is closing, it closes it `holding` later,
+    /// numbering its [`closed`] 1000 and the phase's number, apart from
+    /// what its script numbers. It logs each message it sends as its
+    /// action and each message it receives as its observation, in the
+    /// latest phase announced, and does nothing else with what it hears,
+    /// whatever phase it is tagged with. What it says later is said by its
+    /// think loop, a [`Cue`].
     pub struct Puppet {
         context: Context<Message, Entry>,
         script: Script,
+        /// How long it takes to close a phase.
+        holding: Duration,
         /// The latest phase announced, shared with the cue.
         announced: Announced,
+    }
+
+    /// Say `message` from the puppet of `context` `after` from now, or at
+    /// once if `after` is zero.
+    fn cue(
+        context: &Context<Message, Entry>,
+        after: Duration,
+        message: Message,
+        announced: &Announced,
+    ) -> anyhow::Result<()> {
+        if after.is_zero() {
+            say(context, message, announced)
+        } else {
+            context.think_after(after, message)
+        }
     }
 
     #[async_trait]
@@ -1307,6 +1348,10 @@ pub(crate) mod tests {
                     .as_ref()
                     .map_or(0, |(seq, _)| *seq);
                 observe(&self.context, message.sender(), n, seq);
+                if let Message::Closing { seq, .. } = message {
+                    let closed = closed(*seq, &self.context.id, 1000 + seq);
+                    cue(&self.context, self.holding, closed, &self.announced)?;
+                }
                 return Ok(());
             };
             *self.announced.lock().unwrap() = Some((*seq, view.clone()));
@@ -1315,11 +1360,7 @@ pub(crate) mod tests {
                 return Ok(());
             }
             for (after, said) in (self.script)(&self.context.id, *seq, view) {
-                if after.is_zero() {
-                    say(&self.context, said, &self.announced)?;
-                } else {
-                    self.context.think_after(after, said)?;
-                }
+                cue(&self.context, after, said, &self.announced)?;
             }
             Ok(())
         }
@@ -1367,14 +1408,21 @@ pub(crate) mod tests {
     }
 
     impl Actor {
-        /// A puppet following `script`.
+        /// A puppet following `script`, which closes a phase at once.
         pub(super) fn puppet(script: Script) -> Seat {
+            Actor::holding(script, Duration::ZERO)
+        }
+
+        /// A puppet following `script`, which closes a phase `holding`
+        /// after it is told the phase is closing.
+        pub(super) fn holding(script: Script, holding: Duration) -> Seat {
             let announced = Announced::default();
             let shared = Arc::clone(&announced);
             let behavior: Builder<Actor> = Box::new(move |context| {
                 Actor::Puppet(Puppet {
                     context,
                     script,
+                    holding,
                     announced,
                 })
             });
@@ -1391,6 +1439,120 @@ pub(crate) mod tests {
     /// A player who never selects.
     pub(super) fn mute() -> Seat {
         Actor::puppet(Box::new(|_, _, _| vec![]))
+    }
+
+    /// A player who never selects, and closes a phase `holding` after it
+    /// is told the phase is closing.
+    pub(super) fn mute_holding(holding: Duration) -> Seat {
+        Actor::holding(Box::new(|_, _, _| vec![]), holding)
+    }
+
+    /// The number of the environment's announcement of the phase numbered
+    /// `seq` to `player`.
+    pub(super) fn announced_to(logged: &[Entry], player: &str, seq: u64) -> u64 {
+        told_to(
+            logged,
+            player,
+            |message| matches!(message, Message::Announce { seq: of, .. } if *of == seq),
+        )
+    }
+
+    /// The number of the environment's word to `player` that the phase
+    /// numbered `seq` is closing.
+    pub(super) fn closing_to(logged: &[Entry], player: &str, seq: u64) -> u64 {
+        told_to(
+            logged,
+            player,
+            |message| matches!(message, Message::Closing { seq: of, .. } if *of == seq),
+        )
+    }
+
+    /// The number of the first message sent to `player` that `wanted`
+    /// holds of.
+    fn told_to(logged: &[Entry], player: &str, wanted: impl Fn(&Message) -> bool) -> u64 {
+        logged
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Action { n, to, message, .. } if to.contains(player) && wanted(message) => {
+                    Some(*n)
+                }
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    /// Check that the phase numbered `seq` closed in `logged` before it
+    /// ended: the environment told each of `players`, in that order, the
+    /// phase was closing, numbered one up each; observed each one's
+    /// [`closed`] for it; and logged how the phase came out, and the next
+    /// phase's first announcement or the end of the game, only after the
+    /// last.
+    pub(crate) fn closed_before_it_ended(logged: &[Entry], seq: u64, players: &[&str]) {
+        let told: Vec<(&str, u64)> = logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Action {
+                    from,
+                    to,
+                    message: Message::Closing { seq: closing, n },
+                    ..
+                } if *closing == seq => {
+                    assert_eq!(from, ENVIRONMENT);
+                    assert_eq!(to.len(), 1, "{to:?}");
+                    Some((to.iter().next().unwrap().as_str(), *n))
+                }
+                _ => None,
+            })
+            .collect();
+        let to: Vec<&str> = told.iter().map(|(to, _)| *to).collect();
+        assert_eq!(to, players, "{seq}");
+        let numbers: Vec<u64> = told.iter().map(|(_, n)| *n).collect();
+        let first = numbers[0];
+        let one_up: Vec<u64> = (first..first + numbers.len() as u64).collect();
+        assert_eq!(numbers, one_up, "{seq}");
+        let closed: Vec<(&str, u64)> = logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Action {
+                    from,
+                    to,
+                    message: Message::Closed { seq: of, n, .. },
+                    ..
+                } if *of == seq => {
+                    assert_eq!(*to, to_the_environment(), "{from}");
+                    Some((from.as_str(), *n))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut closers: Vec<&str> = closed.iter().map(|(from, _)| *from).collect();
+        closers.sort_unstable();
+        let mut expected = players.to_vec();
+        expected.sort_unstable();
+        assert_eq!(closers, expected, "{seq}");
+        let observed: Vec<Option<usize>> = closed
+            .iter()
+            .map(|(from, n)| {
+                logged.iter().position(|entry| {
+                    matches!(entry, Entry::Observation { by, from: sender, n: number, .. }
+                        if by == ENVIRONMENT && sender == from && number == n)
+                })
+            })
+            .collect();
+        assert!(observed.iter().all(Option::is_some), "{seq}: {closed:?}");
+        let last = observed.into_iter().flatten().max().unwrap();
+        let ended = |entry: &Entry| match entry {
+            Entry::Event(Outcome::Hunted { seq: of, .. } | Outcome::Voted { seq: of, .. }) => {
+                *of == seq
+            }
+            Entry::Action {
+                message: Message::Announce { seq: next, .. },
+                ..
+            } => *next == seq + 1,
+            other => matches!(other, Entry::Event(Outcome::End { .. })),
+        };
+        assert!(!logged[..last].iter().any(ended), "{seq}: {logged:?}");
+        assert!(logged[last..].iter().any(ended), "{seq}: {logged:?}");
     }
 
     /// Run a game of `roles` under `rules`, each player choosing at random
@@ -1438,10 +1600,26 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// The selections the environment logged as its observations, as
-    /// [`observed_by`] has them.
+    /// The selections and retractions the environment logged as its
+    /// observations, as [`observed_by`] has them: all but the players'
+    /// [`closed`].
     pub(super) fn observed_by_the_environment(logged: &[Entry]) -> Vec<(&str, u64, u64)> {
+        let closes: HashSet<(&str, u64)> = logged
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Action {
+                    from,
+                    n,
+                    message: Message::Closed { .. },
+                    ..
+                } => Some((from.as_str(), *n)),
+                _ => None,
+            })
+            .collect();
         observed_by(logged, ENVIRONMENT)
+            .into_iter()
+            .filter(|(from, n, _)| !closes.contains(&(*from, *n)))
+            .collect()
     }
 
     /// A selection of `target` by `from` in the phase numbered `seq`, the
@@ -1475,6 +1653,22 @@ pub(crate) mod tests {
             target: target.map(str::to_string),
             ratify: Duration::from_secs(20),
         })
+    }
+
+    /// The environment's word that the phase numbered `seq` is closing, the
+    /// `n`th message it sent.
+    pub(super) fn closing(seq: u64, n: u64) -> Message {
+        Message::Closing { seq, n }
+    }
+
+    /// `from`'s word that it has closed the phase numbered `seq`, the `n`th
+    /// message `from` sent.
+    pub(super) fn closed(seq: u64, from: &str, n: u64) -> Message {
+        Message::Closed {
+            seq,
+            from: from.to_string(),
+            n,
+        }
     }
 
     /// One werewolf against `villagers`.

@@ -20,9 +20,10 @@ mod tests {
     use crate::strategy::RANDOM;
     use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{
-        Script, at_once, between_the_deal_and_the_end, configured, dealt, logged, mute,
-        observed_by, observed_by_the_environment, one_wolf_against, play, quick, run, seen,
-        selection, selections, tentative, utterance, village,
+        Script, announced_to, at_once, between_the_deal_and_the_end, closed_before_it_ended,
+        closing_to, configured, dealt, logged, mute, observed_by, observed_by_the_environment,
+        one_wolf_against, play, quick, run, seen, selection, selections, tentative, utterance,
+        village,
     };
     use crate::werewolf::{
         Actor, ENVIRONMENT, Entry, Message, Move, Outcome, Phase, PlayerId, Role, Rules, Team,
@@ -71,9 +72,10 @@ mod tests {
         );
         let (winner, logged, _) = run(episode, won, log).await.unwrap();
 
-        // Everything between is an announcement or a selection, logged as
-        // the action of its sender and the observation of each of its
-        // receivers, or a night's hunt.
+        // Everything between is an announcement, a selection, a phase's
+        // closing or a player's close of it, logged as the action of its
+        // sender and the observation of each of its receivers, or a night's
+        // hunt.
         let doctors: HashSet<&PlayerId> = roles
             .iter()
             .filter(|(_, role)| **role == Role::Doctor)
@@ -85,6 +87,10 @@ mod tests {
         let mut actions: HashMap<(&str, u64), &HashSet<ActorId>> = HashMap::new();
         let mut observations: HashMap<(&str, u64), Vec<&str>> = HashMap::new();
         let mut announced = 0;
+        let mut closings = 0;
+        let mut closes = 0;
+        // The players each phase was announced to, in the order announced.
+        let mut phases: Vec<Vec<&str>> = Vec::new();
         let mut selected = 0;
         let mut observed = 0;
         let mut hunts = 0;
@@ -106,6 +112,34 @@ mod tests {
                 assert_eq!(*forgot, None);
                 assert_eq!(actions.insert((from, *n), to), None);
                 announced += 1;
+                let seq = usize::try_from(*seq).unwrap();
+                phases.resize(phases.len().max(seq), Vec::new());
+                phases[seq - 1].extend(to.iter().map(String::as_str));
+            }
+            if let Entry::Action {
+                from,
+                n,
+                to,
+                message: Message::Closing { .. },
+                ..
+            } = entry
+            {
+                assert_eq!(from, ENVIRONMENT);
+                assert_eq!(actions.insert((from, *n), to), None);
+                closings += 1;
+            }
+            if let Entry::Action {
+                from,
+                n,
+                to,
+                message: Message::Closed { from: closer, .. },
+                ..
+            } = entry
+            {
+                assert_eq!(from, closer);
+                assert_eq!(*to, to_the_environment());
+                assert_eq!(actions.insert((from, *n), to), None);
+                closes += 1;
             }
             if let Entry::Action {
                 from,
@@ -158,10 +192,17 @@ mod tests {
         }
         // Nothing else is logged between: no reminder to end a phase.
         assert_eq!(
-            announced + selected + observed + hunts,
+            announced + closings + closes + selected + observed + hunts,
             between.len(),
             "{logged:?}"
         );
+        // Each phase closed before it ended, with a closing and a close
+        // for every player it was announced to.
+        assert_eq!(closings, announced, "{logged:?}");
+        assert_eq!(closes, announced, "{logged:?}");
+        for (seq, players) in phases.iter().enumerate() {
+            closed_before_it_ended(&logged, seq as u64 + 1, players);
+        }
         // Every message is logged once as an action, and as an observation
         // with the same number at most once by each of its receivers, and
         // always by the environment, or by the player it announced to. A
@@ -212,8 +253,11 @@ mod tests {
         assert_eq!(took, quick().night_limit);
         assert!(selections(&logged).is_empty(), "{logged:?}");
         // Ann observed the announcement, the environment's first message,
-        // and nothing else.
-        assert_eq!(observed_by(&logged, "ann"), [(ENVIRONMENT, 1, 1)]);
+        // and the night's closing, its third, and nothing else.
+        assert_eq!(
+            observed_by(&logged, "ann"),
+            [(ENVIRONMENT, 1, 1), (ENVIRONMENT, 3, 1)]
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -238,12 +282,17 @@ mod tests {
         let puppets = HashMap::from([("wolf", Actor::puppet(wolf))]);
         let (_, logged, _) = play(roles, quick(), puppets).await.unwrap();
         for player in ["bob", "cat"] {
-            // After the announcement, which the environment numbered below
-            // 10. A tentative decision names no sender, so the werewolf's
-            // are observed as the environment's.
+            // What the werewolf numbered 10 and up, which the other
+            // players' votes are numbered below, and not the environment's
+            // announcement or closing of the day. A tentative decision names
+            // no sender, so the werewolf's are observed as the environment's.
+            let own = [
+                (ENVIRONMENT, announced_to(&logged, player, 2), 2),
+                (ENVIRONMENT, closing_to(&logged, player, 2), 2),
+            ];
             let heard: Vec<(&str, u64, u64)> = observed_by(&logged, player)
                 .into_iter()
-                .filter(|(_, n, seq)| *n >= 10 && *seq == 2)
+                .filter(|heard| heard.1 >= 10 && heard.2 == 2 && !own.contains(heard))
                 .collect();
             assert_eq!(
                 heard,

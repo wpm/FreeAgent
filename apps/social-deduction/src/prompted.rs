@@ -32,6 +32,13 @@
 //! the one it was last announced; if not, it sends nothing and logs each
 //! message it would have sent as [`Entry::Withheld`].
 //!
+//! Told that the phase it is in is closing, a player makes no choice for
+//! it: it starts no model call for it, sends the speech of the call it has
+//! in flight and withholds the choices, and closes the phase once it has
+//! no call in flight, at once if it had none. Neither the closing nor its
+//! close is remembered, since the model is never asked while a phase
+//! closes.
+//!
 //! A model that is not reached, or an answer that is not well formed, is a
 //! failure: the player logs it as [`Entry::Failed`], carries nothing out,
 //! and the game goes on. The player logs an [`Entry::Observation`] for each
@@ -42,7 +49,7 @@
 //! the probe finds the model refuses that, and then every request asks it
 //! to call one, and an answer in prose is a failure like any other.
 
-use crate::game::{Actor, Ending, Entry, Game, Message, Seat, act, observe};
+use crate::game::{Actor, Ending, Entry, Game, Message, Seat, act, close, observe};
 use crate::model::spec::Probed;
 use crate::model::{self, Request, Response, Tool, ToolChoice};
 use crate::seat::PlayerId;
@@ -223,7 +230,8 @@ pub(crate) fn probed<G: Game>(
 
 /// What a player remembers: a message it received from another actor in
 /// the phase it was in, or one it sent. Reminders to itself, messages from
-/// another phase, and what it withheld, are not remembered.
+/// another phase, what it withheld, and a phase's closing and its close,
+/// are not remembered.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Memory<G: Game> {
     /// The player received `message`, whose [`Message::sender`] sent it.
@@ -251,6 +259,10 @@ pub trait Account<G: Game> {
 
 /// What a call has a player send, as the message it makes.
 pub(crate) trait Sending<G: Game> {
+    /// Whether this is speech, which is sent while its phase closes. All
+    /// else is a choice, which is not.
+    fn speaks(&self) -> bool;
+
     /// The message `from` sends for this in the phase numbered `seq`,
     /// numbered `n`.
     fn message(self, seq: u64, from: &PlayerId, n: u64) -> Message<G>;
@@ -278,6 +290,9 @@ pub(crate) struct Mind<G: Game> {
     /// How many reminders the player has set, which numbers them so that
     /// only the latest counts.
     reminders: AtomicU64,
+    /// The model call in flight and the phase closing, if any. Never locked
+    /// across an await.
+    flight: Mutex<Flight>,
     /// Its system prompt, rendered for its seat and role.
     prompt: String,
     /// The model's id, as each request names it.
@@ -312,6 +327,20 @@ pub(crate) struct Shown {
     pub(crate) forgot: Option<usize>,
 }
 
+/// What the think loop is doing about the phases, as the perceive loop
+/// needs to know it to close one.
+#[derive(Default)]
+struct Flight {
+    /// The phase the think loop has a model call in flight for, set just
+    /// before the call and cleared once its answer or failure is carried
+    /// out.
+    calling: Option<u64>,
+    /// The latest phase the player was told is closing. A call in flight
+    /// for it owes the environment the player's close of it, which the
+    /// think loop sends once the call is done.
+    closing: Option<u64>,
+}
+
 /// A phase as a player was announced it: its number, what the player may
 /// see of it, and how long it lasts.
 #[derive(Clone)]
@@ -343,6 +372,7 @@ impl<G: Game> Mind<G> {
             announced: Mutex::new(None),
             waking: AtomicBool::new(false),
             reminders: AtomicU64::new(0),
+            flight: Mutex::new(Flight::default()),
             prompt,
             model_id,
             tool_choice,
@@ -455,6 +485,39 @@ impl<G: Game> Mind<G> {
     fn reminder_counts(&self, seq: u64, count: u64) -> bool {
         count == self.reminders.load(Ordering::Relaxed) && self.in_phase(seq)
     }
+
+    /// Take in that the phase numbered `seq` is closing, and say whether
+    /// the player closes it now: whether it has no call in flight for it.
+    /// If it has one, the close is owed once the call is done.
+    fn close(&self, seq: u64) -> bool {
+        let mut flight = self.flight.lock().unwrap();
+        flight.closing = Some(seq);
+        flight.calling != Some(seq)
+    }
+
+    /// Whether the phase numbered `seq` is closing.
+    fn closing(&self, seq: u64) -> bool {
+        self.flight.lock().unwrap().closing == Some(seq)
+    }
+
+    /// Mark a call in flight for the phase numbered `seq`, unless the phase
+    /// is closing. Returns whether the call may be made.
+    fn take_off(&self, seq: u64) -> bool {
+        let mut flight = self.flight.lock().unwrap();
+        if flight.closing == Some(seq) {
+            return false;
+        }
+        flight.calling = Some(seq);
+        true
+    }
+
+    /// Mark the call in flight done. Returns the phase whose close it owed,
+    /// if it owed one.
+    fn land(&self) -> Option<u64> {
+        let mut flight = self.flight.lock().unwrap();
+        let landed = flight.calling.take();
+        landed.filter(|seq| flight.closing == Some(*seq))
+    }
 }
 
 /// A player whose decisions are made by a language model. Its perceive
@@ -537,17 +600,21 @@ impl<G: Game> Player<G> {
     }
 
     /// Woken, decide: take the wake-up, and play the phase the player is
-    /// in as its game plays it. If that fails, log the failure with the
-    /// phase and what went wrong, causes included, which is all there is to
-    /// do about it: the player has not acted, and the game goes on. The
-    /// failure is not remembered, so the model is never told of it. Being
-    /// woken before any phase was announced is an error.
+    /// in as its game plays it, unless the phase is closing. If that fails,
+    /// log the failure with the phase and what went wrong, causes included,
+    /// which is all there is to do about it: the player has not acted, and
+    /// the game goes on. The failure is not remembered, so the model is
+    /// never told of it. Then close the phase if it began closing in the
+    /// meantime. Being woken before any phase was announced is an error.
     async fn decide(&self) -> anyhow::Result<()> {
         self.mind.woken();
         let Announced { seq, view, limit } = self
             .mind
             .announced()
             .context("woken before any phase was announced")?;
+        if !self.mind.take_off(seq) {
+            return Ok(());
+        }
         if let Err(error) = G::play(self, seq, &view, limit).await {
             self.context.log(Entry::Failed {
                 player: self.context.id.clone(),
@@ -555,7 +622,16 @@ impl<G: Game> Player<G> {
                 error: format!("{error:#}"),
             });
         }
-        Ok(())
+        match self.mind.land() {
+            Some(seq) => self.closed(seq),
+            None => Ok(()),
+        }
+    }
+
+    /// Tell the environment the player has closed the phase numbered
+    /// `seq`.
+    fn closed(&self, seq: u64) -> anyhow::Result<()> {
+        close(&self.context, seq, self.mind.number())
     }
 
     /// Ask the model `request` in the phase numbered `seq`, logging the
@@ -595,7 +671,9 @@ impl<G: Game> Player<G> {
     /// order, numbered, to whom the rules of the game send it, and then set
     /// a reminder to be woken after `wait`. A call may begin in one phase
     /// and end in the next, and then nothing is sent, each message is
-    /// logged as withheld, unnumbered, and no reminder is set.
+    /// logged as withheld, unnumbered, and no reminder is set. While the
+    /// phase closes, its speech is sent, each choice is withheld, and no
+    /// reminder is set.
     pub(crate) fn carry_out(
         &self,
         seq: u64,
@@ -606,8 +684,9 @@ impl<G: Game> Player<G> {
     ) -> anyhow::Result<()> {
         let me = &self.context.id;
         let still_on = self.mind.in_phase(seq);
+        let open = still_on && !self.mind.closing(seq);
         for sending in sends {
-            if still_on {
+            if still_on && (sending.speaks() || open) {
                 let message = sending.message(seq, me, self.mind.number());
                 let to = G::receivers(&message, me, view);
                 self.send(message, to, shown)?;
@@ -621,7 +700,7 @@ impl<G: Game> Player<G> {
             }
         }
         match wait {
-            Some(after) if still_on => self.remind(seq, after),
+            Some(after) if open => self.remind(seq, after),
             _ => Ok(()),
         }
     }
@@ -662,11 +741,20 @@ impl<G: Game> Behavior for Player<G> {
     /// observed and nothing more, neither remembered nor woken for: the
     /// player keeps to the phase it is in, as the environment does when it
     /// drops a late move, and the observation's `seq` beside the message's
-    /// shows it came late. A reminder to itself is ignored.
+    /// shows it came late. Told the phase it is in is closing, it closes
+    /// it, at once if it has no call in flight for it. A reminder to itself
+    /// is ignored.
     async fn receive(&mut self, message: &Message<G>) -> anyhow::Result<()> {
         let Some(n) = message.number() else {
             return Ok(());
         };
+        if let Message::Closing { seq, .. } = message {
+            observe(&self.context, message.sender(), n, self.mind.seq());
+            if self.mind.in_phase(*seq) && self.mind.close(*seq) {
+                self.closed(*seq)?;
+            }
+            return Ok(());
+        }
         if let Message::Announce {
             seq, view, limit, ..
         } = message
@@ -838,7 +926,8 @@ pub(crate) mod tests {
 
     /// The phases of what `player` logged sending, withholding or failing
     /// after the entry at `i` in the log and before its next usage: what
-    /// came of the call whose usage is at `i`.
+    /// came of the call whose usage is at `i`. A close of a phase is no
+    /// part of what came of a call.
     pub(crate) fn came_of<G: Game>(
         logged: &[Entry<G>],
         i: usize,
@@ -849,7 +938,7 @@ pub(crate) mod tests {
             .take_while(|entry| !matches!(entry, Entry::Usage { player: by, .. } if by == player))
             .filter_map(|entry| match entry {
                 Entry::Action { from, message, .. } | Entry::Withheld { from, message, .. }
-                    if from == player =>
+                    if from == player && !closes(message) =>
                 {
                     Some(message.seq())
                 }
@@ -861,13 +950,24 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// How many lines of talk each of the players' actions says the model
-    /// forgot, in the log's order.
+    /// Whether `message` is a player's close of a phase, which no model
+    /// made.
+    pub(crate) fn closes<G: Game>(message: &Message<G>) -> bool {
+        matches!(message, Message::Closed { .. })
+    }
+
+    /// How many lines of talk each of the players' actions but their closes
+    /// says the model forgot, in the log's order.
     pub(crate) fn forgotten<G: Game>(logged: &[Entry<G>]) -> Vec<Option<usize>> {
         logged
             .iter()
             .filter_map(|entry| match entry {
-                Entry::Action { from, forgot, .. } if from != ENVIRONMENT => Some(*forgot),
+                Entry::Action {
+                    from,
+                    forgot,
+                    message,
+                    ..
+                } if from != ENVIRONMENT && !closes(message) => Some(*forgot),
                 _ => None,
             })
             .collect()
@@ -923,8 +1023,8 @@ pub(crate) mod tests {
     pub(crate) type Called = (&'static str, Option<u64>, String);
 
     /// Every call each player logged, in the log's order: the entries the
-    /// player logged from its `Thinking` up to its next, each told as
-    /// [`Called`].
+    /// player logged from its `Thinking` up to its next but its closes,
+    /// each told as [`Called`].
     pub(crate) fn calls<G: Game>(logged: &[Entry<G>]) -> BTreeMap<&str, Vec<Vec<Called>>> {
         let mut calls: BTreeMap<&str, Vec<Vec<Called>>> = BTreeMap::new();
         for entry in logged {
@@ -946,7 +1046,7 @@ pub(crate) mod tests {
                 } => (player, ("failed", Some(*seq), error.clone())),
                 Entry::Usage { player, seq, .. } => (player, ("usage", Some(*seq), String::new())),
                 Entry::Action { from, message, .. } | Entry::Withheld { from, message, .. }
-                    if from != ENVIRONMENT =>
+                    if from != ENVIRONMENT && !closes(message) =>
                 {
                     (from, ("acted", message.seq(), String::new()))
                 }

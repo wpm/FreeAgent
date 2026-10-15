@@ -21,7 +21,7 @@ use crate::model::{Model, ToolChoice};
 use crate::prompted::{self, Account};
 use crate::random;
 use crate::report::Line;
-use crate::seat::{Dealt, ENVIRONMENT, PlayerId, to_everyone_but};
+use crate::seat::{Dealt, ENVIRONMENT, PlayerId, to_everyone_but, to_the_environment};
 use async_trait::async_trait;
 use free_agent::{ActorId, ActorInit, Behavior, Context, Episode, Logger};
 use serde::de::DeserializeOwned;
@@ -168,8 +168,8 @@ pub trait Tagged {
 
 /// What the environment and the players say to one another: what every
 /// game has alike, and the game's own moves. The environment numbers its
-/// announcements in one series with its own moves, each player its
-/// utterances and moves together. Each announcement is a message of its
+/// announcements and closings in one series with its own moves, each player
+/// its utterances, closes and moves together. Each announcement is a message of its
 /// own, since each player is shown a different view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -221,6 +221,27 @@ pub enum Message<G: Game> {
         /// Which reminder of the player's this is.
         count: u64,
     },
+    /// The environment tells a player that the phase numbered `seq` is
+    /// closing: it is over, its outcome is fixed, and it ends once every
+    /// player it was announced to has closed. Only a game whose phases
+    /// [close](crate::announced::Announced::CLOSES) sends it.
+    Closing {
+        /// The number of the phase.
+        seq: u64,
+        /// The environment's number for this message.
+        n: u64,
+    },
+    /// A player tells the environment it has finished with the phase
+    /// numbered `seq`: it has no model call in flight for it and will
+    /// start none.
+    Closed {
+        /// The number of the phase.
+        seq: u64,
+        /// Who closed, since a message does not carry its sender.
+        from: PlayerId,
+        /// The player's number for this message.
+        n: u64,
+    },
     /// A message only this game has, written as the game writes it.
     #[serde(untagged)]
     Move(G::Move),
@@ -232,7 +253,10 @@ impl<G: Game> Message<G> {
     /// does not have.
     pub fn number(&self) -> Option<u64> {
         match self {
-            Message::Announce { n, .. } | Message::Say { n, .. } => Some(*n),
+            Message::Announce { n, .. }
+            | Message::Say { n, .. }
+            | Message::Closing { n, .. }
+            | Message::Closed { n, .. } => Some(*n),
             Message::Move(own) => own.number(),
             Message::EndPhase { .. } | Message::Wake | Message::Remind { .. } => None,
         }
@@ -246,17 +270,19 @@ impl<G: Game> Message<G> {
             Message::Announce { seq, .. }
             | Message::Say { seq, .. }
             | Message::EndPhase { seq }
-            | Message::Remind { seq, .. } => Some(*seq),
+            | Message::Remind { seq, .. }
+            | Message::Closing { seq, .. }
+            | Message::Closed { seq, .. } => Some(*seq),
             Message::Move(own) => Some(own.seq()),
             Message::Wake => None,
         }
     }
 
-    /// Who sent this message: the speaker of an utterance, the sender of a
-    /// move, and otherwise the environment.
+    /// Who sent this message: the speaker of an utterance, the player who
+    /// closed, the sender of a move, and otherwise the environment.
     pub fn sender(&self) -> ActorId {
         match self {
-            Message::Say { from, .. } => from.clone(),
+            Message::Say { from, .. } | Message::Closed { from, .. } => from.clone(),
             Message::Move(own) => own.sender(),
             _ => ENVIRONMENT.to_string(),
         }
@@ -266,13 +292,12 @@ impl<G: Game> Message<G> {
 /// What the log holds: the deal, the configuration, every message sent as
 /// the action of its sender and the observation of its receiver, each model
 /// call going out and coming back, the usage the provider reported for each
-/// model call, each message a model player
-/// withheld because its phase had ended, each failure of a model player to
-/// act, and the game's own events, such as how each phase came out and the
-/// result. Every actor logs its own actions and observations: the
-/// environment logs the deal, the configuration and the game's events
-/// besides, and a player its calls, usages, what it withholds and its
-/// failures.
+/// model call, each message a model player withheld because its phase had
+/// ended or was closing, each failure of a model player to act, and the
+/// game's own events, such as how each phase came out and the result.
+/// Every actor logs its own actions and observations: the environment logs
+/// the deal, the configuration and the game's events besides, and a player
+/// its calls, usages, what it withholds and its failures.
 /// Every entry made during a phase names the phase in a field, so nothing
 /// about phases depends on the order entries reach the log or on their
 /// times.
@@ -332,7 +357,8 @@ pub enum Entry<G: Game> {
     },
     /// `from` did not send `message`, which a model made from `seen`
     /// history entries, having forgotten `forgot` lines of talk, because
-    /// the phase it was made in had ended before the model answered. It was
+    /// the phase it was made in had ended, or for a choice begun closing,
+    /// before the model answered. It was
     /// never sent, so it has no number: its `n` is 0, and the player does
     /// not remember it.
     Withheld {
@@ -541,6 +567,22 @@ pub fn act<G: Game>(
         });
     }
     context.send(message, to)
+}
+
+/// Tell the environment that the player of `context` has closed the phase
+/// numbered `seq`, its `n`th message, logged as its action. No model made
+/// it.
+pub fn close<G: Game>(
+    context: &Context<Message<G>, Entry<G>>,
+    seq: u64,
+    n: u64,
+) -> anyhow::Result<()> {
+    let closed = Message::Closed {
+        seq,
+        from: context.id.clone(),
+        n,
+    };
+    act(context, closed, to_the_environment(), None, None)
 }
 
 /// Log that the actor of `context`, in the phase numbered `seq`, received

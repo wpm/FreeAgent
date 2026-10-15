@@ -104,6 +104,17 @@ mod tests {
             "{last:?}"
         );
         let between = &entries[2..entries.len() - 1];
+        // Avalon's phases end at once, without closing.
+        assert!(
+            !between.iter().any(|entry| matches!(
+                entry,
+                Entry::Action {
+                    message: Message::Closing { .. } | Message::Closed { .. },
+                    ..
+                }
+            )),
+            "{entries:?}"
+        );
         // Whom each message, named by its sender and number, was entries as
         // sent to as an action, and who entries observing it.
         let mut actions: HashMap<(&str, u64), &HashSet<ActorId>> = HashMap::new();
