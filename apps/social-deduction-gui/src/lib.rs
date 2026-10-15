@@ -4,7 +4,7 @@
 //! [`screen`] is what the screen shows, a pure function of the cues so
 //! far; [`view`] draws it, for the game the URL's [`address`] names. In
 //! the desktop app, [`tauri`] reaches the backend that plays a game live,
-//! and [`settings`] edits its configuration.
+//! and [`settings`] edits its configuration, with a [`tip`] for help.
 
 #![warn(missing_docs)]
 
@@ -13,4 +13,5 @@ mod desktop;
 pub mod screen;
 pub mod settings;
 pub mod tauri;
+pub mod tip;
 pub mod view;

@@ -12,6 +12,7 @@ use social_deduction_stage::GameName;
 use social_deduction_stage::settings::{Snapshot, game_title};
 
 use crate::tauri::{self, Cues};
+use crate::tip::Tips;
 use crate::view::{Live, Viewer};
 
 /// The app's logo.
@@ -104,6 +105,7 @@ pub fn Desktop() -> impl IntoView {
     let on_link = Callback::new(tauri::open_url);
 
     view! {
+        <Tips />
         <Show
             when=move || watching.get()
             fallback=move || view! { <Start snapshot=snapshot pending=pending error=error run=run /> }
@@ -148,6 +150,7 @@ fn Start(
     let choice = move |choice: GameName| {
         view! {
             <button
+                data-tip=format!("Play {} next. Its settings are on the {} tab of Settings.", game_title(choice), game_title(choice))
                 class:sd-segment-on=move || game.get() == choice
                 aria-pressed=move || (game.get() == choice).to_string()
                 on:click=move |_| {
@@ -171,18 +174,18 @@ fn Start(
                 {choice(GameName::Werewolf)}
                 {choice(GameName::Avalon)}
             </div>
-            <p class="sd-summary">{summary}</p>
+            <p class="sd-summary" data-tip="The players, strategies and models of the next game. Change them in Settings.">{summary}</p>
             <div class="sd-run">
-                <button class="sd-play" on:click=move |_| run.run(()) disabled=blocked>
+                <button class="sd-play" on:click=move |_| run.run(()) disabled=blocked data-tip="Start a game with these settings. It plays live here, and its log is saved.">
                     {move || pending.get().then(|| view! { <span class="sd-spinner"></span> })}
                     "Play"
                 </button>
-                {move || pending.get().then(|| view! { <button on:click=|_| tauri::stop()>"Stop"</button> })}
+                {move || pending.get().then(|| view! { <button on:click=|_| tauri::stop() data-tip="Stop starting the game.">"Stop"</button> })}
             </div>
             {move || {
                 first_error.get().map(|(message, path)| {
                     view! {
-                        <button class="sd-link sd-first-error" on:click=move |_| tauri::settings_open(Some(path.clone()))>
+                        <button class="sd-link sd-first-error" data-tip="What stops the game from starting. Open Settings at this field to fix it." on:click=move |_| tauri::settings_open(Some(path.clone()))>
                             {message}
                         </button>
                     }

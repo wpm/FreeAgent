@@ -14,8 +14,8 @@
 // Assassin's target. At 420 px wide the board stacks under the chat and
 // nothing scrolls sideways. With a stand-in for the desktop app's backend,
 // the main window opens on its start state with Play, #settings opens the
-// Settings window's four tabs, and typing goes on in a field while each
-// change is stored. The console stays clean throughout.
+// Settings window's four tabs, help shows on hover and on focus, and
+// typing goes on in a field while each change is stored. The console stays clean throughout.
 // Screenshots land in ./screenshots for a human to look at.
 //
 //   npm test                 # against ../dist, from this directory
@@ -456,6 +456,9 @@ await section('desktop', async () => {
   const summary = await main.$eval('.sd-summary', (element) => element.textContent);
   check(summary === '7 players · 1 strategy · qwen2.5-7b-instruct-1m', `desktop: the start state sums up the game (${summary})`);
   await main.screenshot({ path: join(shots, 'desktop-start.png'), fullPage: true });
+  await main.hover('.sd-play');
+  const played = await main.$eval('.sd-tip', (element) => !element.hidden && element.textContent);
+  check(typeof played === 'string' && played.startsWith('Start a game'), `desktop: Play has help (${played})`);
   const settings = watch(await app.newPage());
   await settings.setViewportSize({ width: 760, height: 560 });
   await settings.goto(`${origin}#settings`);
@@ -466,6 +469,20 @@ await section('desktop', async () => {
     `desktop: #settings renders the four tabs (${tabs.join(', ')})`,
   );
   await settings.screenshot({ path: join(shots, 'settings-general.png'), fullPage: true });
+  // Help shows under what the pointer is over, and under what has the
+  // keyboard's focus.
+  const tip = () =>
+    settings.$eval('.sd-tip', (element) => ({ text: element.textContent, shown: !element.hidden, top: element.getBoundingClientRect().top }));
+  await settings.hover('.sd-settings button:has-text("Change…")');
+  const hovered = await tip();
+  check(hovered.shown && hovered.text.startsWith('Choose another folder'), `desktop: hovering shows help (${JSON.stringify(hovered)})`);
+  await settings.mouse.move(0, 0);
+  await settings.focus('.sd-segments button:has-text("Dark")');
+  const focused = await tip();
+  check(focused.shown && focused.text.startsWith('Always dark'), `desktop: focus shows help (${JSON.stringify(focused)})`);
+  await settings.screenshot({ path: join(shots, 'settings-tip.png') });
+  await settings.keyboard.press('Escape');
+  check(!(await tip()).shown, 'desktop: Escape hides help');
   for (const [index, name] of [[1, 'models'], [2, 'werewolf']]) {
     await settings.click(`.sd-tabs [role="tab"]:nth-child(${index + 1})`);
     await settings.waitForSelector('.sd-tab-head h2');

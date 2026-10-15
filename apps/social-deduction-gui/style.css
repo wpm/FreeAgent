@@ -6,6 +6,8 @@
   --sd-good-fg: #ffffff;
   --sd-evil: #b91c1c;
   --sd-evil-fg: #ffffff;
+  --tip-bg: #1d2230;
+  --tip-ink: #f3f5f9;
 
   --role-villager-bg: #dde6f2;
   --role-villager-fg: #1e3a5f;
@@ -38,6 +40,8 @@
   :root:not([data-theme="light"]) {
     --sd-good: #3b82f6;
     --sd-evil: #dc2626;
+    --tip-bg: #eef0f4;
+    --tip-ink: #1a1d24;
 
     --role-villager-bg: #22344c;
     --role-villager-fg: #d7e3f3;
@@ -70,6 +74,8 @@
 :root[data-theme="dark"] {
   --sd-good: #3b82f6;
   --sd-evil: #dc2626;
+  --tip-bg: #eef0f4;
+  --tip-ink: #1a1d24;
 
   --role-villager-bg: #22344c;
   --role-villager-fg: #d7e3f3;
@@ -894,4 +900,34 @@ body,
 .sd-settings .sd-danger {
   border-color: var(--rc-error);
   color: var(--rc-error);
+}
+
+/* Hover and focus help */
+
+.sd-tip {
+  position: fixed;
+  z-index: 10;
+  max-width: 300px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  background: var(--tip-bg);
+  color: var(--tip-ink);
+  font-size: 12.5px;
+  line-height: 1.4;
+  pointer-events: none;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+}
+
+.sd-tip[hidden] {
+  display: none;
+}
+
+span[data-tip],
+div[data-tip],
+p[data-tip],
+h2[data-tip],
+h3[data-tip],
+h4[data-tip],
+label[data-tip] {
+  cursor: help;
 }

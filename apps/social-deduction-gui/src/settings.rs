@@ -21,6 +21,7 @@ use wasm_bindgen::JsCast;
 
 use crate::desktop::set_theme;
 use crate::tauri;
+use crate::tip::Tips;
 
 mod models;
 
@@ -52,6 +53,20 @@ impl Tab {
             Tab::General => "General",
             Tab::Models => "Models",
             Tab::Game(game) => game_title(game),
+        }
+    }
+
+    /// What the tab holds, as its help says.
+    pub fn tip(self) -> &'static str {
+        match self {
+            Tab::General => "Where game logs go, and the app's appearance.",
+            Tab::Models => "Model providers, their keys, and the models strategies can use.",
+            Tab::Game(GameName::Werewolf) => {
+                "Werewolf's players, phase limits, strategies and prompt parts."
+            }
+            Tab::Game(GameName::Avalon) => {
+                "Avalon's players, phase limits, strategies and prompt parts."
+            }
         }
     }
 
@@ -233,6 +248,7 @@ pub fn SettingsWindow() -> impl IntoView {
 
     view! {
         <RichChatStyle highlight=false fonts=false />
+        <Tips />
         <div class="sd-settings-window">
             <nav class="sd-tabs" role="tablist">
                 {TABS
@@ -241,6 +257,7 @@ pub fn SettingsWindow() -> impl IntoView {
                         view! {
                             <button
                                 role="tab"
+                                data-tip=each.tip()
                                 class:sd-tab-on=move || tab.get() == each
                                 aria-selected=move || (tab.get() == each).to_string()
                                 on:click=move |_| tab.set(each)
@@ -278,14 +295,14 @@ fn Problem(error: Signal<Option<String>>) -> impl IntoView {
 /// The General tab: the folder logs go in, and the look.
 #[component]
 fn General(editor: Editor, logs: RwSignal<String>) -> impl IntoView {
-    let reveal = if window()
+    let (reveal, manager) = if window()
         .navigator()
         .platform()
         .is_ok_and(|platform| platform.starts_with("Mac"))
     {
-        "Show in Finder"
+        ("Show in Finder", "Finder")
     } else {
-        "Show in Explorer"
+        ("Show in Explorer", "Explorer")
     };
     let change = move |_| {
         spawn_local(async move {
@@ -295,10 +312,11 @@ fn General(editor: Editor, logs: RwSignal<String>) -> impl IntoView {
             }
         });
     };
-    let appearance = move |choice: Appearance, title: &'static str| {
+    let appearance = move |choice: Appearance, title: &'static str, tip: &'static str| {
         let chosen = move || editor.settings.with(|s| s.general.appearance == choice);
         view! {
             <button
+                data-tip=tip
                 class:sd-segment-on=chosen
                 aria-pressed=move || chosen().to_string()
                 on:click=move |_| editor.edit(|s| s.general.appearance = choice)
@@ -309,19 +327,19 @@ fn General(editor: Editor, logs: RwSignal<String>) -> impl IntoView {
     };
     view! {
         <section class="sd-section">
-            <h2>"Game logs"</h2>
-            <p class="sd-path" id=field_id(&path(&["general", "logs"]))>{move || logs.get()}</p>
+            <h2 data-tip="Each game's log is saved here as it plays, one file per game.">"Game logs"</h2>
+            <p class="sd-path" id=field_id(&path(&["general", "logs"])) data-tip="The folder game logs are saved in.">{move || logs.get()}</p>
             <div class="sd-row">
-                <button on:click=change>"Change…"</button>
-                <button on:click=|_| tauri::logs_reveal()>{reveal}</button>
+                <button on:click=change data-tip="Choose another folder for game logs. Logs already saved stay where they are.">"Change…"</button>
+                <button on:click=|_| tauri::logs_reveal() data-tip=format!("Open the logs folder in {manager}.")>{reveal}</button>
             </div>
         </section>
         <section class="sd-section">
-            <h2>"Appearance"</h2>
+            <h2 data-tip="How the app looks.">"Appearance"</h2>
             <div class="sd-segments" role="group" aria-label="Appearance">
-                {appearance(Appearance::System, "System")}
-                {appearance(Appearance::Light, "Light")}
-                {appearance(Appearance::Dark, "Dark")}
+                {appearance(Appearance::System, "System", "Follow the system's look. Werewolf turns dark by night and light by day.")}
+                {appearance(Appearance::Light, "Light", "Always light, whatever the system or the game shows.")}
+                {appearance(Appearance::Dark, "Dark", "Always dark, whatever the system or the game shows.")}
             </div>
             <p class="sd-note">"System follows the system's look, and keeps Werewolf dark by night and light by day."</p>
         </section>
