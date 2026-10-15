@@ -94,14 +94,11 @@ pub async fn list(base_url: &str, key: Option<SecretString>) -> Listing {
     }
 }
 
-/// The context window a game gives a model of the provider at `base_url`
-/// whose window its configuration does not set: `reported`, the one its
-/// listing reports, otherwise the provider's default in `src/models.toml`,
-/// otherwise [`model::CONTEXT_WINDOW`].
+/// The context window, in tokens, a game gives a model of the provider at
+/// `base_url` whose configuration sets none, as [`model::window::unset`] gives
+/// it, from `reported`, the one its listing reports.
 pub fn window(base_url: &str, reported: Option<u64>) -> u64 {
-    reported
-        .or_else(|| model::known_context_window(base_url))
-        .unwrap_or(model::CONTEXT_WINDOW)
+    model::window::unset(base_url, reported).tokens
 }
 
 /// Where a model stands among its provider's models, which sort most

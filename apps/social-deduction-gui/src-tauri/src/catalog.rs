@@ -28,12 +28,11 @@ use tauri::{AppHandle, Emitter, Manager, State, async_runtime};
 /// plays.
 const WHILE_PLAYING: Duration = Duration::from_secs(2);
 
-/// The latest listing of each provider, the probes kept, and how far
-/// probing each provider has got.
+/// The probes kept, the providers being probed, and how far probing each
+/// has got.
 pub struct Catalog {
     path: PathBuf,
     probes: Mutex<Probes>,
-    listings: Mutex<HashMap<String, Listing>>,
     probing: Mutex<HashSet<String>>,
     progress: Mutex<HashMap<String, Progress>>,
 }
@@ -49,7 +48,6 @@ impl Catalog {
         Ok(Self {
             probes: Mutex::new(Probes::load(&path)),
             path,
-            listings: Mutex::default(),
             probing: Mutex::default(),
             progress: Mutex::default(),
         })
@@ -134,13 +132,9 @@ async fn list(
     };
     let mut listing = catalog::list(&base_url, key.clone()).await;
     if listing.error.is_none() {
-        let mut listings = catalog.listings.lock().unwrap();
-        listings.insert(base_url.clone(), listing.clone());
+        start(app, &listing, base_url.clone(), key);
     }
     listing.checks = catalog.probes.lock().unwrap().of(&base_url);
-    if listing.error.is_none() {
-        start(app, base_url, key);
-    }
     listing
 }
 
@@ -153,22 +147,22 @@ pub fn check_in_background(app: &AppHandle) {
         let found = providers().await;
         let shown = app.state::<Store>().settings().providers_shown(&found);
         for provider in shown {
-            list(&app, provider.base_url, provider.api_key_env, false).await;
+            let app = app.clone();
+            async_runtime::spawn(async move {
+                list(&app, provider.base_url, provider.api_key_env, false).await;
+            });
         }
     });
 }
 
 /// Probe each model of the provider at `base_url`, asked with `key`, that
-/// its listing holds and that has not been probed, as many at once as
+/// its `listing` holds and that has not been probed, as many at once as
 /// [`catalog::at_once`] says, on a thread of its own, unless it is being
 /// probed already. A local server's models wait while a game plays. The
 /// probes are kept as they end, and stored once all have.
-fn start(app: &AppHandle, base_url: String, key: Option<SecretString>) {
+fn start(app: &AppHandle, listing: &Listing, base_url: String, key: Option<SecretString>) {
     let catalog = app.state::<Catalog>();
-    let Some(listing) = catalog.listings.lock().unwrap().get(&base_url).cloned() else {
-        return;
-    };
-    let ids = catalog.probes.lock().unwrap().unprobed(&base_url, &listing);
+    let ids = catalog.probes.lock().unwrap().unprobed(&base_url, listing);
     if ids.is_empty() || !catalog.probing.lock().unwrap().insert(base_url.clone()) {
         return;
     }

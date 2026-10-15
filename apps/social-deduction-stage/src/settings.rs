@@ -156,14 +156,15 @@ impl AppSettings {
     }
 
     /// Add `provider`, its name and base URL trimmed, the base URL's
-    /// final slash too, unless it lacks a name or a [`whole`] base URL.
+    /// final slash too, unless it lacks a name or a whole base URL: an
+    /// `http` or `https` URL ending in `/v1`.
     ///
     /// # Errors
     ///
     /// When it lacks a name or a whole base URL.
     pub fn add_provider(&mut self, provider: Provider) -> Result<(), String> {
         let name = provider.name.trim();
-        let base_url = provider.base_url.trim().trim_end_matches('/');
+        let base_url = root(&provider.base_url);
         if name.is_empty() || !whole(base_url) {
             return Err("Give it a name and a base URL ending in /v1.".to_string());
         }
@@ -194,7 +195,7 @@ impl AppSettings {
                 Some(port) => Provider::local(port),
                 None => Provider {
                     name: host(&model.base_url).to_string(),
-                    base_url: model.base_url.trim().trim_end_matches('/').to_string(),
+                    base_url: root(&model.base_url).to_string(),
                     api_key_env: model.api_key_env.clone(),
                 },
             });
@@ -205,7 +206,7 @@ impl AppSettings {
     /// Remove the provider added at `base_url`, and every model reached
     /// through it.
     pub fn remove_provider(&mut self, base_url: &str) {
-        let at = |url: &str| url.trim_end_matches('/') == base_url.trim_end_matches('/');
+        let at = |url: &str| root(url) == root(base_url);
         self.providers.retain(|provider| !at(&provider.base_url));
         self.models.retain(|_, model| !at(&model.base_url));
     }
@@ -568,10 +569,9 @@ impl Provider {
 /// The provider of `providers` at `base_url`, with or without a final
 /// slash, if there is one.
 pub fn provider_at<'a>(providers: &'a [Provider], base_url: &str) -> Option<&'a Provider> {
-    let trimmed = base_url.trim().trim_end_matches('/');
     providers
         .iter()
-        .find(|provider| provider.base_url.trim_end_matches('/') == trimmed)
+        .find(|provider| root(&provider.base_url) == root(base_url))
 }
 
 /// The host of `base_url`: `api.example.com` of
@@ -584,9 +584,15 @@ fn host(base_url: &str) -> &str {
     rest.split('/').next().unwrap_or(rest)
 }
 
+/// `base_url` as base URLs are compared: without spaces around it or a
+/// final slash.
+fn root(base_url: &str) -> &str {
+    base_url.trim().trim_end_matches('/')
+}
+
 /// Whether `base_url` is whole: an `http` or `https` URL ending in `/v1`.
-pub fn whole(base_url: &str) -> bool {
-    let base_url = base_url.trim().trim_end_matches('/');
+fn whole(base_url: &str) -> bool {
+    let base_url = root(base_url);
     (base_url.starts_with("http://") || base_url.starts_with("https://"))
         && base_url.ends_with("/v1")
 }

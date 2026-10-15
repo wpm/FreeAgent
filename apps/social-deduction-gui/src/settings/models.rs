@@ -141,22 +141,13 @@ fn attempt(
     Ok(())
 }
 
-/// A provider's listing as the window has it.
-#[derive(Debug, Clone, Default, PartialEq)]
-struct Fetched {
-    /// Whether it is being fetched.
-    loading: bool,
-    /// The listing, once it has come.
-    listing: Option<Listing>,
-}
-
 /// What the Models tab knows of the providers.
 #[derive(Clone, Copy)]
 struct Catalog {
     /// The providers found, known and local.
     found: RwSignal<Vec<Provider>>,
-    /// Each provider's listing, by base URL.
-    listings: RwSignal<BTreeMap<String, Fetched>>,
+    /// Each provider's listing, by base URL, once it has come.
+    listings: RwSignal<BTreeMap<String, Option<Listing>>>,
     /// How far probing each provider has got, by base URL.
     progress: RwSignal<BTreeMap<String, Progress>>,
     /// Where each key variable's key is.
@@ -169,7 +160,7 @@ impl Catalog {
     /// `forget` says.
     fn fetch(self, base_url: String, api_key_env: Option<String>, forget: bool) {
         self.listings.update(|listings| {
-            listings.entry(base_url.clone()).or_default().loading = true;
+            listings.entry(base_url.clone()).or_default();
         });
         spawn_local(async move {
             let listing = tauri::listing(base_url.clone(), api_key_env, forget)
@@ -179,13 +170,7 @@ impl Catalog {
                     ..Listing::default()
                 });
             self.listings.update(|listings| {
-                listings.insert(
-                    base_url,
-                    Fetched {
-                        loading: false,
-                        listing: Some(listing),
-                    },
-                );
+                listings.insert(base_url, Some(listing));
             });
         });
     }
@@ -205,10 +190,7 @@ impl Catalog {
     /// Keep what a probe found.
     fn probed(self, probe: Probe) {
         self.listings.update(|listings| {
-            let Some(listing) = listings
-                .get_mut(&probe.base_url)
-                .and_then(|fetched| fetched.listing.as_mut())
-            else {
+            let Some(listing) = listings.get_mut(&probe.base_url).and_then(Option::as_mut) else {
                 return;
             };
             match probe.check {
@@ -222,11 +204,12 @@ impl Catalog {
         });
     }
 
-    /// The listing of the provider at `base_url`, as it changes.
-    fn fetched(self, base_url: String) -> Memo<Option<Fetched>> {
+    /// The listing of the provider at `base_url`, as it changes, once it
+    /// has come.
+    fn fetched(self, base_url: String) -> Memo<Option<Listing>> {
         Memo::new(move |_| {
             self.listings
-                .with(|listings| listings.get(&base_url).cloned())
+                .with(|listings| listings.get(&base_url).cloned().flatten())
         })
     }
 }
@@ -390,7 +373,7 @@ fn Available(
     editor: Editor,
     catalog: Catalog,
     provider: Provider,
-    fetched: Memo<Option<Fetched>>,
+    fetched: Memo<Option<Listing>>,
     names: Memo<Vec<String>>,
 ) -> impl IntoView {
     let local = !is_remote(&provider.base_url);
@@ -407,70 +390,71 @@ fn Available(
     let adding = RwSignal::new(None::<String>);
     let pending = {
         let base_url = provider.base_url.clone();
-        move || {
+        Memo::new(move |_| {
             catalog
                 .progress
                 .with(|progress| remaining(progress, &base_url))
-        }
+        })
     };
-    let offered = move || {
-        let fetched = fetched.get()?;
-        let listing = fetched.listing?;
-        Some(added.with(|added| {
-            available(&listing, added)
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>()
-        }))
-    };
-    let body = move || {
-        let Some(fetched) = fetched.get() else {
-            return ().into_any();
-        };
-        let Some(listing) = fetched.listing else {
-            return view! { <p class="sd-note">"Listing its models…"</p> }.into_any();
-        };
-        if let Some(error) = listing.error {
-            return view! { <p class="sd-field-error">{error}</p> }.into_any();
-        }
-        if listing.models.iter().all(|model| model.hidden) {
-            return if local {
-                view! {
-                    <p class="sd-note" data-tip="The server answered at this address but has no model loaded. Load one and it will appear here once it has been checked.">
-                        "The server is running, but no model is loaded."
-                    </p>
-                }
-                .into_any()
-            } else {
-                view! { <p class="sd-note">"It lists no models."</p> }.into_any()
-            };
-        }
-        let rows = offered().unwrap_or_default();
-        let still = pending().map(|count| view! {
+    let rows = Memo::new(move |_| {
+        fetched.with(|listing| {
+            listing.as_ref().map_or_else(Vec::new, |listing| {
+                added.with(|added| available(listing, added).into_iter().cloned().collect())
+            })
+        })
+    });
+    let still = move || {
+        let listed = fetched.with(|listing| listing.as_ref().is_some_and(|l| l.error.is_none()));
+        let count = pending.get().filter(|_| listed)?;
+        Some(view! {
             <p class="sd-note" data-tip="Checked in the background. Each appears here if it plays.">{format!("Checking {count} more…")}</p>
-        });
-        if rows.is_empty() {
-            let none = if added.with(BTreeSet::is_empty) {
+        })
+    };
+    // Why none are available, when none are.
+    let none = move || {
+        let note = |text: &'static str| view! { <p class="sd-note">{text}</p> }.into_any();
+        fetched.with(|listing| {
+            let Some(listing) = listing else {
+                return Some(note("Listing its models…"));
+            };
+            if let Some(error) = &listing.error {
+                return Some(view! { <p class="sd-field-error">{error.clone()}</p> }.into_any());
+            }
+            if listing.models.iter().all(|model| model.hidden) {
+                return Some(if local {
+                    view! {
+                        <p class="sd-note" data-tip="The server answered at this address but has no model loaded. Load one and it will appear here once it has been checked.">
+                            "The server is running, but no model is loaded."
+                        </p>
+                    }
+                    .into_any()
+                } else {
+                    note("It lists no models.")
+                });
+            }
+            if !rows.with(Vec::is_empty) || pending.with(Option::is_some) {
+                return None;
+            }
+            Some(note(if added.with(BTreeSet::is_empty) {
                 "None of its models plays both games yet."
             } else {
                 "Every model this provider has that plays is already added."
-            };
-            return view! { {still.is_none().then(|| view! { <p class="sd-note">{none}</p> })} {still} }.into_any();
-        }
-        let provider = provider.clone();
-        view! {
+            }))
+        })
+    };
+    let provider = StoredValue::new(provider);
+    view! {
+        {none}
+        <Show when=move || rows.with(|rows| !rows.is_empty())>
             <h5 class="sd-label" data-tip="Models from this provider that play both games and aren't added yet, most capable first.">"Available"</h5>
             <div class="sd-models">
-                {rows
-                    .into_iter()
-                    .map(|model| view! { <Offered editor=editor provider=provider.clone() model=model adding=adding /> })
-                    .collect_view()}
+                <For each=move || rows.get() key=|model| model.id.clone() let:model>
+                    <Offered editor=editor provider=provider.get_value() model=model adding=adding />
+                </For>
             </div>
-            {still}
-        }
-        .into_any()
-    };
-    view! { {body} }
+        </Show>
+        {still}
+    }
 }
 
 /// A model a provider offers: its id, its context window and **Add**, or,
@@ -570,7 +554,7 @@ fn Offered(
 /// window, **×**, and, when it no longer plays, a warning naming the
 /// strategies that ask it.
 #[component]
-fn ModelRow(editor: Editor, fetched: Memo<Option<Fetched>>, name: String) -> impl IntoView {
+fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> impl IntoView {
     let model = {
         let name = name.clone();
         Memo::new(move |_| {
@@ -588,14 +572,17 @@ fn ModelRow(editor: Editor, fetched: Memo<Option<Fetched>>, name: String) -> imp
         Memo::new(move |_| editor.errors.with(|errors| model_errors(errors, &name)))
     };
     let listed = Memo::new(move |_| {
-        let id = model.with(|m| m.id.clone());
-        let listing = fetched.get()?.listing?;
-        let window = listing
-            .models
-            .iter()
-            .find(|listed| listed.id == id)
-            .map(|listed| listed.context_window);
-        Some((window, stopped(&listing, &id)))
+        model.with(|m| {
+            fetched.with(|listing| {
+                let listing = listing.as_ref()?;
+                let window = listing
+                    .models
+                    .iter()
+                    .find(|listed| listed.id == m.id)
+                    .map(|listed| listed.context_window);
+                Some((window, stopped(listing, &m.id)))
+            })
+        })
     });
     let figure = move || listed.get().and_then(|(window, _)| window);
     let problem = RwSignal::new(None::<String>);
@@ -732,8 +719,22 @@ fn KeyField(catalog: Catalog, variable: String, changed: Callback<()>) -> impl I
     let field = NodeRef::<html::Input>::new();
     let failure = RwSignal::new(None::<String>);
     let opened = RwSignal::new(false);
-    let save = {
+    // What the keychain answered: the failure, if any; otherwise the key
+    // changed.
+    let answered = {
         let variable = variable.clone();
+        move |result: Result<(), String>| {
+            let ok = result.is_ok();
+            failure.set(result.err());
+            catalog.key_status(variable.clone());
+            if ok {
+                opened.set(false);
+                changed.run(());
+            }
+        }
+    };
+    let save = {
+        let (variable, answered) = (variable.clone(), answered.clone());
         move |_| {
             let Some(input) = field.get_untracked() else {
                 return;
@@ -742,33 +743,19 @@ fn KeyField(catalog: Catalog, variable: String, changed: Callback<()>) -> impl I
             if key.trim().is_empty() {
                 return;
             }
-            let variable = variable.clone();
+            let (variable, answered) = (variable.clone(), answered.clone());
             spawn_local(async move {
-                let result = tauri::key_store(variable.clone(), key).await;
+                let result = tauri::key_store(variable, key).await;
                 input.set_value("");
-                let ok = result.is_ok();
-                failure.set(result.err());
-                catalog.key_status(variable);
-                if ok {
-                    opened.set(false);
-                    changed.run(());
-                }
+                answered(result);
             });
         }
     };
     let remove = {
         let variable = variable.clone();
         move |_| {
-            let variable = variable.clone();
-            spawn_local(async move {
-                let result = tauri::key_remove(variable.clone()).await;
-                let ok = result.is_ok();
-                failure.set(result.err());
-                catalog.key_status(variable);
-                if ok {
-                    changed.run(());
-                }
-            });
+            let (variable, answered) = (variable.clone(), answered.clone());
+            spawn_local(async move { answered(tauri::key_remove(variable).await) });
         }
     };
     let chip = {
