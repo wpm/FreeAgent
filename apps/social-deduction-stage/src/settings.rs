@@ -660,6 +660,43 @@ pub struct Progress {
     pub checked: usize,
     /// How many models there are to probe.
     pub total: usize,
+    /// Why the last of its models that could not be asked could not be,
+    /// if one could not be.
+    #[serde(default)]
+    pub unchecked: Option<Unchecked>,
+}
+
+/// Why a model could not be asked to play, which says nothing about the
+/// model, each with what the provider said, or the error when it said
+/// nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Unchecked {
+    /// The account has no credits left.
+    NoCredits(String),
+    /// The provider did not accept the API key.
+    KeyRefused(String),
+    /// The API key is not allowed to use the provider's models.
+    KeyForbidden(String),
+    /// Anything else, such as a provider that could not be reached.
+    Failed(String),
+}
+
+impl Unchecked {
+    /// Whether every model of the provider would fail to be asked the
+    /// same way, the account being the trouble.
+    pub fn account_wide(&self) -> bool {
+        !matches!(self, Unchecked::Failed(_))
+    }
+
+    /// What the provider said, or the error.
+    pub fn said(&self) -> &str {
+        match self {
+            Unchecked::NoCredits(said)
+            | Unchecked::KeyRefused(said)
+            | Unchecked::KeyForbidden(said)
+            | Unchecked::Failed(said) => said,
+        }
+    }
 }
 
 /// Where a key variable's key is, never the key itself.
@@ -1036,6 +1073,21 @@ mod tests {
     fn a_model_plays_whether_or_not_it_is_made_to_call_a_tool() {
         let no = Check::DidNotPlay("no tools".to_string());
         assert!(Check::Plays.plays() && Check::PlaysUnforced.plays() && !no.plays());
+    }
+
+    #[test]
+    fn only_a_failure_of_the_account_stops_a_provider_s_checks() {
+        let said = || "said".to_string();
+        for unchecked in [
+            Unchecked::NoCredits(said()),
+            Unchecked::KeyRefused(said()),
+            Unchecked::KeyForbidden(said()),
+        ] {
+            assert!(unchecked.account_wide(), "{unchecked:?}");
+            assert_eq!(unchecked.said(), "said");
+        }
+        assert!(!Unchecked::Failed(said()).account_wide());
+        assert_eq!(Unchecked::Failed(said()).said(), "said");
     }
 
     #[test]

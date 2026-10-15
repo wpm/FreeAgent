@@ -9,6 +9,11 @@
 //! so a first launch, or the first after an update, checks every model.
 //! Each probe sends a `probe` event as it ends and a `progress` event with
 //! it. Probes are kept in `probes.json` in the app's data directory.
+//!
+//! A model that could not be asked is left to probe again, and the
+//! progress carries why, for its provider's card. When the account is the
+//! reason, as with a key not accepted or no credits left, the provider's
+//! other models wait too, until its key changes or Settings opens again.
 
 use crate::secret::keychain;
 use crate::settings::Store;
@@ -17,7 +22,7 @@ use social_deduction::catalog::{self, KNOCK, Probes};
 use social_deduction::live::Session;
 use social_deduction::model::spec::Keys;
 use social_deduction::model::{key_variable, local_ports};
-use social_deduction::settings::{Check, Listing, Probe, Progress, Provider, is_remote};
+use social_deduction::settings::{Check, Listing, Probe, Progress, Provider, Unchecked, is_remote};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -173,6 +178,7 @@ fn start(app: &AppHandle, listing: &Listing, base_url: String, key: Option<Secre
             base_url: base_url.clone(),
             checked: 0,
             total: ids.len(),
+            unchecked: None,
         };
         catalog.progressed(&app, &progress);
         let local = !is_remote(&base_url);
@@ -186,11 +192,18 @@ fn start(app: &AppHandle, listing: &Listing, base_url: String, key: Option<Secre
                 catalog::probe(&url, &id, key).await
             }
         };
-        let record = |id: &str, check: Option<Check>| {
-            if let Some(check) = &check {
-                let mut probes = catalog.probes.lock().unwrap();
-                probes.record(&base_url, id, check.clone());
-            }
+        let record = |id: &str, probed: Result<Check, Unchecked>| {
+            let check = match probed {
+                Ok(check) => {
+                    let mut probes = catalog.probes.lock().unwrap();
+                    probes.record(&base_url, id, check.clone());
+                    Some(check)
+                }
+                Err(unchecked) => {
+                    progress.unchecked = Some(unchecked);
+                    None
+                }
+            };
             let probe = Probe {
                 base_url: base_url.clone(),
                 id: id.to_string(),
@@ -202,6 +215,11 @@ fn start(app: &AppHandle, listing: &Listing, base_url: String, key: Option<Secre
         };
         let at_once = catalog::at_once(&base_url);
         async_runtime::block_on(catalog::probe_each(ids, at_once, probe, record));
+        // Those not probed once the account failed are left for next time.
+        if progress.checked < progress.total {
+            progress.total = progress.checked;
+            catalog.progressed(&app, &progress);
+        }
         catalog.change(|_| {});
         catalog.probing.lock().unwrap().remove(&base_url);
     });

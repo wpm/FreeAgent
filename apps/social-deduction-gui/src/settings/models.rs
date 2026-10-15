@@ -956,6 +956,7 @@ mod tests {
             base_url: base_url.to_string(),
             checked,
             total,
+            unchecked: None,
         };
         let local = "http://localhost:1234/v1";
         let openai = "https://api.openai.com/v1";

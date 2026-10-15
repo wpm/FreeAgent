@@ -227,10 +227,12 @@ pub fn key_variable<'a>(base_url: &str, named: Option<&'a str>) -> Option<&'a st
 
 /// A request the provider answered with anything but success: the status,
 /// kept so a reader can tell a request the provider would not put to the
-/// model from one that never got that far, and the error's words.
+/// model from one that never got that far, what the provider said, and
+/// the error's words.
 #[derive(Debug)]
 pub(crate) struct Rejection {
     pub(crate) status: StatusCode,
+    pub(crate) said: Said,
     message: String,
 }
 
@@ -520,6 +522,7 @@ impl Provider {
                     "{sent} was answered {}",
                     explained(status, self.api_key.is_some(), &said)
                 ),
+                said,
             }
             .into());
         }
@@ -591,7 +594,7 @@ impl Model for Provider {
 
 #[cfg(test)]
 mod tests {
-    use super::canned::{answering, bound, completion, listing, reported, unreachable};
+    use super::canned::{self, answering, bound, completion, listing, reported, unreachable};
     use super::fake::selecting;
     use super::*;
     use serde_json::json;
@@ -908,22 +911,11 @@ mod tests {
         );
     }
 
-    /// What OpenAI answers a request with when the account is out of
-    /// credits.
-    const NO_CREDITS: &str = r#"{
-        "error": {
-            "message": "You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
-            "type": "insufficient_quota",
-            "param": null,
-            "code": "insufficient_quota"
-        }
-    }"#;
-
     #[test]
     fn an_account_out_of_credits_is_explained_by_the_provider_s_words_first_and_not_as_a_rate_limit()
      {
         assert_eq!(
-            explanation("429 Too Many Requests", true, NO_CREDITS),
+            explanation("429 Too Many Requests", true, canned::NO_CREDITS),
             "429 Too Many Requests: You have no credits remaining. Add credits to continue using \
              the API at https://platform.openai.com/settings/organization/billing/. \
              (the account has no credits left; add credits to continue)"

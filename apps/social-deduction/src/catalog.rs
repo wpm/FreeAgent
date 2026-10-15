@@ -12,11 +12,12 @@
 
 use crate::model::check;
 use crate::model::{self, Provider as Client, REQUEST_TIMEOUT};
-use crate::settings::{Check, Listed, Listing, Provider, is_remote};
+use crate::settings::{Check, Listed, Listing, Provider, Unchecked, is_remote};
 use futures_util::StreamExt;
 use reqwest::StatusCode;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -187,24 +188,57 @@ pub async fn probe(base_url: &str, id: &str, key: Option<SecretString>) -> anyho
     check::probe(&client, id).await
 }
 
+/// Why a model could not be asked to play, from `error`, its probe's:
+/// for what the provider said, or the error when it said nothing.
+pub fn unchecked(error: &anyhow::Error) -> Unchecked {
+    let rejection = model::rejection(error);
+    let said = rejection
+        .and_then(|rejection| rejection.said.words.clone())
+        .unwrap_or_else(|| format!("{error:#}"));
+    match rejection {
+        Some(rejection) if rejection.said.code.as_deref() == Some(model::NO_CREDITS) => {
+            Unchecked::NoCredits(said)
+        }
+        Some(rejection) if rejection.status == StatusCode::UNAUTHORIZED => {
+            Unchecked::KeyRefused(said)
+        }
+        Some(rejection) if rejection.status == StatusCode::FORBIDDEN => {
+            Unchecked::KeyForbidden(said)
+        }
+        _ => Unchecked::Failed(said),
+    }
+}
+
 /// Probe each of `ids` with `probe`, `at_once` at a time, passing each id
-/// to `record` with what its probe found, or `None` when the probe could
-/// not be run, as each probe ends.
+/// to `record` with what its probe found, or why it could not be run, as
+/// each probe ends. A probe that could not be run is logged, and one the
+/// account could not run, as [`Unchecked::account_wide`] says, stops the
+/// rest from starting, since each would fail the same way.
 pub async fn probe_each<F>(
     ids: Vec<String>,
     at_once: usize,
     probe: impl Fn(String) -> F,
-    mut record: impl FnMut(&str, Option<Check>),
+    mut record: impl FnMut(&str, Result<Check, Unchecked>),
 ) where
     F: Future<Output = anyhow::Result<Check>>,
 {
-    let probes = ids.into_iter().map(|id| {
-        let probed = probe(id.clone());
-        async move { (id, probed.await.ok()) }
-    });
-    let mut ended = futures_util::stream::iter(probes).buffer_unordered(at_once.max(1));
-    while let Some((id, check)) = ended.next().await {
-        record(&id, check);
+    let stopped = Cell::new(false);
+    let mut ended = futures_util::stream::iter(ids)
+        .take_while(|_| std::future::ready(!stopped.get()))
+        .map(|id| {
+            let probed = probe(id.clone());
+            async move { (id, probed.await) }
+        })
+        .buffer_unordered(at_once.max(1));
+    while let Some((id, probed)) = ended.next().await {
+        let probed = probed.map_err(|error| {
+            tracing::warn!("{id} could not be checked: {error:#}");
+            unchecked(&error)
+        });
+        if probed.as_ref().is_err_and(Unchecked::account_wide) {
+            stopped.set(true);
+        }
+        record(&id, probed);
     }
 }
 
@@ -505,8 +539,8 @@ mod tests {
             }
         };
         let ids = ids.iter().map(ToString::to_string).collect();
-        probe_each(ids, at_once, probe, |id, check| {
-            recorded.lock().unwrap().push((id.to_string(), check));
+        probe_each(ids, at_once, probe, |id, probed| {
+            recorded.lock().unwrap().push((id.to_string(), probed.ok()));
         })
         .await;
         let mut recorded = recorded.into_inner().unwrap();
@@ -529,6 +563,76 @@ mod tests {
         let (most, recorded) = probed(&ids, 1).await;
         assert_eq!(most, 1);
         assert_eq!(recorded.len(), 8);
+    }
+
+    #[tokio::test]
+    async fn a_model_that_could_not_be_asked_is_unchecked_for_what_the_provider_said() {
+        let answered = async |status: &str, body: &str| {
+            let (base_url, _served) = canned::answering(status, body);
+            let error = probe(&base_url, "gpt", None).await.unwrap_err();
+            unchecked(&error)
+        };
+        let said = r#"{"error": {"message": "Not you", "code": "nope"}}"#;
+        assert_eq!(
+            answered("429 Too Many Requests", canned::NO_CREDITS).await,
+            Unchecked::NoCredits(
+                "You have no credits remaining. Add credits to continue using the API at \
+                 https://platform.openai.com/settings/organization/billing/."
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            answered("401 Unauthorized", said).await,
+            Unchecked::KeyRefused("Not you".to_string())
+        );
+        assert_eq!(
+            answered("403 Forbidden", said).await,
+            Unchecked::KeyForbidden("Not you".to_string())
+        );
+        assert_eq!(
+            answered("500 Internal Server Error", said).await,
+            Unchecked::Failed("Not you".to_string())
+        );
+        // A provider that said nothing, or was not reached, is unchecked
+        // for the error.
+        let error = answered("503 Service Unavailable", "").await;
+        assert!(
+            matches!(&error, Unchecked::Failed(why) if why.contains("503")),
+            "{error:?}"
+        );
+        let base_url = canned::unreachable();
+        let error = unchecked(&probe(&base_url, "gpt", None).await.unwrap_err());
+        assert!(
+            matches!(&error, Unchecked::Failed(why) if why.contains(&base_url)),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_model_the_account_could_not_ask_stops_the_provider_s_probing_and_any_other_does_not()
+    {
+        let (broke, _served) = canned::answering("429 Too Many Requests", canned::NO_CREDITS);
+        let down = canned::unreachable();
+        let playing = canned::playing(&["a", "b"]);
+        let asked = |id: String| {
+            let base_url = match id.as_str() {
+                "broke" => broke.clone(),
+                "down" => down.clone(),
+                _ => playing.clone(),
+            };
+            async move { probe(&base_url, &id, None).await }
+        };
+        let mut recorded = Vec::new();
+        let ids = ["down", "a", "broke", "b"].map(String::from).to_vec();
+        probe_each(ids, 1, asked, |id, probed| {
+            recorded.push((id.to_string(), probed));
+        })
+        .await;
+        let ids: Vec<&str> = recorded.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["down", "a", "broke"]);
+        assert!(matches!(recorded[0].1, Err(Unchecked::Failed(_))));
+        assert_eq!(recorded[1].1, Ok(Check::Plays));
+        assert!(matches!(recorded[2].1, Err(Unchecked::NoCredits(_))));
     }
 
     #[tokio::test(start_paused = true)]
