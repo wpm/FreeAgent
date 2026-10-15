@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use social_deduction_stage::settings::{
-    AppSettings, Check, FieldError, GameSettings, KeyStatus, Listing, Provider, Snapshot,
+    AppSettings, FieldError, GameSettings, KeyStatus, Listing, Progress, Provider, Snapshot,
 };
 use social_deduction_stage::{Cue, GameName};
 use wasm_bindgen::prelude::*;
@@ -168,8 +168,9 @@ pub async fn providers() -> Result<Vec<Provider>, String> {
     call("providers", json!({})).await
 }
 
-/// The models the provider at `base_url` lists, fetched afresh, with its
-/// probes forgotten, when `refresh` says.
+/// The models the provider at `base_url` lists now, with what probing
+/// found of each, its probes forgotten first when `forget` says. Its
+/// models not yet probed are probed in the background.
 ///
 /// # Errors
 ///
@@ -177,32 +178,19 @@ pub async fn providers() -> Result<Vec<Provider>, String> {
 pub async fn listing(
     base_url: String,
     api_key_env: Option<String>,
-    refresh: bool,
+    forget: bool,
 ) -> Result<Listing, String> {
-    let args = json!({ "baseUrl": base_url, "apiKeyEnv": api_key_env, "refresh": refresh });
+    let args = json!({ "baseUrl": base_url, "apiKeyEnv": api_key_env, "forget": forget });
     call("listing", args).await
 }
 
-/// Probe every model of the provider at `base_url` not probed yet.
-pub fn check_all(base_url: String, api_key_env: Option<String>) {
-    background(
-        "check_all",
-        json!({ "baseUrl": base_url, "apiKeyEnv": api_key_env }),
-    );
-}
-
-/// Probe the model `id` of the provider at `base_url`.
+/// How far probing each provider has got.
 ///
 /// # Errors
 ///
 /// When the backend cannot be reached.
-pub async fn check_model(
-    base_url: String,
-    api_key_env: Option<String>,
-    id: String,
-) -> Result<Option<Check>, String> {
-    let args = json!({ "baseUrl": base_url, "apiKeyEnv": api_key_env, "id": id });
-    call("check_model", args).await
+pub async fn checking() -> Result<Vec<Progress>, String> {
+    call("checking", json!({})).await
 }
 
 /// Store `key` in the keychain for `variable`.

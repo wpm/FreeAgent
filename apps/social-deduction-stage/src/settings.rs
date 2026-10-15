@@ -28,6 +28,9 @@ pub struct AppSettings {
     pub werewolf: GameSettings,
     /// Avalon's settings.
     pub avalon: GameSettings,
+    /// The providers added besides those known and found, in the order
+    /// they were added.
+    pub providers: Vec<Provider>,
 }
 
 impl AppSettings {
@@ -87,6 +90,124 @@ impl AppSettings {
             [first, name, ..] if first == "models" => models.contains(name),
             _ => false,
         })
+    }
+
+    /// Why `name` cannot name a model other than `except`: it is empty, or
+    /// another model has it.
+    fn name_problem(&self, name: &str, except: &str) -> Result<(), String> {
+        if name.is_empty() {
+            return Err("Give it a name.".to_string());
+        }
+        if name != except && self.models.contains_key(name) {
+            return Err("Another model already has that name.".to_string());
+        }
+        Ok(())
+    }
+
+    /// Add `model` as `name`, trimmed, unless that cannot name it.
+    ///
+    /// # Errors
+    ///
+    /// When the name is empty or another model has it.
+    pub fn add_model(&mut self, name: &str, model: ModelSettings) -> Result<(), String> {
+        let name = name.trim();
+        self.name_problem(name, "")?;
+        self.models.insert(name.to_string(), model);
+        Ok(())
+    }
+
+    /// Rename the model `old` to `new`, trimmed, and every strategy of
+    /// either game that asks it with it, unless `new` cannot name it.
+    ///
+    /// # Errors
+    ///
+    /// When the name is empty or another model has it.
+    pub fn rename_model(&mut self, old: &str, new: &str) -> Result<(), String> {
+        let new = new.trim();
+        self.name_problem(new, old)?;
+        let Some(model) = self.models.remove(old) else {
+            return Ok(());
+        };
+        self.models.insert(new.to_string(), model);
+        for game in [&mut self.werewolf, &mut self.avalon] {
+            for strategy in game.strategies.values_mut() {
+                if strategy.model == old {
+                    strategy.model = new.to_string();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The prompted strategies that ask the model `name`, each as its game
+    /// and its name: `Werewolf “everyone”`.
+    pub fn users_of_model(&self, name: &str) -> Vec<String> {
+        [GameName::Werewolf, GameName::Avalon]
+            .into_iter()
+            .flat_map(|game| {
+                let settings = self.game(game);
+                settings
+                    .strategies
+                    .keys()
+                    .filter(move |strategy| settings.model_of(strategy) == Some(name))
+                    .map(move |strategy| format!("{} “{strategy}”", game_title(game)))
+            })
+            .collect()
+    }
+
+    /// Add `provider`, its name and base URL trimmed, the base URL's
+    /// final slash too, unless it lacks a name or a [`whole`] base URL.
+    ///
+    /// # Errors
+    ///
+    /// When it lacks a name or a whole base URL.
+    pub fn add_provider(&mut self, provider: Provider) -> Result<(), String> {
+        let name = provider.name.trim();
+        let base_url = provider.base_url.trim().trim_end_matches('/');
+        if name.is_empty() || !whole(base_url) {
+            return Err("Give it a name and a base URL ending in /v1.".to_string());
+        }
+        self.providers.push(Provider {
+            name: name.to_string(),
+            base_url: base_url.to_string(),
+            api_key_env: provider.api_key_env,
+        });
+        Ok(())
+    }
+
+    /// The providers the Models tab shows: those `found`, known and local,
+    /// then those added, then the provider of each model's base URL that
+    /// is none of them, as a local server when it is one on this machine,
+    /// whether or not it is up, and otherwise named for its host.
+    pub fn providers_shown(&self, found: &[Provider]) -> Vec<Provider> {
+        let mut shown = found.to_vec();
+        for provider in &self.providers {
+            if provider_at(&shown, &provider.base_url).is_none() {
+                shown.push(provider.clone());
+            }
+        }
+        for model in self.models.values() {
+            if model.base_url.trim().is_empty() || provider_at(&shown, &model.base_url).is_some() {
+                continue;
+            }
+            shown.push(match Provider::local_port(&model.base_url) {
+                Some(port) => Provider::local(port),
+                None => Provider {
+                    name: host(&model.base_url).to_string(),
+                    base_url: model.base_url.trim().trim_end_matches('/').to_string(),
+                    api_key_env: model.api_key_env.clone(),
+                },
+            });
+        }
+        shown
+    }
+
+    /// Remove the provider added at `base_url`, and every model reached
+    /// through it.
+    pub fn remove_provider(&mut self, base_url: &str) {
+        let at = |url: &str| url.trim_end_matches('/') == base_url.trim_end_matches('/');
+        self.providers.retain(|provider| !at(&provider.base_url));
+        self.models.retain(|_, model| !at(&model.base_url));
     }
 
     /// The first error among `errors` that stops a game of `game`, with
@@ -444,6 +565,32 @@ impl Provider {
     }
 }
 
+/// The provider of `providers` at `base_url`, with or without a final
+/// slash, if there is one.
+pub fn provider_at<'a>(providers: &'a [Provider], base_url: &str) -> Option<&'a Provider> {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    providers
+        .iter()
+        .find(|provider| provider.base_url.trim_end_matches('/') == trimmed)
+}
+
+/// The host of `base_url`: `api.example.com` of
+/// `https://api.example.com/v1`.
+fn host(base_url: &str) -> &str {
+    let base_url = base_url.trim();
+    let rest = base_url
+        .split_once("://")
+        .map_or(base_url, |(_, rest)| rest);
+    rest.split('/').next().unwrap_or(rest)
+}
+
+/// Whether `base_url` is whole: an `http` or `https` URL ending in `/v1`.
+pub fn whole(base_url: &str) -> bool {
+    let base_url = base_url.trim().trim_end_matches('/');
+    (base_url.starts_with("http://") || base_url.starts_with("https://"))
+        && base_url.ends_with("/v1")
+}
+
 /// Whether the provider at `base_url` is remote: reached over `https`.
 pub fn is_remote(base_url: &str) -> bool {
     base_url.trim_start().starts_with("https://")
@@ -466,8 +613,9 @@ pub struct Listing {
 pub struct Listed {
     /// Its id.
     pub id: String,
-    /// Its context window, in tokens, when the provider reports one.
-    pub context_window: Option<u64>,
+    /// The context window a game gives it unless its settings give one, in
+    /// tokens: the one the provider reports, or the provider's default.
+    pub context_window: u64,
     /// Whether its id says it is not a model that talks, such as an
     /// embedding model, which is never probed.
     pub hidden: bool,
@@ -496,13 +644,6 @@ pub struct Progress {
     pub total: usize,
 }
 
-impl Progress {
-    /// The line under a provider: `Checked 14 of 31`.
-    pub fn told(&self) -> String {
-        format!("Checked {} of {}", self.checked, self.total)
-    }
-}
-
 /// Where a key variable's key is, never the key itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyStatus {
@@ -521,7 +662,7 @@ impl KeyStatus {
     pub fn told(&self) -> String {
         match self {
             KeyStatus::InKeychain => "in the keychain".to_string(),
-            KeyStatus::InEnvironment => "in the environment".to_string(),
+            KeyStatus::InEnvironment => "from the environment".to_string(),
             KeyStatus::Missing => "not set".to_string(),
             KeyStatus::Unavailable(why) => why.clone(),
         }
@@ -545,24 +686,6 @@ pub enum Check {
 }
 
 impl Check {
-    /// The model's mark: `✓`, `~` or `✗`.
-    pub fn mark(&self) -> &'static str {
-        match self {
-            Check::Plays => "✓",
-            Check::PlaysUnforced => "~",
-            Check::DidNotPlay(_) => "✗",
-        }
-    }
-
-    /// What the mark means.
-    pub fn told(&self) -> String {
-        match self {
-            Check::Plays => "plays".to_string(),
-            Check::PlaysUnforced => "plays only when not made to call a tool".to_string(),
-            Check::DidNotPlay(why) => format!("doesn't play: {why}"),
-        }
-    }
-
     /// Whether the model plays, made to call a tool or not.
     pub fn plays(&self) -> bool {
         !matches!(self, Check::DidNotPlay(_))
@@ -724,9 +847,164 @@ mod tests {
     }
 
     #[test]
+    fn a_model_is_renamed_and_the_strategies_that_ask_it_follow() {
+        let mut settings = two_strategies();
+        settings
+            .avalon
+            .strategies
+            .insert("all".to_string(), prompted("gpt"));
+        assert_eq!(settings.rename_model("gpt", " opus "), Ok(()));
+        assert!(settings.models.contains_key("opus") && !settings.models.contains_key("gpt"));
+        assert_eq!(settings.werewolf.strategies["smart"].model, "opus");
+        assert_eq!(settings.avalon.strategies["all"].model, "opus");
+        assert_eq!(settings.werewolf.strategies["everyone"].model, "local");
+        assert_eq!(settings.rename_model("opus", "opus"), Ok(()));
+        assert_eq!(
+            settings.rename_model("opus", " "),
+            Err("Give it a name.".to_string())
+        );
+        assert_eq!(
+            settings.rename_model("opus", "local"),
+            Err("Another model already has that name.".to_string())
+        );
+        assert_eq!(settings.rename_model("missing", "found"), Ok(()));
+        assert!(!settings.models.contains_key("found"));
+    }
+
+    #[test]
+    fn a_model_is_added_under_a_name_no_other_has() {
+        let mut settings = two_strategies();
+        let opus = ModelSettings {
+            base_url: "https://api.anthropic.com/v1".to_string(),
+            id: "claude-opus-5-5".to_string(),
+            ..ModelSettings::default()
+        };
+        assert_eq!(
+            settings.add_model("gpt", opus.clone()),
+            Err("Another model already has that name.".to_string())
+        );
+        assert_eq!(
+            settings.add_model("", opus.clone()),
+            Err("Give it a name.".to_string())
+        );
+        assert_eq!(settings.add_model(" opus ", opus.clone()), Ok(()));
+        assert_eq!(settings.models["opus"], opus);
+    }
+
+    #[test]
+    fn a_model_s_users_are_the_prompted_strategies_that_ask_it() {
+        let mut settings = two_strategies();
+        settings
+            .avalon
+            .strategies
+            .insert("all".to_string(), prompted("local"));
+        assert_eq!(
+            settings.users_of_model("local"),
+            ["Werewolf “everyone”", "Avalon “all”"]
+        );
+        assert_eq!(settings.users_of_model("gpt"), ["Werewolf “smart”"]);
+        assert!(settings.users_of_model("nobody").is_empty());
+    }
+
+    #[test]
+    fn a_provider_added_needs_a_name_and_a_whole_base_url_and_takes_its_models_when_removed() {
+        let mut settings = two_strategies();
+        let example = |name: &str, base_url: &str| Provider {
+            name: name.to_string(),
+            base_url: base_url.to_string(),
+            api_key_env: Some("EXAMPLE_API_KEY".to_string()),
+        };
+        let wanted = "Give it a name and a base URL ending in /v1.";
+        for (name, base_url) in [
+            (" ", "https://api.example.com/v1"),
+            ("Example", "api.example.com/v1"),
+            ("Example", "https://api.example.com"),
+        ] {
+            assert_eq!(
+                settings.add_provider(example(name, base_url)),
+                Err(wanted.to_string())
+            );
+        }
+        assert_eq!(
+            settings.add_provider(example(" Example ", " https://api.example.com/v1/ ")),
+            Ok(())
+        );
+        assert_eq!(
+            settings.providers,
+            [example("Example", "https://api.example.com/v1")]
+        );
+        settings.models.get_mut("gpt").unwrap().base_url =
+            "https://api.example.com/v1/".to_string();
+        settings.remove_provider("https://api.example.com/v1");
+        assert!(settings.providers.is_empty());
+        assert_eq!(settings.models.keys().collect::<Vec<_>>(), ["local"]);
+    }
+
+    #[test]
+    fn the_providers_shown_are_those_found_then_added_then_each_other_a_model_names() {
+        let openai = Provider {
+            name: "OpenAI".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key_env: Some("OPENAI_API_KEY".to_string()),
+        };
+        assert_eq!(
+            provider_at(std::slice::from_ref(&openai), " https://api.openai.com/v1/")
+                .map(|p| p.name.as_str()),
+            Some("OpenAI")
+        );
+        let added = Provider {
+            name: "Example".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key_env: None,
+        };
+        let model = |base_url: &str, api_key_env: Option<&str>| ModelSettings {
+            base_url: base_url.to_string(),
+            api_key_env: api_key_env.map(String::from),
+            ..ModelSettings::default()
+        };
+        let settings = AppSettings {
+            providers: vec![added.clone(), openai.clone()],
+            models: BTreeMap::from([
+                ("a".to_string(), model("https://api.openai.com/v1/", None)),
+                ("b".to_string(), model("http://localhost:9999/v1", None)),
+                (
+                    "c".to_string(),
+                    model("https://other.example.org/v1/", Some("OTHER_KEY")),
+                ),
+                ("d".to_string(), model("", None)),
+                ("e".to_string(), model("https://api.example.com/v1", None)),
+            ]),
+            ..AppSettings::default()
+        };
+        assert_eq!(
+            settings.providers_shown(std::slice::from_ref(&openai)),
+            [
+                openai,
+                added,
+                Provider::local(9999),
+                Provider {
+                    name: "other.example.org".to_string(),
+                    base_url: "https://other.example.org/v1".to_string(),
+                    api_key_env: Some("OTHER_KEY".to_string()),
+                },
+            ]
+        );
+        assert_eq!(host("localhost"), "localhost");
+    }
+
+    #[test]
+    fn a_base_url_is_whole_when_it_is_http_or_https_and_ends_in_v1() {
+        assert!(whole("https://api.openai.com/v1"));
+        assert!(whole(" http://localhost:1234/v1/ "));
+        assert!(!whole("http://localhost:1234/"));
+        assert!(!whole("localhost:1234/v1"));
+        assert!(!whole(""));
+    }
+
+    #[test]
     fn a_key_s_status_says_where_it_is() {
         assert_eq!(KeyStatus::InKeychain.told(), "in the keychain");
-        assert_eq!(KeyStatus::InEnvironment.told(), "in the environment");
+        assert_eq!(KeyStatus::InEnvironment.told(), "from the environment");
         assert_eq!(KeyStatus::Missing.told(), "not set");
         assert_eq!(
             KeyStatus::Unavailable("no store".to_string()).told(),
@@ -737,18 +1015,8 @@ mod tests {
     }
 
     #[test]
-    fn a_check_is_marked_and_told() {
+    fn a_model_plays_whether_or_not_it_is_made_to_call_a_tool() {
         let no = Check::DidNotPlay("no tools".to_string());
-        assert_eq!(
-            [Check::Plays.mark(), Check::PlaysUnforced.mark(), no.mark()],
-            ["✓", "~", "✗"]
-        );
-        assert_eq!(Check::Plays.told(), "plays");
-        assert_eq!(
-            Check::PlaysUnforced.told(),
-            "plays only when not made to call a tool"
-        );
-        assert_eq!(no.told(), "doesn't play: no tools");
         assert!(Check::Plays.plays() && Check::PlaysUnforced.plays() && !no.plays());
     }
 
@@ -842,15 +1110,5 @@ mod tests {
         assert_eq!(Provider::local_port("https://api.openai.com/v1"), None);
         assert!(is_remote(" https://api.openai.com/v1"));
         assert!(!is_remote("http://localhost:1234/v1"));
-    }
-
-    #[test]
-    fn progress_is_told_as_a_count() {
-        let progress = Progress {
-            base_url: "https://api.openai.com/v1".to_string(),
-            checked: 14,
-            total: 31,
-        };
-        assert_eq!(progress.told(), "Checked 14 of 31");
     }
 }

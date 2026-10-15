@@ -15,7 +15,12 @@
 // nothing scrolls sideways. With a stand-in for the desktop app's backend,
 // the main window opens on its start state with Play, #settings opens the
 // Settings window's four tabs, help shows on hover and on focus, and
-// typing goes on in a field while each change is stored. The console stays clean throughout.
+// typing goes on in a field while each change is stored. Its Models tab
+// shows each provider by name with where its key comes from, why it lists
+// nothing, or the models that play; adding one asks for its name, and a
+// name taken or empty is refused; a context window typed overrides the
+// provider's, and Reset puts it back; and everything on it has help. The
+// console stays clean throughout.
 // Screenshots land in ./screenshots for a human to look at.
 //
 //   npm test                 # against ../dist, from this directory
@@ -417,9 +422,31 @@ function backend(snapshot) {
       emit('settings', { ...snapshot, settings: structuredClone(settings) }, 'main');
       return [];
     },
-    providers: [{ name: 'OpenAI', base_url: 'https://api.openai.com/v1', api_key_env: 'OPENAI_API_KEY' }],
-    listing: { models: [], error: null, checks: {} },
-    key_status: 'Missing',
+    providers: [
+      { name: 'OpenAI', base_url: 'https://api.openai.com/v1', api_key_env: 'OPENAI_API_KEY' },
+      { name: 'Anthropic', base_url: 'https://api.anthropic.com/v1', api_key_env: 'ANTHROPIC_API_KEY' },
+      { name: 'Local (localhost:1234)', base_url: 'http://localhost:1234/v1', api_key_env: null },
+      { name: 'Local (localhost:11434)', base_url: 'http://localhost:11434/v1', api_key_env: null },
+    ],
+    checking: [],
+    listing: ({ baseUrl }) => {
+      const model = (id, context_window) => ({ id, context_window, hidden: false });
+      const listings = {
+        'https://api.openai.com/v1': { models: [], error: "Couldn't list models: 401, check the API key", checks: {} },
+        'https://api.anthropic.com/v1': {
+          models: [model('claude-opus-5-5', 200000), model('claude-sonnet-5-5', 200000), model('claude-mute-1', 200000)],
+          error: null,
+          checks: { 'claude-opus-5-5': 'Plays', 'claude-sonnet-5-5': 'PlaysUnforced', 'claude-mute-1': { DidNotPlay: 'no tools' } },
+        },
+        'http://localhost:1234/v1': {
+          models: [model('qwen2.5-7b-instruct-1m', 1010000), model('llama-3.2-3b-instruct', 131072)],
+          error: null,
+          checks: { 'qwen2.5-7b-instruct-1m': 'Plays', 'llama-3.2-3b-instruct': 'Plays' },
+        },
+      };
+      return listings[baseUrl] ?? { models: [], error: null, checks: {} };
+    },
+    key_status: ({ variable }) => (variable === 'OPENAI_API_KEY' ? 'InEnvironment' : 'InKeychain'),
   };
   window.__TAURI__ = {
     core: {
@@ -436,6 +463,82 @@ function backend(snapshot) {
     event: { listen: listen(null) },
     webviewWindow: { getCurrentWebviewWindow: () => ({ label, listen: listen(label) }) },
   };
+}
+
+/** Check the Models tab of the Settings window `settings`, then go back
+ * to the Werewolf tab. */
+async function models(settings) {
+  await settings.click('.sd-tabs [role="tab"]:nth-child(2)');
+  await settings.waitForSelector('.sd-offered');
+  const providers = await settings.$$eval('.sd-provider h4', (names) => names.map((name) => name.textContent.trim()));
+  check(
+    JSON.stringify(providers) === JSON.stringify(['OpenAI', 'Anthropic', 'Local (localhost:1234)', 'Local (localhost:11434)']),
+    `desktop: each provider is shown by its name (${providers.join(', ')})`,
+  );
+  const card = (name) => `.sd-provider[aria-label="${name}"]`;
+  const text = (selector) => settings.$eval(selector, (element) => element.textContent.trim());
+  const ids = (selector) => settings.$$eval(selector, (found) => found.map((id) => id.textContent.trim()));
+  check(
+    (await text(`${card('Local (localhost:11434)')} .sd-note`)) === 'The server is running, but no model is loaded.',
+    'desktop: a local server with no model loaded says so',
+  );
+  check((await text(`${card('OpenAI')} .sd-field-error`)).includes('401'), 'desktop: a provider that cannot list its models says why');
+  check(
+    (await text(`${card('OpenAI')} .sd-chip`)) === 'OPENAI_API_KEY from the environment' &&
+      (await text(`${card('Anthropic')} .sd-chip`)) === 'ANTHROPIC_API_KEY in the keychain' &&
+      (await text(`${card('Local (localhost:1234)')} .sd-chip`)) === 'No key needed',
+    'desktop: each provider says where its key comes from',
+  );
+  const offered = await ids(`${card('Anthropic')} .sd-offered .sd-id`);
+  check(
+    JSON.stringify(offered) === JSON.stringify(['claude-opus-5-5', 'claude-sonnet-5-5']),
+    `desktop: only models that play are available, in the listing's order (${offered.join(', ')})`,
+  );
+  const local = await ids(`${card('Local (localhost:1234)')} .sd-id`);
+  check(
+    JSON.stringify(local) === JSON.stringify(['qwen2.5-7b-instruct-1m', 'llama-3.2-3b-instruct']),
+    `desktop: a model added is under its provider and not available again (${local.join(', ')})`,
+  );
+  const untipped = await settings.$$eval('.sd-settings button, .sd-settings input', (all) =>
+    all.filter((element) => !element.closest('[data-tip]')).map((element) => element.outerHTML.slice(0, 80)),
+  );
+  check(untipped.length === 0, `desktop: everything on the Models tab has help (${untipped.join(' ')})`);
+  await settings.screenshot({ path: join(shots, 'settings-models.png'), fullPage: true });
+  // Adding a model asks for its name, filled in with its id.
+  await settings.click(`${card('Anthropic')} .sd-offered button`);
+  const name = `${card('Anthropic')} .sd-adding input`;
+  await settings.waitForSelector(name);
+  check((await settings.$eval(name, (input) => input.value)) === 'claude-opus-5-5', 'desktop: a model added is first named for its id');
+  await settings.fill(name, 'qwen');
+  await settings.press(name, 'Enter');
+  await settings.waitForSelector(`${card('Anthropic')} .sd-field-error`);
+  check(
+    (await text(`${card('Anthropic')} .sd-field-error`)) === 'Another model already has that name.',
+    'desktop: a name another model has is refused',
+  );
+  await settings.fill(name, 'opus');
+  await settings.press(name, 'Enter');
+  await settings.waitForSelector(`${card('Anthropic')} input.sd-name`);
+  check((await settings.$eval(`${card('Anthropic')} input.sd-name`, (input) => input.value)) === 'opus', 'desktop: the model is added under the name given');
+  // A name emptied is refused, and the old one is put back.
+  const qwen = `${card('Local (localhost:1234)')} input.sd-name`;
+  await settings.fill(qwen, '');
+  await settings.press(qwen, 'Tab');
+  check((await settings.$eval(qwen, (input) => input.value)) === 'qwen', 'desktop: an empty name is refused');
+  // The context window is the provider's until a number is typed, and
+  // Reset puts it back.
+  const window = `${card('Local (localhost:1234)')} .sd-window input`;
+  const shown = () => settings.$eval(window, (input) => [input.value, input.placeholder]);
+  check(JSON.stringify(await shown()) === JSON.stringify(['', '1,010,000']), "desktop: an empty context window shows the provider's figure");
+  await settings.fill(window, '32768');
+  await settings.press(window, 'Tab');
+  await settings.waitForSelector(`${card('Local (localhost:1234)')} .sd-window button`);
+  check((await shown())[0] === '32,768', 'desktop: a context window typed overrides it');
+  await settings.screenshot({ path: join(shots, 'settings-models-added.png'), fullPage: true });
+  await settings.click(`${card('Local (localhost:1234)')} .sd-window button`);
+  check((await shown())[0] === '', 'desktop: Reset goes back to the provider\'s figure');
+  await settings.click('.sd-tabs [role="tab"]:nth-child(3)');
+  await settings.waitForSelector('.sd-stepper input');
 }
 
 await section('desktop', async () => {
@@ -483,11 +586,12 @@ await section('desktop', async () => {
   await settings.screenshot({ path: join(shots, 'settings-tip.png') });
   await settings.keyboard.press('Escape');
   check(!(await tip()).shown, 'desktop: Escape hides help');
-  for (const [index, name] of [[1, 'models'], [2, 'werewolf']]) {
+  for (const [index, name] of [[2, 'werewolf']]) {
     await settings.click(`.sd-tabs [role="tab"]:nth-child(${index + 1})`);
     await settings.waitForSelector('.sd-tab-head h2');
     await settings.screenshot({ path: join(shots, `settings-${name}.png`), fullPage: true });
   }
+  await models(settings);
   const players = await settings.$$eval('.sd-stepper input', (inputs) => inputs.map((input) => input.value));
   check(JSON.stringify(players) === JSON.stringify(['2', '3', '1', '1']), `desktop: the Werewolf tab shows each role's count (${players.join(', ')})`);
   // The tab uses the window's width: players beside phase limits, short

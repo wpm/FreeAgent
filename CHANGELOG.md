@@ -22,11 +22,12 @@ workflow takes a version's notes from here.
   an `.rpm` for Linux. The website links to the newest of each.
 - The desktop app's settings live in a standard Settings window (⌘, on
   macOS, Ctrl+, elsewhere), stored as they change, with each field's error
-  beneath it. Both games share one list of models. Choosing a provider
-  fills in its base URL and key variable, local servers are found as the
-  window opens, and a model's id is chosen from its provider's listing of
-  the models that pass `models --check`, probed in the background and kept
-  in `probes.json`. API keys sit with their provider, in the OS keychain.
+  beneath it. Both games share one list of models, grouped by provider:
+  each provider's card holds its key and the models it offers that pass
+  `models --check`, most capable first, checked in the background and kept
+  in `probes.json`. Local servers are found at launch, and any other
+  OpenAI-compatible provider can be added. API keys sit with their
+  provider, in the OS keychain.
   The main window opens on a start state with **Werewolf** or **Avalon**
   and **Play**, and **File** imports and exports configuration files that
   `social-deduction play` plays the same way.

@@ -53,16 +53,19 @@ it does.
   **Show in Finder** (**Show in Explorer** elsewhere), and the
   appearance: System, Light or Dark. System keeps Werewolf dark by night
   and light by day.
-- **Models**: the models both games share, one card each, and their
-  providers. **Add Model** starts with the provider, which fills in the
-  base URL and the key variable: OpenAI, Anthropic, a local server, or
-  **Other…**. The model id is chosen from the provider's own listing,
-  which shows the models that pass the probe `social-deduction models
-  --check` runs: ✓ plays, ~ plays only when not made to call a tool.
-  **Show all** adds the rest, ✗ for a model that does not play. A
-  provider's context window fills in when the listing reports one. Each
-  provider that needs a key shows where it is and stores or removes it in
-  the keychain; storing one lists the provider's models again.
+- **Models**: a card for each provider, holding its base URL and key,
+  **Your models** from it, and **Available**: its models that play and
+  aren't added yet, most capable first, each with its context window and
+  **Add**. Adding one asks for its name, filled in with the model id. A
+  name is edited in place, and renaming updates the strategies that use
+  it. A context window left empty is the provider's figure; a number
+  typed overrides it, and **Reset** goes back. A model that stops playing
+  stays under **Your models** with "No longer plays" and the strategies
+  that use it. The key line names the variable and where its key comes
+  from, the environment or the keychain, which takes priority, and stores
+  or removes it there. **Add provider…** adds any other OpenAI-compatible
+  service by name, base URL and key variable. Hovering over or focusing
+  anything shows what it does.
 - **Werewolf** and **Avalon**: the role counts beside the phase limits
   (`45s`, `2m`), the strategies two across, who plays what, with **Split
   seats…** to share a role among strategies, and the prompt parts: named
@@ -71,14 +74,18 @@ it does.
   **Restore Defaults…** brings back the game's example `prompted`
   configuration, leaving the models as they are.
 
-When the Settings window opens, the app looks for a local server at
-`http://localhost:<port>/v1` on ports 1234, 11434, 8080 and 8000 (LM
-Studio's, Ollama's, llama.cpp's and vLLM's), and each one that answers is
-a provider, **Local (localhost:1234)**. A remote provider's models are
-probed in the background, four at a time, once its key is set. A local
-server's are probed one at a time when **Check all** is pressed, since the
-server loads each model it is asked about, and each model's card has its
-own **Check**. ↻ lists a provider's models again and probes them afresh.
+The app looks for a local server at `http://localhost:<port>/v1` on ports
+1234, 11434, 8080 and 8000 (LM Studio's, Ollama's, llama.cpp's and
+vLLM's), and each one that answers is a provider, **Local
+(localhost:1234)**. Models are checked in the background with the probe
+`social-deduction models --check` runs: every model at the first launch
+and after each update, a model a provider lists for the first time, and a
+provider's models again when its key changes. A remote provider's are
+checked four at a time; a local server's one at a time, since it loads
+each model it is asked about, and never while a game plays. A line at the
+top of the Models tab says what is being checked. A provider's models are
+ranked by the families in `src/models.toml`, newer first within a family,
+then by the parameter count in the id, then newest first.
 
 **File ▸ Import Configuration…** reads a configuration file. Its game's
 settings replace that game's, and its models join the shared ones; a model

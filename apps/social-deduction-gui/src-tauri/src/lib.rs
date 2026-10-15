@@ -1,7 +1,8 @@
 //! The desktop shell around the viewer: a main window that plays a game
 //! live, and a Settings window. The app owns its settings, in [`settings`];
-//! the Models tab's providers, listings and probes are in [`catalog`]; API
-//! keys are stored through [`secret`]; and [`play`](game::play) runs the
+//! the Models tab's providers and listings, and the checks run on their
+//! models in the background from launch, are in [`catalog`]; API keys are
+//! stored through [`secret`]; and [`play`](game::play) runs the
 //! chosen game as `social-deduction play` runs it, its log saved and
 //! folded into cues sent to the main window. The [`menu`] opens Settings,
 //! starts a new game, and imports and exports configuration files.
@@ -41,6 +42,7 @@ pub fn run() {
             let handle = app.handle();
             app.manage(settings::Store::open(handle)?);
             app.manage(catalog::Catalog::open(handle)?);
+            catalog::check_in_background(handle);
             app.set_menu(menu::build(handle)?)?;
             Ok(())
         })
@@ -58,8 +60,7 @@ pub fn run() {
             settings::logs_reveal,
             catalog::providers,
             catalog::listing,
-            catalog::check_all,
-            catalog::check_model,
+            catalog::checking,
             secret::key_store,
             secret::key_remove,
             secret::key_status

@@ -1,12 +1,14 @@
 //! What the desktop app's Models tab offers: the providers a model is
 //! reached through, those `src/models.toml` knows and the local servers
-//! [`discover`] finds; each provider's [`list`]ing; and what probing each
-//! listed model found, kept in [`Probes`] so that no model is probed twice.
+//! [`discover`] finds; each provider's [`list`]ing, most capable first, as
+//! [`rank`] ranks it; and what probing each listed model found, kept in
+//! [`Probes`] so that no model is probed twice.
 //!
 //! A remote provider, one reached over `https`, has its models probed
 //! [`AT_ONCE`] at a time. A local server loads each model it is asked
-//! about, so its models are probed one at a time. [`probe_each`] runs a
-//! provider's probes either way.
+//! about, so its models are probed one at a time, and [`idle`] holds them
+//! back while a game plays. [`probe_each`] runs a provider's probes either
+//! way.
 
 use crate::model::check;
 use crate::model::{self, Provider as Client, REQUEST_TIMEOUT};
@@ -15,6 +17,7 @@ use futures_util::StreamExt;
 use reqwest::StatusCode;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::Path;
@@ -62,28 +65,104 @@ pub async fn discover(ports: &[u16], timeout: Duration) -> Vec<u16> {
         .collect()
 }
 
-/// The models the provider at `base_url` lists, asked with `key`, each
-/// marked hidden when its id says it does not chat; or, when it cannot
-/// list them, why, in a line for under the provider.
+/// The models the provider at `base_url` lists, asked with `key`, most
+/// capable first, as [`rank`] ranks them, each marked hidden when its id
+/// says it does not chat and with the context window a game gives it, as
+/// [`window`] says; or, when it cannot list them, why, in a line for under
+/// the provider.
 pub async fn list(base_url: &str, key: Option<SecretString>) -> Listing {
     let listed = async { Client::new(base_url, key, REQUEST_TIMEOUT)?.listing().await };
     match listed.await {
-        Ok(models) => Listing {
-            models: models
-                .into_iter()
-                .map(|model| Listed {
-                    hidden: model::hidden(&model.id),
-                    id: model.id,
-                    context_window: model.context_window,
-                })
-                .collect(),
-            ..Listing::default()
-        },
+        Ok(mut models) => {
+            rank(&mut models);
+            Listing {
+                models: models
+                    .into_iter()
+                    .map(|model| Listed {
+                        hidden: model::hidden(&model.id),
+                        context_window: window(base_url, model.context_window),
+                        id: model.id,
+                    })
+                    .collect(),
+                ..Listing::default()
+            }
+        }
         Err(error) => Listing {
             error: Some(unlisted(base_url, &error)),
             ..Listing::default()
         },
     }
+}
+
+/// The context window a game gives a model of the provider at `base_url`
+/// whose window its configuration does not set: `reported`, the one its
+/// listing reports, otherwise the provider's default in `src/models.toml`,
+/// otherwise [`model::CONTEXT_WINDOW`].
+pub fn window(base_url: &str, reported: Option<u64>) -> u64 {
+    reported
+        .or_else(|| model::known_context_window(base_url))
+        .unwrap_or(model::CONTEXT_WINDOW)
+}
+
+/// Where a model stands among its provider's models, which sort most
+/// capable first.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Standing {
+    /// Of the family at this place in `src/models.toml`'s list, newest
+    /// first, and an undated one by its id, a higher version first.
+    Family(usize, Reverse<Option<u64>>, Reverse<String>),
+    /// Of so many tenths of a billion parameters, the most first.
+    Sized(Reverse<u64>, String),
+    /// Of neither, newest first.
+    Other(Reverse<Option<u64>>, String),
+}
+
+/// Rank a provider's `models` most capable first: those of a family
+/// `src/models.toml` lists, in its order and newest first within each;
+/// then those whose id gives a parameter count, the most first; then the
+/// rest, newest first.
+pub fn rank(models: &mut [model::Listed]) {
+    models.sort_by_cached_key(|model| {
+        let (id, made) = (model.id.clone(), Reverse(model.created));
+        match (family(&model.id), parameters(&model.id)) {
+            (Some(place), _) => Standing::Family(place, made, Reverse(id)),
+            (None, Some(count)) => Standing::Sized(Reverse(count), id),
+            (None, None) => Standing::Other(made, id),
+        }
+    });
+}
+
+/// The place in `src/models.toml`'s list of the family of the model `id`:
+/// one whose name the id is, or starts with before a hyphen and a digit,
+/// whatever its case.
+fn family(id: &str) -> Option<usize> {
+    let id = id.to_lowercase();
+    model::families().iter().position(|family| {
+        id.strip_prefix(family.as_str()).is_some_and(|rest| {
+            rest.is_empty()
+                || rest
+                    .strip_prefix('-')
+                    .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+        })
+    })
+}
+
+/// How many tenths of a billion parameters the model `id` has, as a part
+/// of its id of its own says, such as `7b` or `0.5b`: the largest, if
+/// several do.
+fn parameters(id: &str) -> Option<u64> {
+    id.to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '.')
+        .filter_map(|part| {
+            let number = part.strip_suffix('b')?;
+            let (whole, tenths) = number.split_once('.').unwrap_or((number, "0"));
+            let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+            if !digits(whole) || !digits(tenths) || tenths.len() > 1 {
+                return None;
+            }
+            Some(whole.parse::<u64>().ok()? * 10 + tenths.parse::<u64>().ok()?)
+        })
+        .max()
 }
 
 /// Why the provider at `base_url` could not list its models, from `error`.
@@ -129,6 +208,14 @@ pub async fn probe_each<F>(
     let mut ended = futures_util::stream::iter(probes).buffer_unordered(at_once.max(1));
     while let Some((id, check)) = ended.next().await {
         record(&id, check);
+    }
+}
+
+/// Wait until `busy` says no, asking it every `every`: a local server's
+/// models are not probed while a game plays.
+pub async fn idle(busy: impl Fn() -> bool, every: Duration) {
+    while busy() {
+        tokio::time::sleep(every).await;
     }
 }
 
@@ -264,25 +351,109 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_listing_marks_the_ids_hidden_and_reports_each_context_window() {
-        let base_url = canned::playing_within(&["gpt-4.1", "text-embedding-3-small"], 32768);
+    async fn a_listing_marks_the_ids_hidden_and_ranks_them_with_each_context_window() {
+        let base_url = canned::playing_within(&["text-embedding-3-small", "gpt-4.1"], 32768);
         let listing = list(&base_url, None).await;
         assert_eq!(
             listing.models,
             [
                 Listed {
                     id: "gpt-4.1".to_string(),
-                    context_window: Some(32768),
+                    context_window: 32768,
                     hidden: false,
                 },
                 Listed {
                     id: "text-embedding-3-small".to_string(),
-                    context_window: Some(32768),
+                    context_window: 32768,
                     hidden: true,
                 },
             ]
         );
         assert_eq!(listing.error, None);
+        // A listing that reports no window gives the code's default.
+        let listing = list(&canned::playing(&["llama"]), None).await;
+        assert_eq!(listing.models[0].context_window, model::CONTEXT_WINDOW);
+    }
+
+    #[test]
+    fn a_window_the_listing_does_not_report_is_the_provider_s_default() {
+        assert_eq!(window("https://api.anthropic.com/v1", None), 200_000);
+        assert_eq!(window("https://api.anthropic.com/v1", Some(8192)), 8192);
+        assert_eq!(
+            window("http://localhost:1234/v1", None),
+            model::CONTEXT_WINDOW
+        );
+    }
+
+    /// A model the provider at lists as `id`, made at `created`.
+    fn made(id: &str, created: Option<u64>) -> model::Listed {
+        model::Listed {
+            id: id.to_string(),
+            context_window: None,
+            created,
+        }
+    }
+
+    #[test]
+    fn models_rank_by_family_then_by_size_then_newest_first() {
+        let mut models = vec![
+            made("mystery-old", Some(1)),
+            made("claude-haiku-5-5", Some(50)),
+            made("gemma-3-12b-it", None),
+            made("claude-opus-4-1-20250805", Some(10)),
+            made("mystery-new", Some(9)),
+            made("claude-opus-5-5", Some(40)),
+            made("llama-3.2-3b-instruct", None),
+            made("gpt-4.1-mini", None),
+            made("gpt-4.1-2025-04-14", None),
+            made("qwen2.5-7b-instruct-1m", None),
+            made("undated", None),
+            made("claude-fable-5-1", Some(30)),
+            made("gpt-4.1", None),
+        ];
+        rank(&mut models);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "claude-fable-5-1",
+                "claude-opus-5-5",
+                "claude-opus-4-1-20250805",
+                "gpt-4.1-2025-04-14",
+                "gpt-4.1",
+                "claude-haiku-5-5",
+                "gpt-4.1-mini",
+                "gemma-3-12b-it",
+                "qwen2.5-7b-instruct-1m",
+                "llama-3.2-3b-instruct",
+                "mystery-new",
+                "mystery-old",
+                "undated",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_family_is_the_whole_id_or_its_start_before_a_version_or_date() {
+        let family = |id| family(id).map(|place| model::families()[place].as_str());
+        assert_eq!(family("claude-opus-5-5"), Some("claude-opus"));
+        assert_eq!(family("Claude-Opus-5-5"), Some("claude-opus"));
+        assert_eq!(family("gpt-4.1"), Some("gpt-4.1"));
+        assert_eq!(family("gpt-4.1-mini-2025-04-14"), Some("gpt-4.1-mini"));
+        assert_eq!(family("o3-mini"), None);
+        assert_eq!(family("claude-opusx"), None);
+    }
+
+    #[test]
+    fn a_parameter_count_is_read_from_a_part_of_the_id_of_its_own() {
+        assert_eq!(parameters("qwen2.5-7b-instruct-1m"), Some(70));
+        assert_eq!(parameters("llama3.2:3b"), Some(30));
+        assert_eq!(parameters("Meta-Llama-3.1-8B-Instruct"), Some(80));
+        assert_eq!(parameters("qwen2.5-0.5b"), Some(5));
+        assert_eq!(parameters("gemma-2b-or-27b"), Some(270));
+        for none in ["phi-3.5-mini", "mixtral-8x7b", "b", "1.2.3b", "gpt-4.1"] {
+            assert_eq!(parameters(none), None, "{none}");
+        }
     }
 
     #[tokio::test]
@@ -363,6 +534,19 @@ mod tests {
         assert_eq!(recorded.len(), 8);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn waiting_for_idle_asks_until_nothing_is_busy() {
+        let asked = AtomicUsize::new(0);
+        let started = tokio::time::Instant::now();
+        idle(
+            || asked.fetch_add(1, Ordering::SeqCst) < 2,
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(asked.into_inner(), 3);
+        assert_eq!(started.elapsed(), Duration::from_secs(10));
+    }
+
     /// A listing of `ids`, of which those starting `text-embedding` are
     /// hidden.
     fn listing(ids: &[&str]) -> Listing {
@@ -371,7 +555,7 @@ mod tests {
                 .iter()
                 .map(|id| Listed {
                     id: id.to_string(),
-                    context_window: None,
+                    context_window: model::CONTEXT_WINDOW,
                     hidden: id.starts_with("text-embedding"),
                 })
                 .collect(),

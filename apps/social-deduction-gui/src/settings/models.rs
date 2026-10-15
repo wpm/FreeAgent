@@ -1,4 +1,7 @@
-//! The Models tab: the providers, with their keys, and the shared models.
+//! The Models tab: a card for each provider, holding its key, the models
+//! added from it, and the models it offers that play and are not added
+//! yet, most capable first. Models are checked in the background, and a
+//! line at the top says while any are.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -6,42 +9,136 @@ use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use social_deduction_stage::settings::{
-    AppSettings, Check, KeyStatus, Listing, ModelSettings, Probe, Progress, Provider, is_remote,
-    unique,
+    AppSettings, Check, FieldError, KeyStatus, Listed, Listing, ModelSettings, Probe, Progress,
+    Provider, is_remote, provider_at,
 };
 
-use super::{Choice, Editor, Problem, TextField, field_id, path};
+use super::{Editor, field_id, path};
 use crate::tauri;
 
-/// The provider of `providers` at `base_url`, if there is one.
-pub fn provider_at<'a>(providers: &'a [Provider], base_url: &str) -> Option<&'a Provider> {
-    let trimmed = base_url.trim_end_matches('/');
-    providers
-        .iter()
-        .find(|provider| provider.base_url.trim_end_matches('/') == trimmed)
+/// What a provider is, which its card's name explains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// A hosted provider the app knows.
+    Hosted,
+    /// A model server on this computer.
+    Local,
+    /// A provider the user added.
+    Added,
 }
 
-/// What the model id dropdown offers of `listing`: each model that
-/// plays, with its mark, or, with `all`, every model, each with its mark
-/// or none.
-pub fn offered(listing: &Listing, all: bool) -> Vec<(String, String)> {
+impl Kind {
+    /// What `provider` is, given the providers `found`, known and local.
+    pub fn of(provider: &Provider, found: &[Provider]) -> Kind {
+        if Provider::local_port(&provider.base_url).is_some() {
+            Kind::Local
+        } else if provider_at(found, &provider.base_url).is_some() {
+            Kind::Hosted
+        } else {
+            Kind::Added
+        }
+    }
+
+    /// What its name's help says.
+    pub fn tip(self) -> &'static str {
+        match self {
+            Kind::Hosted => "A hosted provider. Its address and key variable come filled in.",
+            Kind::Local => "A model server found running on this computer.",
+            Kind::Added => "A provider you added.",
+        }
+    }
+}
+
+/// `tokens` with its thousands grouped: `1,047,576`.
+pub fn grouped(tokens: u64) -> String {
+    let digits = tokens.to_string();
+    let mut out = String::new();
+    for (place, digit) in digits.chars().enumerate() {
+        if place > 0 && (digits.len() - place).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// The number of tokens typed as `text`, its commas and spaces ignored,
+/// or none when nothing is typed or it is not a whole number.
+pub fn typed_tokens(text: &str) -> Option<u64> {
+    let digits: String = text
+        .chars()
+        .filter(|c| !matches!(c, ',' | ' ' | '_'))
+        .collect();
+    digits.parse().ok()
+}
+
+/// The models of `listing` that play, and that `added`, the ids of the
+/// models added, does not hold, in the listing's order.
+pub fn available<'a>(listing: &'a Listing, added: &BTreeSet<String>) -> Vec<&'a Listed> {
     listing
         .models
         .iter()
-        .filter_map(|model| {
-            let check = listing.checks.get(&model.id);
-            let plays = check.is_some_and(Check::plays);
-            if !all && !plays {
-                return None;
-            }
-            let mark = match (check, model.hidden) {
-                (Some(check), _) => check.mark(),
-                (None, true) => "—",
-                (None, false) => "?",
-            };
-            Some((model.id.clone(), mark.to_string()))
-        })
+        .filter(|model| !model.hidden && !added.contains(&model.id))
+        .filter(|model| listing.checks.get(&model.id).is_some_and(Check::plays))
         .collect()
+}
+
+/// Whether the model `id` of `listing` has been checked and does not play.
+pub fn stopped(listing: &Listing, id: &str) -> bool {
+    listing.checks.get(id).is_some_and(|check| !check.plays())
+}
+
+/// How many models of the provider at `base_url` are still to be
+/// checked, as `progress` says, if any.
+fn remaining(progress: &BTreeMap<String, Progress>, base_url: &str) -> Option<usize> {
+    progress
+        .get(base_url)
+        .filter(|p| p.checked < p.total)
+        .map(|p| p.total - p.checked)
+}
+
+/// The line at the top of the tab while models are checked, naming the
+/// providers of `shown` whose models are, or none when none are:
+/// `Checking 2 new models on Local (localhost:1234) in the background.`
+pub fn checking_line(progress: &BTreeMap<String, Progress>, shown: &[Provider]) -> Option<String> {
+    let checking: Vec<(&str, usize)> = shown
+        .iter()
+        .filter_map(|p| Some((p.name.as_str(), remaining(progress, &p.base_url)?)))
+        .collect();
+    let count: usize = checking.iter().map(|(_, count)| count).sum();
+    let names: Vec<&str> = checking.iter().map(|(name, _)| *name).collect();
+    let names = match names.split_last()? {
+        (last, []) => (*last).to_string(),
+        (last, rest) => format!("{} and {last}", rest.join(", ")),
+    };
+    let models = if count == 1 { "model" } else { "models" };
+    Some(format!(
+        "Checking {count} new {models} on {names} in the background."
+    ))
+}
+
+/// The errors among `errors` of the model `name`, any field.
+pub fn model_errors(errors: &[FieldError], name: &str) -> Vec<String> {
+    errors
+        .iter()
+        .filter(
+            |error| matches!(&error.path[..], [models, of, ..] if models == "models" && of == name),
+        )
+        .map(|error| error.message.clone())
+        .collect()
+}
+
+/// Change the settings with `change`, and send them to be stored, unless
+/// it fails.
+fn attempt(
+    editor: Editor,
+    change: impl FnOnce(&mut AppSettings) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut changed = editor.settings.get_untracked();
+    change(&mut changed)?;
+    editor.settings.set(changed);
+    editor.send();
+    Ok(())
 }
 
 /// A provider's listing as the window has it.
@@ -56,8 +153,8 @@ struct Fetched {
 /// What the Models tab knows of the providers.
 #[derive(Clone, Copy)]
 struct Catalog {
-    /// The providers, known and local.
-    providers: RwSignal<Vec<Provider>>,
+    /// The providers found, known and local.
+    found: RwSignal<Vec<Provider>>,
     /// Each provider's listing, by base URL.
     listings: RwSignal<BTreeMap<String, Fetched>>,
     /// How far probing each provider has got, by base URL.
@@ -68,20 +165,14 @@ struct Catalog {
 
 impl Catalog {
     /// Fetch the listing of the provider at `base_url`, its key in the
-    /// variable `api_key_env` names, afresh when `refresh` says.
-    fn fetch(self, base_url: String, api_key_env: Option<String>, refresh: bool) {
-        if base_url.trim().is_empty() {
-            return;
-        }
+    /// variable `api_key_env` names, its probes forgotten first when
+    /// `forget` says.
+    fn fetch(self, base_url: String, api_key_env: Option<String>, forget: bool) {
         self.listings.update(|listings| {
-            let fetched = listings.entry(base_url.clone()).or_default();
-            fetched.loading = true;
-            if refresh {
-                fetched.listing = None;
-            }
+            listings.entry(base_url.clone()).or_default().loading = true;
         });
         spawn_local(async move {
-            let listing = tauri::listing(base_url.clone(), api_key_env, refresh)
+            let listing = tauri::listing(base_url.clone(), api_key_env, forget)
                 .await
                 .unwrap_or_else(|failure| Listing {
                     error: Some(failure),
@@ -130,51 +221,38 @@ impl Catalog {
             }
         });
     }
-}
 
-/// The providers the Models tab shows: those known or found, and each
-/// base URL a model names that is neither, as a local server when it is
-/// one on this machine, whether or not it is up, and otherwise as
-/// **Other**.
-fn shown_providers(providers: &[Provider], settings: &AppSettings) -> Vec<Provider> {
-    let mut shown = providers.to_vec();
-    for model in settings.models.values() {
-        if model.base_url.trim().is_empty() || provider_at(&shown, &model.base_url).is_some() {
-            continue;
-        }
-        shown.push(match Provider::local_port(&model.base_url) {
-            Some(port) => Provider::local(port),
-            None => Provider {
-                name: format!("Other ({})", model.base_url),
-                base_url: model.base_url.clone(),
-                api_key_env: model.api_key_env.clone(),
-            },
-        });
+    /// The listing of the provider at `base_url`, as it changes.
+    fn fetched(self, base_url: String) -> Memo<Option<Fetched>> {
+        Memo::new(move |_| {
+            self.listings
+                .with(|listings| listings.get(&base_url).cloned())
+        })
     }
-    shown
 }
 
-/// Whether `base_url` is whole, as far as can be told while it is typed:
-/// an `http` or `https` URL ending in `/v1`.
-pub fn whole(base_url: &str) -> bool {
-    let base_url = base_url.trim().trim_end_matches('/');
-    (base_url.starts_with("http://") || base_url.starts_with("https://"))
-        && base_url.ends_with("/v1")
-}
-
-/// The Models tab: the providers, with their keys, and a card for each
-/// model, with **Add Model**.
+/// The Models tab: the line saying what is being checked, a card for
+/// each provider, and **Add provider…**.
 #[component]
 pub(super) fn Models(editor: Editor) -> impl IntoView {
     let catalog = Catalog {
-        providers: RwSignal::new(Vec::new()),
+        found: RwSignal::new(Vec::new()),
         listings: RwSignal::new(BTreeMap::new()),
         progress: RwSignal::new(BTreeMap::new()),
         keys: RwSignal::new(BTreeMap::new()),
     };
     spawn_local(async move {
         if let Ok(found) = tauri::providers().await {
-            catalog.providers.set(found);
+            catalog.found.set(found);
+        }
+    });
+    spawn_local(async move {
+        if let Ok(all) = tauri::checking().await {
+            catalog.progress.update(|progress| {
+                for each in all {
+                    progress.entry(each.base_url.clone()).or_insert(each);
+                }
+            });
         }
     });
     tauri::listen("probe", move |probe: Probe| catalog.probed(probe));
@@ -183,185 +261,469 @@ pub(super) fn Models(editor: Editor) -> impl IntoView {
             all.insert(progress.base_url.clone(), progress);
         });
     });
-    // Each provider a model uses is listed once its base URL is whole.
-    let used = Memo::new(move |_| {
-        editor.settings.with(|s| {
-            s.models
-                .values()
-                .filter(|model| whole(&model.base_url))
-                .map(|model| (model.base_url.clone(), model.api_key_env.clone()))
-                .collect::<BTreeSet<_>>()
-        })
+    let shown = Memo::new(move |_| {
+        catalog
+            .found
+            .with(|found| editor.settings.with(|s| s.providers_shown(found)))
     });
+    // Each provider shown is listed once each time the tab opens.
     Effect::new(move |_| {
-        for (base_url, api_key_env) in used.get() {
-            let fetched = catalog
+        for provider in shown.get() {
+            let listed = catalog
                 .listings
-                .with_untracked(|listings| listings.contains_key(&base_url));
-            if !fetched {
-                catalog.fetch(base_url, api_key_env, false);
+                .with_untracked(|listings| listings.contains_key(&provider.base_url));
+            if !listed {
+                catalog.fetch(provider.base_url, provider.api_key_env, false);
             }
         }
     });
-    let shown = Memo::new(move |_| {
-        catalog
-            .providers
-            .with(|providers| editor.settings.with(|s| shown_providers(providers, s)))
-    });
-    let model_names = Memo::new(move |_| {
-        editor
-            .settings
-            .with(|s| s.models.keys().cloned().collect::<Vec<_>>())
-    });
-    let adding = RwSignal::new(None::<String>);
-    let added_name = NodeRef::<html::Input>::new();
-    let add = move |base_url: String| {
-        let providers = shown.get_untracked();
-        let provider = provider_at(&providers, &base_url).cloned();
-        let wanted = added_name
-            .get_untracked()
-            .map(|input| input.value().trim().to_string())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "model".to_string());
-        adding.set(None);
-        editor.edit(move |s| {
-            let name = unique(&wanted, |name| s.models.contains_key(name));
-            s.models.insert(
-                name,
-                ModelSettings {
-                    base_url: provider
-                        .as_ref()
-                        .map(|p| p.base_url.clone())
-                        .unwrap_or_default(),
-                    api_key_env: provider.and_then(|p| p.api_key_env),
-                    ..ModelSettings::default()
-                },
-            );
-        });
+    let status = move || {
+        let line = catalog
+            .progress
+            .with(|progress| shown.with(|shown| checking_line(progress, shown)));
+        match line {
+            Some(line) => view! {
+                <div class="sd-status" data-tip="Checks run in the background and never block you. Local models are checked one at a time, and not while a game is playing.">
+                    <span class="sd-spinner"></span>
+                    <span>{line}</span>
+                </div>
+            }
+            .into_any(),
+            None => view! {
+                <div class="sd-status sd-status-idle" data-tip="Models are checked on first launch and after each update, and again when a provider lists a new model or a key changes.">
+                    <span>"Every model is checked. Only those that play both games are listed."</span>
+                </div>
+            }
+            .into_any(),
+        }
     };
     view! {
         <div class="sd-tab-head">
             <h2>"Models"</h2>
         </div>
-        <section class="sd-section">
-            <h3>"Providers"</h3>
-            <For each=move || shown.get() key=|provider| provider.base_url.clone() let:provider>
-                <ProviderCard catalog=catalog provider=provider />
-            </For>
-        </section>
-        <section class="sd-section">
-            <h3>"Models"</h3>
-            <For each=move || model_names.get() key=Clone::clone let:name>
-                <ModelCard editor=editor catalog=catalog providers=shown name=name />
-            </For>
-            <Show
-                when=move || adding.get().is_some()
-                fallback=move || view! { <div class="sd-row"><button on:click=move |_| adding.set(Some(String::new()))>"Add Model"</button></div> }
-            >
-                <div class="sd-card sd-adding">
-                    <label class="sd-field">
-                        <span>"Name"</span>
-                        <input type="text" node_ref=added_name spellcheck="false" placeholder="model" />
-                    </label>
-                    <p class="sd-note">"Choose its provider:"</p>
-                    <div class="sd-row sd-wrap">
-                        {move || {
-                            shown
-                                .get()
-                                .into_iter()
-                                .map(|provider| {
-                                    let base_url = provider.base_url.clone();
-                                    view! { <button on:click=move |_| add(base_url.clone())>{provider.name}</button> }
-                                })
-                                .collect_view()
-                        }}
-                        <button on:click=move |_| add(String::new())>"Other…"</button>
-                        <button on:click=move |_| adding.set(None)>"Cancel"</button>
-                    </div>
-                </div>
-            </Show>
-        </section>
+        {status}
+        <For
+            each=move || shown.get()
+            key=|provider| (provider.name.clone(), provider.base_url.clone(), provider.api_key_env.clone())
+            let:provider
+        >
+            <ProviderCard editor=editor catalog=catalog provider=provider />
+        </For>
+        <AddProvider editor=editor />
     }
 }
 
-/// A provider's card: its base URL, its key, ↻, **Check all** for a
-/// local one, how far probing has got, and why it could not list its
-/// models.
+/// A provider's card: its name and base URL, its key, the models added
+/// from it, and those it offers that play and are not added.
 #[component]
-fn ProviderCard(catalog: Catalog, provider: Provider) -> impl IntoView {
+fn ProviderCard(editor: Editor, catalog: Catalog, provider: Provider) -> impl IntoView {
+    let kind = catalog
+        .found
+        .with_untracked(|found| Kind::of(&provider, found));
     let Provider {
         name,
         base_url,
         api_key_env,
-    } = provider;
-    let local = !is_remote(&base_url);
-    let fetched = {
-        let base_url = base_url.clone();
-        Memo::new(move |_| {
-            catalog
-                .listings
-                .with(|listings| listings.get(&base_url).cloned())
-        })
+    } = provider.clone();
+    let fetched = catalog.fetched(base_url.clone());
+    let key = match api_key_env.clone() {
+        Some(variable) => {
+            let (base_url, api_key_env) = (base_url.clone(), api_key_env.clone());
+            let changed = Callback::new(move |()| {
+                catalog.fetch(base_url.clone(), api_key_env.clone(), true);
+            });
+            view! { <KeyField catalog=catalog variable=variable changed=changed /> }.into_any()
+        }
+        None => view! {
+            <div class="sd-key">
+                <span class="sd-chip" data-tip="A model server on this computer. It doesn't need an API key.">"No key needed"</span>
+            </div>
+        }
+        .into_any(),
     };
-    let progress = {
+    let remove = {
         let base_url = base_url.clone();
-        move || {
-            catalog.progress.with(|all| {
-                all.get(&base_url)
-                    .filter(|p| p.total > 0)
-                    .map(Progress::told)
-            })
+        move |_| {
+            let base_url = base_url.clone();
+            editor.edit(move |s| s.remove_provider(&base_url));
         }
     };
-    let refresh = {
-        let (base_url, api_key_env) = (base_url.clone(), api_key_env.clone());
-        move |_| catalog.fetch(base_url.clone(), api_key_env.clone(), true)
+    let names = {
+        let mine = [provider.clone()];
+        Memo::new(move |_| {
+            editor.settings.with(|s| {
+                s.models
+                    .iter()
+                    .filter(|(_, model)| provider_at(&mine, &model.base_url).is_some())
+                    .map(|(name, _)| name.clone())
+                    .collect::<Vec<_>>()
+            })
+        })
     };
-    let check_all = {
-        let (base_url, api_key_env) = (base_url.clone(), api_key_env.clone());
-        move |_| tauri::check_all(base_url.clone(), api_key_env.clone())
-    };
-    let key = api_key_env.clone().map(|variable| {
-        let (base_url, api_key_env) = (base_url.clone(), api_key_env.clone());
-        let fetch = move || catalog.fetch(base_url.clone(), api_key_env.clone(), false);
-        view! { <KeyField catalog=catalog variable=variable stored=Callback::new(move |()| fetch()) /> }
-    });
     view! {
-        <div class="sd-card sd-provider">
+        <section class="sd-card sd-provider" aria-label=name.clone()>
             <div class="sd-card-head">
-                <h4>{name}</h4>
-                <code class="sd-url">{base_url.clone()}</code>
-                <button title="List and check its models again" aria-label="Refresh" on:click=refresh>"↻"</button>
-                {local.then(|| view! { <button on:click=check_all>"Check all"</button> })}
+                <h4 data-tip=kind.tip()>{name.clone()}</h4>
+                <code class="sd-url" data-tip="The address this provider's models are reached at.">{base_url.clone()}</code>
+                {(kind == Kind::Added).then(|| view! {
+                    <button class="sd-link" on:click=remove data-tip="Remove this provider and its models.">"Remove provider"</button>
+                })}
             </div>
             {key}
-            <p class="sd-note">
-                {move || {
-                    fetched.get().map(|fetched| match fetched.listing {
-                        Some(listing) if listing.error.is_none() => format!("{} models", listing.models.len()),
-                        _ if fetched.loading => "Loading models…".to_string(),
-                        _ => String::new(),
-                    })
-                }}
-                " "
-                {progress}
-            </p>
-            {move || {
-                fetched
-                    .get()
-                    .and_then(|fetched| fetched.listing?.error)
-                    .map(|error| view! { <p class="sd-field-error">{error}</p> })
-            }}
+            <Show when=move || names.with(|names| !names.is_empty())>
+                <h5 class="sd-label" data-tip="The models from this provider your strategies can use.">"Your models"</h5>
+                <div class="sd-models">
+                    <For each=move || names.get() key=Clone::clone let:name>
+                        <ModelRow editor=editor fetched=fetched name=name />
+                    </For>
+                </div>
+            </Show>
+            <Available editor=editor catalog=catalog provider=provider.clone() fetched=fetched names=names />
+        </section>
+    }
+}
+
+/// The models a provider offers that play and are not added, each with
+/// **Add**, which asks for its name; or why there are none.
+#[component]
+fn Available(
+    editor: Editor,
+    catalog: Catalog,
+    provider: Provider,
+    fetched: Memo<Option<Fetched>>,
+    names: Memo<Vec<String>>,
+) -> impl IntoView {
+    let local = !is_remote(&provider.base_url);
+    let added = Memo::new(move |_| {
+        names.with(|names| {
+            editor.settings.with(|s| {
+                names
+                    .iter()
+                    .filter_map(|name| s.models.get(name).map(|m| m.id.clone()))
+                    .collect::<BTreeSet<_>>()
+            })
+        })
+    });
+    let adding = RwSignal::new(None::<String>);
+    let pending = {
+        let base_url = provider.base_url.clone();
+        move || {
+            catalog
+                .progress
+                .with(|progress| remaining(progress, &base_url))
+        }
+    };
+    let offered = move || {
+        let fetched = fetched.get()?;
+        let listing = fetched.listing?;
+        Some(added.with(|added| {
+            available(&listing, added)
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        }))
+    };
+    let body = move || {
+        let Some(fetched) = fetched.get() else {
+            return ().into_any();
+        };
+        let Some(listing) = fetched.listing else {
+            return view! { <p class="sd-note">"Listing its models…"</p> }.into_any();
+        };
+        if let Some(error) = listing.error {
+            return view! { <p class="sd-field-error">{error}</p> }.into_any();
+        }
+        if listing.models.iter().all(|model| model.hidden) {
+            return if local {
+                view! {
+                    <p class="sd-note" data-tip="The server answered at this address but has no model loaded. Load one and it will appear here once it has been checked.">
+                        "The server is running, but no model is loaded."
+                    </p>
+                }
+                .into_any()
+            } else {
+                view! { <p class="sd-note">"It lists no models."</p> }.into_any()
+            };
+        }
+        let rows = offered().unwrap_or_default();
+        let still = pending().map(|count| view! {
+            <p class="sd-note" data-tip="Checked in the background. Each appears here if it plays.">{format!("Checking {count} more…")}</p>
+        });
+        if rows.is_empty() {
+            let none = if added.with(BTreeSet::is_empty) {
+                "None of its models plays both games yet."
+            } else {
+                "Every model this provider has that plays is already added."
+            };
+            return view! { {still.is_none().then(|| view! { <p class="sd-note">{none}</p> })} {still} }.into_any();
+        }
+        let provider = provider.clone();
+        view! {
+            <h5 class="sd-label" data-tip="Models from this provider that play both games and aren't added yet, most capable first.">"Available"</h5>
+            <div class="sd-models">
+                {rows
+                    .into_iter()
+                    .map(|model| view! { <Offered editor=editor provider=provider.clone() model=model adding=adding /> })
+                    .collect_view()}
+            </div>
+            {still}
+        }
+        .into_any()
+    };
+    view! { {body} }
+}
+
+/// A model a provider offers: its id, its context window and **Add**, or,
+/// once **Add** is pressed, a field for its name.
+#[component]
+fn Offered(
+    editor: Editor,
+    provider: Provider,
+    model: Listed,
+    adding: RwSignal<Option<String>>,
+) -> impl IntoView {
+    let Listed {
+        id, context_window, ..
+    } = model;
+    let field = NodeRef::<html::Input>::new();
+    let problem = RwSignal::new(None::<String>);
+    let confirm = {
+        let id = id.clone();
+        move || {
+            let Some(input) = field.get_untracked() else {
+                return;
+            };
+            let model = ModelSettings {
+                base_url: provider.base_url.clone(),
+                id: id.clone(),
+                api_key_env: provider.api_key_env.clone(),
+                ..ModelSettings::default()
+            };
+            match attempt(editor, |s| s.add_model(&input.value(), model)) {
+                Ok(()) => adding.set(None),
+                Err(why) => problem.set(Some(why)),
+            }
+        }
+    };
+    let opened = {
+        let id = id.clone();
+        move || adding.get().as_deref() == Some(id.as_str())
+    };
+    let open = {
+        let id = id.clone();
+        move |_| {
+            problem.set(None);
+            adding.set(Some(id.clone()));
+        }
+    };
+    // The name field is focused, its text chosen, as it opens.
+    Effect::new(move |_| {
+        if let Some(input) = field.get() {
+            let _ = input.focus();
+            input.select();
+        }
+    });
+    let typed = confirm.clone();
+    let shown_id = id.clone();
+    view! {
+        <Show
+            when=opened
+            fallback=move || view! {
+                <div class="sd-model sd-offered">
+                    <code class="sd-id">{id.clone()}</code>
+                    <span class="sd-note" data-tip="The context window the provider reports.">{format!("{} tokens", grouped(context_window))}</span>
+                    <button on:click=open.clone() data-tip="Make this model available to strategies. You name it next.">"Add"</button>
+                </div>
+            }
+        >
+            <div class="sd-model sd-adding">
+                <code class="sd-id">{shown_id.clone()}</code>
+                <input
+                    type="text"
+                    node_ref=field
+                    spellcheck="false"
+                    autocomplete="off"
+                    aria-label="Name for the new model"
+                    data-tip="Strategies pick the model by this name. It starts as the model id; shorten it if you like."
+                    prop:value=move || adding.get().unwrap_or_default()
+                    on:keydown={
+                        let typed = typed.clone();
+                        move |event| match event.key().as_str() {
+                            "Enter" => typed(),
+                            "Escape" => adding.set(None),
+                            _ => {}
+                        }
+                    }
+                />
+                <button class="sd-primary" on:click={
+                    let confirm = confirm.clone();
+                    move |_| confirm()
+                }>"Add"</button>
+                <button on:click=move |_| adding.set(None)>"Cancel"</button>
+            </div>
+            {move || problem.get().map(|why| view! { <p class="sd-field-error">{why}</p> })}
+        </Show>
+    }
+}
+
+/// A model added: its name, which is edited in place, its id, its context
+/// window, **×**, and, when it no longer plays, a warning naming the
+/// strategies that ask it.
+#[component]
+fn ModelRow(editor: Editor, fetched: Memo<Option<Fetched>>, name: String) -> impl IntoView {
+    let model = {
+        let name = name.clone();
+        Memo::new(move |_| {
+            editor
+                .settings
+                .with(|s| s.models.get(&name).cloned().unwrap_or_default())
+        })
+    };
+    let users = {
+        let name = name.clone();
+        Memo::new(move |_| editor.settings.with(|s| s.users_of_model(&name)))
+    };
+    let errors = {
+        let name = name.clone();
+        Memo::new(move |_| editor.errors.with(|errors| model_errors(errors, &name)))
+    };
+    let listed = Memo::new(move |_| {
+        let id = model.with(|m| m.id.clone());
+        let listing = fetched.get()?.listing?;
+        let window = listing
+            .models
+            .iter()
+            .find(|listed| listed.id == id)
+            .map(|listed| listed.context_window);
+        Some((window, stopped(&listing, &id)))
+    });
+    let figure = move || listed.get().and_then(|(window, _)| window);
+    let problem = RwSignal::new(None::<String>);
+    let renamed = {
+        let name = name.clone();
+        move |event| {
+            let input = event_target::<web_sys::HtmlInputElement>(&event);
+            let wanted = input.value();
+            match attempt(editor, |s| s.rename_model(&name, &wanted)) {
+                Ok(()) => problem.set(None),
+                Err(why) => {
+                    input.set_value(&name);
+                    problem.set(Some(why));
+                }
+            }
+        }
+    };
+    let name_tip = move || {
+        let users = users.get();
+        if users.is_empty() {
+            "The name strategies pick this model by. No strategy uses it yet.".to_string()
+        } else {
+            format!(
+                "The name strategies pick this model by. Used by {}. Renaming updates them.",
+                users.join(", ")
+            )
+        }
+    };
+    let set_window = {
+        let name = name.clone();
+        move |window: Option<u64>| {
+            editor.edit_model(&name, |m| m.context_window = window);
+        }
+    };
+    let typed = {
+        let set_window = set_window.clone();
+        move |event| set_window(typed_tokens(&event_target_value(&event)))
+    };
+    let window_tip = move || {
+        match figure() {
+        Some(tokens) => format!(
+            "How many tokens of the game so far the model is sent. Empty means the provider's figure, {}. A smaller number keeps prompts short and cheap.",
+            grouped(tokens)
+        ),
+        None => "How many tokens of the game so far the model is sent. Empty means the provider's figure. A smaller number keeps prompts short and cheap.".to_string(),
+    }
+    };
+    let removed = name.clone();
+    let remove_tip = move || {
+        if users.with(Vec::is_empty) {
+            "Remove this model."
+        } else {
+            "Remove this model. Strategies that use it will need another."
+        }
+    };
+    view! {
+        <div class="sd-model" class:sd-warned=move || listed.get().is_some_and(|(_, stopped)| stopped)>
+            <input
+                type="text"
+                class="sd-name"
+                id=field_id(&path(&["models", &name]))
+                spellcheck="false"
+                autocomplete="off"
+                aria-label="Model name"
+                data-tip=name_tip
+                value=name.clone()
+                on:change=renamed
+                on:keydown=|event| {
+                    if event.key() == "Enter" {
+                        let _ = event_target::<web_sys::HtmlElement>(&event).blur();
+                    }
+                }
+            />
+            <code class="sd-id" id=field_id(&path(&["models", &name, "id"])) data-tip="The id the provider lists this model under.">
+                {move || model.with(|m| m.id.clone())}
+            </code>
+            <span class="sd-window">
+                <input
+                    type="text"
+                    inputmode="numeric"
+                    id=field_id(&path(&["models", &name, "context_window"]))
+                    aria-label="Context window in tokens"
+                    data-tip=window_tip
+                    placeholder=move || figure().map_or_else(|| "the provider's".to_string(), grouped)
+                    prop:value=move || model.with(|m| m.context_window.map(grouped).unwrap_or_default())
+                    on:change=typed
+                />
+                <span class="sd-note">"tokens"</span>
+                <Show when=move || model.with(|m| m.context_window.is_some())>
+                    <button class="sd-link" data-tip="Go back to the provider's figure." on:click={
+                        let set_window = set_window.clone();
+                        move |_| set_window(None)
+                    }>"Reset"</button>
+                </Show>
+            </span>
+            <button
+                class="sd-remove"
+                aria-label=format!("Remove {name}")
+                data-tip=remove_tip
+                on:click=move |_| {
+                    let removed = removed.clone();
+                    editor.edit(move |s| {
+                        s.models.remove(&removed);
+                    });
+                }
+            >"×"</button>
+            {move || listed.get().is_some_and(|(_, stopped)| stopped).then(|| {
+                let users = users.get();
+                let used = if users.is_empty() { String::new() } else { format!(" Used by {}.", users.join(", ")) };
+                view! {
+                    <p class="sd-warning" data-tip="It failed the check after the last app update, or the provider changed the model behind its id. Games using it will likely fail. Pick another model for its strategies, or remove it.">
+                        {format!("⚠ No longer plays.{used}")}
+                    </p>
+                }
+            })}
+            {move || problem.get().map(|why| view! { <p class="sd-field-error">{why}</p> })}
+            {move || errors.get().into_iter().map(|error| view! { <p class="sd-field-error">{error}</p> }).collect_view()}
         </div>
     }
 }
 
-/// A key variable's status, and a password field to store a key, with
-/// **Save**, and **Remove** when the key is in the keychain. A key is read
-/// from its field when **Save** is pressed, and the field is cleared as
-/// soon as the keychain answers; `stored` hears that it was stored.
+/// A provider's key: where it is, by its variable's name, and how to
+/// store it in the keychain or remove it from there. A key is read from
+/// its field when **Save to keychain** is pressed, and the field is
+/// cleared as soon as the keychain answers; `changed` hears that the key
+/// changed.
 #[component]
-fn KeyField(catalog: Catalog, variable: String, stored: Callback<()>) -> impl IntoView {
+fn KeyField(catalog: Catalog, variable: String, changed: Callback<()>) -> impl IntoView {
     catalog.key_status(variable.clone());
     let status = {
         let variable = variable.clone();
@@ -369,14 +731,18 @@ fn KeyField(catalog: Catalog, variable: String, stored: Callback<()>) -> impl In
     };
     let field = NodeRef::<html::Input>::new();
     let failure = RwSignal::new(None::<String>);
+    let opened = RwSignal::new(false);
     let save = {
         let variable = variable.clone();
         move |_| {
             let Some(input) = field.get_untracked() else {
                 return;
             };
-            let variable = variable.clone();
             let key = input.value();
+            if key.trim().is_empty() {
+                return;
+            }
+            let variable = variable.clone();
             spawn_local(async move {
                 let result = tauri::key_store(variable.clone(), key).await;
                 input.set_value("");
@@ -384,7 +750,8 @@ fn KeyField(catalog: Catalog, variable: String, stored: Callback<()>) -> impl In
                 failure.set(result.err());
                 catalog.key_status(variable);
                 if ok {
-                    stored.run(());
+                    opened.set(false);
+                    changed.run(());
                 }
             });
         }
@@ -394,298 +761,269 @@ fn KeyField(catalog: Catalog, variable: String, stored: Callback<()>) -> impl In
         move |_| {
             let variable = variable.clone();
             spawn_local(async move {
-                failure.set(tauri::key_remove(variable.clone()).await.err());
+                let result = tauri::key_remove(variable.clone()).await;
+                let ok = result.is_ok();
+                failure.set(result.err());
                 catalog.key_status(variable);
+                if ok {
+                    changed.run(());
+                }
             });
         }
     };
+    let chip = {
+        let variable = variable.clone();
+        move || {
+            let status = status.get()?;
+            let (tip, good) = match &status {
+                KeyStatus::InEnvironment => (
+                    "Read from the environment the app started in. A key stored in the keychain would take priority.",
+                    true,
+                ),
+                KeyStatus::InKeychain => (
+                    "Stored, encrypted, in your system keychain. It takes priority over the environment variable, and the app never shows or logs it.",
+                    true,
+                ),
+                KeyStatus::Missing => (
+                    "No key in the keychain or the environment, so this provider's models can't be listed or checked.",
+                    false,
+                ),
+                KeyStatus::Unavailable(_) => ("The system keychain couldn't be asked.", false),
+            };
+            Some(view! {
+                <span class="sd-chip" class:sd-chip-good=good class:sd-chip-bad=!good data-tip=tip>
+                    <code>{variable.clone()}</code>
+                    {format!(" {}", status.told())}
+                </span>
+            })
+        }
+    };
+    let form_shown = move || opened.get() || status.get().is_some_and(|status| !status.is_set());
     view! {
         <div class="sd-key">
-            <code>{variable.clone()}</code>
-            <span class="sd-note">{move || status.get().map(|status| status.told())}</span>
-        </div>
-        <div class="sd-row">
-            <input type="password" node_ref=field autocomplete="off" placeholder="API key" />
-            <button on:click=save>"Save"</button>
+            {chip}
             <Show when=move || status.get() == Some(KeyStatus::InKeychain)>
-                <button on:click=remove.clone()>"Remove"</button>
+                <button class="sd-link" on:click=remove.clone() data-tip="Delete the key from the keychain. The environment variable is used again, if it is set.">"Remove from keychain"</button>
+            </Show>
+            <Show when=move || status.get() == Some(KeyStatus::InEnvironment) && !opened.get()>
+                <button class="sd-link" on:click=move |_| opened.set(true) data-tip="Store a key in the system keychain instead. It takes priority over the environment variable.">"Store a key in the keychain…"</button>
+            </Show>
+            <Show when=form_shown>
+                <input type="password" node_ref=field autocomplete="off" placeholder="Paste an API key" aria-label="API key" data-tip="Saved to the system keychain, never to a file, and never shown again." />
+                <button class="sd-primary" on:click=save.clone() data-tip="Store this key in the keychain. The models are listed and checked again with it.">"Save to keychain"</button>
             </Show>
         </div>
         {move || failure.get().map(|failure| view! { <p class="sd-field-error">{failure}</p> })}
     }
 }
 
-/// A model's card: its provider, base URL and key variable, its id chosen
-/// from the provider's listing, its context window, its probe mark and
-/// **Check**.
+/// **Add provider…**, which opens fields for another OpenAI-compatible
+/// provider's name, base URL and key variable.
 #[component]
-fn ModelCard(
-    editor: Editor,
-    catalog: Catalog,
-    providers: Memo<Vec<Provider>>,
-    name: String,
-) -> impl IntoView {
-    let model = {
-        let name = name.clone();
-        Memo::new(move |_| {
-            editor
-                .settings
-                .with(|s| s.models.get(&name).cloned().unwrap_or_default())
-        })
-    };
-    let key = StoredValue::new(name.clone());
-    let change = move |change: &dyn Fn(&mut ModelSettings)| {
-        editor.edit_model(&key.read_value(), change);
-    };
-    let at = |field: &str| path(&["models", name.as_str(), field]);
-    let fetched = Memo::new(move |_| {
-        let base_url = model.with(|m| m.base_url.clone());
-        catalog
-            .listings
-            .with(|listings| listings.get(&base_url).cloned())
-    });
-    let show_all = RwSignal::new(false);
-    let list_id = format!(
-        "ids-{}",
-        name.replace(|c: char| !c.is_ascii_alphanumeric(), "-")
+fn AddProvider(editor: Editor) -> impl IntoView {
+    let opened = RwSignal::new(false);
+    let problem = RwSignal::new(None::<String>);
+    let (name, base_url, variable) = (
+        NodeRef::<html::Input>::new(),
+        NodeRef::<html::Input>::new(),
+        NodeRef::<html::Input>::new(),
     );
-    let options = move || {
-        let all = show_all.get();
-        fetched
-            .get()
-            .and_then(|fetched| fetched.listing)
-            .map(|listing| offered(&listing, all))
+    let value = |field: NodeRef<html::Input>| {
+        field
+            .get_untracked()
+            .map(|input| input.value())
             .unwrap_or_default()
-            .into_iter()
-            .map(|(id, mark)| view! { <option value=id.clone() label=format!("{mark} {id}")></option> })
-            .collect_view()
     };
-    let provider_value = Signal::derive(move || {
-        let base_url = model.with(|m| m.base_url.clone());
-        providers
-            .with(|providers| provider_at(providers, &base_url).map(|p| p.base_url.clone()))
-            .unwrap_or_default()
-    });
-    let provider_options = Signal::derive(move || {
-        let mut options: Vec<(String, String)> = providers
-            .get()
-            .into_iter()
-            .map(|p| (p.base_url, p.name))
-            .collect();
-        options.push((String::new(), "Other…".to_string()));
-        options
-    });
-    let set_provider = Callback::new(move |base_url: String| {
-        let provider =
-            providers.with_untracked(|providers| provider_at(providers, &base_url).cloned());
-        change(&|m| match &provider {
-            Some(provider) => {
-                m.base_url.clone_from(&provider.base_url);
-                m.api_key_env.clone_from(&provider.api_key_env);
+    let confirm = move |_| {
+        let variable = value(variable).trim().to_string();
+        let provider = Provider {
+            name: value(name),
+            base_url: value(base_url),
+            api_key_env: (!variable.is_empty()).then_some(variable),
+        };
+        match attempt(editor, |s| s.add_provider(provider)) {
+            Ok(()) => {
+                problem.set(None);
+                opened.set(false);
             }
-            None => {
-                m.base_url.clear();
-                m.api_key_env = None;
-            }
-        });
-    });
-    let text = |pick: fn(&ModelSettings) -> String| Signal::derive(move || model.with(pick));
-    let set_text = |write: fn(&mut ModelSettings, String)| {
-        Callback::new(move |value: String| change(&|m| write(m, value.clone())))
-    };
-    let set_id = Callback::new(move |id: String| {
-        let window = fetched.with_untracked(|fetched| {
-            let listing = fetched.as_ref()?.listing.as_ref()?;
-            listing.models.iter().find(|m| m.id == id)?.context_window
-        });
-        change(&|m| {
-            m.id.clone_from(&id);
-            if window.is_some() {
-                m.context_window = window;
-            }
-        });
-    });
-    let window_at = at("context_window");
-    let window_error = editor.error(window_at.clone());
-    let set_window = move |event| {
-        let window = event_target_value(&event).trim().parse::<u64>().ok();
-        change(&|m| m.context_window = window);
-    };
-    let mark = move || {
-        let id = model.with(|m| m.id.clone());
-        fetched
-            .get()
-            .and_then(|fetched| fetched.listing)
-            .and_then(|listing| listing.checks.get(&id).cloned())
-            .map_or_else(
-                || "unchecked".to_string(),
-                |check| format!("{} {}", check.mark(), check.told()),
-            )
-    };
-    let checking = RwSignal::new(false);
-    let check = move |_| {
-        let (base_url, api_key_env, id) =
-            model.with_untracked(|m| (m.base_url.clone(), m.api_key_env.clone(), m.id.clone()));
-        if id.is_empty() {
-            return;
+            Err(why) => problem.set(Some(why)),
         }
-        checking.set(true);
-        spawn_local(async move {
-            let _ = tauri::check_model(base_url, api_key_env, id).await;
-            checking.set(false);
-        });
     };
-    let loading = move || {
-        fetched
-            .get()
-            .is_some_and(|fetched| fetched.loading && fetched.listing.is_none())
-    };
-    let removed = name.clone();
     view! {
-        <div class="sd-card">
-            <div class="sd-card-head">
-                <h4>{name.clone()}</h4>
-                <span class="sd-mark" title="What checking the model found">{mark}</span>
-                <button on:click=check disabled=move || checking.get()>
-                    {move || checking.get().then(|| view! { <span class="sd-spinner"></span> })}
-                    "Check"
-                </button>
-                <button on:click=move |_| {
-                    let removed = removed.clone();
-                    editor.edit(move |s| {
-                        s.models.remove(&removed);
-                    });
-                }>"Remove"</button>
+        <Show
+            when=move || opened.get()
+            fallback=move || view! {
+                <div class="sd-row">
+                    <button on:click=move |_| opened.set(true) data-tip="Add another OpenAI-compatible provider by its address.">"Add provider…"</button>
+                </div>
+            }
+        >
+            <div class="sd-card sd-add-provider">
+                <label class="sd-field">
+                    <span>"Name"</span>
+                    <input type="text" node_ref=name spellcheck="false" placeholder="Provider name" data-tip="What this provider is called in Settings." />
+                </label>
+                <label class="sd-field">
+                    <span>"Base URL"</span>
+                    <input type="text" node_ref=base_url spellcheck="false" placeholder="https://api.example.com/v1" data-tip="The root of an OpenAI-compatible API, ending in /v1." />
+                </label>
+                <label class="sd-field">
+                    <span>"Key variable"</span>
+                    <input type="text" node_ref=variable spellcheck="false" placeholder="EXAMPLE_API_KEY (optional)" data-tip="The environment variable the key is read from, and the name it is stored under in the keychain. Leave it empty if the server needs no key." />
+                </label>
+                <div class="sd-row">
+                    <button class="sd-primary" on:click=confirm>"Add provider"</button>
+                    <button on:click=move |_| {
+                        problem.set(None);
+                        opened.set(false);
+                    }>"Cancel"</button>
+                </div>
+                {move || problem.get().map(|why| view! { <p class="sd-field-error">{why}</p> })}
             </div>
-            <Choice label="Provider" value=provider_value options=provider_options set=set_provider editor=editor at=at("provider") />
-            <TextField label="Base URL" value=text(|m| m.base_url.clone()) set=set_text(|m, v| m.base_url = v) editor=editor at=at("base_url") placeholder="http://localhost:1234/v1" />
-            <TextField label="Key variable" value=text(|m| m.api_key_env.clone().unwrap_or_default()) set=set_text(|m, v| m.api_key_env = (!v.trim().is_empty()).then_some(v)) editor=editor at=at("api_key_env") placeholder="none" />
-            <TextField
-                label="Model id"
-                value=text(|m| m.id.clone())
-                set=set_id
-                editor=editor
-                at=at("id")
-                list=list_id.clone()
-                placeholder=Signal::derive(move || if loading() { "Loading models…".to_string() } else { "Search or type a model id".to_string() })
-            />
-            <datalist id=list_id>{options}</datalist>
-            {move || fetched.get().and_then(|fetched| fetched.listing?.error).map(|error| view! { <p class="sd-field-error">{error}</p> })}
-            <label class="sd-check">
-                <input type="checkbox" prop:checked=move || show_all.get() on:change=move |event| show_all.set(event_target_checked(&event)) />
-                "Show all"
-            </label>
-            <label class="sd-field">
-                <span>"Context window"</span>
-                <input
-                    type="number"
-                    min="1"
-                    id=field_id(&window_at)
-                    placeholder="the provider's"
-                    class:sd-invalid=move || window_error.with(Option::is_some)
-                    prop:value=move || model.with(|m| m.context_window.map(|w| w.to_string()).unwrap_or_default())
-                    on:input=set_window
-                />
-            </label>
-            <Problem error=window_error />
-        </div>
+        </Show>
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use social_deduction_stage::settings::Listed;
 
-    #[test]
-    fn a_base_url_is_listed_once_it_is_whole() {
-        assert!(whole("https://api.openai.com/v1"));
-        assert!(whole("http://localhost:1234/v1/"));
-        assert!(!whole("http://localhost:1234/"));
-        assert!(!whole("localhost:1234/v1"));
-        assert!(!whole(""));
+    /// A provider called `name` at `base_url`.
+    fn provider(name: &str, base_url: &str) -> Provider {
+        Provider {
+            name: name.to_string(),
+            base_url: base_url.to_string(),
+            api_key_env: None,
+        }
     }
 
     #[test]
-    fn a_provider_is_found_by_its_base_url_with_or_without_a_slash() {
-        let providers = [Provider {
-            name: "OpenAI".to_string(),
-            base_url: "https://api.openai.com/v1".to_string(),
-            api_key_env: Some("OPENAI_API_KEY".to_string()),
-        }];
-        assert_eq!(
-            provider_at(&providers, "https://api.openai.com/v1/").map(|p| p.name.as_str()),
-            Some("OpenAI")
-        );
-        assert!(provider_at(&providers, "http://localhost:1234/v1").is_none());
-        let mut settings = AppSettings::default();
-        settings.models.insert(
-            "local".to_string(),
-            ModelSettings {
-                base_url: "http://localhost:9999/v1".to_string(),
-                ..ModelSettings::default()
-            },
-        );
-        settings.models.insert(
-            "remote".to_string(),
-            ModelSettings {
-                base_url: "https://example.com/v1".to_string(),
-                ..ModelSettings::default()
-            },
-        );
-        settings
-            .models
-            .insert("blank".to_string(), ModelSettings::default());
-        let shown = shown_providers(&providers, &settings);
-        let names: Vec<&str> = shown.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "OpenAI",
-                "Local (localhost:9999)",
-                "Other (https://example.com/v1)"
-            ]
-        );
+    fn a_provider_is_hosted_local_or_added() {
+        let openai = provider("OpenAI", "https://api.openai.com/v1");
+        let found = [openai.clone(), Provider::local(1234)];
+        assert_eq!(Kind::of(&openai, &found), Kind::Hosted);
+        assert_eq!(Kind::of(&Provider::local(9999), &found), Kind::Local);
+        let example = provider("Example", "https://api.example.com/v1");
+        assert_eq!(Kind::of(&example, &found), Kind::Added);
+        assert_eq!(Kind::Added.tip(), "A provider you added.");
     }
 
     #[test]
-    fn the_dropdown_offers_models_that_play_unless_it_shows_all() {
-        let listed = |id: &str, hidden| Listed {
-            id: id.to_string(),
-            context_window: None,
-            hidden,
-        };
-        let listing = Listing {
-            models: vec![
-                listed("plays", false),
-                listed("unforced", false),
-                listed("mute", false),
-                listed("unchecked", false),
-                listed("embedding", true),
-            ],
+    fn tokens_are_grouped_by_thousands_and_read_back_without_the_commas() {
+        assert_eq!(grouped(1_047_576), "1,047,576");
+        assert_eq!(grouped(200_000), "200,000");
+        assert_eq!(grouped(4096), "4,096");
+        assert_eq!(grouped(512), "512");
+        assert_eq!(typed_tokens("1,047,576"), Some(1_047_576));
+        assert_eq!(typed_tokens(" 32 768 "), Some(32768));
+        assert_eq!(typed_tokens(""), None);
+        assert_eq!(typed_tokens("lots"), None);
+    }
+
+    /// A listing of `ids`, of which those starting `text-embedding` are
+    /// hidden, with `checks`.
+    fn listing(ids: &[&str], checks: &[(&str, Check)]) -> Listing {
+        Listing {
+            models: ids
+                .iter()
+                .map(|id| Listed {
+                    id: id.to_string(),
+                    context_window: 200_000,
+                    hidden: id.starts_with("text-embedding"),
+                })
+                .collect(),
             error: None,
-            checks: BTreeMap::from([
-                ("plays".to_string(), Check::Plays),
-                ("unforced".to_string(), Check::PlaysUnforced),
-                ("mute".to_string(), Check::DidNotPlay("no".to_string())),
-            ]),
-        };
-        let shown = |all| -> Vec<String> {
-            offered(&listing, all)
-                .into_iter()
-                .map(|(id, mark)| format!("{mark} {id}"))
-                .collect()
-        };
-        assert_eq!(shown(false), ["✓ plays", "~ unforced"]);
-        assert_eq!(
-            shown(true),
-            [
-                "✓ plays",
-                "~ unforced",
-                "✗ mute",
-                "? unchecked",
-                "— embedding"
-            ]
+            checks: checks
+                .iter()
+                .map(|(id, check)| (id.to_string(), check.clone()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn only_models_that_play_and_are_not_added_are_available() {
+        let no = Check::DidNotPlay("no tools".to_string());
+        let listing = listing(
+            &["opus", "sonnet", "haiku", "mute", "new", "text-embedding-3"],
+            &[
+                ("opus", Check::Plays),
+                ("sonnet", Check::PlaysUnforced),
+                ("haiku", Check::Plays),
+                ("mute", no),
+                ("text-embedding-3", Check::Plays),
+            ],
         );
+        let added = BTreeSet::from(["haiku".to_string()]);
+        let ids: Vec<&str> = available(&listing, &added)
+            .into_iter()
+            .map(|model| model.id.as_str())
+            .collect();
+        assert_eq!(ids, ["opus", "sonnet"]);
+        assert!(stopped(&listing, "mute"));
+        assert!(!stopped(&listing, "opus") && !stopped(&listing, "new"));
+    }
+
+    #[test]
+    fn the_status_line_counts_the_models_still_to_check_and_names_their_providers() {
+        let progress = |base_url: &str, checked, total| Progress {
+            base_url: base_url.to_string(),
+            checked,
+            total,
+        };
+        let local = "http://localhost:1234/v1";
+        let openai = "https://api.openai.com/v1";
+        let shown = [Provider::local(1234), provider("OpenAI", openai)];
+        let all = |each: &[Progress]| {
+            each.iter()
+                .map(|p| (p.base_url.clone(), p.clone()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        assert_eq!(checking_line(&all(&[progress(openai, 3, 3)]), &shown), None);
+        assert_eq!(
+            checking_line(&all(&[progress(local, 1, 3)]), &shown).as_deref(),
+            Some("Checking 2 new models on Local (localhost:1234) in the background.")
+        );
+        assert_eq!(
+            checking_line(
+                &all(&[
+                    progress(local, 2, 3),
+                    progress(openai, 0, 2),
+                    progress("http://x/v1", 0, 1)
+                ]),
+                &shown
+            )
+            .as_deref(),
+            Some("Checking 3 new models on Local (localhost:1234) and OpenAI in the background.")
+        );
+        let three = [
+            shown[0].clone(),
+            shown[1].clone(),
+            provider("X", "http://x/v1"),
+        ];
+        assert_eq!(
+            checking_line(
+                &all(&[
+                    progress(local, 2, 3),
+                    progress(openai, 0, 2),
+                    progress("http://x/v1", 0, 1)
+                ]),
+                &three
+            )
+            .as_deref(),
+            Some(
+                "Checking 4 new models on Local (localhost:1234), OpenAI and X in the background."
+            )
+        );
+    }
+
+    #[test]
+    fn a_model_s_errors_are_those_at_any_of_its_fields() {
+        let errors = [
+            FieldError::new(&["models", "gpt", "id"], "needs an id"),
+            FieldError::new(&["models", "gpt", "context_window"], "too small"),
+            FieldError::new(&["models", "gpt-2", "id"], "other"),
+            FieldError::new(&["werewolf", "gpt"], "not a model"),
+        ];
+        assert_eq!(model_errors(&errors, "gpt"), ["needs an id", "too small"]);
     }
 }

@@ -1,30 +1,41 @@
 //! The commands behind the Models tab: the providers, local servers
-//! among them, each provider's listing, and probing its models, as
-//! [`social_deduction::catalog`] does each.
+//! among them, and each provider's listing, as
+//! [`social_deduction::catalog`] gives each, and checking its models.
 //!
-//! Nothing here keeps the window waiting on the network: each command is
-//! async, and probing runs in the background, sending a `probe` event as
-//! each model's probe ends and a `progress` event with it. Listings are
-//! kept for the app's session, and probes in `probes.json` in the app's
-//! data directory.
+//! Models are checked in the background, never at the user's asking: each
+//! listing starts probing the models it holds that have not been probed,
+//! as many at once as [`catalog::at_once`] says, and a local server's only
+//! while no game is playing. The app lists every provider when it starts,
+//! so a first launch, or the first after an update, checks every model.
+//! Each probe sends a `probe` event as it ends and a `progress` event with
+//! it. Probes are kept in `probes.json` in the app's data directory.
 
 use crate::secret::keychain;
+use crate::settings::Store;
 use secrecy::SecretString;
 use social_deduction::catalog::{self, KNOCK, Probes};
+use social_deduction::live::Session;
 use social_deduction::model::spec::Keys;
 use social_deduction::model::{key_variable, local_ports};
 use social_deduction::settings::{Check, Listing, Probe, Progress, Provider, is_remote};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State, async_runtime};
 
-/// The listings fetched this session and the probes kept.
+/// How often probing a local server's models asks whether a game still
+/// plays.
+const WHILE_PLAYING: Duration = Duration::from_secs(2);
+
+/// The latest listing of each provider, the probes kept, and how far
+/// probing each provider has got.
 pub struct Catalog {
     path: PathBuf,
     probes: Mutex<Probes>,
     listings: Mutex<HashMap<String, Listing>>,
     probing: Mutex<HashSet<String>>,
+    progress: Mutex<HashMap<String, Progress>>,
 }
 
 impl Catalog {
@@ -40,6 +51,7 @@ impl Catalog {
             path,
             listings: Mutex::default(),
             probing: Mutex::default(),
+            progress: Mutex::default(),
         })
     }
 
@@ -51,16 +63,24 @@ impl Catalog {
             tracing::warn!("the probes could not be saved: {error}");
         }
     }
+
+    /// Keep `progress`, and send it to the Settings window.
+    fn progressed(&self, app: &AppHandle, progress: &Progress) {
+        let mut all = self.progress.lock().unwrap();
+        all.insert(progress.base_url.clone(), progress.clone());
+        announce(app, "progress", progress);
+    }
 }
 
-/// The key for the provider at `base_url`, read from the variable
-/// `api_key_env` names or the one it is known by: whether one is needed,
-/// and the key, if it is set.
-fn key(base_url: &str, api_key_env: Option<&str>) -> (bool, Option<SecretString>) {
-    match key_variable(base_url, api_key_env) {
-        Some(variable) => (true, keychain().key(variable).ok().flatten()),
-        None => (false, None),
-    }
+/// The variable holding the key for the provider at `base_url`, the one
+/// `api_key_env` names or the one it is known by, if it wants one, and
+/// the key, if it is set.
+fn key(base_url: &str, api_key_env: Option<&str>) -> Option<(String, Option<SecretString>)> {
+    let variable = key_variable(base_url, api_key_env)?;
+    Some((
+        variable.to_string(),
+        keychain().key(variable).ok().flatten(),
+    ))
 }
 
 /// The providers: those known, then a local server on each port that
@@ -70,96 +90,88 @@ pub async fn providers() -> Vec<Provider> {
     catalog::providers(&catalog::discover(local_ports(), KNOCK).await)
 }
 
-/// The models the provider at `base_url` lists, with what probing found
-/// of each, fetched once a session, or again when `refresh` says, which
-/// forgets its probes too. A remote provider whose key is set has its
-/// models probed in the background.
+/// How far probing each provider has got, for a window that opens while
+/// it runs.
+#[tauri::command]
+pub fn checking(catalog: State<'_, Catalog>) -> Vec<Progress> {
+    catalog.progress.lock().unwrap().values().cloned().collect()
+}
+
+/// The models the provider at `base_url` lists now, with what probing
+/// found of each, its probes forgotten first when `forget` says, as when
+/// its key changes. Its models not yet probed are probed in the
+/// background. A provider whose key is not set is not asked.
 #[tauri::command]
 pub async fn listing(
     app: AppHandle,
-    catalog: State<'_, Catalog>,
     base_url: String,
     api_key_env: Option<String>,
-    refresh: bool,
+    forget: bool,
 ) -> Result<Listing, String> {
-    if refresh {
-        catalog.listings.lock().unwrap().remove(&base_url);
+    Ok(list(&app, base_url, api_key_env, forget).await)
+}
+
+/// What [`listing`] gives.
+async fn list(
+    app: &AppHandle,
+    base_url: String,
+    api_key_env: Option<String>,
+    forget: bool,
+) -> Listing {
+    let catalog = app.state::<Catalog>();
+    if forget {
         catalog.change(|probes| probes.clear(&base_url));
     }
-    let kept = catalog.listings.lock().unwrap().get(&base_url).cloned();
-    let (needed, key) = key(&base_url, api_key_env.as_deref());
-    let mut listing = match kept {
-        Some(listing) => listing,
-        None => {
-            let listing = catalog::list(&base_url, key.clone()).await;
-            if listing.error.is_none() {
-                let mut listings = catalog.listings.lock().unwrap();
-                listings.insert(base_url.clone(), listing.clone());
-            }
-            listing
+    let key = match key(&base_url, api_key_env.as_deref()) {
+        Some((variable, None)) => {
+            return Listing {
+                error: Some(format!("Its models are listed once {variable} is set.")),
+                ..Listing::default()
+            };
         }
+        Some((_, key)) => key,
+        None => None,
     };
+    let mut listing = catalog::list(&base_url, key.clone()).await;
+    if listing.error.is_none() {
+        let mut listings = catalog.listings.lock().unwrap();
+        listings.insert(base_url.clone(), listing.clone());
+    }
     listing.checks = catalog.probes.lock().unwrap().of(&base_url);
-    if listing.error.is_none() && is_remote(&base_url) && (!needed || key.is_some()) {
-        start(&app, base_url, key);
+    if listing.error.is_none() {
+        start(app, base_url, key);
     }
-    Ok(listing)
+    listing
 }
 
-/// Probe every model of the provider at `base_url` not probed yet, in the
-/// background, as **Check all** does.
-#[tauri::command]
-pub fn check_all(app: AppHandle, base_url: String, api_key_env: Option<String>) {
-    let (_, key) = key(&base_url, api_key_env.as_deref());
-    start(&app, base_url, key);
-}
-
-/// Probe the model `id` of the provider at `base_url`, as its **Check**
-/// does, and give back what it found, or `None` when the probe could not
-/// be run.
-#[tauri::command]
-pub async fn check_model(
-    app: AppHandle,
-    catalog: State<'_, Catalog>,
-    base_url: String,
-    api_key_env: Option<String>,
-    id: String,
-) -> Result<Option<Check>, String> {
-    let (_, key) = key(&base_url, api_key_env.as_deref());
-    let (url, model) = (base_url.clone(), id.clone());
-    // Probing goes through futures the compiler cannot prove Send, as
-    // preparing a game does.
-    let check = async_runtime::spawn_blocking(move || {
-        async_runtime::block_on(async move { catalog::probe(&url, &model, key).await.ok() })
-    })
-    .await
-    .map_err(|error| error.to_string())?;
-    if let Some(check) = &check {
-        catalog.change(|probes| probes.record(&base_url, &id, check.clone()));
-    }
-    let probe = Probe {
-        base_url,
-        id,
-        check: check.clone(),
-    };
-    announce(&app, "probe", &probe);
-    Ok(check)
+/// List every provider the Settings window shows, in the background, so
+/// that each one's models not yet probed are probed: every model on a
+/// first launch and after an update.
+pub fn check_in_background(app: &AppHandle) {
+    let app = app.clone();
+    async_runtime::spawn(async move {
+        let found = providers().await;
+        let shown = app.state::<Store>().settings().providers_shown(&found);
+        for provider in shown {
+            list(&app, provider.base_url, provider.api_key_env, false).await;
+        }
+    });
 }
 
 /// Probe each model of the provider at `base_url`, asked with `key`, that
 /// its listing holds and that has not been probed, as many at once as
 /// [`catalog::at_once`] says, on a thread of its own, unless it is being
-/// probed already. The probes are kept as they end, and stored once all
-/// have.
+/// probed already. A local server's models wait while a game plays. The
+/// probes are kept as they end, and stored once all have.
 fn start(app: &AppHandle, base_url: String, key: Option<SecretString>) {
     let catalog = app.state::<Catalog>();
     let Some(listing) = catalog.listings.lock().unwrap().get(&base_url).cloned() else {
         return;
     };
-    if !catalog.probing.lock().unwrap().insert(base_url.clone()) {
+    let ids = catalog.probes.lock().unwrap().unprobed(&base_url, &listing);
+    if ids.is_empty() || !catalog.probing.lock().unwrap().insert(base_url.clone()) {
         return;
     }
-    let ids = catalog.probes.lock().unwrap().unprobed(&base_url, &listing);
     let app = app.clone();
     async_runtime::spawn_blocking(move || {
         let catalog = app.state::<Catalog>();
@@ -168,10 +180,17 @@ fn start(app: &AppHandle, base_url: String, key: Option<SecretString>) {
             checked: 0,
             total: ids.len(),
         };
-        announce(&app, "progress", &progress);
+        catalog.progressed(&app, &progress);
+        let local = !is_remote(&base_url);
         let probe = |id: String| {
-            let (url, key) = (base_url.clone(), key.clone());
-            async move { catalog::probe(&url, &id, key).await }
+            let (url, key, app) = (base_url.clone(), key.clone(), app.clone());
+            async move {
+                if local {
+                    let busy = || app.state::<Session>().busy();
+                    catalog::idle(busy, WHILE_PLAYING).await;
+                }
+                catalog::probe(&url, &id, key).await
+            }
         };
         let record = |id: &str, check: Option<Check>| {
             if let Some(check) = &check {
@@ -185,7 +204,7 @@ fn start(app: &AppHandle, base_url: String, key: Option<SecretString>) {
             };
             announce(&app, "probe", &probe);
             progress.checked += 1;
-            announce(&app, "progress", &progress);
+            catalog.progressed(&app, &progress);
         };
         let at_once = catalog::at_once(&base_url);
         async_runtime::block_on(catalog::probe_each(ids, at_once, probe, record));

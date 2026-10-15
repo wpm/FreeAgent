@@ -144,6 +144,11 @@ impl Session {
         Ok(stopped)
     }
 
+    /// Whether a game is being prepared or playing.
+    pub fn busy(&self) -> bool {
+        self.held().busy()
+    }
+
     /// Stop the game being prepared, so that it never starts, or the game
     /// playing.
     pub fn stop(&self) {
@@ -527,11 +532,6 @@ mod tests {
         Ok(prepared(name).await)
     }
 
-    /// Whether `session` has a game being prepared or playing.
-    fn busy(session: &Session) -> bool {
-        session.held().busy()
-    }
-
     #[tokio::test(start_paused = true)]
     async fn a_session_plays_one_game_at_a_time_and_keeps_its_log() {
         let session = Session::default();
@@ -564,7 +564,7 @@ mod tests {
                 ..
             })
         ));
-        assert!(!busy(&session));
+        assert!(!session.busy());
         let (sender, receiver) = unbounded_channel();
         session
             .play(
@@ -589,7 +589,7 @@ mod tests {
         let hanging = std::future::pending();
         let (played, ()) = tokio::join!(session.play(hanging, &games, sending(sender)), async {
             tokio::task::yield_now().await;
-            assert!(busy(&session));
+            assert!(session.busy());
             let error = session
                 .play(std::future::pending(), &games, sending(refused))
                 .await
@@ -601,7 +601,7 @@ mod tests {
         assert!(received(receiver).await.is_empty());
         assert!(!dir.join("games").exists());
         assert!(session.log().is_none());
-        assert!(!busy(&session));
+        assert!(!session.busy());
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -637,7 +637,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "no model");
-        assert!(!busy(&session));
+        assert!(!session.busy());
         fs::write(dir.join("games"), "").unwrap();
         let error = session
             .play(
@@ -651,7 +651,7 @@ mod tests {
             format!("{error:#}").starts_with("The log could not be created: "),
             "{error:#}"
         );
-        assert!(!busy(&session));
+        assert!(!session.busy());
         assert!(session.log().is_none());
         fs::remove_dir_all(dir).unwrap();
     }

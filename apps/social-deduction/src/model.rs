@@ -120,6 +120,9 @@ struct Knowledge {
     /// Words in a model's id that say it does not chat.
     #[serde(default)]
     hide: Vec<String>,
+    /// The families of models, most capable first.
+    #[serde(default)]
+    families: Vec<String>,
 }
 
 /// A provider `src/models.toml` knows.
@@ -178,6 +181,12 @@ pub fn local_ports() -> &'static [u16] {
 pub fn hidden(id: &str) -> bool {
     let id = id.to_lowercase();
     KNOWLEDGE.hide.iter().any(|word| id.contains(word.as_str()))
+}
+
+/// The families of models `src/models.toml` ranks, most capable first,
+/// each the start of its models' ids: `claude-opus`, `gpt-4.1`.
+pub fn families() -> &'static [String] {
+    &KNOWLEDGE.families
 }
 
 /// The headers every request to the provider at `base_url` must carry,
@@ -344,9 +353,11 @@ struct Listing {
     data: Vec<Listed>,
 }
 
-/// One model as a provider lists it: its id, and its context window, in
-/// tokens, when its entry carries one. The window is the first of the
-/// fields `src/models.toml` names that holds a positive whole number.
+/// One model as a provider lists it: its id, its context window, in
+/// tokens, when its entry carries one, and when it was made, when its
+/// entry says. The window is the first of the fields `src/models.toml`
+/// names that holds a positive whole number. When it was made is OpenAI's
+/// `created`, in seconds since 1970, or Anthropic's `created_at`, a date.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(from = "Entry")]
 pub struct Listed {
@@ -354,6 +365,8 @@ pub struct Listed {
     pub id: String,
     /// The model's context window, in tokens, if its entry says.
     pub context_window: Option<u64>,
+    /// When the model was made, in seconds since 1970, if its entry says.
+    pub created: Option<u64>,
 }
 
 /// A model's entry in a [`Listing`], as written.
@@ -373,9 +386,19 @@ impl From<Entry> for Listed {
                 .as_u64()
                 .filter(|&tokens| tokens > 0)
         });
+        let created = entry
+            .fields
+            .get("created")
+            .and_then(serde_json::Value::as_u64)
+            .or_else(|| {
+                let date = entry.fields.get("created_at")?.as_str()?;
+                let made = humantime::parse_rfc3339_weak(date).ok()?;
+                Some(made.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs())
+            });
         Self {
             id: entry.id,
             context_window,
+            created,
         }
     }
 }
@@ -623,6 +646,38 @@ mod tests {
     }
 
     #[test]
+    fn the_file_ranks_model_families_most_capable_first() {
+        let place = |family: &str| families().iter().position(|f| f == family).unwrap();
+        assert!(place("claude-fable") < place("claude-opus"));
+        assert!(place("claude-opus") < place("claude-sonnet"));
+        assert!(place("claude-sonnet") < place("claude-haiku"));
+        assert!(place("gpt-4.1") < place("gpt-4.1-mini"));
+    }
+
+    #[test]
+    fn a_model_s_creation_is_read_from_its_entry_in_seconds_or_as_a_date() {
+        let created = |fields: serde_json::Value| {
+            let mut model = json!({"id": "m"});
+            model
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            entry(model).created
+        };
+        assert_eq!(
+            created(json!({"created": 1_700_000_000})),
+            Some(1_700_000_000)
+        );
+        assert_eq!(
+            created(json!({"created_at": "2025-02-19T00:00:00Z"})),
+            Some(1_739_923_200)
+        );
+        assert_eq!(created(json!({"created_at": "yesterday"})), None);
+        assert_eq!(created(json!({"created": "soon"})), None);
+        assert_eq!(created(json!({})), None);
+    }
+
+    #[test]
     fn the_file_parses_and_knows_at_least_one_provider() {
         assert!(!KNOWLEDGE.providers.is_empty());
     }
@@ -857,6 +912,7 @@ mod tests {
             Listed {
                 id: "qwen2.5-7b-instruct".to_string(),
                 context_window: None,
+                created: None,
             }
         );
         let (base_url, _served) =
@@ -921,6 +977,7 @@ mod tests {
             Listed {
                 id: "b".to_string(),
                 context_window: Some(32768),
+                created: None,
             }
         );
     }
