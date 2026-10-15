@@ -1,5 +1,6 @@
 //! The desktop app's settings, [`AppSettings`]: the models both games
-//! share, and each game's table, phases, strategies and text. The app owns
+//! share, and each game's table, phases, strategies and prompt parts. The
+//! app owns
 //! them. It stores them in `settings.toml` with [`save`] and reads them
 //! back with [`load`], [`validate`]s them field by field, and plays a game
 //! from the configuration [`text`] they make, which is what `social-deduction
@@ -124,7 +125,7 @@ struct Written {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     models: BTreeMap<String, ModelSettings>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    text: BTreeMap<String, String>,
+    prompt_parts: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     strategies: BTreeMap<String, WrittenStrategy>,
     #[serde(default)]
@@ -200,7 +201,7 @@ fn written(app: &AppSettings, game: GameName) -> Written {
             .map(|phase| (phase.key.clone(), phase.limit.clone()))
             .collect(),
         models,
-        text: settings.text.clone(),
+        prompt_parts: settings.prompt_parts.clone(),
         strategies,
         roles,
     }
@@ -317,7 +318,7 @@ fn imported<G: Tabled>(settled: &config::Settings<G>, written: Written) -> Impor
             roles,
             phases,
             strategies,
-            text: written.text,
+            prompt_parts: written.prompt_parts,
         },
         models: written.models,
     }
@@ -416,8 +417,9 @@ pub fn save(app: &AppSettings, dir: &Path) -> io::Result<()> {
 /// be durations that the game's rules allow together. A strategy may not
 /// be named [`RANDOM`], must name a model that exists when it is prompted,
 /// and its prompt must render for every role at the table, naming only
-/// variables and text blocks. The strategy everyone plays and each role's
-/// must exist, and no text block may be named like a variable. Settings
+/// variables and prompt parts. The strategy everyone plays and each role's
+/// must exist, and a prompt part is named by letters, digits and
+/// underscores, and not like a variable. Settings
 /// with none of those wrong settle as the game's rules settle a table,
 /// whose error is the roles'.
 pub fn validate(app: &AppSettings) -> Vec<FieldError> {
@@ -492,7 +494,7 @@ fn game_errors<G: Tabled>(app: &AppSettings, models: &[FieldError]) -> Vec<Field
             settings.roles.iter().any(|r| r.key == key && r.count > 0)
         })
         .collect();
-    let known = variables::<G>(&settings.text);
+    let known = variables::<G>(&settings.prompt_parts);
     for (name, strategy) in &settings.strategies {
         if name == RANDOM {
             let message =
@@ -512,9 +514,13 @@ fn game_errors<G: Tabled>(app: &AppSettings, models: &[FieldError]) -> Vec<Field
             let message = format!("strategy '{name}' names model '{model}', which doesn't exist");
             error(&["strategies", name, "model"], message);
         }
-        if let Some(message) =
-            prompt_error::<G>(name, &strategy.system, &settings.text, &known, &seated)
-        {
+        if let Some(message) = prompt_error::<G>(
+            name,
+            &strategy.system,
+            &settings.prompt_parts,
+            &known,
+            &seated,
+        ) {
             error(&["strategies", name, "system"], message);
         }
     }
@@ -539,10 +545,15 @@ fn game_errors<G: Tabled>(app: &AppSettings, models: &[FieldError]) -> Vec<Field
         }
     }
     let variables = variables::<G>(&BTreeMap::new());
-    for block in settings.text.keys().filter(|key| variables.contains(*key)) {
-        let message =
-            format!("the text block '{block}' is named like a variable, which it can't be");
-        error(&["text", block], message);
+    for part in settings.prompt_parts.keys() {
+        let message = if variables.contains(part) {
+            format!("the prompt part '{part}' is named like a variable, which it can't be")
+        } else if !is_part_name(part) {
+            format!("the prompt part '{part}' needs a name of letters, digits and underscores")
+        } else {
+            continue;
+        };
+        error(&["prompt_parts", part], message);
     }
     let named = settings.models_named();
     let models_fine = !models
@@ -558,33 +569,38 @@ fn game_errors<G: Tabled>(app: &AppSettings, models: &[FieldError]) -> Vec<Field
 }
 
 /// What a prompt of a game of `G` is rendered with for `role`: the seat's
-/// name, the role's variables, and each of `text`.
-fn told<G: Tabled>(text: &BTreeMap<String, String>, role: G::Role) -> Value {
+/// name, the role's variables, and each of `prompt_parts`.
+fn told<G: Tabled>(prompt_parts: &BTreeMap<String, String>, role: G::Role) -> Value {
     merge_maps([
         context! { name => "Player 1" },
         G::variables(role),
-        Value::from(text),
+        Value::from(prompt_parts),
     ])
 }
 
 /// Every name a prompt of a game of `G` may use, for any role, with the
-/// text blocks `text`.
-fn variables<G: Tabled>(text: &BTreeMap<String, String>) -> BTreeSet<String> {
+/// prompt parts `prompt_parts`.
+fn variables<G: Tabled>(prompt_parts: &BTreeMap<String, String>) -> BTreeSet<String> {
     G::roles()
         .into_iter()
-        .flat_map(|role| told::<G>(text, role).try_iter().into_iter().flatten())
+        .flat_map(|role| {
+            told::<G>(prompt_parts, role)
+                .try_iter()
+                .into_iter()
+                .flatten()
+        })
         .filter_map(|key| key.as_str().map(String::from))
         .collect()
 }
 
 /// What is wrong with the prompt template `system` of the strategy `name`
-/// in a game of `G` with the text blocks `text`, rendered for each of
-/// `roles`, if anything is. A name the template uses that is none of
-/// `known`, the variables and text blocks, nor a global, is named.
+/// in a game of `G` with the prompt parts `prompt_parts`, rendered for
+/// each of `roles`, if anything is. A name the template uses that is none
+/// of `known`, the variables and prompt parts, nor a global, is named.
 fn prompt_error<G: Tabled>(
     name: &str,
     system: &str,
-    text: &BTreeMap<String, String>,
+    prompt_parts: &BTreeMap<String, String>,
     known: &BTreeSet<String>,
     roles: &[G::Role],
 ) -> Option<String> {
@@ -606,11 +622,11 @@ fn prompt_error<G: Tabled>(
         .min();
     if let Some(unknown) = unknown {
         return Some(format!(
-            "strategy '{name}' names '{unknown}', which is neither a text block nor a variable"
+            "strategy '{name}' names '{unknown}', which is neither a prompt part nor a variable"
         ));
     }
     roles.iter().find_map(|role| {
-        let error = template.render(told::<G>(text, *role)).err()?;
+        let error = template.render(told::<G>(prompt_parts, *role)).err()?;
         Some(format!(
             "the prompt of strategy '{name}' doesn't render: {error}"
         ))
@@ -941,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_naming_a_missing_text_block_or_that_does_not_render_is_an_error_at_its_prompt() {
+    fn a_prompt_naming_a_missing_prompt_part_or_that_does_not_render_is_an_error_at_its_prompt() {
         let system = |app: &mut AppSettings, text: &str| {
             app.werewolf.strategies.get_mut("everyone").unwrap().system = text.to_string();
         };
@@ -952,7 +968,7 @@ mod tests {
             only_error(&app),
             (
                 at_system.clone(),
-                "strategy 'everyone' names 'rulez', which is neither a text block nor a variable"
+                "strategy 'everyone' names 'rulez', which is neither a prompt part nor a variable"
                     .to_string()
             )
         );
@@ -1011,16 +1027,32 @@ mod tests {
     }
 
     #[test]
-    fn a_text_block_named_like_a_variable_is_an_error_at_the_block() {
+    fn a_prompt_part_named_like_a_variable_is_an_error_at_the_part() {
         let mut app = defaults();
         app.avalon
-            .text
+            .prompt_parts
             .insert("team".to_string(), "Taken.".to_string());
         assert_eq!(
             only_error(&app),
             (
-                path(&["avalon", "text", "team"]),
-                "the text block 'team' is named like a variable, which it can't be".to_string()
+                path(&["avalon", "prompt_parts", "team"]),
+                "the prompt part 'team' is named like a variable, which it can't be".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn a_prompt_part_named_but_by_letters_digits_and_underscores_is_an_error_at_the_part() {
+        let mut app = defaults();
+        app.avalon
+            .prompt_parts
+            .insert("the tone".to_string(), "Calm.".to_string());
+        assert_eq!(
+            only_error(&app),
+            (
+                path(&["avalon", "prompt_parts", "the tone"]),
+                "the prompt part 'the tone' needs a name of letters, digits and underscores"
+                    .to_string()
             )
         );
     }

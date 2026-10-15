@@ -375,8 +375,8 @@ const desktop = {
         { key: 'day_limit', limit: '1m' },
         { key: 'ratify_limit', limit: '20s' },
       ],
-      strategies: { everyone: { policy: 'prompted', model: 'qwen', system: 'You are {{ name }}, a {{ role }}.' } },
-      text: { rules: 'Play well.' },
+      strategies: { everyone: { policy: 'prompted', model: 'qwen', system: '{{ rules }}\nYou are {{ name }}, a {{ role }}.' } },
+      prompt_parts: { rules: 'Play well.' },
     },
     avalon: {
       strategy: 'random',
@@ -388,7 +388,7 @@ const desktop = {
       ],
       phases: [{ key: 'vote_limit', limit: '1m' }],
       strategies: {},
-      text: {},
+      prompt_parts: {},
     },
   },
   errors: [],
@@ -490,11 +490,67 @@ await section('desktop', async () => {
   }
   const players = await settings.$$eval('.sd-stepper input', (inputs) => inputs.map((input) => input.value));
   check(JSON.stringify(players) === JSON.stringify(['2', '3', '1', '1']), `desktop: the Werewolf tab shows each role's count (${players.join(', ')})`);
+  // The tab uses the window's width: players beside phase limits, short
+  // limit fields, strategies two across, and the prompt parts' list beside
+  // their editor.
+  await settings.fill('.sd-adder-strategy input', 'bold');
+  await settings.click('.sd-adder-strategy button');
+  await settings.waitForSelector('.sd-strategy:nth-child(2)');
+  const wide = await settings.evaluate(() => {
+    const box = (selector, index = 0) => document.querySelectorAll(selector)[index].getBoundingClientRect();
+    return {
+      players: box('.sd-top > .sd-box').right <= box('.sd-top > .sd-box', 1).left,
+      limit: box('.sd-limit input').width,
+      strategies: box('.sd-strategy').right <= box('.sd-strategy', 1).left,
+      parts: box('.sd-part-list').right <= box('.sd-part-editor').left,
+      uses: [...document.querySelectorAll('.sd-part')].map((part) => part.textContent),
+      pulled: document.querySelector('.sd-part-head code').textContent,
+    };
+  });
+  check(wide.players && wide.strategies && wide.parts, `desktop: the Werewolf tab lays out side by side (${JSON.stringify(wide)})`);
+  check(wide.limit < 120, `desktop: a phase limit's field is short (${wide.limit}px)`);
+  check(JSON.stringify(wide.uses) === JSON.stringify(['rules1 use']), `desktop: a prompt part shows its uses (${wide.uses})`);
+  check(wide.pulled === '{{ rules }}', `desktop: a prompt part shows how to pull it in (${wide.pulled})`);
+  await settings.fill('.sd-adder-part input', 'the tone');
+  await settings.click('.sd-adder-part button');
+  const refused = await settings.$eval('.sd-adder-part', (adder) => adder.textContent);
+  check(refused.includes('Use letters, digits and underscores'), `desktop: a prompt part's name is letters, digits and underscores (${refused})`);
+  await settings.screenshot({ path: join(shots, 'settings-werewolf-wide.png'), fullPage: true });
+  // Every control on the General, Werewolf and Avalon tabs has help.
+  const unhelped = [];
+  for (const index of [0, 2, 3]) {
+    await settings.click(`.sd-tabs [role="tab"]:nth-child(${index + 1})`);
+    await settings.waitForTimeout(100);
+    unhelped.push(
+      ...(await settings.$$eval('.sd-settings button, .sd-settings input, .sd-settings select, .sd-settings textarea, .sd-settings h2, .sd-settings h3', (elements) =>
+        elements.filter((element) => !element.closest('[data-tip]') && !element.querySelector('[data-tip]')).map((element) => element.outerHTML.slice(0, 80)),
+      )),
+    );
+  }
+  check(unhelped.length === 0, `desktop: everything on General, Werewolf and Avalon has help${unhelped.map((element) => `; ${element}`).join('')}`);
+  await settings.screenshot({ path: join(shots, 'settings-avalon.png'), fullPage: true });
+  // On a narrow window it all falls back to one column.
+  await settings.click('.sd-tabs [role="tab"]:nth-child(3)');
+  await settings.setViewportSize({ width: 520, height: 700 });
+  await settings.waitForTimeout(100);
+  const narrowSettings = await settings.evaluate(() => {
+    const box = (selector, index = 0) => document.querySelectorAll(selector)[index].getBoundingClientRect();
+    const pane = document.querySelector('.sd-settings');
+    return {
+      stacked: box('.sd-top > .sd-box', 1).top >= box('.sd-top > .sd-box').bottom && box('.sd-strategy', 1).top >= box('.sd-strategy').bottom,
+      wide: pane.scrollWidth,
+      window: pane.clientWidth,
+    };
+  });
+  check(narrowSettings.stacked, 'desktop: a narrow Settings window stacks the boxes');
+  check(narrowSettings.wide <= narrowSettings.window, `desktop: a narrow Settings window scrolls only down (${narrowSettings.wide} in ${narrowSettings.window})`);
+  await settings.screenshot({ path: join(shots, 'settings-werewolf-narrow.png'), fullPage: true });
+  await settings.setViewportSize({ width: 760, height: 560 });
   // Typing goes on into a new prompt part and a phase limit, each change
   // stored as it is made.
   await settings.fill('.sd-adder-part input', 'tone');
   await settings.click('.sd-adder-part button');
-  const part = '[id="field-werewolf.text.tone"]';
+  const part = '[id="field-werewolf.prompt_parts.tone"]';
   await settings.click(part);
   await settings.keyboard.type('Speak briefly.', { delay: 30 });
   const typed = await settings.$eval(part, (area) => ({ value: area.value, focused: document.activeElement === area }));

@@ -8,14 +8,13 @@
 //! `settings` event, and a `focus` event, or the hash it opens at, names a
 //! field to show.
 
-use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_rich_chat::RichChatStyle;
 use social_deduction_stage::GameName;
 use social_deduction_stage::settings::{
-    AppSettings, Appearance, FieldError, GameSettings, ModelSettings, Policy, RANDOM, RoleSettings,
-    Snapshot, StrategySettings, game_key, game_title, label,
+    AppSettings, Appearance, FieldError, GameSettings, ModelSettings, RoleSettings, Snapshot,
+    StrategySettings, game_key, game_title,
 };
 use wasm_bindgen::JsCast;
 
@@ -23,8 +22,10 @@ use crate::desktop::set_theme;
 use crate::tauri;
 use crate::tip::Tips;
 
+mod game;
 mod models;
 
+use game::GameTab;
 use models::Models;
 
 /// The tabs, in order.
@@ -357,6 +358,7 @@ fn TextField(
     at: Vec<String>,
     #[prop(optional, into)] placeholder: Signal<String>,
     #[prop(optional, into)] list: Option<String>,
+    #[prop(optional, into)] tip: Option<String>,
 ) -> impl IntoView {
     let error = editor.error(at.clone());
     view! {
@@ -365,6 +367,7 @@ fn TextField(
             <input
                 type="text"
                 id=field_id(&at)
+                data-tip=tip
                 spellcheck="false"
                 autocomplete="off"
                 list=list
@@ -379,7 +382,8 @@ fn TextField(
 }
 
 /// A select among `options`, each a value and its label, over `value`,
-/// which `set` changes, with the error at `at` beneath it.
+/// which `set` changes, with the error at `at` beneath it. A `label` left
+/// empty is not shown, and the select is named by its `tip`.
 #[component]
 fn Choice(
     #[prop(into)] label: String,
@@ -388,6 +392,8 @@ fn Choice(
     set: Callback<String>,
     editor: Editor,
     at: Vec<String>,
+    #[prop(optional, into)] tip: Option<String>,
+    #[prop(optional, into)] label_tip: Option<String>,
 ) -> impl IntoView {
     let error = editor.error(at.clone());
     let choices = move || {
@@ -405,12 +411,16 @@ fn Choice(
             })
             .collect_view()
     };
+    let named = (label.is_empty()).then(|| tip.clone()).flatten();
+    let shown = (!label.is_empty()).then(|| view! { <span data-tip=label_tip>{label}</span> });
     view! {
         <label class="sd-field">
-            <span>{label}</span>
+            {shown}
             <select
                 class="sd-select"
                 id=field_id(&at)
+                aria-label=named
+                data-tip=tip
                 class:sd-invalid=move || error.with(Option::is_some)
                 prop:value=move || value.get()
                 on:change=move |event| set.run(event_target_value(&event))
@@ -419,415 +429,6 @@ fn Choice(
             </select>
         </label>
         <Problem error=error />
-    }
-}
-
-/// A name field and a button that adds a thing of that name with `add`.
-#[component]
-fn Adder(
-    #[prop(into)] label: String,
-    add: Callback<String>,
-    #[prop(optional, into)] class: String,
-) -> impl IntoView {
-    let field = NodeRef::<html::Input>::new();
-    let added = move || {
-        let Some(input) = field.get_untracked() else {
-            return;
-        };
-        let name = input.value().trim().to_string();
-        if !name.is_empty() {
-            input.set_value("");
-            add.run(name);
-        }
-    };
-    view! {
-        <div class=format!("sd-row {class}")>
-            <input
-                type="text"
-                node_ref=field
-                spellcheck="false"
-                placeholder="name"
-                on:keydown=move |event| {
-                    if event.key() == "Enter" {
-                        added();
-                    }
-                }
-            />
-            <button on:click=move |_| added()>{label}</button>
-        </div>
-    }
-}
-
-/// A game's tab: its table, phases, strategies, who plays what, and text
-/// blocks, with **Restore Defaults…**.
-#[component]
-fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
-    let key = game_key(game);
-    let at = move |rest: &[&str]| path(&[&[key], rest].concat());
-    let confirming = RwSignal::new(false);
-    let restore = move |_| {
-        confirming.set(false);
-        spawn_local(async move {
-            if let Ok(defaults) = tauri::game_defaults(game).await {
-                editor.edit(|settings| *settings.game_mut(game) = defaults);
-            }
-        });
-    };
-    let role_keys = editor.game(game, |s| {
-        s.roles
-            .iter()
-            .map(|role| role.key.clone())
-            .collect::<Vec<_>>()
-    });
-    let phase_keys = editor.game(game, |s| {
-        s.phases
-            .iter()
-            .map(|phase| phase.key.clone())
-            .collect::<Vec<_>>()
-    });
-    let strategy_names = editor.game(game, |s| s.strategies.keys().cloned().collect::<Vec<_>>());
-    let block_names = editor.game(game, |s| s.text.keys().cloned().collect::<Vec<_>>());
-    let players = editor.game(game, GameSettings::players);
-    let table_error = editor.error(at(&["roles"]));
-    let strategy_options = Signal::derive(move || {
-        let mut names: Vec<(String, String)> = strategy_names
-            .get()
-            .into_iter()
-            .map(|name| (name.clone(), name))
-            .collect();
-        if !names.iter().any(|(name, _)| name == RANDOM) {
-            names.push((RANDOM.to_string(), RANDOM.to_string()));
-        }
-        names
-    });
-    let model_options = Signal::derive(move || {
-        let mut names: Vec<(String, String)> = vec![(String::new(), "Choose a model".to_string())];
-        editor.settings.with(|s| {
-            names.extend(s.models.keys().map(|name| (name.clone(), name.clone())));
-        });
-        names
-    });
-    let add_strategy = Callback::new(move |name: String| {
-        editor.edit_game(game, |s| {
-            s.strategies.entry(name).or_default();
-        });
-    });
-    let add_block = Callback::new(move |name: String| {
-        editor.edit_game(game, |s| {
-            s.text.entry(name).or_default();
-        });
-    });
-    let everyone = editor.game(game, |s| s.strategy.clone());
-    view! {
-        <div class="sd-tab-head">
-            <h2>{game_title(game)}</h2>
-            <Show
-                when=move || confirming.get()
-                fallback=move || view! { <button on:click=move |_| confirming.set(true)>"Restore Defaults…"</button> }
-            >
-                <div class="sd-confirm" role="alertdialog">
-                    <span>{format!("Replace the {} settings with the defaults? The models stay as they are.", game_title(game))}</span>
-                    <button class="sd-danger" on:click=restore>"Restore"</button>
-                    <button on:click=move |_| confirming.set(false)>"Cancel"</button>
-                </div>
-            </Show>
-        </div>
-        <section class="sd-section">
-            <h3>"Players"</h3>
-            <For each=move || role_keys.get() key=Clone::clone let:role>
-                <RoleCount editor=editor game=game role=role />
-            </For>
-            <p class="sd-note" id=field_id(&at(&["roles"]))>
-                {move || format!("{} players at the table", players.get())}
-            </p>
-            <Problem error=table_error />
-        </section>
-        <section class="sd-section">
-            <h3>"Phase limits"</h3>
-            <For each=move || phase_keys.get() key=Clone::clone let:phase>
-                {
-                    let read = phase.clone();
-                    let value = editor.game(game, move |s| {
-                        s.phases.iter().find(|p| p.key == read).map(|p| p.limit.clone()).unwrap_or_default()
-                    });
-                    let written = phase.clone();
-                    let set = Callback::new(move |limit: String| {
-                        editor.edit_game(game, |s| {
-                            if let Some(phase) = s.phases.iter_mut().find(|p| p.key == written) {
-                                phase.limit = limit;
-                            }
-                        });
-                    });
-                    view! {
-                        <TextField label=label(&phase) value=value set=set editor=editor at=at(&["phases", &phase]) placeholder="45s, 2m" />
-                    }
-                }
-            </For>
-        </section>
-        <section class="sd-section">
-            <h3>"Strategies"</h3>
-            <For each=move || strategy_names.get() key=Clone::clone let:name>
-                <StrategyCard editor=editor game=game name=name models=model_options />
-            </For>
-            <Adder label="Add Strategy" add=add_strategy />
-        </section>
-        <section class="sd-section">
-            <h3>"Who plays what"</h3>
-            <Choice
-                label="Everyone"
-                value=everyone
-                options=strategy_options
-                set=Callback::new(move |name: String| editor.edit_game(game, |s| s.strategy = name))
-                editor=editor
-                at=at(&["strategy"])
-            />
-            <For each=move || role_keys.get() key=Clone::clone let:role>
-                <RoleStrategy editor=editor game=game role=role strategies=strategy_options />
-            </For>
-        </section>
-        <section class="sd-section">
-            <h3>"Text"</h3>
-            <For each=move || block_names.get() key=Clone::clone let:block>
-                <TextBlock editor=editor game=game block=block />
-            </For>
-            <Adder label="Add Text" add=add_block class="sd-adder-part" />
-        </section>
-    }
-}
-
-/// The role `role` of `game` in `editor`, read with `read`, as it
-/// changes.
-fn role_signal<T: Send + Sync + 'static>(
-    editor: Editor,
-    game: GameName,
-    role: String,
-    read: impl Fn(&RoleSettings) -> T + Send + Sync + 'static,
-) -> Signal<Option<T>> {
-    editor.game(game, move |s| {
-        s.roles.iter().find(|r| r.key == role).map(&read)
-    })
-}
-
-/// A role's count, as a stepper.
-#[component]
-fn RoleCount(editor: Editor, game: GameName, role: String) -> impl IntoView {
-    let count = role_signal(editor, game, role.clone(), |r| r.count);
-    let at = path(&[game_key(game), "roles", &role, "count"]);
-    let step = {
-        let role = role.clone();
-        move |by: isize| {
-            let role = role.clone();
-            editor.edit_role(game, &role, |r| r.count = r.count.saturating_add_signed(by));
-        }
-    };
-    let typed = {
-        let role = role.clone();
-        move |event| {
-            let Ok(count) = event_target_value(&event).trim().parse::<usize>() else {
-                return;
-            };
-            editor.edit_role(game, &role, |r| r.count = count);
-        }
-    };
-    let down = step.clone();
-    view! {
-        <div class="sd-field">
-            <span>{label(&role)}</span>
-            <div class="sd-stepper">
-                <button aria-label="Fewer" on:click=move |_| down(-1) disabled=move || count.get() == Some(0)>"−"</button>
-                <input type="number" min="0" id=field_id(&at) prop:value=move || count.get().unwrap_or_default().to_string() on:input=typed />
-                <button aria-label="More" on:click=move |_| step(1)>"+"</button>
-            </div>
-        </div>
-        <Problem error=editor.error(at) />
-    }
-}
-
-/// Which strategy a role's seats play, and how many play each of the
-/// strategies it allots seats to.
-#[component]
-fn RoleStrategy(
-    editor: Editor,
-    game: GameName,
-    role: String,
-    strategies: Signal<Vec<(String, String)>>,
-) -> impl IntoView {
-    let value = role_signal(editor, game, role.clone(), |r| {
-        r.strategy.clone().unwrap_or_default()
-    });
-    let value = Signal::derive(move || value.get().unwrap_or_default());
-    let options = Signal::derive(move || {
-        let mut options = vec![(String::new(), "Everyone's".to_string())];
-        options.extend(strategies.get());
-        options
-    });
-    let allotted = role_signal(editor, game, role.clone(), |r| {
-        r.strategies.clone().into_iter().collect::<Vec<_>>()
-    });
-    let set = {
-        let role = role.clone();
-        Callback::new(move |name: String| {
-            editor.edit_role(game, &role, |r| {
-                r.strategy = (!name.is_empty()).then_some(name)
-            });
-        })
-    };
-    let at = path(&[game_key(game), "roles", &role, "strategy"]);
-    let allotments = {
-        let role = role.clone();
-        move || {
-            allotted
-                .get()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(name, seats)| {
-                    let role = role.clone();
-                    let at = path(&[game_key(game), "roles", &role, "strategies", &name]);
-                    let (written, shown) = (name.clone(), name.clone());
-                    let set = move |event| {
-                        let seats = event_target_value(&event).trim().parse::<usize>().unwrap_or_default();
-                        let name = written.clone();
-                        editor.edit_role(game, &role, |r| {
-                            if seats == 0 {
-                                r.strategies.remove(&name);
-                            } else {
-                                r.strategies.insert(name, seats);
-                            }
-                        });
-                    };
-                    view! {
-                        <label class="sd-field sd-allotted">
-                            <span>{format!("Seats playing {shown}")}</span>
-                            <input type="number" min="0" id=field_id(&at) prop:value=seats.to_string() on:change=set />
-                        </label>
-                        <Problem error=editor.error(at) />
-                    }
-                })
-                .collect_view()
-        }
-    };
-    view! {
-        <Choice label=label(&role) value=value options=options set=set editor=editor at=at />
-        {allotments}
-    }
-}
-
-/// A strategy's card: its policy, and for a prompted one, its model and
-/// system prompt.
-#[component]
-fn StrategyCard(
-    editor: Editor,
-    game: GameName,
-    name: String,
-    models: Signal<Vec<(String, String)>>,
-) -> impl IntoView {
-    let read = |pick: fn(&StrategySettings) -> String| {
-        let name = name.clone();
-        editor.game(game, move |s| {
-            s.strategies.get(&name).map(pick).unwrap_or_default()
-        })
-    };
-    let policy = read(|s| match s.policy {
-        Policy::Prompted => "prompted".to_string(),
-        Policy::Random => "random".to_string(),
-    });
-    let model = read(|s| s.model.clone());
-    let system = read(|s| s.system.clone());
-    let key = StoredValue::new(name.clone());
-    let change = move |change: &dyn Fn(&mut StrategySettings)| {
-        editor.edit_strategy(game, &key.read_value(), change);
-    };
-    let policies = Signal::derive(|| {
-        vec![
-            ("prompted".to_string(), "Prompted".to_string()),
-            ("random".to_string(), "Random".to_string()),
-        ]
-    });
-    let set_policy = Callback::new(move |policy: String| {
-        let policy = if policy == "random" {
-            Policy::Random
-        } else {
-            Policy::Prompted
-        };
-        change(&|s| s.policy = policy);
-    });
-    let set_model = Callback::new(move |model: String| change(&|s| s.model.clone_from(&model)));
-    let at = |rest: &[&str]| path(&[&[game_key(game), "strategies", name.as_str()], rest].concat());
-    let (system_at, model_at, policy_at, name_at) =
-        (at(&["system"]), at(&["model"]), at(&["policy"]), at(&[]));
-    let system_error = editor.error(system_at.clone());
-    let removed = name.clone();
-    let remove = move |_| {
-        let removed = removed.clone();
-        editor.edit(move |settings| {
-            settings.game_mut(game).strategies.remove(&removed);
-        });
-    };
-    view! {
-        <div class="sd-card" id=field_id(&name_at)>
-            <div class="sd-card-head">
-                <h4>{name.clone()}</h4>
-                <button on:click=remove>"Remove"</button>
-            </div>
-            <Problem error=editor.error(name_at.clone()) />
-            <Choice label="Policy" value=policy options=policies set=set_policy editor=editor at=policy_at />
-            <Show when=move || policy.get() == "prompted">
-                <Choice label="Model" value=model options=models set=set_model editor=editor at=model_at.clone() />
-                <label class="sd-field sd-area">
-                    <span>"System prompt"</span>
-                    <textarea
-                        id=field_id(&system_at)
-                        spellcheck="false"
-                        class:sd-invalid=move || system_error.with(Option::is_some)
-                        prop:value=move || system.get()
-                        on:input=move |event| {
-                            let text = event_target_value(&event);
-                            change(&|s| s.system.clone_from(&text));
-                        }
-                    ></textarea>
-                </label>
-                <Problem error=system_error />
-            </Show>
-        </div>
-    }
-}
-
-/// A text block's card.
-#[component]
-fn TextBlock(editor: Editor, game: GameName, block: String) -> impl IntoView {
-    let read = block.clone();
-    let value = editor.game(game, move |s| {
-        s.text.get(&read).cloned().unwrap_or_default()
-    });
-    let at = path(&[game_key(game), "text", &block]);
-    let error = editor.error(at.clone());
-    let (written, removed) = (block.clone(), block.clone());
-    view! {
-        <div class="sd-card">
-            <div class="sd-card-head">
-                <h4>{block.clone()}</h4>
-                <button on:click=move |_| {
-                    let removed = removed.clone();
-                    editor.edit(move |s| {
-                        s.game_mut(game).text.remove(&removed);
-                    });
-                }>"Remove"</button>
-            </div>
-            <textarea
-                class="sd-mono"
-                id=field_id(&at)
-                spellcheck="false"
-                class:sd-invalid=move || error.with(Option::is_some)
-                prop:value=move || value.get()
-                on:input=move |event| {
-                    let (text, written) = (event_target_value(&event), written.clone());
-                    editor.edit(move |s| {
-                        s.game_mut(game).text.insert(written, text);
-                    });
-                }
-            ></textarea>
-            <Problem error=error />
-        </div>
     }
 }
 

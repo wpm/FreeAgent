@@ -570,7 +570,7 @@ mod tests {
                 .collect(),
             models: BTreeMap::from([(MODEL.to_string(), model)]),
             prompts: roles.keys().map(|id| (id.clone(), told(id))).collect(),
-            text: BTreeMap::new(),
+            prompt_parts: BTreeMap::new(),
         }
     }
 

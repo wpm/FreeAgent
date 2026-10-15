@@ -45,7 +45,9 @@ start state. The game last played is chosen at launch.
 
 **Settings…** (⌘, on macOS, **Edit ▸ Preferences…** and Ctrl+, elsewhere)
 opens the Settings window. Every change is stored as it is made and
-applies to the next game. Each field's error shows in red beneath it.
+applies to the next game. Each field's error shows in red beneath it, and
+hovering over anything, or focusing it, shows what it is and what changing
+it does.
 
 - **General**: the folder game logs are saved in, with **Change…** and
   **Show in Finder** (**Show in Explorer** elsewhere), and the
@@ -61,10 +63,13 @@ applies to the next game. Each field's error shows in red beneath it.
   provider's context window fills in when the listing reports one. Each
   provider that needs a key shows where it is and stores or removes it in
   the keychain; storing one lists the provider's models again.
-- **Werewolf** and **Avalon**: the role counts, the phase limits (`45s`,
-  `2m`), the strategies, who plays what, and the text blocks. **Restore
-  Defaults…** brings back the game's example `prompted` configuration,
-  leaving the models as they are.
+- **Werewolf** and **Avalon**: the role counts beside the phase limits
+  (`45s`, `2m`), the strategies two across, who plays what, with **Split
+  seats…** to share a role among strategies, and the prompt parts: named
+  pieces of text a system prompt pulls in with `{{ name }}`, each listed
+  with how many strategies use it. On a narrow window it is one column.
+  **Restore Defaults…** brings back the game's example `prompted`
+  configuration, leaving the models as they are.
 
 When the Settings window opens, the app looks for a local server at
 `http://localhost:<port>/v1` on ports 1234, 11434, 8080 and 8000 (LM

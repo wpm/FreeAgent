@@ -902,6 +902,383 @@ body,
   color: var(--rc-error);
 }
 
+/* A game's tab */
+
+.sd-settings .sd-segments {
+  align-self: flex-start;
+}
+
+.sd-settings .sd-segments button {
+  border: none;
+  border-radius: 0;
+}
+
+.sd-settings .sd-segments button + button {
+  border-left: 1px solid var(--rc-border);
+}
+
+.sd-top {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.sd-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+  padding: 0.75rem 0.9rem 0.9rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.6rem;
+}
+
+.sd-box > h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.sd-box > h3 .sd-note {
+  font-weight: 400;
+}
+
+.sd-box select,
+.sd-box input,
+.sd-box textarea {
+  font-size: 0.85rem;
+}
+
+.sd-roles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11.5rem, 1fr));
+  gap: 0.5rem;
+}
+
+.sd-roles > .sd-field-error {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.sd-role {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.25rem 0.3rem 0.25rem 0.6rem;
+  border: 1px solid var(--rc-border);
+  border-radius: 0.5rem;
+}
+
+.sd-role-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.sd-dot {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+}
+
+.sd-role .sd-stepper input {
+  box-sizing: border-box;
+  width: 2.2rem;
+  text-align: center;
+  padding: 0.15rem 0.1rem;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.sd-role .sd-stepper input::-webkit-inner-spin-button,
+.sd-role .sd-stepper input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.sd-settings .sd-role .sd-stepper button {
+  width: 1.6rem;
+  height: 1.6rem;
+  justify-content: center;
+  padding: 0;
+  border-radius: 0.35rem;
+}
+
+.sd-limits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+}
+
+.sd-limit {
+  display: grid;
+  gap: 0.2rem;
+  align-content: start;
+}
+
+.sd-limit label {
+  color: var(--rc-muted);
+  font-size: 0.8rem;
+}
+
+.sd-limit input {
+  box-sizing: border-box;
+  width: 4.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-limit .sd-field-error {
+  margin: 0;
+  max-width: 12rem;
+}
+
+.sd-strategies {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+  gap: 0.75rem;
+}
+
+.sd-strategy {
+  align-content: start;
+}
+
+.sd-strategy .sd-card-head h4 {
+  flex: 1 1 5rem;
+  overflow-wrap: anywhere;
+}
+
+.sd-strategy .sd-card-head .sd-field {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.sd-strategy .sd-card-head select {
+  max-width: 9rem;
+}
+
+.sd-strategy .sd-card-head .sd-field-error,
+.sd-strategy .sd-card-head .sd-field + .sd-field-error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.sd-strategy textarea {
+  min-height: 9rem;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+.sd-settings .sd-remove {
+  justify-content: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 0.35rem;
+  color: var(--rc-muted);
+  font-size: 1.1rem;
+}
+
+.sd-settings .sd-remove:hover {
+  border-color: var(--rc-border);
+  color: var(--rc-error);
+}
+
+.sd-adder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sd-adder input {
+  flex: 0 1 12rem;
+}
+
+.sd-adder .sd-field-error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.sd-assign {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.5rem 1rem;
+}
+
+.sd-everyone {
+  grid-column: 1 / -1;
+}
+
+.sd-everyone .sd-field > span {
+  flex: 0 0 6.5rem;
+  font-weight: 600;
+}
+
+.sd-everyone .sd-field > select {
+  flex: 0 1 16rem;
+}
+
+.sd-everyone .sd-field + .sd-field-error {
+  margin-left: 7rem;
+}
+
+.sd-assigned {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.sd-assigned-row {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sd-assigned-row .sd-field {
+  min-width: 0;
+}
+
+.sd-assigned-row .sd-field > select {
+  width: 100%;
+}
+
+.sd-assigned-row .sd-field-error {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.sd-settings .sd-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--rc-accent);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.sd-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.8rem;
+  padding-left: 7rem;
+}
+
+.sd-seats {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.sd-seats input {
+  width: 3.2rem;
+}
+
+.sd-parts {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr);
+  min-height: 16rem;
+  margin: 0 -0.9rem -0.9rem;
+  border-top: 1px solid var(--rc-border);
+}
+
+.sd-part-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem;
+  border-right: 1px solid var(--rc-border);
+}
+
+.sd-settings .sd-part {
+  justify-content: space-between;
+  padding: 0.3rem 0.5rem;
+  border: none;
+  border-radius: 0.35rem;
+  background: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  text-align: left;
+}
+
+.sd-settings .sd-part[aria-current="true"] {
+  background: var(--rc-accent);
+  color: var(--rc-accent-fg);
+}
+
+.sd-uses {
+  font-family: var(--rc-font);
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
+
+.sd-part-list .sd-adder {
+  margin-top: 0.5rem;
+}
+
+.sd-part-list .sd-adder input {
+  flex: 1 1 100%;
+}
+
+.sd-part-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.6rem 0.9rem 0.9rem;
+}
+
+.sd-part-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.sd-part-head code {
+  font-weight: 600;
+}
+
+.sd-part-head .sd-note {
+  flex: 1;
+}
+
+.sd-part-editor textarea {
+  flex: 1;
+  min-height: 12rem;
+}
+
+@media (max-width: 680px) {
+  .sd-top,
+  .sd-parts {
+    grid-template-columns: 1fr;
+  }
+
+  .sd-strategies {
+    grid-template-columns: 1fr;
+  }
+
+  .sd-part-list {
+    border-right: none;
+    border-bottom: 1px solid var(--rc-border);
+  }
+
+  .sd-split {
+    padding-left: 0;
+  }
+}
+
 /* Hover and focus help */
 
 .sd-tip {

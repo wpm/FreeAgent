@@ -1,5 +1,6 @@
 //! The desktop app's settings: the folder logs go in, the look, the models
-//! both games share, and each game's table, phases, strategies and text.
+//! both games share, and each game's table, phases, strategies and
+//! prompt parts.
 //! The backend stores them and checks them, and the Settings window edits
 //! them, so they cross between the two as they are. The providers a model
 //! is chosen from, the models each one lists, what probing a model found
@@ -122,6 +123,29 @@ pub fn label(key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Whether `name` can name a prompt part: letters, digits and
+/// underscores, not starting with a digit, so that a template can pull it
+/// in with `{{ name }}`.
+pub fn is_part_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Whether the template `system` pulls in `name` with `{{ name }}`, a
+/// filter after it or not.
+fn pulls_in(system: &str, name: &str) -> bool {
+    system.split("{{").skip(1).any(|after| {
+        let after = after.trim_start_matches(|c: char| c == '-' || c.is_whitespace());
+        let end = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(after.len());
+        &after[..end] == name
+    })
+}
+
 /// `count` and the noun for it, `one` or `many`.
 fn plural(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
@@ -227,8 +251,8 @@ pub struct GameSettings {
     pub phases: Vec<PhaseSettings>,
     /// The strategies, by name, besides [`RANDOM`].
     pub strategies: BTreeMap<String, StrategySettings>,
-    /// Named blocks of text for the prompts to use.
-    pub text: BTreeMap<String, String>,
+    /// Named pieces of text the system prompts pull in with `{{ name }}`.
+    pub prompt_parts: BTreeMap<String, String>,
 }
 
 impl Default for GameSettings {
@@ -239,7 +263,7 @@ impl Default for GameSettings {
             roles: Vec::new(),
             phases: Vec::new(),
             strategies: BTreeMap::new(),
-            text: BTreeMap::new(),
+            prompt_parts: BTreeMap::new(),
         }
     }
 }
@@ -281,6 +305,18 @@ impl GameSettings {
         self.strategies
             .keys()
             .filter_map(|name| self.model_of(name))
+            .collect()
+    }
+
+    /// The names of the prompted strategies whose system prompts pull in
+    /// `part` with `{{ part }}`.
+    pub fn users_of(&self, part: &str) -> Vec<&str> {
+        self.strategies
+            .iter()
+            .filter(|(_, strategy)| {
+                strategy.policy == Policy::Prompted && pulls_in(&strategy.system, part)
+            })
+            .map(|(name, _)| name.as_str())
             .collect()
     }
 
@@ -723,6 +759,39 @@ mod tests {
             Some(FieldError::new(&["models", "gpt", "id"], "Werewolf: no id"))
         );
         assert_eq!(settings.first_error(GameName::Avalon, &errors), None);
+    }
+
+    #[test]
+    fn a_prompt_part_s_name_is_letters_digits_and_underscores() {
+        for name in ["rules", "tone_2", "_aside", "Rules"] {
+            assert!(is_part_name(name), "{name}");
+        }
+        for name in ["", "2nd", "the rules", "tone-2", "règles"] {
+            assert!(!is_part_name(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_prompt_part_is_used_by_the_prompted_strategies_that_pull_it_in() {
+        let mut settings = two_strategies().werewolf;
+        let system = |settings: &mut GameSettings, name: &str, system: &str| {
+            settings.strategies.get_mut(name).unwrap().system = system.to_string();
+        };
+        system(&mut settings, "everyone", "{{ rules }}\nYou are {{name}}.");
+        system(&mut settings, "smart", "{{rules|upper}} {{ ruleset }}");
+        settings.strategies.insert(
+            "dumb".to_string(),
+            StrategySettings {
+                policy: Policy::Random,
+                system: "{{ rules }}".to_string(),
+                ..StrategySettings::default()
+            },
+        );
+        assert_eq!(settings.users_of("rules"), ["everyone", "smart"]);
+        assert_eq!(settings.users_of("ruleset"), ["smart"]);
+        assert_eq!(settings.users_of("name"), ["everyone"]);
+        assert!(settings.users_of("rule").is_empty());
+        assert!(settings.users_of("tone").is_empty());
     }
 
     #[test]

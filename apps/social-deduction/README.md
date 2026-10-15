@@ -109,7 +109,7 @@ ratify_limit = "20s"
 base_url = "http://localhost:1234/v1"
 id = "qwen2.5-7b-instruct"
 
-[text]
+[prompt_parts]
 rules = """Werewolf is a game of hidden roles. …"""
 
 [strategies.cautious]
@@ -160,8 +160,9 @@ Every table may be left out, and a key the file does not know is an error.
   many seats of the role play each strategy.
 - `strategy`, at the top of the file: the strategy every role plays that
   is not allotted otherwise.
-- `[text]`: named blocks of text for the templates to use, so that the rules
-  are written once.
+- `[prompt_parts]`: named pieces of text the templates pull in with
+  `{{ name }}`, so that the rules are written once. A part's name is
+  letters, digits and underscores.
 
 A role's `strategies` table allots its seats first, and the role's own
 `strategy` fills the rest, up to the role's count. These villagers are 2
@@ -220,8 +221,8 @@ strategy = "smart"
 
 A prompted player's system prompt is rendered from its strategy's `system`,
 a [minijinja](https://docs.rs/minijinja) template with the variables `name`,
-the player's seat; `role`, the role it was dealt; and every block in
-`[text]` by its name. A strategy reads differently by role through
+the player's seat; `role`, the role it was dealt; and every part in
+`[prompt_parts]` by its name. A strategy reads differently by role through
 conditionals such as `{% if role == "werewolf" %}`, and players differ by
 playing different strategies. Every seat's prompt is rendered for every
 (role, strategy) pair at the table whose strategy is prompted before the
@@ -421,7 +422,7 @@ told and logged as Werewolf's is.
 
 The configuration file is shaped like Werewolf's: a top-level `game`,
 `"avalon"`, and `strategy`,
-`[models.<name>]`, `[text]`, `[strategies.<name>]` and each role's table,
+`[models.<name>]`, `[prompt_parts]`, `[strategies.<name>]` and each role's table,
 with the same allotments and the same precedence, a setting coming from the
 file, otherwise the code. The roles' tables are
 `[roles.merlin]`, `[roles.percival]`, `[roles.servant]`,
@@ -441,7 +442,7 @@ social-deduction play configs/avalon/random.toml
 
 A prompted strategy may be allotted to any role, beside random ones, with
 one model or several, as in Werewolf. Its template has the variables
-`name`, `role`, `team` and every `[text]` block. `role` is told as a
+`name`, `role`, `team` and every part in `[prompt_parts]`. `role` is told as a
 sentence names it: "Merlin", "Percival", "a loyal servant of Arthur", "the
 Assassin", "Morgana", "Mordred", "Oberon" or "a minion of Mordred"; `team`
 is `good` or `evil`. Each

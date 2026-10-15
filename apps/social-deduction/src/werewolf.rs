@@ -1243,7 +1243,7 @@ pub(crate) mod tests {
                 .collect(),
             models: BTreeMap::new(),
             prompts: BTreeMap::new(),
-            text: BTreeMap::new(),
+            prompt_parts: BTreeMap::new(),
         }
     }
 

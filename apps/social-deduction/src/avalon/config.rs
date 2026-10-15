@@ -28,7 +28,7 @@ use crate::strategy::RoleConfig;
 use serde::Deserialize;
 use std::time::Duration;
 
-/// The variables every template has besides the text blocks.
+/// The variables every template has besides the prompt parts.
 const VARIABLES: [&str; 3] = ["name", "role", "team"];
 
 /// The configuration file, as written.
@@ -143,7 +143,7 @@ impl Config {
             limits,
             lineup,
             models: self.models,
-            text: self.text,
+            prompt_parts: self.prompt_parts,
         })
     }
 }
@@ -252,7 +252,7 @@ policy = "random"
         let prompts = settings.prompts().unwrap();
         let in_play: Vec<&str> = settings.models_in_play().into_keys().collect();
         assert_eq!(in_play, ["qwen"]);
-        let rules = &settings.text["rules"];
+        let rules = &settings.prompt_parts["rules"];
         for said in ["every phase", "speak", "wait"] {
             assert!(rules.contains(said), "{said}: {rules}");
         }
@@ -345,9 +345,9 @@ policy = "random"
     }
 
     #[test]
-    fn a_text_block_named_like_a_variable_is_an_error_naming_it() {
+    fn a_prompt_part_named_like_a_variable_is_an_error_naming_it() {
         for variable in VARIABLES {
-            let file = format!("{STRATEGIES}[text]\n{variable} = \"Taken.\"\n");
+            let file = format!("{STRATEGIES}[prompt_parts]\n{variable} = \"Taken.\"\n");
             let error = parse(&file).unwrap_err();
             assert!(format!("{error:#}").contains(variable), "{error:#}");
         }
@@ -492,7 +492,7 @@ propose_limit = \"30s\"
 vote_limit = \"1m 30s\"
 quest_limit = \"10s\"
 assassinate_limit = \"5s\"
-[text]
+[prompt_parts]
 rules = \"The rules.\"
 [roles.merlin]
 strategy = \"dice\"
@@ -548,7 +548,7 @@ count = 1
                 ]),
                 models: Models::new(),
                 prompts: BTreeMap::new(),
-                text: BTreeMap::from([("rules".to_string(), "The rules.".to_string())]),
+                prompt_parts: BTreeMap::from([("rules".to_string(), "The rules.".to_string())]),
             }
         );
     }

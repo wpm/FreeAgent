@@ -29,7 +29,7 @@ use humantime::format_duration;
 use serde::Deserialize;
 use std::time::Duration;
 
-/// The variables every template has besides the text blocks.
+/// The variables every template has besides the prompt parts.
 const VARIABLES: [&str; 2] = ["name", "role"];
 
 /// The configuration file, as written.
@@ -125,7 +125,7 @@ impl Config {
             },
             lineup,
             models: self.models,
-            text: self.text,
+            prompt_parts: self.prompt_parts,
         })
     }
 }
@@ -242,7 +242,7 @@ system = "{{ name }} the {{ role }}"
             // The rules, where there are any, tell the players the ratify
             // limit, and that by day they may speak, vote, or wait, and
             // withdraw their vote.
-            if let Some(rules) = settings.text.get("rules") {
+            if let Some(rules) = settings.prompt_parts.get("rules") {
                 assert!(!prompts.is_empty(), "{name}");
                 let ratify = format_duration(settings.limits.ratify_limit).to_string();
                 assert!(rules.contains(&ratify), "{name}: {rules}");
@@ -315,9 +315,9 @@ system = "{{ name }} the {{ role }}"
     }
 
     #[test]
-    fn a_text_block_named_like_a_variable_is_an_error_naming_it() {
+    fn a_prompt_part_named_like_a_variable_is_an_error_naming_it() {
         for variable in VARIABLES {
-            let file = format!("{PLAIN}[text]\n{variable} = \"Taken.\"\n");
+            let file = format!("{PLAIN}[prompt_parts]\n{variable} = \"Taken.\"\n");
             let error = parse(&file).unwrap_err();
             assert!(format!("{error:#}").contains(variable), "{error:#}");
         }
@@ -745,7 +745,7 @@ strategy = \"smart\"
 night_limit = \"30s\"
 day_limit = \"1m 30s\"
 ratify_limit = \"10s\"
-[text]
+[prompt_parts]
 rules = \"The rules.\"
 [roles.werewolf]
 strategy = \"bold\"
@@ -838,7 +838,7 @@ count = 1
                         "The rules. Player 3 the seer".to_string()
                     ),
                 ]),
-                text: BTreeMap::from([("rules".to_string(), "The rules.".to_string())]),
+                prompt_parts: BTreeMap::from([("rules".to_string(), "The rules.".to_string())]),
             }
         );
     }
