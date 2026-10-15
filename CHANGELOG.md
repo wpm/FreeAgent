@@ -179,6 +179,13 @@ workflow takes a version's notes from here.
 
 ### Changed
 
+- A Werewolf phase closes before it ends, so no speech is cut off: the
+  environment fixes the outcome, tells every living player the phase is
+  `Closing`, and waits for each one's `Closed` before it logs the outcome
+  and announces the next phase. A prompted player sends the speech of the
+  model call it had in flight, withholds the call's choices, and starts no
+  new call while the phase closes. The console tells "Day 1 is closing."
+  Avalon's phases end as before.
 - Each game's narrator tells its story in lines that say what they are:
   a phase heading, a player's vote or selection, a player's utterance with
   who spoke, a blank line, or anything else told. The console prints them

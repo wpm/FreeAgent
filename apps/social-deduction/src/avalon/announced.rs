@@ -22,6 +22,8 @@ use crate::game::Tagged;
 use std::collections::HashMap;
 
 impl Announced for Avalon {
+    /// A phase ends at once: talk belongs to the game, not the phase.
+    const CLOSES: bool = false;
     type State = State;
     type Underway = Awaited<Choice>;
 

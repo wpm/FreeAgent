@@ -544,6 +544,10 @@ enum Sending {
 }
 
 impl crate::prompted::Sending<Avalon> for Sending {
+    fn speaks(&self) -> bool {
+        matches!(self, Sending::Say(_))
+    }
+
     /// The message `from` sends for this in the phase numbered `seq`,
     /// numbered `n`.
     fn message(self, seq: u64, from: &PlayerId, n: u64) -> Message {
