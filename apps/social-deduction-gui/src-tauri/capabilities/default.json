@@ -1,12 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The viewer's window: core APIs, the game's commands, file dialogs for configurations, and opening links in the system browser.",
-  "windows": ["main"],
+  "description": "The main and Settings windows: core APIs, events, the app's commands, and opening links in the system browser.",
+  "windows": ["main", "settings"],
   "permissions": [
     "core:default",
-    "dialog:allow-open",
-    "dialog:allow-save",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://*" }, { "url": "http://*" }, { "url": "mailto:*" }]

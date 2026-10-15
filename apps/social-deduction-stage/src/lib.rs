@@ -5,11 +5,11 @@
 //! [`Cue`]s, and the frontend draws each one as it arrives. These types are
 //! everything that crosses between the two, and they depend on serde alone,
 //! so the frontend builds them for `wasm32-unknown-unknown`. The desktop
-//! app's settings screen crosses the same way, as a [`form`].
+//! app's [`settings`] cross the same way.
 
 #![warn(missing_docs)]
 
-pub mod form;
+pub mod settings;
 
 use std::fmt;
 

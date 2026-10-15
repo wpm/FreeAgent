@@ -16,11 +16,12 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
 use crate::address::{Address, GAMES};
-use crate::desktop::Desktop;
+use crate::desktop::{Desktop, set_theme};
 use crate::screen::{
     self, Board, Body, Landed, NARRATOR, Post, Screen, THINKING_DELAY, Thinker, Timer, dots_due,
     entry, role_key,
 };
+use crate::settings::SettingsWindow;
 use crate::tauri;
 
 /// How often a replay shows the next cue.
@@ -35,11 +36,14 @@ const TICK: Duration = Duration::from_millis(100);
 /// The commit the page was built from, when the build names one.
 const COMMIT: Option<&str> = option_env!("GITHUB_SHA");
 
-/// The viewer: the desktop app's inside the desktop app, and the web
-/// page's in a browser.
+/// The viewer: the desktop app's inside the desktop app, its Settings
+/// window at `#settings`, and the web page's in a browser.
 #[component]
 pub fn App() -> impl IntoView {
-    if tauri::in_tauri() {
+    let hash = window().location().hash().unwrap_or_default();
+    if tauri::in_tauri() && hash.starts_with("#settings") {
+        view! { <SettingsWindow /> }.into_any()
+    } else if tauri::in_tauri() {
         view! { <Desktop /> }.into_any()
     } else {
         view! { <Web /> }.into_any()
@@ -213,12 +217,14 @@ impl Live {
 /// The game on `live`'s screen: a header with the game, its phase and
 /// clock, its outcome and the `children`, which control it, then the chat
 /// beside the board, and the footer. A `failure` shows above the chat,
-/// and a link goes to `on_link` when there is one.
+/// and a link goes to `on_link` when there is one. The page takes the
+/// game's theme, unless the `appearance` holds it to one.
 #[component]
 pub(crate) fn Viewer(
     live: Live,
     #[prop(optional, into)] failure: Signal<Option<String>>,
     #[prop(optional)] on_link: Option<Callback<String>>,
+    #[prop(optional, into)] appearance: Signal<Option<&'static str>>,
     children: Children,
 ) -> impl IntoView {
     let screen = live.screen;
@@ -233,15 +239,8 @@ pub(crate) fn Viewer(
         screen.with(|screen| screen.clock.now(waited))
     }));
 
-    let theme = Memo::new(move |_| screen.with(Screen::theme));
-    Effect::new(move |_| {
-        if let Some(root) = document().document_element() {
-            let _ = match theme.get() {
-                Some(theme) => root.set_attribute("data-theme", theme),
-                None => root.remove_attribute("data-theme"),
-            };
-        }
-    });
+    let theme = Memo::new(move |_| appearance.get().or_else(|| screen.with(Screen::theme)));
+    Effect::new(move |_| set_theme(theme.get()));
 
     let options = RenderOptions {
         math: false,

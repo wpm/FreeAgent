@@ -4,11 +4,13 @@
 //! JSON.
 
 use leptos::task::spawn_local;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
-use social_deduction_stage::Cue;
-use social_deduction_stage::form::{Check, FormView, KeyStatus, Value};
+use social_deduction_stage::settings::{
+    AppSettings, FieldError, GameSettings, KeyStatus, Listing, Progress, Provider, Snapshot,
+};
+use social_deduction_stage::{Cue, GameName};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -26,6 +28,22 @@ extern "C" {
 
     #[wasm_bindgen(method, setter)]
     fn set_onmessage(this: &Channel, handler: &js_sys::Function);
+
+    /// The window the page is in.
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "webviewWindow"])]
+    type WebviewWindow;
+
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "webviewWindow"], js_name = getCurrentWebviewWindow)]
+    fn current_window() -> WebviewWindow;
+
+    /// `handler` hears each `event` sent to this window or to every
+    /// window.
+    #[wasm_bindgen(catch, method, js_name = listen)]
+    async fn listen_to(
+        this: &WebviewWindow,
+        event: &str,
+        handler: &js_sys::Function,
+    ) -> Result<JsValue, JsValue>;
 }
 
 /// Whether the page is inside the desktop app.
@@ -35,15 +53,6 @@ pub fn in_tauri() -> bool {
             js_sys::Reflect::has(&window, &JsValue::from_str("__TAURI__")).unwrap_or(false)
         })
         .unwrap_or(false)
-}
-
-/// An example configuration to play.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Preset {
-    /// Where it is among the examples: `werewolf/random`.
-    pub name: String,
-    /// The configuration file's text.
-    pub text: String,
 }
 
 /// Where a game's cues arrive: a channel, and what is done with each cue
@@ -85,16 +94,6 @@ fn error(error: JsValue) -> String {
     error.as_string().unwrap_or_else(|| format!("{error:?}"))
 }
 
-/// The example configurations.
-///
-/// # Errors
-///
-/// When the backend cannot be reached.
-pub async fn presets() -> Result<Vec<Preset>, String> {
-    let presets = invoke("presets", object(&[])).await.map_err(error)?;
-    serde_wasm_bindgen::from_value(presets).map_err(|error| error.to_string())
-}
-
 /// The command `cmd`'s answer to `args`, a JSON object.
 ///
 /// # Errors
@@ -108,92 +107,90 @@ async fn call<T: DeserializeOwned>(cmd: &str, args: serde_json::Value) -> Result
     serde_wasm_bindgen::from_value(answer).map_err(|error| error.to_string())
 }
 
-/// The configuration being edited, as the form shows it.
+/// The settings, what is wrong with them, and where logs go.
 ///
 /// # Errors
 ///
 /// When the backend cannot be reached.
-pub async fn document_view() -> Result<FormView, String> {
-    call("document_view", json!({})).await
+pub async fn settings_get() -> Result<Snapshot, String> {
+    call("settings_get", json!({})).await
 }
 
-/// Set the key at `path` to `value`, and the form after.
-///
-/// # Errors
-///
-/// When the edit names no key, or passes through a value.
-pub async fn document_set(path: Vec<String>, value: Value) -> Result<FormView, String> {
-    call("document_set", json!({ "path": path, "value": value })).await
-}
-
-/// The configuration's text.
+/// Make the settings `settings`, and what is wrong with them.
 ///
 /// # Errors
 ///
 /// When the backend cannot be reached.
-pub async fn document_text() -> Result<String, String> {
-    call("document_text", json!({})).await
+pub async fn settings_set(settings: &AppSettings) -> Result<Vec<FieldError>, String> {
+    call("settings_set", json!({ "settings": settings })).await
 }
 
-/// Replace the configuration with `text`, and the form after.
+/// Open the Settings window at the field `path`, or as it was.
+pub fn settings_open(path: Option<Vec<String>>) {
+    background("settings_open", json!({ "path": path }));
+}
+
+/// Choose `game` to play.
+pub fn game_choose(game: GameName) {
+    background("game_choose", json!({ "game": game }));
+}
+
+/// The settings `game` starts from.
 ///
 /// # Errors
 ///
-/// When `text` is not TOML, in the parser's words.
-pub async fn document_replace(text: String) -> Result<FormView, String> {
-    call("document_replace", json!({ "text": text })).await
+/// When the backend cannot be reached.
+pub async fn game_defaults(game: GameName) -> Result<GameSettings, String> {
+    call("game_defaults", json!({ "game": game })).await
 }
 
-/// Open the preset `name`, and the form after.
+/// Choose the folder logs are saved in, and the snapshot after, if one
+/// was chosen.
 ///
 /// # Errors
 ///
-/// When there is no such preset.
-pub async fn load_preset(name: String) -> Result<FormView, String> {
-    call("load_preset", json!({ "name": name })).await
+/// When the backend cannot be reached.
+pub async fn logs_choose() -> Result<Option<Snapshot>, String> {
+    call("logs_choose", json!({})).await
 }
 
-/// The filters the file dialogs show: configuration files.
-fn toml_filters() -> serde_json::Value {
-    json!([{ "name": "Configuration", "extensions": ["toml"] }])
+/// Reveal the folder logs are saved in.
+pub fn logs_reveal() {
+    background("logs_reveal", json!({}));
 }
 
-/// Open a configuration file the user picks, and the form after, or
-/// `None` when they pick none.
+/// The providers, local servers that answer among them.
 ///
 /// # Errors
 ///
-/// When the file cannot be read or is not TOML.
-pub async fn open_file() -> Result<Option<FormView>, String> {
-    let options = json!({ "options": { "filters": toml_filters() } });
-    let Some(path) = call::<Option<String>>("plugin:dialog|open", options).await? else {
-        return Ok(None);
-    };
-    call("open", json!({ "path": path })).await.map(Some)
+/// When the backend cannot be reached.
+pub async fn providers() -> Result<Vec<Provider>, String> {
+    call("providers", json!({})).await
 }
 
-/// Save the configuration to a file the user picks. Whether they picked
-/// one.
+/// The models the provider at `base_url` lists now, with what probing
+/// found of each, its probes forgotten first when `forget` says. Its
+/// models not yet probed are probed in the background.
 ///
 /// # Errors
 ///
-/// When the file cannot be written.
-pub async fn save_file() -> Result<bool, String> {
-    let options = json!({ "options": { "filters": toml_filters() } });
-    let Some(path) = call::<Option<String>>("plugin:dialog|save", options).await? else {
-        return Ok(false);
-    };
-    call::<()>("save", json!({ "path": path })).await?;
-    Ok(true)
+/// When the backend cannot be reached.
+pub async fn listing(
+    base_url: String,
+    api_key_env: Option<String>,
+    forget: bool,
+) -> Result<Listing, String> {
+    let args = json!({ "baseUrl": base_url, "apiKeyEnv": api_key_env, "forget": forget });
+    call("listing", args).await
 }
 
-/// Ask the model `name` to play.
+/// How far probing each provider has got.
 ///
 /// # Errors
 ///
-/// When it could not be asked.
-pub async fn model_check(name: String) -> Result<Check, String> {
-    call("model_check", json!({ "name": name })).await
+/// When the backend cannot be reached.
+pub async fn checking() -> Result<Vec<Progress>, String> {
+    call("checking", json!({})).await
 }
 
 /// Store `key` in the keychain for `variable`.
@@ -223,14 +220,15 @@ pub async fn key_status(variable: String) -> Result<KeyStatus, String> {
     call("key_status", json!({ "variable": variable })).await
 }
 
-/// Play the game the configuration `text` describes, its cues sent to
-/// `cues`. It returns once the game has started.
+/// Play a game of `game` under the settings, its cues sent to `cues`. It
+/// returns once the game has started.
 ///
 /// # Errors
 ///
 /// Why the game could not start, in full.
-pub async fn play(text: &str, cues: &Cues) -> Result<(), String> {
-    let args = object(&[("text", &text.into()), ("cues", &cues.channel)]);
+pub async fn play(game: GameName, cues: &Cues) -> Result<(), String> {
+    let game = serde_wasm_bindgen::to_value(&game).map_err(|error| error.to_string())?;
+    let args = object(&[("game", &game), ("cues", &cues.channel)]);
     invoke("play", args).await.map(drop).map_err(error)
 }
 
@@ -247,6 +245,37 @@ pub fn show_log() {
 /// Open `url` in the system browser.
 pub fn open_url(url: String) {
     command("plugin:opener|open_url", object(&[("url", &url.into())]));
+}
+
+/// Run the command `cmd` with the JSON `args`, in the background, and log
+/// its error if it fails.
+fn background(cmd: &'static str, args: serde_json::Value) {
+    match args.serialize(&serde_wasm_bindgen::Serializer::json_compatible()) {
+        Ok(args) => command(cmd, args),
+        Err(failure) => web_sys::console::error_1(&format!("{cmd}: {failure}").into()),
+    }
+}
+
+/// Have `handle` hear each `event` the backend sends to this window or to
+/// every window, its payload as JSON, for as long as the page is open.
+/// What it sends another window, such as the main window's `settings`,
+/// goes by.
+pub fn listen<T: DeserializeOwned>(event: &'static str, mut handle: impl FnMut(T) + 'static) {
+    let handler = Closure::<dyn FnMut(JsValue)>::new(move |received: JsValue| {
+        let payload =
+            js_sys::Reflect::get(&received, &JsValue::from_str("payload")).unwrap_or(JsValue::NULL);
+        match serde_wasm_bindgen::from_value(payload) {
+            Ok(payload) => handle(payload),
+            Err(failure) => web_sys::console::error_1(&format!("{event}: {failure}").into()),
+        }
+    });
+    // Kept for as long as the page is open.
+    let handler: js_sys::Function = handler.into_js_value().unchecked_into();
+    spawn_local(async move {
+        if let Err(failure) = current_window().listen_to(event, &handler).await {
+            web_sys::console::error_1(&format!("listening to {event}: {}", error(failure)).into());
+        }
+    });
 }
 
 /// Run the command `cmd` with `args`, in the background, and log its error

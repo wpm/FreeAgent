@@ -6,7 +6,40 @@
 # first of them holding a positive whole number is the window.
 context_window_fields = ["max_model_len", "context_length"]
 
-# Providers known, in the order the help lists them. Each has the root of its
+# The ports the desktop app looks for a local server on, at
+# http://localhost:<port>/v1: LM Studio's, Ollama's, llama.cpp's and vLLM's.
+local_ports = [1234, 11434, 8080, 8000]
+
+# Words in a model's id that say it does not chat, such as an embedding or a
+# speech model. The desktop app never asks such a model to play.
+hide = ["embedding", "tts", "whisper", "transcribe", "dall-e", "image", "moderation", "realtime", "audio"]
+
+# Families of models, most capable first, each the start of its models'
+# ids. The desktop app lists a provider's models in this order, newer first
+# within a family, then models with a parameter count in their id, such as
+# `7b`, largest first, then the rest, newest first. A model is of a family
+# when its id is the family's name, or that name, a hyphen and a version or
+# a date: `claude-opus-5-5`, `gpt-4.1-2025-04-14`. A provider's new family
+# goes in here.
+families = [
+    "claude-fable",
+    "claude-opus",
+    "claude-sonnet",
+    "gpt-5",
+    "o3",
+    "gpt-4.1",
+    "claude-haiku",
+    "gpt-5-mini",
+    "o4-mini",
+    "gpt-4o",
+    "gpt-4.1-mini",
+    "gpt-5-nano",
+    "gpt-4o-mini",
+    "gpt-4.1-nano",
+]
+
+# Providers known, in the order the help lists them. Each has the name the
+# desktop app shows, the root of its
 # OpenAI-compatible API, ending in /v1, as a base URL is given on the command
 # line; the environment variable that conventionally holds its API key, if it
 # wants one; the headers every request to it must carry, if any; and the
@@ -16,12 +49,14 @@ context_window_fields = ["max_model_len", "context_length"]
 
 # OpenAI's chat models take 128000 tokens or more.
 [[providers]]
+name = "OpenAI"
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 context_window = 128000
 
 # Anthropic's models take 200000 tokens.
 [[providers]]
+name = "Anthropic"
 base_url = "https://api.anthropic.com/v1"
 api_key_env = "ANTHROPIC_API_KEY"
 headers = { anthropic-version = "2023-06-01" }

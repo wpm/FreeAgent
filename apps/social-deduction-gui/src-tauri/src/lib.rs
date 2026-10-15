@@ -1,17 +1,23 @@
-//! The desktop shell around the viewer: a window that plays a game live.
-//! The frontend edits a configuration through [`settings`], stores API
-//! keys through [`secret`], and calls [`play`](game::play); the game
-//! runs here as `social-deduction play` runs it, its log saved to the app's
-//! data directory and folded into cues sent to the frontend. Closing the
-//! window stops the game, whether it is being prepared or playing. The opener plugin hands links to the system
-//! browser and reveals a game's log, and the dialog plugin picks the files
-//! a configuration is opened from and saved to.
+//! The desktop shell around the viewer: a main window that plays a game
+//! live, and a Settings window. The app owns its settings, in [`settings`];
+//! the Models tab's providers and listings, and the checks run on their
+//! models in the background from launch, are in [`catalog`]; API keys are
+//! stored through [`secret`]; and [`play`](game::play) runs the
+//! chosen game as `social-deduction play` runs it, its log saved and
+//! folded into cues sent to the main window. The [`menu`] opens Settings,
+//! starts a new game, and imports and exports configuration files.
+//! Closing the main window stops the game, whether it is being prepared or
+//! playing, and closes Settings. The opener plugin hands links to the
+//! system browser and reveals folders, and the dialog plugin picks files
+//! and asks before an import.
 
 #![warn(missing_docs)]
 
+pub mod catalog;
 #[cfg(all(target_os = "macos", debug_assertions))]
 mod dev_bundle;
 pub mod game;
+pub mod menu;
 pub mod secret;
 pub mod settings;
 
@@ -33,30 +39,40 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Session::default())
         .setup(|app| {
-            let editing = settings::opened_last(app.handle()).unwrap_or_default();
-            app.manage(editing);
+            let handle = app.handle();
+            app.manage(settings::Store::open(handle)?);
+            app.manage(catalog::Catalog::open(handle)?);
+            catalog::check_in_background(handle);
+            app.set_menu(menu::build(handle)?)?;
             Ok(())
         })
+        .on_menu_event(menu::chosen)
         .invoke_handler(tauri::generate_handler![
-            game::presets,
             game::play,
             game::stop,
             game::show_log,
-            settings::document_view,
-            settings::document_set,
-            settings::document_text,
-            settings::document_replace,
-            settings::open,
-            settings::save,
-            settings::load_preset,
-            settings::model_check,
+            settings::settings_get,
+            settings::settings_set,
+            settings::settings_open,
+            settings::game_choose,
+            settings::game_defaults,
+            settings::logs_choose,
+            settings::logs_reveal,
+            catalog::providers,
+            catalog::listing,
+            catalog::checking,
             secret::key_store,
             secret::key_remove,
             secret::key_status
         ])
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { .. } = event {
+            if window.label() == "main"
+                && let WindowEvent::CloseRequested { .. } = event
+            {
                 window.state::<Session>().stop();
+                if let Some(settings) = window.app_handle().get_webview_window(settings::WINDOW) {
+                    let _ = settings.close();
+                }
             }
         })
         .run(context)

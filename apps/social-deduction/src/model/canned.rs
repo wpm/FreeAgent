@@ -395,6 +395,17 @@ pub fn refusal(model: &str) -> String {
     format!("{model} does not support tools")
 }
 
+/// What OpenAI answers a request with, 429 Too Many Requests, when the
+/// account is out of credits.
+pub const NO_CREDITS: &str = r#"{
+    "error": {
+        "message": "You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+        "type": "insufficient_quota",
+        "param": null,
+        "code": "insufficient_quota"
+    }
+}"#;
+
 /// An error in OpenAI's shape saying `message`.
 fn error(message: &str) -> String {
     serde_json::json!({"error": {"message": message, "type": "invalid_request_error"}}).to_string()

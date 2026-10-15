@@ -1,5 +1,5 @@
 # The least a model-played game needs: one model and one prompted strategy
-# for everyone. The rules live in a text block the prompt pulls in, and the
+# for everyone. The rules live in a prompt part the prompt pulls in, and the
 # prompt tells a werewolf apart from the rest with one conditional. Run it
 # from the root of a release archive, or from apps/social-deduction in a
 # checkout, with
@@ -22,7 +22,7 @@ id = "qwen2.5-7b-instruct-1m"
 # The model's context window in tokens, over what the provider reports.
 # context_window = 32768
 
-[text]
+[prompt_parts]
 rules = """
 Werewolf is a game of hidden roles. A few of the players are secretly
 werewolves; the rest are villagers, among them a doctor and a seer. Play

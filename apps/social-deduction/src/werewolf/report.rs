@@ -2849,7 +2849,7 @@ mod tests {
             allotments: BTreeMap::new(),
             models,
             prompts: BTreeMap::from([(id("wolf"), "You are wolf.".to_string())]),
-            text: BTreeMap::new(),
+            prompt_parts: BTreeMap::new(),
         })))
     }
 

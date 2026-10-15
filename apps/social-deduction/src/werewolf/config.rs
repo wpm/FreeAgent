@@ -29,7 +29,7 @@ use humantime::format_duration;
 use serde::Deserialize;
 use std::time::Duration;
 
-/// The variables every template has besides the text blocks.
+/// The variables every template has besides the prompt parts.
 const VARIABLES: [&str; 2] = ["name", "role"];
 
 /// The configuration file, as written.
@@ -40,6 +40,13 @@ pub type Config = crate::config::Config<Phases, Roles>;
 /// variables.
 pub fn parse(file: &str) -> anyhow::Result<Config> {
     Config::parse(file, &VARIABLES)
+}
+
+/// The configuration `table` holds, as
+/// [`crate::config::Config::from_table`] makes it, with Werewolf's
+/// template variables.
+pub fn from_table(table: toml::Table) -> anyhow::Result<Config> {
+    Config::from_table(table, &VARIABLES)
 }
 
 /// The `[phases]` table: how long each phase waits for the players, and
@@ -101,21 +108,14 @@ pub type Settings = crate::config::Settings<Werewolf>;
 
 impl Config {
     /// The settings that take effect: each limit from the file if given
-    /// there, otherwise from the code; and each role's allotment, as
-    /// [`crate::config::Config::allot`] allots it. A ratify limit longer
-    /// than the day limit is an error naming both, since the day would run
-    /// out before any vote stood.
+    /// there, otherwise from the code, the ratify limit checked as
+    /// [`within_the_day`] checks it; and each role's allotment, as
+    /// [`crate::config::Config::allot`] allots it.
     pub fn settle(self) -> anyhow::Result<Settings> {
         let rules = Rules::default();
         let day_limit = self.phases.day_limit.unwrap_or(rules.day_limit);
         let ratify_limit = self.phases.ratify_limit.unwrap_or(rules.ratify_limit);
-        if ratify_limit > day_limit {
-            bail!(
-                "the ratify limit ({}) is longer than the day limit ({})",
-                format_duration(ratify_limit),
-                format_duration(day_limit)
-            );
-        }
+        within_the_day(day_limit, ratify_limit)?;
         let lineup = self.allot(Table::default().counts(), Roles::get)?;
         Ok(Settings {
             limits: Limits {
@@ -125,9 +125,23 @@ impl Config {
             },
             lineup,
             models: self.models,
-            text: self.text,
+            prompt_parts: self.prompt_parts,
         })
     }
+}
+
+/// Check that votes can stand for `ratify_limit` within a day of
+/// `day_limit`: a ratify limit longer than the day limit is an error naming
+/// both, since the day would run out before any vote stood.
+pub fn within_the_day(day_limit: Duration, ratify_limit: Duration) -> anyhow::Result<()> {
+    if ratify_limit > day_limit {
+        bail!(
+            "the ratify limit ({}) is longer than the day limit ({})",
+            format_duration(ratify_limit),
+            format_duration(day_limit)
+        );
+    }
+    Ok(())
 }
 
 /// The configuration a game ran under.
@@ -228,7 +242,7 @@ system = "{{ name }} the {{ role }}"
             // The rules, where there are any, tell the players the ratify
             // limit, and that by day they may speak, vote, or wait, and
             // withdraw their vote.
-            if let Some(rules) = settings.text.get("rules") {
+            if let Some(rules) = settings.prompt_parts.get("rules") {
                 assert!(!prompts.is_empty(), "{name}");
                 let ratify = format_duration(settings.limits.ratify_limit).to_string();
                 assert!(rules.contains(&ratify), "{name}: {rules}");
@@ -301,9 +315,9 @@ system = "{{ name }} the {{ role }}"
     }
 
     #[test]
-    fn a_text_block_named_like_a_variable_is_an_error_naming_it() {
+    fn a_prompt_part_named_like_a_variable_is_an_error_naming_it() {
         for variable in VARIABLES {
-            let file = format!("{PLAIN}[text]\n{variable} = \"Taken.\"\n");
+            let file = format!("{PLAIN}[prompt_parts]\n{variable} = \"Taken.\"\n");
             let error = parse(&file).unwrap_err();
             assert!(format!("{error:#}").contains(variable), "{error:#}");
         }
@@ -731,7 +745,7 @@ strategy = \"smart\"
 night_limit = \"30s\"
 day_limit = \"1m 30s\"
 ratify_limit = \"10s\"
-[text]
+[prompt_parts]
 rules = \"The rules.\"
 [roles.werewolf]
 strategy = \"bold\"
@@ -824,7 +838,7 @@ count = 1
                         "The rules. Player 3 the seer".to_string()
                     ),
                 ]),
-                text: BTreeMap::from([("rules".to_string(), "The rules.".to_string())]),
+                prompt_parts: BTreeMap::from([("rules".to_string(), "The rules.".to_string())]),
             }
         );
     }
