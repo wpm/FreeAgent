@@ -361,7 +361,9 @@ pub struct GameSettings {
     pub phases: Vec<PhaseSettings>,
     /// The strategies, by name, besides [`RANDOM`].
     pub strategies: BTreeMap<String, StrategySettings>,
-    /// Named pieces of text the system prompts pull in with `{{ name }}`.
+    /// Named pieces of text the system prompts pull in with `{{ name }}`,
+    /// read also from settings stored when they were called `text`.
+    #[serde(alias = "text")]
     pub prompt_parts: BTreeMap<String, String>,
 }
 

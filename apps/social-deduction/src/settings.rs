@@ -719,6 +719,22 @@ mod tests {
     }
 
     #[test]
+    fn prompt_parts_stored_under_their_old_name_text_are_read() {
+        let dir = scratch("text");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(FILE),
+            "[werewolf.text]\nrules = \"Werewolves hunt.\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            load(&dir).werewolf.prompt_parts["rules"],
+            "Werewolves hunt."
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn settings_that_cannot_be_read_are_the_defaults_and_cannot_be_saved_over_a_file() {
         let dir = scratch("unreadable");
         std::fs::create_dir_all(&dir).unwrap();
