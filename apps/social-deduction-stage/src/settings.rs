@@ -75,11 +75,10 @@ impl AppSettings {
         errors: &'a [FieldError],
     ) -> impl Iterator<Item = &'a FieldError> + use<'a> {
         let key = game_key(game);
-        let settings = self.game(game);
-        let models: BTreeSet<String> = settings
-            .strategies
-            .keys()
-            .filter_map(|name| settings.model_of(name))
+        let models: BTreeSet<String> = self
+            .game(game)
+            .models_named()
+            .into_iter()
             .map(String::from)
             .collect();
         errors.iter().filter(move |error| match &error.path[..] {
@@ -88,6 +87,39 @@ impl AppSettings {
             _ => false,
         })
     }
+
+    /// The first error among `errors` that stops a game of `game`, with
+    /// the game's title before it, and where it is.
+    pub fn first_error(&self, game: GameName, errors: &[FieldError]) -> Option<FieldError> {
+        let error = self.errors_of(game, errors).next()?;
+        Some(FieldError {
+            path: error.path.clone(),
+            message: format!("{}: {}", game_title(game), error.message),
+        })
+    }
+}
+
+/// `wanted`, or, when `taken` says it is taken, `wanted-2` or the next
+/// number not taken.
+pub fn unique(wanted: &str, taken: impl Fn(&str) -> bool) -> String {
+    let mut name = wanted.to_string();
+    let mut number = 1;
+    while taken(&name) {
+        number += 1;
+        name = format!("{wanted}-{number}");
+    }
+    name
+}
+
+/// A key as words, the first capitalized: `day_limit` as `Day limit`,
+/// `merlin` as `Merlin`.
+pub fn label(key: &str) -> String {
+    let words = key.replace('_', " ");
+    let mut chars = words.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// `count` and the noun for it, `one` or `many`.
@@ -244,6 +276,14 @@ impl GameSettings {
         names
     }
 
+    /// The names of the models the prompted strategies name.
+    pub fn models_named(&self) -> BTreeSet<&str> {
+        self.strategies
+            .keys()
+            .filter_map(|name| self.model_of(name))
+            .collect()
+    }
+
     /// The name of the model the strategy `name` asks, if it is defined
     /// and prompted.
     pub fn model_of(&self, name: &str) -> Option<&str> {
@@ -346,6 +386,29 @@ pub struct Provider {
     pub base_url: String,
     /// The variable that conventionally holds its API key, if it wants one.
     pub api_key_env: Option<String>,
+}
+
+impl Provider {
+    /// The local server on `port`: `Local (localhost:1234)`, wanting no
+    /// key.
+    pub fn local(port: u16) -> Self {
+        Self {
+            name: format!("Local (localhost:{port})"),
+            base_url: format!("http://localhost:{port}/v1"),
+            api_key_env: None,
+        }
+    }
+
+    /// The port of the local server at `base_url`, if it is one.
+    pub fn local_port(base_url: &str) -> Option<u16> {
+        let rest = base_url.trim().strip_prefix("http://localhost:")?;
+        rest.trim_end_matches('/').strip_suffix("/v1")?.parse().ok()
+    }
+}
+
+/// Whether the provider at `base_url` is remote: reached over `https`.
+pub fn is_remote(base_url: &str) -> bool {
+    base_url.trim_start().starts_with("https://")
 }
 
 /// The models a provider lists, or why it could not list them.
@@ -649,6 +712,48 @@ mod tests {
         );
         assert_eq!(no.told(), "doesn't play: no tools");
         assert!(Check::Plays.plays() && Check::PlaysUnforced.plays() && !no.plays());
+    }
+
+    #[test]
+    fn a_game_s_first_error_is_titled_with_the_game() {
+        let settings = two_strategies();
+        let errors = [FieldError::new(&["models", "gpt", "id"], "no id")];
+        assert_eq!(
+            settings.first_error(GameName::Werewolf, &errors),
+            Some(FieldError::new(&["models", "gpt", "id"], "Werewolf: no id"))
+        );
+        assert_eq!(settings.first_error(GameName::Avalon, &errors), None);
+    }
+
+    #[test]
+    fn a_name_taken_is_numbered() {
+        let taken = ["gpt", "gpt-2"];
+        assert_eq!(unique("gpt", |name| taken.contains(&name)), "gpt-3");
+        assert_eq!(unique("claude", |name| taken.contains(&name)), "claude");
+    }
+
+    #[test]
+    fn a_key_is_labeled_as_words() {
+        assert_eq!(label("day_limit"), "Day limit");
+        assert_eq!(label("merlin"), "Merlin");
+        assert_eq!(label(""), "");
+    }
+
+    #[test]
+    fn a_local_server_is_named_for_its_port_and_known_by_its_base_url() {
+        let local = Provider::local(1234);
+        assert_eq!(local.name, "Local (localhost:1234)");
+        assert_eq!(local.base_url, "http://localhost:1234/v1");
+        assert_eq!(local.api_key_env, None);
+        assert_eq!(
+            Provider::local_port("http://localhost:1234/v1/"),
+            Some(1234)
+        );
+        assert_eq!(Provider::local_port("http://localhost:x/v1"), None);
+        assert_eq!(Provider::local_port("http://localhost:1234"), None);
+        assert_eq!(Provider::local_port("https://api.openai.com/v1"), None);
+        assert!(is_remote(" https://api.openai.com/v1"));
+        assert!(!is_remote("http://localhost:1234/v1"));
     }
 
     #[test]

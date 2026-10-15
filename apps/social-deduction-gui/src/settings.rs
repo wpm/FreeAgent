@@ -17,8 +17,8 @@ use leptos_rich_chat::RichChatStyle;
 use social_deduction_stage::GameName;
 use social_deduction_stage::settings::{
     AppSettings, Appearance, Check, FieldError, GameSettings, KeyStatus, Listing, ModelSettings,
-    PhaseSettings, Policy, Probe, Progress, Provider, RANDOM, RoleSettings, Snapshot,
-    StrategySettings, game_key, game_title,
+    Policy, Probe, Progress, Provider, RANDOM, RoleSettings, Snapshot, StrategySettings, game_key,
+    game_title, is_remote, label, unique,
 };
 use wasm_bindgen::JsCast;
 
@@ -58,8 +58,8 @@ impl Tab {
     pub fn of(path: &[String]) -> Tab {
         match path.first().map(String::as_str) {
             Some("models") => Tab::Models,
-            Some("werewolf") => Tab::Game(GameName::Werewolf),
-            Some("avalon") => Tab::Game(GameName::Avalon),
+            Some(key) if key == game_key(GameName::Werewolf) => Tab::Game(GameName::Werewolf),
+            Some(key) if key == game_key(GameName::Avalon) => Tab::Game(GameName::Avalon),
             _ => Tab::General,
         }
     }
@@ -88,27 +88,6 @@ pub fn error_at(errors: &[FieldError], path: &[String]) -> Option<String> {
         .iter()
         .find(|error| error.is_at(path))
         .map(|error| error.message.clone())
-}
-
-/// A role's or a phase's key as a label: `day_limit` as `Day limit`.
-pub fn label(key: &str) -> String {
-    let words = key.replace('_', " ");
-    let mut chars = words.chars();
-    chars
-        .next()
-        .map(|first| first.to_uppercase().chain(chars).collect())
-        .unwrap_or_default()
-}
-
-/// `wanted`, or, when it is taken, `wanted-2` or the next number free.
-pub fn unique(taken: &BTreeSet<String>, wanted: &str) -> String {
-    let mut name = wanted.to_string();
-    let mut number = 1;
-    while taken.contains(&name) {
-        number += 1;
-        name = format!("{wanted}-{number}");
-    }
-    name
 }
 
 /// The provider of `providers` at `base_url`, if there is one.
@@ -168,6 +147,38 @@ impl Editor {
                 Ok(errors) if self.sent.get_value() == number => self.errors.set(errors),
                 Ok(_) => {}
                 Err(failure) => web_sys::console::error_1(&failure.into()),
+            }
+        });
+    }
+
+    /// Change the settings of `game` with `change`.
+    fn edit_game(self, game: GameName, change: impl FnOnce(&mut GameSettings)) {
+        self.edit(|settings| change(settings.game_mut(game)));
+    }
+
+    /// Change the role `role` of `game` with `change`.
+    fn edit_role(self, game: GameName, role: &str, change: impl FnOnce(&mut RoleSettings)) {
+        self.edit_game(game, |settings| {
+            if let Some(found) = settings.roles.iter_mut().find(|r| r.key == role) {
+                change(found);
+            }
+        });
+    }
+
+    /// Change the strategy `name` of `game` with `change`.
+    fn edit_strategy(self, game: GameName, name: &str, change: impl FnOnce(&mut StrategySettings)) {
+        self.edit_game(game, |settings| {
+            if let Some(strategy) = settings.strategies.get_mut(name) {
+                change(strategy);
+            }
+        });
+    }
+
+    /// Change the model `name` with `change`.
+    fn edit_model(self, name: &str, change: impl FnOnce(&mut ModelSettings)) {
+        self.edit(|settings| {
+            if let Some(model) = settings.models.get_mut(name) {
+                change(model);
             }
         });
     }
@@ -461,9 +472,6 @@ fn Adder(#[prop(into)] label: String, add: Callback<String>) -> impl IntoView {
 fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
     let key = game_key(game);
     let at = move |rest: &[&str]| path(&[&[key], rest].concat());
-    let edit_game = move |change: Box<dyn FnOnce(&mut GameSettings)>| {
-        editor.edit(|settings| change(settings.game_mut(game)));
-    };
     let confirming = RwSignal::new(false);
     let restore = move |_| {
         confirming.set(false);
@@ -508,19 +516,14 @@ fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
         names
     });
     let add_strategy = Callback::new(move |name: String| {
-        edit_game(Box::new(move |s| {
-            s.strategies
-                .entry(name)
-                .or_insert_with(|| StrategySettings {
-                    policy: Policy::Prompted,
-                    ..StrategySettings::default()
-                });
-        }));
+        editor.edit_game(game, |s| {
+            s.strategies.entry(name).or_default();
+        });
     });
     let add_block = Callback::new(move |name: String| {
-        edit_game(Box::new(move |s| {
+        editor.edit_game(game, |s| {
             s.text.entry(name).or_default();
-        }));
+        });
     });
     let everyone = editor.game(game, |s| s.strategy.clone());
     view! {
@@ -557,14 +560,11 @@ fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
                     });
                     let written = phase.clone();
                     let set = Callback::new(move |limit: String| {
-                        let written = written.clone();
-                        edit_game(Box::new(move |s| {
+                        editor.edit_game(game, |s| {
                             if let Some(phase) = s.phases.iter_mut().find(|p| p.key == written) {
                                 phase.limit = limit;
-                            } else {
-                                s.phases.push(PhaseSettings { key: written, limit });
                             }
-                        }));
+                        });
                     });
                     view! {
                         <TextField label=label(&phase) value=value set=set editor=editor at=at(&["phases", &phase]) placeholder="45s, 2m" />
@@ -585,7 +585,7 @@ fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
                 label="Everyone"
                 value=everyone
                 options=strategy_options
-                set=Callback::new(move |name: String| edit_game(Box::new(move |s| s.strategy = name)))
+                set=Callback::new(move |name: String| editor.edit_game(game, |s| s.strategy = name))
                 editor=editor
                 at=at(&["strategy"])
             />
@@ -616,20 +616,6 @@ fn role_signal<T: Send + Sync + 'static>(
     })
 }
 
-/// Change the role `role` of `game` in `editor` with `change`.
-fn edit_role(editor: Editor, game: GameName, role: &str, change: impl FnOnce(&mut RoleSettings)) {
-    editor.edit(|settings| {
-        if let Some(found) = settings
-            .game_mut(game)
-            .roles
-            .iter_mut()
-            .find(|r| r.key == role)
-        {
-            change(found);
-        }
-    });
-}
-
 /// A role's count, as a stepper.
 #[component]
 fn RoleCount(editor: Editor, game: GameName, role: String) -> impl IntoView {
@@ -639,9 +625,7 @@ fn RoleCount(editor: Editor, game: GameName, role: String) -> impl IntoView {
         let role = role.clone();
         move |by: isize| {
             let role = role.clone();
-            edit_role(editor, game, &role, |r| {
-                r.count = r.count.saturating_add_signed(by)
-            });
+            editor.edit_role(game, &role, |r| r.count = r.count.saturating_add_signed(by));
         }
     };
     let typed = {
@@ -650,7 +634,7 @@ fn RoleCount(editor: Editor, game: GameName, role: String) -> impl IntoView {
             let Ok(count) = event_target_value(&event).trim().parse::<usize>() else {
                 return;
             };
-            edit_role(editor, game, &role, |r| r.count = count);
+            editor.edit_role(game, &role, |r| r.count = count);
         }
     };
     let down = step.clone();
@@ -691,7 +675,7 @@ fn RoleStrategy(
     let set = {
         let role = role.clone();
         Callback::new(move |name: String| {
-            edit_role(editor, game, &role, |r| {
+            editor.edit_role(game, &role, |r| {
                 r.strategy = (!name.is_empty()).then_some(name)
             });
         })
@@ -711,7 +695,7 @@ fn RoleStrategy(
                     let set = move |event| {
                         let seats = event_target_value(&event).trim().parse::<usize>().unwrap_or_default();
                         let name = written.clone();
-                        edit_role(editor, game, &role, |r| {
+                        editor.edit_role(game, &role, |r| {
                             if seats == 0 {
                                 r.strategies.remove(&name);
                             } else {
@@ -747,10 +731,9 @@ fn StrategyCard(
 ) -> impl IntoView {
     let read = |pick: fn(&StrategySettings) -> String| {
         let name = name.clone();
-        let read = editor.game(game, move |s| {
+        editor.game(game, move |s| {
             s.strategies.get(&name).map(pick).unwrap_or_default()
-        });
-        Signal::derive(move || read.get())
+        })
     };
     let policy = read(|s| match s.policy {
         Policy::Prompted => "prompted".to_string(),
@@ -758,16 +741,9 @@ fn StrategyCard(
     });
     let model = read(|s| s.model.clone());
     let system = read(|s| s.system.clone());
-    let change = {
-        let name = name.clone();
-        move |change: Box<dyn FnOnce(&mut StrategySettings)>| {
-            let name = name.clone();
-            editor.edit(move |settings| {
-                if let Some(strategy) = settings.game_mut(game).strategies.get_mut(&name) {
-                    change(strategy);
-                }
-            });
-        }
+    let key = StoredValue::new(name.clone());
+    let change = move |change: &dyn Fn(&mut StrategySettings)| {
+        editor.edit_strategy(game, &key.read_value(), change);
     };
     let policies = Signal::derive(|| {
         vec![
@@ -775,21 +751,15 @@ fn StrategyCard(
             ("random".to_string(), "Random".to_string()),
         ]
     });
-    let set_policy = {
-        let change = change.clone();
-        Callback::new(move |policy: String| {
-            let policy = if policy == "random" {
-                Policy::Random
-            } else {
-                Policy::Prompted
-            };
-            change(Box::new(move |s| s.policy = policy));
-        })
-    };
-    let set_model = {
-        let change = change.clone();
-        Callback::new(move |model: String| change(Box::new(move |s| s.model = model)))
-    };
+    let set_policy = Callback::new(move |policy: String| {
+        let policy = if policy == "random" {
+            Policy::Random
+        } else {
+            Policy::Prompted
+        };
+        change(&|s| s.policy = policy);
+    });
+    let set_model = Callback::new(move |model: String| change(&|s| s.model.clone_from(&model)));
     let at = |rest: &[&str]| path(&[&[game_key(game), "strategies", name.as_str()], rest].concat());
     let (system_at, model_at, policy_at, name_at) =
         (at(&["system"]), at(&["model"]), at(&["policy"]), at(&[]));
@@ -818,12 +788,9 @@ fn StrategyCard(
                         spellcheck="false"
                         class:sd-invalid=move || system_error.with(Option::is_some)
                         prop:value=move || system.get()
-                        on:input={
-                            let change = change.clone();
-                            move |event| {
-                                let text = event_target_value(&event);
-                                change(Box::new(move |s| s.system = text));
-                            }
+                        on:input=move |event| {
+                            let text = event_target_value(&event);
+                            change(&|s| s.system.clone_from(&text));
                         }
                     ></textarea>
                 </label>
@@ -970,21 +937,24 @@ fn shown_providers(providers: &[Provider], settings: &AppSettings) -> Vec<Provid
         if model.base_url.trim().is_empty() || provider_at(&shown, &model.base_url).is_some() {
             continue;
         }
-        let local = model
-            .base_url
-            .strip_prefix("http://localhost:")
-            .and_then(|rest| rest.trim_end_matches('/').strip_suffix("/v1"))
-            .filter(|port| port.parse::<u16>().is_ok());
-        shown.push(Provider {
-            name: match local {
-                Some(port) => format!("Local (localhost:{port})"),
-                None => format!("Other ({})", model.base_url),
+        shown.push(match Provider::local_port(&model.base_url) {
+            Some(port) => Provider::local(port),
+            None => Provider {
+                name: format!("Other ({})", model.base_url),
+                base_url: model.base_url.clone(),
+                api_key_env: model.api_key_env.clone(),
             },
-            base_url: model.base_url.clone(),
-            api_key_env: model.api_key_env.clone(),
         });
     }
     shown
+}
+
+/// Whether `base_url` is whole, as far as can be told while it is typed:
+/// an `http` or `https` URL ending in `/v1`.
+pub fn whole(base_url: &str) -> bool {
+    let base_url = base_url.trim().trim_end_matches('/');
+    (base_url.starts_with("http://") || base_url.starts_with("https://"))
+        && base_url.ends_with("/v1")
 }
 
 /// The Models tab: the providers, with their keys, and a card for each
@@ -1008,15 +978,18 @@ fn Models(editor: Editor) -> impl IntoView {
             all.insert(progress.base_url.clone(), progress);
         });
     });
-    // Each provider a model uses is listed once it is named.
-    Effect::new(move |_| {
-        let used: BTreeSet<(String, Option<String>)> = editor.settings.with(|s| {
+    // Each provider a model uses is listed once its base URL is whole.
+    let used = Memo::new(move |_| {
+        editor.settings.with(|s| {
             s.models
                 .values()
+                .filter(|model| whole(&model.base_url))
                 .map(|model| (model.base_url.clone(), model.api_key_env.clone()))
-                .collect()
-        });
-        for (base_url, api_key_env) in used {
+                .collect::<BTreeSet<_>>()
+        })
+    });
+    Effect::new(move |_| {
+        for (base_url, api_key_env) in used.get() {
             let fetched = catalog
                 .listings
                 .with_untracked(|listings| listings.contains_key(&base_url));
@@ -1047,8 +1020,7 @@ fn Models(editor: Editor) -> impl IntoView {
             .unwrap_or_else(|| "model".to_string());
         adding.set(None);
         editor.edit(move |s| {
-            let taken = s.models.keys().cloned().collect();
-            let name = unique(&taken, &wanted);
+            let name = unique(&wanted, |name| s.models.contains_key(name));
             s.models.insert(
                 name,
                 ModelSettings {
@@ -1117,7 +1089,7 @@ fn ProviderCard(catalog: Catalog, provider: Provider) -> impl IntoView {
         base_url,
         api_key_env,
     } = provider;
-    let local = !base_url.starts_with("https://");
+    let local = !is_remote(&base_url);
     let fetched = {
         let base_url = base_url.clone();
         Memo::new(move |_| {
@@ -1256,16 +1228,9 @@ fn ModelCard(
                 .with(|s| s.models.get(&name).cloned().unwrap_or_default())
         })
     };
-    let change = {
-        let name = name.clone();
-        move |change: Box<dyn FnOnce(&mut ModelSettings)>| {
-            let name = name.clone();
-            editor.edit(move |s| {
-                if let Some(model) = s.models.get_mut(&name) {
-                    change(model);
-                }
-            });
-        }
+    let key = StoredValue::new(name.clone());
+    let change = move |change: &dyn Fn(&mut ModelSettings)| {
+        editor.edit_model(&key.read_value(), change);
     };
     let at = |field: &str| path(&["models", name.as_str(), field]);
     let fetched = Memo::new(move |_| {
@@ -1305,51 +1270,41 @@ fn ModelCard(
         options.push((String::new(), "Other…".to_string()));
         options
     });
-    let set_provider = {
-        let change = change.clone();
-        Callback::new(move |base_url: String| {
-            let provider =
-                providers.with_untracked(|providers| provider_at(providers, &base_url).cloned());
-            change(Box::new(move |m| match provider {
-                Some(provider) => {
-                    m.base_url = provider.base_url;
-                    m.api_key_env = provider.api_key_env;
-                }
-                None => {
-                    m.base_url.clear();
-                    m.api_key_env = None;
-                }
-            }));
-        })
-    };
+    let set_provider = Callback::new(move |base_url: String| {
+        let provider =
+            providers.with_untracked(|providers| provider_at(providers, &base_url).cloned());
+        change(&|m| match &provider {
+            Some(provider) => {
+                m.base_url.clone_from(&provider.base_url);
+                m.api_key_env.clone_from(&provider.api_key_env);
+            }
+            None => {
+                m.base_url.clear();
+                m.api_key_env = None;
+            }
+        });
+    });
     let text = |pick: fn(&ModelSettings) -> String| Signal::derive(move || model.with(pick));
     let set_text = |write: fn(&mut ModelSettings, String)| {
-        let change = change.clone();
-        Callback::new(move |value: String| change(Box::new(move |m| write(m, value))))
+        Callback::new(move |value: String| change(&|m| write(m, value.clone())))
     };
-    let set_id = {
-        let change = change.clone();
-        Callback::new(move |id: String| {
-            let window = fetched.with_untracked(|fetched| {
-                let listing = fetched.as_ref()?.listing.as_ref()?;
-                listing.models.iter().find(|m| m.id == id)?.context_window
-            });
-            change(Box::new(move |m| {
-                m.id = id;
-                if window.is_some() {
-                    m.context_window = window;
-                }
-            }));
-        })
-    };
+    let set_id = Callback::new(move |id: String| {
+        let window = fetched.with_untracked(|fetched| {
+            let listing = fetched.as_ref()?.listing.as_ref()?;
+            listing.models.iter().find(|m| m.id == id)?.context_window
+        });
+        change(&|m| {
+            m.id.clone_from(&id);
+            if window.is_some() {
+                m.context_window = window;
+            }
+        });
+    });
     let window_at = at("context_window");
     let window_error = editor.error(window_at.clone());
-    let set_window = {
-        let change = change.clone();
-        move |event| {
-            let window = event_target_value(&event).trim().parse::<u64>().ok();
-            change(Box::new(move |m| m.context_window = window));
-        }
+    let set_window = move |event| {
+        let window = event_target_value(&event).trim().parse::<u64>().ok();
+        change(&|m| m.context_window = window);
     };
     let mark = move || {
         let id = model.with(|m| m.id.clone());
@@ -1476,17 +1431,12 @@ mod tests {
     }
 
     #[test]
-    fn a_key_is_labeled_as_words() {
-        assert_eq!(label("day_limit"), "Day limit");
-        assert_eq!(label("merlin"), "Merlin");
-        assert_eq!(label(""), "");
-    }
-
-    #[test]
-    fn a_name_taken_is_numbered() {
-        let taken: BTreeSet<String> = ["gpt", "gpt-2"].map(String::from).into();
-        assert_eq!(unique(&taken, "gpt"), "gpt-3");
-        assert_eq!(unique(&taken, "claude"), "claude");
+    fn a_base_url_is_listed_once_it_is_whole() {
+        assert!(whole("https://api.openai.com/v1"));
+        assert!(whole("http://localhost:1234/v1/"));
+        assert!(!whole("http://localhost:1234/"));
+        assert!(!whole("localhost:1234/v1"));
+        assert!(!whole(""));
     }
 
     #[test]

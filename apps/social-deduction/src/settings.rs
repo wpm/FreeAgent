@@ -52,9 +52,8 @@ trait Tabled: Game {
     const GAME: GameName;
     /// Its `[phases]` keys, in the order the phases come.
     const PHASES: &'static [&'static str];
-    /// Its roles, in the order they are dealt, each with its count in the
-    /// code.
-    fn counts() -> Vec<(Self::Role, usize)>;
+    /// Its roles, in the order they are dealt.
+    fn roles() -> Vec<Self::Role>;
     /// The settings a configuration `table` settles to.
     fn settle(table: toml::Table) -> anyhow::Result<config::Settings<Self>>;
     /// What is wrong with `limits` together, each by its key.
@@ -65,8 +64,11 @@ impl Tabled for Werewolf {
     const GAME: GameName = GameName::Werewolf;
     const PHASES: &'static [&'static str] = &["night_limit", "day_limit", "ratify_limit"];
 
-    fn counts() -> Vec<(werewolf::Role, usize)> {
-        werewolf::Table::default().counts().to_vec()
+    fn roles() -> Vec<werewolf::Role> {
+        werewolf::Table::default()
+            .counts()
+            .map(|(role, _)| role)
+            .to_vec()
     }
 
     fn settle(table: toml::Table) -> anyhow::Result<werewolf::config::Settings> {
@@ -89,8 +91,11 @@ impl Tabled for Avalon {
         "assassinate_limit",
     ];
 
-    fn counts() -> Vec<(avalon::Role, usize)> {
-        avalon::Table::default().counts().to_vec()
+    fn roles() -> Vec<avalon::Role> {
+        avalon::Table::default()
+            .counts()
+            .map(|(role, _)| role)
+            .to_vec()
     }
 
     fn settle(table: toml::Table) -> anyhow::Result<avalon::config::Settings> {
@@ -152,9 +157,8 @@ struct WrittenRole {
 fn written(app: &AppSettings, game: GameName) -> Written {
     let settings = app.game(game);
     let models = settings
-        .strategies
-        .keys()
-        .filter_map(|name| settings.model_of(name))
+        .models_named()
+        .into_iter()
         .filter_map(|name| Some((name.to_string(), app.models.get(name)?.clone())))
         .collect();
     let strategies = settings
@@ -261,9 +265,9 @@ fn imported<G: Tabled>(settled: &config::Settings<G>, written: Written) -> Impor
     let counts = settled.lineup.role_counts();
     let limits = serde_json::to_value(&settled.limits).expect("limits are JSON");
     let mut roles = written.roles;
-    let roles = G::counts()
+    let roles = G::roles()
         .into_iter()
-        .map(|(role, _)| {
+        .map(|role| {
             let key = role_key(role);
             let file = roles.remove(&key).unwrap_or_default();
             RoleSettings {
@@ -331,12 +335,9 @@ pub fn import(app: &mut AppSettings, imported: Imported) {
         models,
     } = imported;
     for (name, model) in models {
-        let mut taken = name.clone();
-        let mut number = 1;
-        while app.models.get(&taken).is_some_and(|other| *other != model) {
-            number += 1;
-            taken = format!("{name}-{number}");
-        }
+        let taken = unique(&name, |taken| {
+            app.models.get(taken).is_some_and(|other| *other != model)
+        });
         for strategy in settings.strategies.values_mut() {
             if strategy.policy == Policy::Prompted && strategy.model == name {
                 strategy.model.clone_from(&taken);
@@ -484,14 +485,14 @@ fn game_errors<G: Tabled>(app: &AppSettings, models: &[FieldError]) -> Vec<Field
         error(&["phases", phase], message);
     }
     let defined = |name: &str| name == RANDOM || settings.strategies.contains_key(name);
-    let seated: Vec<G::Role> = G::counts()
+    let seated: Vec<G::Role> = G::roles()
         .into_iter()
-        .map(|(role, _)| role)
         .filter(|role| {
             let key = role_key(role);
             settings.roles.iter().any(|r| r.key == key && r.count > 0)
         })
         .collect();
+    let known = variables::<G>(&settings.text);
     for (name, strategy) in &settings.strategies {
         if name == RANDOM {
             let message =
@@ -511,7 +512,9 @@ fn game_errors<G: Tabled>(app: &AppSettings, models: &[FieldError]) -> Vec<Field
             let message = format!("strategy '{name}' names model '{model}', which doesn't exist");
             error(&["strategies", name, "model"], message);
         }
-        if let Some(message) = prompt_error::<G>(name, &strategy.system, &settings.text, &seated) {
+        if let Some(message) =
+            prompt_error::<G>(name, &strategy.system, &settings.text, &known, &seated)
+        {
             error(&["strategies", name, "system"], message);
         }
     }
@@ -523,7 +526,7 @@ fn game_errors<G: Tabled>(app: &AppSettings, models: &[FieldError]) -> Vec<Field
         error(&["strategy"], message);
     }
     for role in &settings.roles {
-        let title = title(&role.key);
+        let title = label(&role.key);
         if let Some(strategy) = &role.strategy
             && !defined(strategy)
         {
@@ -541,11 +544,7 @@ fn game_errors<G: Tabled>(app: &AppSettings, models: &[FieldError]) -> Vec<Field
             format!("the text block '{block}' is named like a variable, which it can't be");
         error(&["text", block], message);
     }
-    let named: BTreeSet<&str> = settings
-        .strategies
-        .keys()
-        .filter_map(|name| settings.model_of(name))
-        .collect();
+    let named = settings.models_named();
     let models_fine = !models
         .iter()
         .any(|error| named.contains(error.path[1].as_str()));
@@ -556,15 +555,6 @@ fn game_errors<G: Tabled>(app: &AppSettings, models: &[FieldError]) -> Vec<Field
         errors.push(FieldError::new(&[key, "roles"], format!("{settling:#}")));
     }
     errors
-}
-
-/// A role's key as the role is written: `Werewolf`.
-fn title(key: &str) -> String {
-    let mut chars = key.chars();
-    chars
-        .next()
-        .map(|first| first.to_uppercase().chain(chars).collect())
-        .unwrap_or_default()
 }
 
 /// What a prompt of a game of `G` is rendered with for `role`: the seat's
@@ -580,21 +570,22 @@ fn told<G: Tabled>(text: &BTreeMap<String, String>, role: G::Role) -> Value {
 /// Every name a prompt of a game of `G` may use, for any role, with the
 /// text blocks `text`.
 fn variables<G: Tabled>(text: &BTreeMap<String, String>) -> BTreeSet<String> {
-    G::counts()
+    G::roles()
         .into_iter()
-        .flat_map(|(role, _)| told::<G>(text, role).try_iter().into_iter().flatten())
+        .flat_map(|role| told::<G>(text, role).try_iter().into_iter().flatten())
         .filter_map(|key| key.as_str().map(String::from))
         .collect()
 }
 
 /// What is wrong with the prompt template `system` of the strategy `name`
 /// in a game of `G` with the text blocks `text`, rendered for each of
-/// `roles`, if anything is. A name the template uses that is no variable,
-/// text block or global is named.
+/// `roles`, if anything is. A name the template uses that is none of
+/// `known`, the variables and text blocks, nor a global, is named.
 fn prompt_error<G: Tabled>(
     name: &str,
     system: &str,
     text: &BTreeMap<String, String>,
+    known: &BTreeSet<String>,
     roles: &[G::Role],
 ) -> Option<String> {
     let mut env = Environment::new();
@@ -607,12 +598,11 @@ fn prompt_error<G: Tabled>(
             ));
         }
     };
-    let mut known = variables::<G>(text);
-    known.extend(env.globals().map(|(global, _)| global.to_string()));
+    let globals: BTreeSet<&str> = env.globals().map(|(global, _)| global).collect();
     let unknown = template
         .undeclared_variables(false)
         .into_iter()
-        .filter(|variable| !known.contains(variable))
+        .filter(|variable| !known.contains(variable) && !globals.contains(variable.as_str()))
         .min();
     if let Some(unknown) = unknown {
         return Some(format!(
@@ -761,7 +751,11 @@ mod tests {
             let text = text(&app, game);
             config::parse(&text).unwrap_or_else(|e| panic!("{e:#}\n{text}"));
             let prepared = prepare(&text, &Environment).await.unwrap();
-            assert_eq!(GameName::from(prepared.game()), game);
+            let prepared = match prepared.game() {
+                config::Name::Werewolf => GameName::Werewolf,
+                config::Name::Avalon => GameName::Avalon,
+            };
+            assert_eq!(prepared, game);
         }
     }
 
@@ -1029,11 +1023,5 @@ mod tests {
                 "the text block 'team' is named like a variable, which it can't be".to_string()
             )
         );
-    }
-
-    #[test]
-    fn a_role_key_is_titled_as_the_role_is_written() {
-        assert_eq!(title("merlin"), "Merlin");
-        assert_eq!(title(""), "");
     }
 }

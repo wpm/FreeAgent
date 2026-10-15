@@ -75,15 +75,6 @@ impl Name {
     }
 }
 
-impl From<Name> for social_deduction_stage::GameName {
-    fn from(name: Name) -> Self {
-        match name {
-            Name::Werewolf => Self::Werewolf,
-            Name::Avalon => Self::Avalon,
-        }
-    }
-}
-
 /// The one key [`load`] reads first, every other key ignored.
 #[derive(Deserialize)]
 struct Which {

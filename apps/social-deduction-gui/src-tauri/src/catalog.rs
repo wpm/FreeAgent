@@ -13,7 +13,7 @@ use secrecy::SecretString;
 use social_deduction::catalog::{self, KNOCK, Probes};
 use social_deduction::model::spec::Keys;
 use social_deduction::model::{key_variable, local_ports};
-use social_deduction::settings::{Check, Listing, Probe, Progress, Provider};
+use social_deduction::settings::{Check, Listing, Probe, Progress, Provider, is_remote};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -43,11 +43,10 @@ impl Catalog {
         })
     }
 
-    /// Keep what probing the model `id` of the provider at `base_url`
-    /// found.
-    fn record(&self, base_url: &str, id: &str, check: &Check) {
+    /// Change the probes with `change`, and keep them.
+    fn change(&self, change: impl FnOnce(&mut Probes)) {
         let mut probes = self.probes.lock().unwrap();
-        probes.record(base_url, id, check.clone());
+        change(&mut probes);
         if let Err(error) = probes.save(&self.path) {
             tracing::warn!("the probes could not be saved: {error}");
         }
@@ -85,11 +84,7 @@ pub async fn listing(
 ) -> Result<Listing, String> {
     if refresh {
         catalog.listings.lock().unwrap().remove(&base_url);
-        let mut probes = catalog.probes.lock().unwrap();
-        probes.clear(&base_url);
-        if let Err(error) = probes.save(&catalog.path) {
-            tracing::warn!("the probes could not be saved: {error}");
-        }
+        catalog.change(|probes| probes.clear(&base_url));
     }
     let kept = catalog.listings.lock().unwrap().get(&base_url).cloned();
     let (needed, key) = key(&base_url, api_key_env.as_deref());
@@ -105,8 +100,8 @@ pub async fn listing(
         }
     };
     listing.checks = catalog.probes.lock().unwrap().of(&base_url);
-    if listing.error.is_none() && catalog::is_remote(&base_url) && (!needed || key.is_some()) {
-        start(&app, base_url, api_key_env);
+    if listing.error.is_none() && is_remote(&base_url) && (!needed || key.is_some()) {
+        start(&app, base_url, key);
     }
     Ok(listing)
 }
@@ -115,7 +110,8 @@ pub async fn listing(
 /// background, as **Check all** does.
 #[tauri::command]
 pub fn check_all(app: AppHandle, base_url: String, api_key_env: Option<String>) {
-    start(&app, base_url, api_key_env);
+    let (_, key) = key(&base_url, api_key_env.as_deref());
+    start(&app, base_url, key);
 }
 
 /// Probe the model `id` of the provider at `base_url`, as its **Check**
@@ -139,7 +135,7 @@ pub async fn check_model(
     .await
     .map_err(|error| error.to_string())?;
     if let Some(check) = &check {
-        catalog.record(&base_url, &id, check);
+        catalog.change(|probes| probes.record(&base_url, &id, check.clone()));
     }
     let probe = Probe {
         base_url,
@@ -150,11 +146,12 @@ pub async fn check_model(
     Ok(check)
 }
 
-/// Probe each model of the provider at `base_url` that its listing holds
-/// and that has not been probed, as many at once as
+/// Probe each model of the provider at `base_url`, asked with `key`, that
+/// its listing holds and that has not been probed, as many at once as
 /// [`catalog::at_once`] says, on a thread of its own, unless it is being
-/// probed already.
-fn start(app: &AppHandle, base_url: String, api_key_env: Option<String>) {
+/// probed already. The probes are kept as they end, and stored once all
+/// have.
+fn start(app: &AppHandle, base_url: String, key: Option<SecretString>) {
     let catalog = app.state::<Catalog>();
     let Some(listing) = catalog.listings.lock().unwrap().get(&base_url).cloned() else {
         return;
@@ -163,7 +160,6 @@ fn start(app: &AppHandle, base_url: String, api_key_env: Option<String>) {
         return;
     }
     let ids = catalog.probes.lock().unwrap().unprobed(&base_url, &listing);
-    let (_, key) = key(&base_url, api_key_env.as_deref());
     let app = app.clone();
     async_runtime::spawn_blocking(move || {
         let catalog = app.state::<Catalog>();
@@ -179,7 +175,8 @@ fn start(app: &AppHandle, base_url: String, api_key_env: Option<String>) {
         };
         let record = |id: &str, check: Option<Check>| {
             if let Some(check) = &check {
-                catalog.record(&base_url, id, check);
+                let mut probes = catalog.probes.lock().unwrap();
+                probes.record(&base_url, id, check.clone());
             }
             let probe = Probe {
                 base_url: base_url.clone(),
@@ -192,13 +189,14 @@ fn start(app: &AppHandle, base_url: String, api_key_env: Option<String>) {
         };
         let at_once = catalog::at_once(&base_url);
         async_runtime::block_on(catalog::probe_each(ids, at_once, probe, record));
+        catalog.change(|_| {});
         catalog.probing.lock().unwrap().remove(&base_url);
     });
 }
 
-/// Send `payload` to every window as `event`.
+/// Send `payload` to the Settings window as `event`.
 fn announce(app: &AppHandle, event: &str, payload: impl serde::Serialize + Clone) {
-    if let Err(error) = app.emit(event, payload) {
+    if let Err(error) = app.emit_to(crate::settings::WINDOW, event, payload) {
         tracing::warn!("probing could not be announced: {error}");
     }
 }

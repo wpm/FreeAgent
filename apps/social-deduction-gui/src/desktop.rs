@@ -27,11 +27,21 @@ pub(crate) fn set_theme(theme: Option<&str>) {
     }
 }
 
+/// The game the settings in `snapshot` choose, Werewolf until they come.
+fn chosen(snapshot: RwSignal<Option<Snapshot>>) -> Signal<GameName> {
+    Signal::derive(move || {
+        snapshot.with(|got| {
+            got.as_ref()
+                .map_or(GameName::Werewolf, |got| got.settings.general.game)
+        })
+    })
+}
+
 /// The main window.
 #[component]
 pub fn Desktop() -> impl IntoView {
     let snapshot = RwSignal::new(None::<Snapshot>);
-    let game = RwSignal::new(GameName::Werewolf);
+    let game = chosen(snapshot);
     let pending = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
     let live = Live::default();
@@ -42,10 +52,7 @@ pub fn Desktop() -> impl IntoView {
 
     spawn_local(async move {
         match tauri::settings_get().await {
-            Ok(got) => {
-                game.set(got.settings.general.game);
-                snapshot.set(Some(got));
-            }
+            Ok(got) => snapshot.set(Some(got)),
             Err(failure) => error.set(Some(failure)),
         }
     });
@@ -99,7 +106,7 @@ pub fn Desktop() -> impl IntoView {
     view! {
         <Show
             when=move || watching.get()
-            fallback=move || view! { <Start snapshot=snapshot game=game pending=pending error=error run=run /> }
+            fallback=move || view! { <Start snapshot=snapshot pending=pending error=error run=run /> }
         >
             <Viewer live=live on_link=on_link appearance=appearance>
                 <Show
@@ -121,22 +128,18 @@ pub fn Desktop() -> impl IntoView {
 #[component]
 fn Start(
     snapshot: RwSignal<Option<Snapshot>>,
-    game: RwSignal<GameName>,
     pending: RwSignal<bool>,
     error: RwSignal<Option<String>>,
     run: Callback<()>,
 ) -> impl IntoView {
+    let game = chosen(snapshot);
     let summary =
         move || snapshot.with(|got| got.as_ref().map(|got| got.settings.summary(game.get())));
     let first_error = Memo::new(move |_| {
         snapshot.with(|got| {
             let got = got.as_ref()?;
-            let game = game.get();
-            let error = got.settings.errors_of(game, &got.errors).next()?;
-            Some((
-                format!("{}: {}", game_title(game), error.message),
-                error.path.clone(),
-            ))
+            let error = got.settings.first_error(game.get(), &got.errors)?;
+            Some((error.message, error.path))
         })
     });
     let blocked = move || {
@@ -148,7 +151,11 @@ fn Start(
                 class:sd-segment-on=move || game.get() == choice
                 aria-pressed=move || (game.get() == choice).to_string()
                 on:click=move |_| {
-                    game.set(choice);
+                    snapshot.update(|got| {
+                        if let Some(got) = got {
+                            got.settings.general.game = choice;
+                        }
+                    });
                     tauri::game_choose(choice);
                 }
             >

@@ -5,7 +5,7 @@ use crate::secret::keychain;
 use crate::settings::Store;
 use social_deduction::live::Session;
 use social_deduction::run::prepare;
-use social_deduction::settings::{self, game_title};
+use social_deduction::settings;
 use social_deduction_stage::{Cue, GameName};
 use std::path::PathBuf;
 use tauri::ipc::Channel;
@@ -24,8 +24,8 @@ pub async fn play(
     cues: Channel<Cue>,
 ) -> Result<(), String> {
     let snapshot = store.change(|held| held.general.game = game);
-    if let Some(error) = snapshot.settings.errors_of(game, &snapshot.errors).next() {
-        return Err(format!("{}: {}", game_title(game), error.message));
+    if let Some(error) = snapshot.settings.first_error(game, &snapshot.errors) {
+        return Err(error.message);
     }
     let text = settings::text(&snapshot.settings, game);
     let dir = PathBuf::from(snapshot.logs);

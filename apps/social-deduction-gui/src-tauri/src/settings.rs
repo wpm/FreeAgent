@@ -29,7 +29,7 @@ pub struct Store {
 
 impl Store {
     /// The settings stored for `app`, as [`settings::load`] reads them,
-    /// stored back at once, so that the first launch's are kept.
+    /// stored at once the first time, so that the first launch's are kept.
     ///
     /// # Errors
     ///
@@ -37,8 +37,9 @@ impl Store {
     pub fn open(app: &AppHandle) -> tauri::Result<Self> {
         let dir = app.path().app_config_dir()?;
         let logs = app.path().app_data_dir()?.join("games");
+        let first = !dir.join(settings::FILE).exists();
         let loaded = settings::load(&dir);
-        if let Err(error) = settings::save(&loaded, &dir) {
+        if first && let Err(error) = settings::save(&loaded, &dir) {
             tracing::warn!("the settings could not be saved: {error}");
         }
         Ok(Self {
@@ -50,7 +51,21 @@ impl Store {
 
     /// The settings, what is wrong with them, and where logs go.
     pub fn snapshot(&self) -> Snapshot {
-        snapshot(self.settings.lock().unwrap().clone(), &self.logs)
+        snapshot(self.settings(), &self.logs)
+    }
+
+    /// The settings.
+    pub fn settings(&self) -> AppSettings {
+        self.settings.lock().unwrap().clone()
+    }
+
+    /// The folder logs are saved in.
+    pub fn logs(&self) -> PathBuf {
+        let held = self.settings.lock().unwrap();
+        held.general
+            .logs
+            .as_ref()
+            .map_or_else(|| self.logs.clone(), PathBuf::from)
     }
 
     /// Change the settings with `change`, store them, and give back the
@@ -99,7 +114,7 @@ pub fn settings_get(store: State<'_, Store>) -> Snapshot {
 
 /// Make the settings `settings`, from the Settings window, and give back
 /// what is wrong with them. The main window hears of it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn settings_set(
     app: AppHandle,
     store: State<'_, Store>,
@@ -111,7 +126,7 @@ pub fn settings_set(
 }
 
 /// Choose `game` to play.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn game_choose(store: State<'_, Store>, game: GameName) {
     store.change(|held| held.general.game = game);
 }
@@ -137,7 +152,7 @@ pub fn logs_choose(app: AppHandle, store: State<'_, Store>) -> Option<Snapshot> 
 /// Reveal the folder logs are saved in, made if it is not there yet.
 #[tauri::command(async)]
 pub fn logs_reveal(store: State<'_, Store>) -> Result<(), String> {
-    let logs = PathBuf::from(store.snapshot().logs);
+    let logs = store.logs();
     std::fs::create_dir_all(&logs).map_err(|error| error.to_string())?;
     tauri_plugin_opener::reveal_item_in_dir(logs).map_err(|error| error.to_string())
 }
@@ -286,7 +301,7 @@ pub fn export(app: &AppHandle) {
     else {
         return;
     };
-    let text = settings::text(&app.state::<Store>().snapshot().settings, game);
+    let text = settings::text(&app.state::<Store>().settings(), game);
     if let Err(failure) = std::fs::write(&path, text) {
         let message = format!("{} couldn't be written: {failure}", path.display());
         error(app, "Export Configuration", message);

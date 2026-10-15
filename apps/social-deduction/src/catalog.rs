@@ -10,7 +10,7 @@
 
 use crate::model::check;
 use crate::model::{self, Provider as Client, REQUEST_TIMEOUT};
-use crate::settings::{Check, Listed, Listing, Provider};
+use crate::settings::{Check, Listed, Listing, Provider, is_remote};
 use futures_util::StreamExt;
 use reqwest::StatusCode;
 use secrecy::SecretString;
@@ -37,21 +37,9 @@ pub fn providers(ports: &[u16]) -> Vec<Provider> {
             base_url: base_url.to_string(),
             api_key_env: api_key_env.map(String::from),
         });
-    known.chain(ports.iter().map(|port| local(*port))).collect()
-}
-
-/// The local server on `port`: `Local (localhost:1234)`, wanting no key.
-pub fn local(port: u16) -> Provider {
-    Provider {
-        name: format!("Local (localhost:{port})"),
-        base_url: format!("http://localhost:{port}/v1"),
-        api_key_env: None,
-    }
-}
-
-/// Whether the provider at `base_url` is remote: reached over `https`.
-pub fn is_remote(base_url: &str) -> bool {
-    base_url.trim_start().starts_with("https://")
+    known
+        .chain(ports.iter().map(|port| Provider::local(*port)))
+        .collect()
 }
 
 /// How many of the models of the provider at `base_url` are probed at
@@ -64,7 +52,7 @@ pub fn at_once(base_url: &str) -> usize {
 /// at once and given `timeout` to answer, in order.
 pub async fn discover(ports: &[u16], timeout: Duration) -> Vec<u16> {
     let knocks = ports.iter().map(|port| async move {
-        let client = Client::new(local(*port).base_url, None, timeout).ok()?;
+        let client = Client::new(Provider::local(*port).base_url, None, timeout).ok()?;
         client.listing().await.ok().map(|_| *port)
     });
     futures_util::future::join_all(knocks)
@@ -251,8 +239,6 @@ mod tests {
 
     #[test]
     fn a_remote_provider_is_probed_four_at_a_time_and_a_local_one_one_at_a_time() {
-        assert!(is_remote("https://api.openai.com/v1"));
-        assert!(!is_remote("http://localhost:1234/v1"));
         assert_eq!(at_once("https://api.anthropic.com/v1"), 4);
         assert_eq!(at_once("http://localhost:11434/v1"), 1);
     }
