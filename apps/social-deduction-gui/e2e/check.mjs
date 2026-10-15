@@ -366,6 +366,10 @@ await section('narrow', async () => {
 const desktop = {
   settings: {
     general: { appearance: 'system', game: 'Werewolf' },
+    providers: [
+      { name: 'Broke', base_url: 'https://api.broke.example/v1', api_key_env: 'BROKE_API_KEY' },
+      { name: 'Mute', base_url: 'https://api.mute.example/v1', api_key_env: 'MUTE_API_KEY' },
+    ],
     models: { qwen: { base_url: 'http://localhost:1234/v1', id: 'qwen2.5-7b-instruct-1m' } },
     werewolf: {
       strategy: 'everyone',
@@ -428,7 +432,14 @@ function backend(snapshot) {
       { name: 'Local (localhost:1234)', base_url: 'http://localhost:1234/v1', api_key_env: null },
       { name: 'Local (localhost:11434)', base_url: 'http://localhost:11434/v1', api_key_env: null },
     ],
-    checking: [],
+    checking: [
+      {
+        base_url: 'https://api.broke.example/v1',
+        checked: 1,
+        total: 1,
+        unchecked: { NoCredits: 'You have no credits remaining. Add credits at https://billing.broke.example/credits.' },
+      },
+    ],
     listing: ({ baseUrl }) => {
       const model = (id, context_window) => ({ id, context_window, hidden: false });
       const listings = {
@@ -437,6 +448,15 @@ function backend(snapshot) {
           models: [model('claude-opus-5-5', 200000), model('claude-sonnet-5-5', 200000), model('claude-mute-1', 200000)],
           error: null,
           checks: { 'claude-opus-5-5': 'Plays', 'claude-sonnet-5-5': 'PlaysUnforced', 'claude-mute-1': { DidNotPlay: 'no tools' } },
+        },
+        'https://api.broke.example/v1': { models: [model('broke-1', 8192)], error: null, checks: {} },
+        'https://api.mute.example/v1': {
+          models: [model('mute-1', 8192), model('mute-2', 8192)],
+          error: null,
+          checks: {
+            'mute-1': { DidNotPlay: 'mute-1 did not play Werewolf: did not answer a vote: no tools' },
+            'mute-2': { DidNotPlay: 'mute-2 did not play Avalon: did not answer as a voter: no tools' },
+          },
         },
         'http://localhost:1234/v1': {
           models: [model('qwen2.5-7b-instruct-1m', 1010000), model('llama-3.2-3b-instruct', 131072)],
@@ -472,7 +492,7 @@ async function models(settings) {
   await settings.waitForSelector('.sd-offered');
   const providers = await settings.$$eval('.sd-provider h4', (names) => names.map((name) => name.textContent.trim()));
   check(
-    JSON.stringify(providers) === JSON.stringify(['OpenAI', 'Anthropic', 'Local (localhost:1234)', 'Local (localhost:11434)']),
+    JSON.stringify(providers) === JSON.stringify(['OpenAI', 'Anthropic', 'Local (localhost:1234)', 'Local (localhost:11434)', 'Broke', 'Mute']),
     `desktop: each provider is shown by its name (${providers.join(', ')})`,
   );
   const card = (name) => `.sd-provider[aria-label="${name}"]`;
@@ -483,6 +503,20 @@ async function models(settings) {
     'desktop: a local server with no model loaded says so',
   );
   check((await text(`${card('OpenAI')} .sd-field-error`)).includes('401'), 'desktop: a provider that cannot list its models says why');
+  const tip = (selector) => settings.$eval(selector, (element) => element.dataset.tip);
+  check(
+    (await text(`${card('Broke')} .sd-field-error`)) ===
+      "Broke's account has no credits left. Add credits at billing.broke.example, then reopen Settings." &&
+      (await tip(`${card('Broke')} .sd-field-error`)).startsWith('You have no credits remaining.') &&
+      (await settings.$$(`${card('Broke')} .sd-note`)).length === 0 &&
+      (await text('.sd-status')) === "Some models couldn't be checked. Their providers say why.",
+    "desktop: a provider whose models couldn't be checked says why, and the provider's words are its help",
+  );
+  check(
+    (await text(`${card('Mute')} .sd-note`)) === 'None of its models plays both games. Most often: no tools.' &&
+      (await tip(`${card('Mute')} .sd-note`)) === 'mute-1: no tools\nmute-2: no tools',
+    "desktop: a provider none of whose models play gives the most common reason, and each model's in its help",
+  );
   check(
     (await text(`${card('OpenAI')} .sd-chip`)) === 'OPENAI_API_KEY from the environment' &&
       (await text(`${card('Anthropic')} .sd-chip`)) === 'ANTHROPIC_API_KEY in the keychain' &&

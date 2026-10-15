@@ -83,7 +83,13 @@ and after each update, a model a provider lists for the first time, and a
 provider's models again when its key changes. A remote provider's are
 checked four at a time; a local server's one at a time, since it loads
 each model it is asked about, and never while a game plays. A line at the
-top of the Models tab says what is being checked. A provider's models are
+top of the Models tab says what is being checked. A model that can't be
+asked, as when the provider doesn't accept the key, is asked again when
+Settings next opens, and its provider's card says why in red, the
+provider's own words in its help. When the account is the reason, such as
+no credits left, the provider's other models wait for the next try too. A
+provider none of whose models play says why most of them didn't, and its
+help gives each model's reason. A provider's models are
 ranked by the families in `src/models.toml`, newer first within a family,
 then by the parameter count in the id, then newest first.
 

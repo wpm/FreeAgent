@@ -27,7 +27,8 @@ workflow takes a version's notes from here.
   `models --check`, most capable first, checked in the background and kept
   in `probes.json`. Local servers are found at launch, and any other
   OpenAI-compatible provider can be added. API keys sit with their
-  provider, in the OS keychain.
+  provider, in the OS keychain. A provider whose models can't be checked,
+  as when its account has no credits left, says why on its card.
   The main window opens on a start state with **Werewolf** or **Avalon**
   and **Play**, and **File** imports and exports configuration files that
   `social-deduction play` plays the same way.
@@ -200,6 +201,10 @@ workflow takes a version's notes from here.
   to be made to call a tool in Werewolf is asked to call one in Avalon. The
   reason a model did not play names the model once, then the game and the
   request it did not answer.
+- A provider's error gives the provider's own words first when it
+  classifies them with a code, and reads that code: an account out of
+  credits is told to add credits, and only a rate limit is told to try
+  again shortly.
 - Werewolf lists three or more players as Avalon does, "a, b and c": a
   pack of werewolves, the doctors protecting one player, and the dead.
 - **Breaking:** `social-deduction play CONFIG` replaces

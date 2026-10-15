@@ -10,7 +10,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use social_deduction_stage::settings::{
     AppSettings, Check, FieldError, KeyStatus, Listed, Listing, ModelSettings, Probe, Progress,
-    Provider, is_remote, provider_at,
+    Provider, Unchecked, is_remote, provider_at,
 };
 
 use super::{Editor, field_id, path};
@@ -115,6 +115,85 @@ pub fn checking_line(progress: &BTreeMap<String, Progress>, shown: &[Provider]) 
     Some(format!(
         "Checking {count} new {models} on {names} in the background."
     ))
+}
+
+/// Why the models of the provider `name` could not be checked, in the
+/// user's words, from `unchecked`. An account out of credits is told
+/// where to add them, at the host of the first link the provider gave.
+pub fn unchecked_line(name: &str, unchecked: &Unchecked) -> String {
+    match unchecked {
+        Unchecked::NoCredits(said) => {
+            let host = said
+                .split_whitespace()
+                .find_map(|word| word.strip_prefix("https://"))
+                .and_then(|rest| rest.split('/').next())
+                .map_or_else(String::new, |host| format!(" at {host}"));
+            format!(
+                "{name}'s account has no credits left. Add credits{host}, then reopen Settings."
+            )
+        }
+        Unchecked::KeyRefused(_) => format!("{name} didn't accept the API key."),
+        Unchecked::KeyForbidden(_) => format!("{name} didn't let the API key use its models."),
+        Unchecked::Failed(_) => {
+            format!("Some of {name}'s models couldn't be checked. Reopen Settings to try again.")
+        }
+    }
+}
+
+/// Why a model did not play, from `reason`, as its check gives it: the
+/// cause beneath the request it did not answer, or all of it.
+pub fn why_not(reason: &str) -> &str {
+    reason
+        .split_once(": did not answer ")
+        .and_then(|(_, rest)| rest.split_once(": "))
+        .map_or(reason, |(_, cause)| cause)
+}
+
+/// What a provider whose `listing` holds no model that plays says: a note
+/// giving the reason most of them did not play, the first of the most
+/// common in the listing's order, and a tip giving each model's reason.
+pub fn not_playing(listing: &Listing) -> (String, String) {
+    let reasons: Vec<(&str, &str)> = listing
+        .models
+        .iter()
+        .filter_map(|model| match listing.checks.get(&model.id) {
+            Some(Check::DidNotPlay(reason)) => Some((model.id.as_str(), why_not(reason))),
+            _ => None,
+        })
+        .collect();
+    let count = |why: &str| reasons.iter().filter(|(_, each)| *each == why).count();
+    let most = reasons
+        .iter()
+        .map(|(_, why)| *why)
+        .rev()
+        .max_by_key(|why| count(why))
+        .unwrap_or_default();
+    let note = format!(
+        "None of its models plays both games. Most often: {}.",
+        most.trim_end_matches('.')
+    );
+    let tip = reasons
+        .iter()
+        .map(|(id, why)| format!("{id}: {why}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (note, tip)
+}
+
+/// The line at the top of the tab once no models are being checked: that
+/// every model is, unless a provider of `shown` could not check some, as
+/// `progress` says.
+pub fn checked_line(progress: &BTreeMap<String, Progress>, shown: &[Provider]) -> &'static str {
+    let unchecked = shown.iter().any(|provider| {
+        progress
+            .get(&provider.base_url)
+            .is_some_and(|p| p.unchecked.is_some())
+    });
+    if unchecked {
+        "Some models couldn't be checked. Their providers say why."
+    } else {
+        "Every model is checked. Only those that play both games are listed."
+    }
 }
 
 /// The errors among `errors` of the model `name`, any field.
@@ -272,12 +351,17 @@ pub(super) fn Models(editor: Editor) -> impl IntoView {
                 </div>
             }
             .into_any(),
-            None => view! {
-                <div class="sd-status sd-status-idle" data-tip="Models are checked on first launch and after each update, and again when a provider lists a new model or a key changes.">
-                    <span>"Every model is checked. Only those that play both games are listed."</span>
-                </div>
+            None => {
+                let checked = catalog
+                    .progress
+                    .with(|progress| shown.with(|shown| checked_line(progress, shown)));
+                view! {
+                    <div class="sd-status sd-status-idle" data-tip="Models are checked on first launch and after each update, and again when a provider lists a new model, a key changes, or Settings opens with some not yet checked.">
+                        <span>{checked}</span>
+                    </div>
+                }
+                .into_any()
             }
-            .into_any(),
         }
     };
     view! {
@@ -367,7 +451,8 @@ fn ProviderCard(editor: Editor, catalog: Catalog, provider: Provider) -> impl In
 }
 
 /// The models a provider offers that play and are not added, each with
-/// **Add**, which asks for its name; or why there are none.
+/// **Add**, which asks for its name; or why there are none; and why some
+/// could not be checked, once checking ends.
 #[component]
 fn Available(
     editor: Editor,
@@ -394,6 +479,17 @@ fn Available(
             catalog
                 .progress
                 .with(|progress| remaining(progress, &base_url))
+        })
+    };
+    let unchecked = {
+        let base_url = provider.base_url.clone();
+        Memo::new(move |_| {
+            catalog.progress.with(|progress| {
+                progress
+                    .get(&base_url)
+                    .and_then(|p| p.unchecked.clone())
+                    .filter(|_| remaining(progress, &base_url).is_none())
+            })
         })
     };
     let rows = Memo::new(move |_| {
@@ -432,18 +528,45 @@ fn Available(
                     note("It lists no models.")
                 });
             }
-            if !rows.with(Vec::is_empty) || pending.with(Option::is_some) {
+            if !rows.with(Vec::is_empty)
+                || pending.with(Option::is_some)
+                || unchecked.with(Option::is_some)
+            {
                 return None;
             }
-            Some(note(if added.with(BTreeSet::is_empty) {
-                "None of its models plays both games yet."
-            } else {
-                "Every model this provider has that plays is already added."
-            }))
+            let checked = listing
+                .models
+                .iter()
+                .all(|model| model.hidden || listing.checks.contains_key(&model.id));
+            if !checked {
+                return Some(note("Its models haven't been checked yet."));
+            }
+            if !added.with(BTreeSet::is_empty) {
+                return Some(note(
+                    "Every model this provider has that plays is already added.",
+                ));
+            }
+            let (text, tip) = not_playing(listing);
+            Some(view! { <p class="sd-note" data-tip=tip>{text}</p> }.into_any())
         })
+    };
+    // Why some of its models could not be checked, once checking ends.
+    let trouble = {
+        let name = provider.name.clone();
+        move || {
+            let listed =
+                fetched.with(|listing| listing.as_ref().is_some_and(|l| l.error.is_none()));
+            let unchecked = unchecked.get().filter(|_| listed)?;
+            Some(view! {
+                <p class="sd-field-error" data-tip=unchecked.said().to_string()>
+                    {unchecked_line(&name, &unchecked)}
+                </p>
+            })
+        }
     };
     let provider = StoredValue::new(provider);
     view! {
+        {trouble}
         {none}
         <Show when=move || rows.with(|rows| !rows.is_empty())>
             <h5 class="sd-label" data-tip="Models from this provider that play both games and aren't added yet, most capable first.">"Available"</h5>
@@ -1001,6 +1124,102 @@ mod tests {
             Some(
                 "Checking 4 new models on Local (localhost:1234), OpenAI and X in the background."
             )
+        );
+    }
+
+    #[test]
+    fn once_checking_ends_the_status_line_says_whether_any_model_could_not_be_checked() {
+        let openai = "https://api.openai.com/v1";
+        let shown = [provider("OpenAI", openai)];
+        let ended = |unchecked: Option<Unchecked>| {
+            BTreeMap::from([(
+                openai.to_string(),
+                Progress {
+                    base_url: openai.to_string(),
+                    checked: 2,
+                    total: 2,
+                    unchecked,
+                },
+            )])
+        };
+        let every = "Every model is checked. Only those that play both games are listed.";
+        assert_eq!(checked_line(&BTreeMap::new(), &shown), every);
+        assert_eq!(checked_line(&ended(None), &shown), every);
+        let broke = ended(Some(Unchecked::NoCredits(String::new())));
+        assert_eq!(
+            checked_line(&broke, &shown),
+            "Some models couldn't be checked. Their providers say why."
+        );
+        // A provider not shown is not counted.
+        assert_eq!(checked_line(&broke, &[]), every);
+    }
+
+    #[test]
+    fn a_provider_whose_models_could_not_be_checked_says_why_in_the_user_s_words() {
+        let said = "You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.";
+        assert_eq!(
+            unchecked_line("OpenAI", &Unchecked::NoCredits(said.to_string())),
+            "OpenAI's account has no credits left. Add credits at platform.openai.com, then reopen Settings."
+        );
+        assert_eq!(
+            unchecked_line("Example", &Unchecked::NoCredits("Pay up.".to_string())),
+            "Example's account has no credits left. Add credits, then reopen Settings."
+        );
+        assert_eq!(
+            unchecked_line("OpenAI", &Unchecked::KeyRefused(String::new())),
+            "OpenAI didn't accept the API key."
+        );
+        assert_eq!(
+            unchecked_line("OpenAI", &Unchecked::KeyForbidden(String::new())),
+            "OpenAI didn't let the API key use its models."
+        );
+        assert_eq!(
+            unchecked_line("Local (localhost:1234)", &Unchecked::Failed(String::new())),
+            "Some of Local (localhost:1234)'s models couldn't be checked. Reopen Settings to try again."
+        );
+    }
+
+    #[test]
+    fn why_a_model_did_not_play_is_the_cause_beneath_the_request_it_did_not_answer() {
+        assert_eq!(
+            why_not(
+                "qwen did not play Werewolf: did not answer a day's request: the model made no tool call"
+            ),
+            "the model made no tool call"
+        );
+        assert_eq!(
+            why_not(
+                "qwen did not play Avalon: did not answer as a voter: POST x was answered 400 Bad Request: no: tools"
+            ),
+            "POST x was answered 400 Bad Request: no: tools"
+        );
+        assert_eq!(why_not("no tools"), "no tools");
+    }
+
+    #[test]
+    fn models_that_do_not_play_are_told_by_their_most_common_reason_and_each_in_the_tip() {
+        let no = |cause: &str| {
+            Check::DidNotPlay(format!(
+                "m did not play Werewolf: did not answer a vote: {cause}"
+            ))
+        };
+        let listing = listing(
+            &["a", "b", "c", "d", "text-embedding-3"],
+            &[
+                ("a", no("it made no tool call")),
+                ("b", no("it chose no one")),
+                ("c", no("it chose no one")),
+                ("d", no("it made no tool call")),
+            ],
+        );
+        let (note, tip) = not_playing(&listing);
+        assert_eq!(
+            note,
+            "None of its models plays both games. Most often: it made no tool call."
+        );
+        assert_eq!(
+            tip,
+            "a: it made no tool call\nb: it chose no one\nc: it chose no one\nd: it made no tool call"
         );
     }
 
