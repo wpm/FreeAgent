@@ -14,6 +14,10 @@ use social_deduction_stage::{
 /// The name narration is posted under, centered between the sides.
 pub const NARRATOR: &str = "Narrator";
 
+/// What the header shows in place of the clock while a Werewolf phase
+/// closes.
+pub const CLOSING: &str = "Closing…";
+
 /// How long, in log time, a model call is out before its dots show, so
 /// that a call that ends at once does not flicker.
 pub const THINKING_DELAY: Millis = 300;
@@ -119,11 +123,15 @@ pub struct Timer {
     pub began: Millis,
     /// How long it runs.
     pub limit_ms: u64,
+    /// When it stopped, in log time, if it has: it keeps what it had left
+    /// then.
+    pub stopped: Option<Millis>,
 }
 
 impl Timer {
     /// Milliseconds left at log time `now`, never below zero.
     pub fn left(&self, now: f64) -> f64 {
+        let now = self.stopped.map_or(now, |stopped| now.min(stopped as f64));
         (self.began as f64 + self.limit_ms as f64 - now).clamp(0.0, self.limit_ms as f64)
     }
 
@@ -338,13 +346,25 @@ impl Screen {
         }
     }
 
-    /// The phase's countdown, from the latest board of either game.
+    /// The phase's countdown, from the latest board of either game, while
+    /// the phase is not closing.
     pub fn phase_timer(&self) -> Option<Timer> {
         let (began, limit_ms) = match self.panel.as_ref()? {
             Panel::Avalon(panel) => (panel.began, panel.limit_ms),
-            Panel::Werewolf(panel) => (panel.began, panel.limit_ms),
+            Panel::Werewolf(panel) if panel.closing.is_none() => (panel.began, panel.limit_ms),
+            Panel::Werewolf(_) => return None,
         };
-        Some(Timer { began, limit_ms })
+        Some(Timer {
+            began,
+            limit_ms,
+            stopped: None,
+        })
+    }
+
+    /// Whether the Werewolf phase underway is closing, when the header
+    /// shows [`CLOSING`] in place of its clock.
+    pub fn closing(&self) -> bool {
+        matches!(&self.panel, Some(Panel::Werewolf(panel)) if panel.closing.is_some())
     }
 
     /// The root element's `data-theme`: `dark` by night and `light` by day
@@ -407,6 +427,21 @@ pub fn dots_due(cue: &Cue) -> Option<Millis> {
 }
 
 impl Board<WerewolfPanel> {
+    /// The day's tentative decision, its countdown stopped once the day
+    /// begins closing.
+    pub fn decision(&self) -> Option<Decision> {
+        let ratify = self.panel.ratify.as_ref();
+        let ratify = ratify.filter(|_| self.panel.phase == WerewolfPhase::Day)?;
+        Some(Decision {
+            target: ratify.target.clone(),
+            timer: Timer {
+                began: ratify.since,
+                limit_ms: ratify.limit_ms,
+                stopped: self.panel.closing,
+            },
+        })
+    }
+
     /// The day's votes counted per target, most first, a tie in seat
     /// order.
     pub fn tally(&self) -> Vec<(PlayerId, usize)> {
@@ -424,6 +459,28 @@ impl Board<WerewolfPanel> {
             .collect();
         tally.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
         tally
+    }
+}
+
+/// The day's tentative decision as the board shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decision {
+    /// Whom the vote would put out, or `None` for nobody.
+    pub target: Option<PlayerId>,
+    /// Its ratify countdown.
+    pub timer: Timer,
+}
+
+impl Decision {
+    /// What it says at log time `now`: `Player 4 out in 14s`, or
+    /// `Player 4 out` once its countdown has stopped.
+    pub fn label(&self, now: f64) -> String {
+        let seconds = self
+            .timer
+            .stopped
+            .is_none()
+            .then(|| self.timer.seconds(now));
+        ratify(self.target.as_deref(), seconds)
     }
 }
 
@@ -446,9 +503,14 @@ pub fn deed(player: &str, deed: &NightDeed) -> String {
     }
 }
 
-/// The tentative decision: `Player 4 out in 14s`, or `Nobody out in 14s`.
-pub fn ratify(target: Option<&str>, seconds: u64) -> String {
-    format!("{} out in {seconds}s", target.unwrap_or("Nobody"))
+/// The tentative decision: `Player 4 out in 14s`, or `Nobody out in 14s`,
+/// and without `seconds`, `Player 4 out`.
+pub fn ratify(target: Option<&str>, seconds: Option<u64>) -> String {
+    let out = format!("{} out", target.unwrap_or("Nobody"));
+    match seconds {
+        Some(seconds) => format!("{out} in {seconds}s"),
+        None => out,
+    }
 }
 
 /// How a player died: `killed night 2`, or `voted out day 1`.
@@ -1050,6 +1112,7 @@ mod tests {
         let timer = Timer {
             began: 1_000,
             limit_ms: 20_000,
+            stopped: None,
         };
         assert_eq!(timer.left(0.0), 20_000.0);
         assert_eq!(timer.left(6_000.0), 15_000.0);
@@ -1060,8 +1123,21 @@ mod tests {
         let none = Timer {
             began: 0,
             limit_ms: 0,
+            stopped: None,
         };
         assert_eq!(none.share(0.0), 0.0);
+    }
+
+    #[test]
+    fn a_stopped_timer_keeps_what_it_had_left_when_it_stopped() {
+        let timer = Timer {
+            began: 1_000,
+            limit_ms: 20_000,
+            stopped: Some(6_000),
+        };
+        assert_eq!(timer.left(3_000.0), 18_000.0);
+        assert_eq!(timer.left(30_000.0), 15_000.0);
+        assert_eq!(timer.seconds(30_000.0), 15);
     }
 
     #[test]
@@ -1072,7 +1148,8 @@ mod tests {
             avalon.phase_timer(),
             Some(Timer {
                 began: 0,
-                limit_ms: 60_000
+                limit_ms: 60_000,
+                stopped: None,
             })
         );
         let werewolf = shown(&[werewolf_cast(), tonight()]);
@@ -1080,9 +1157,76 @@ mod tests {
             werewolf.phase_timer(),
             Some(Timer {
                 began: 1_000,
-                limit_ms: 30_000
+                limit_ms: 30_000,
+                stopped: None,
             })
         );
+    }
+
+    /// The four's first day, deciding on `Player 4` from 3 s in for 20 s.
+    fn deciding() -> WerewolfPanel {
+        let mut day = first_day();
+        day.ratify = Some(Ratify {
+            target: Some("Player 4".to_string()),
+            since: 3_000,
+            limit_ms: 20_000,
+        });
+        day
+    }
+
+    /// `panel`, closing from 10 s in.
+    fn closing(panel: &WerewolfPanel) -> WerewolfPanel {
+        WerewolfPanel {
+            closing: Some(10_000),
+            ..panel.clone()
+        }
+    }
+
+    #[test]
+    fn a_closing_phase_shows_closing_in_place_of_its_clock_until_the_next_phase() {
+        let open = shown(&[werewolf_cast(), werewolf(&deciding())]);
+        assert!(!open.closing());
+        assert!(open.phase_timer().is_some());
+        let closed = shown(&[
+            werewolf_cast(),
+            werewolf(&deciding()),
+            werewolf(&closing(&deciding())),
+        ]);
+        assert!(closed.closing());
+        assert_eq!(closed.phase_timer(), None);
+        let night = shown(&[
+            werewolf_cast(),
+            werewolf(&closing(&deciding())),
+            werewolf(&first_night()),
+        ]);
+        assert!(!night.closing());
+        assert!(night.phase_timer().is_some());
+        assert!(!shown(&[cast(), panel(&board())]).closing());
+    }
+
+    #[test]
+    fn a_closing_day_freezes_its_decision_where_it_stood_when_it_began_closing() {
+        let mut later = closing(&deciding());
+        later.votes[0].1 = Some("Player 4".to_string());
+        let screen = shown(&[
+            werewolf_cast(),
+            werewolf(&deciding()),
+            werewolf(&closing(&deciding())),
+            werewolf(&later),
+        ]);
+        let decision = screen.werewolf().unwrap().decision().unwrap();
+        assert_eq!(decision.timer.stopped, Some(10_000));
+        assert_eq!(decision.label(40_000.0), "Player 4 out");
+        let open = shown(&[werewolf_cast(), werewolf(&deciding())]);
+        let decision = open.werewolf().unwrap().decision().unwrap();
+        assert_eq!(decision.timer.stopped, None);
+        assert_eq!(decision.label(10_000.0), "Player 4 out in 13s");
+        let night = WerewolfPanel {
+            phase: WerewolfPhase::Night,
+            ..deciding()
+        };
+        let screen = shown(&[werewolf_cast(), werewolf(&night)]);
+        assert_eq!(screen.werewolf().unwrap().decision(), None);
     }
 
     /// The cast of a Werewolf game of four: a werewolf, a doctor, a seer
@@ -1108,6 +1252,7 @@ mod tests {
             began: 1_000,
             limit_ms: 30_000,
             ratify: None,
+            closing: None,
             seats: players
                 .map(|name| SeatState {
                     name: name.to_string(),
@@ -1328,8 +1473,10 @@ mod tests {
             deed("Player 5", &NightDeed::Ask(target())),
             "Player 5 · ask → Player 3"
         );
-        assert_eq!(ratify(Some("Player 4"), 14), "Player 4 out in 14s");
-        assert_eq!(ratify(None, 3), "Nobody out in 3s");
+        assert_eq!(ratify(Some("Player 4"), Some(14)), "Player 4 out in 14s");
+        assert_eq!(ratify(None, Some(3)), "Nobody out in 3s");
+        assert_eq!(ratify(Some("Player 4"), None), "Player 4 out");
+        assert_eq!(ratify(None, None), "Nobody out");
         let died = |round, phase| death(&Death { round, phase });
         assert_eq!(died(2, WerewolfPhase::Night), "killed night 2");
         assert_eq!(died(1, WerewolfPhase::Day), "voted out day 1");

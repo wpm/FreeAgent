@@ -23,6 +23,7 @@ fn werewolf_panel() -> WerewolfPanel {
             since: 1_500,
             limit_ms: 10_000,
         }),
+        closing: Some(2_000),
         seats: vec![
             SeatState {
                 name: player(1),

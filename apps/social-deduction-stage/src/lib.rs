@@ -214,6 +214,10 @@ pub struct WerewolfPanel {
     pub limit_ms: u64,
     /// The day's tentative decision, with its ratify countdown.
     pub ratify: Option<Ratify>,
+    /// When the phase began closing, while it closes: its outcome is
+    /// fixed, and it waits for the players still finishing what they were
+    /// saying.
+    pub closing: Option<Millis>,
     /// Every seat, in seat order, alive or dead.
     pub seats: Vec<SeatState>,
     /// By day: each living player's vote, `None` while undecided.

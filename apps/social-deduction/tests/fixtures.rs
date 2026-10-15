@@ -41,14 +41,35 @@ fn tells(beat: &Beat, line: &str) -> bool {
     matches!(beat, Beat::Told(lines) if lines.iter().any(|told| told == line))
 }
 
+/// Whether some day closes with a player speaking while it closes, and the
+/// night follows.
+fn spoken_while_a_day_closes(cues: &[Cue]) -> bool {
+    let mut spoke = false;
+    let mut closing = false;
+    for cue in cues {
+        match &cue.beat {
+            Beat::Panel(Panel::Werewolf(panel)) if panel.phase == WerewolfPhase::Night => {
+                if spoke {
+                    return true;
+                }
+                closing = false;
+            }
+            Beat::Panel(Panel::Werewolf(panel)) => closing = panel.closing.is_some(),
+            Beat::Said { .. } => spoke |= closing,
+            _ => {}
+        }
+    }
+    false
+}
+
 #[test]
 fn the_prompted_werewolf_game_has_everything_the_screen_check_plays() {
-    // Talk, thinking, night and day, a ratified day, a night kill, late
-    // speech and a winner.
+    // Talk, thinking, night and day, a day closing with speech while it
+    // closes, a ratified day, a night kill and a winner.
     let cues = folded("werewolf-prompted");
     assert!(any(&cues, |beat| matches!(beat, Beat::Said { .. })));
     assert!(any(&cues, |beat| matches!(beat, Beat::Thinking { .. })));
-    assert!(any(&cues, |beat| matches!(beat, Beat::Late { .. })));
+    assert!(spoken_while_a_day_closes(&cues));
     assert!(any(&cues, |beat| in_phase(beat, WerewolfPhase::Night)));
     assert!(any(&cues, |beat| in_phase(beat, WerewolfPhase::Day)));
     assert!(any(&cues, |beat| tells(beat, "The votes stand.")));
