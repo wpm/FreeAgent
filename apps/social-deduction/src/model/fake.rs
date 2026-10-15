@@ -13,13 +13,16 @@ use std::time::Duration;
 /// How a [`FakeModel`] answers a request.
 type Answering = dyn Fn(&Request) -> anyhow::Result<Response> + Send + Sync;
 
+/// How long a [`FakeModel`] takes to answer a request.
+type Taking = dyn Fn(&Request) -> Duration + Send + Sync;
+
 /// A model that answers as it was built to and remembers what it was
 /// asked.
 pub struct FakeModel {
     answer: Box<Answering>,
     requests: Mutex<Vec<Request>>,
-    /// How long it takes to answer.
-    delay: Duration,
+    /// How long it takes to answer each request.
+    delay: Box<Taking>,
 }
 
 impl FakeModel {
@@ -31,7 +34,7 @@ impl FakeModel {
         Self {
             answer: Box::new(answer),
             requests: Mutex::new(Vec::new()),
-            delay: Duration::ZERO,
+            delay: Box::new(|_| Duration::ZERO),
         }
     }
 
@@ -49,7 +52,15 @@ impl FakeModel {
     /// This model, taking `delay` to answer each request, so that a call
     /// can be in progress while other things happen.
     pub fn taking(self, delay: Duration) -> Self {
-        Self { delay, ..self }
+        self.taking_by(move |_| delay)
+    }
+
+    /// This model, taking as long as `delay` says to answer each request.
+    pub fn taking_by(self, delay: impl Fn(&Request) -> Duration + Send + Sync + 'static) -> Self {
+        Self {
+            delay: Box::new(delay),
+            ..self
+        }
     }
 
     /// Every request the model has been sent, in order.
@@ -62,7 +73,7 @@ impl FakeModel {
 impl Model for FakeModel {
     async fn complete(&self, request: &Request) -> anyhow::Result<Response> {
         self.requests.lock().unwrap().push(request.clone());
-        tokio::time::sleep(self.delay).await;
+        tokio::time::sleep((self.delay)(request)).await;
         (self.answer)(request)
     }
 }

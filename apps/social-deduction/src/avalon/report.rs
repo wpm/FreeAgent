@@ -30,8 +30,8 @@ use std::time::{Duration, SystemTime};
 /// names a player with its role in parentheses, and lists players in seat
 /// order. A blank line sets each phase off from what came before it, and
 /// another the winner from the last. Talk is told as it comes, while its
-/// phase lasts; a message that comes after its phase has ended, whether
-/// withheld or said late, stays in the log and out of the account. A
+/// phase lasts; a message that comes after its phase has ended, and a
+/// withheld choice, stay in the log and out of the account. A
 /// player's failure to act is told as it happens, with what went wrong.
 #[derive(Debug, Default)]
 pub struct Narrator {
@@ -851,19 +851,6 @@ mod tests {
         );
         narrator.narrate(&opens(1, 2, Phase::Vote, &["Player 1", "Player 3"]));
         assert!(narrator.narrate(&spoke(1, "Take me.")).is_empty());
-        let withheld = |message| {
-            logged(Entry::Withheld {
-                from: id("Player 3"),
-                message,
-                seen: Some(4),
-                forgot: None,
-            })
-        };
-        assert!(
-            narrator
-                .narrate(&withheld(utterance(2, "Player 3", 0, "Yes.")))
-                .is_empty()
-        );
     }
 
     #[test]

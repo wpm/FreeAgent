@@ -8,7 +8,7 @@ use std::time::Duration;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_rich_chat::{Message, RenderOptions, RichChatStyle, RichText, Transcript};
+use leptos_rich_chat::{Message, RenderOptions, RichChatStyle, Transcript};
 use social_deduction_stage::{
     Cue, Deed, GameName, NightDeed, Outcome, Side, WerewolfPanel, WerewolfPhase,
 };
@@ -260,11 +260,10 @@ pub(crate) fn Viewer(
     let closing = Memo::new(move |_| screen.with(Screen::closing));
     // Closing pulses while the cues arrive, and holds still at rest.
     let running = Memo::new(move |_| screen.with(|screen| screen.clock.running));
-    let rendering = options.clone();
     // Every thinker's dots share one text, which stays empty.
     let silence = RwSignal::new(String::new());
     let messages = Signal::derive(move || {
-        let mut messages = posts.with(|posts| messages(posts, &rendering));
+        let mut messages = posts.with(|posts| messages(posts));
         thinkers.with(|thinkers| {
             messages.extend(thinkers.iter().map(|thinker| dots(thinker, silence)));
         });
@@ -370,8 +369,8 @@ fn PhaseClock(timer: Timer, now: Signal<f64>) -> impl IntoView {
     }
 }
 
-/// `posts`, as Rich-Chat messages, rendered with `options`.
-fn messages(posts: &[Post], options: &RenderOptions) -> Vec<Message> {
+/// `posts`, as Rich-Chat messages.
+fn messages(posts: &[Post]) -> Vec<Message> {
     posts
         .iter()
         .map(|post| match &post.body {
@@ -382,18 +381,6 @@ fn messages(posts: &[Post], options: &RenderOptions) -> Vec<Message> {
                 })
             }
             Body::Text(text) => Message::new(post.id.clone(), post.name.clone(), text.clone()),
-            Body::Late(text) => {
-                let text = text.clone();
-                let options = options.clone();
-                Message::view(post.id.clone(), post.name.clone(), move || {
-                    view! {
-                        <div class="rc-bubble sd-late">
-                            <RichText content=text.clone() options=options.clone() />
-                            <p class="sd-late-caption">"Too late, never sent."</p>
-                        </div>
-                    }
-                })
-            }
         })
         .collect()
 }

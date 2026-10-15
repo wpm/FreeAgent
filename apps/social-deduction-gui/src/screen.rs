@@ -40,8 +40,6 @@ pub enum Body {
     Heading(String),
     /// Markdown, drawn as a bubble.
     Text(String),
-    /// Markdown said too late to be sent, drawn as a faded bubble.
-    Late(String),
 }
 
 /// A player's thinking dots, pinned below the chat.
@@ -227,7 +225,6 @@ impl Screen {
             }
             Beat::Told(lines) => self.post(NARRATOR.to_string(), Body::Text(lines.join("  \n"))),
             Beat::Said { who, text } => self.post(self.label(who), Body::Text(text.clone())),
-            Beat::Late { who, text } => self.post(self.label(who), Body::Late(text.clone())),
             Beat::Thinking { who } => self.thinking.push((who.clone(), cue.at)),
             Beat::Thought { who } => {
                 self.thinking.retain(|(thinker, _)| thinker != who);
@@ -1061,23 +1058,6 @@ mod tests {
     }
 
     #[test]
-    fn late_speech_is_posted_from_its_speaker_as_late() {
-        let late = cue(Beat::Late {
-            who: "Player 2".to_string(),
-            text: "Wait!".to_string(),
-        });
-        let screen = shown(&[cast(), late]);
-        assert_eq!(
-            screen.posts,
-            [Post {
-                id: "m1".to_string(),
-                name: "Player 2 · Assassin".to_string(),
-                body: Body::Late("Wait!".to_string()),
-            }]
-        );
-    }
-
-    #[test]
     fn the_clock_runs_at_its_rate_from_the_latest_cue_and_never_runs_backward() {
         let mut screen = Screen::default();
         screen.apply(&cue_at(1_000, Beat::Clock { rate: 2.0 }), true);
@@ -1444,12 +1424,6 @@ mod tests {
         assert_eq!(Screen::default().clock.rate, 1.0);
         let screen = shown(&[cue(Beat::Clock { rate: 4.0 })]);
         assert_eq!(screen.clock.rate, 4.0);
-    }
-
-    #[test]
-    fn late_bubbles_are_styled() {
-        let css = include_str!("../style.css");
-        assert!(css.contains(".sd-late"));
     }
 
     #[test]

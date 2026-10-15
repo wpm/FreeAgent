@@ -61,14 +61,6 @@ pub enum Beat {
         /// What they said.
         text: String,
     },
-    /// An utterance made too late to be sent. Shown faded; the players never
-    /// heard it.
-    Late {
-        /// Who spoke.
-        who: PlayerId,
-        /// What they would have said.
-        text: String,
-    },
     /// A player's model call went out: show its thinking dots.
     Thinking {
         /// Whose call went out.

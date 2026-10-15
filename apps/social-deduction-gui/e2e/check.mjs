@@ -11,9 +11,9 @@
 // The prompted Werewolf game, played at ten times the pace, shows a
 // thinking player's dots until it speaks, turns dark by night and light by
 // day, and shows a day closing, with speech landing while it does, before
-// the night falls. The prompted Avalon board names the
-// Assassin's target. At 420 px wide the board stacks under the chat and
-// nothing scrolls sideways. The console stays clean throughout.
+// the night falls. The prompted Avalon board names the Assassin's target.
+// At 420 px wide the board stacks under the chat and nothing scrolls
+// sideways. The console stays clean throughout.
 // Screenshots land in ./screenshots for a human to look at.
 //
 //   npm test                 # against ../dist, from this directory

@@ -27,10 +27,10 @@
 //! has at most one call in progress and one waiting, however fast the talk
 //! comes. A reminder is numbered so that only the latest set counts, and
 //! one for a phase that has ended is ignored. The calls are carried out in
-//! the order the model made them. Before carrying out anything a response
-//! asks for, the player checks that the phase the call began in is still
-//! the one it was last announced; if not, it sends nothing and logs each
-//! message it would have sent as [`Entry::Withheld`].
+//! the order the model made them. Speech is always sent, tagged with the
+//! latest phase the player was announced. A choice is sent only if the
+//! phase the call began in is still the latest and not closing; otherwise
+//! the player logs it as [`Entry::Withheld`], and sets no reminder either.
 //!
 //! Told that the phase it is in is closing, a player makes no choice for
 //! it: it starts no model call for it, sends the speech of the call it has
@@ -259,8 +259,8 @@ pub trait Account<G: Game> {
 
 /// What a call has a player send, as the message it makes.
 pub(crate) trait Sending<G: Game> {
-    /// Whether this is speech, which is sent while its phase closes. All
-    /// else is a choice, which is not.
+    /// Whether this is speech, which is always sent. All else is a choice,
+    /// which is sent only in the phase it was made for while it is open.
     fn speaks(&self) -> bool;
 
     /// The message `from` sends for this in the phase numbered `seq`,
@@ -666,29 +666,30 @@ impl<G: Game> Player<G> {
     }
 
     /// Carry out `sends` and `wait`, what a response made from what it was
-    /// `shown` asked for in the phase numbered `seq`, which `view` shows, if
-    /// that is still the phase the player was last announced: send each in
-    /// order, numbered, to whom the rules of the game send it, and then set
-    /// a reminder to be woken after `wait`. A call may begin in one phase
-    /// and end in the next, and then nothing is sent, each message is
-    /// logged as withheld, unnumbered, and no reminder is set. While the
-    /// phase closes, its speech is sent, each choice is withheld, and no
-    /// reminder is set.
+    /// `shown` asked for in the phase numbered `seq`: send each in order,
+    /// numbered, to whom the rules of the game send it in the latest phase
+    /// the player was announced, and then set a reminder to be woken after
+    /// `wait`. Speech is always sent, tagged with the latest phase. A
+    /// choice is sent only while the call's phase is the latest and not
+    /// closing, and so is a reminder set; otherwise the choice is logged as
+    /// withheld, unnumbered, and no reminder is set.
     pub(crate) fn carry_out(
         &self,
         seq: u64,
-        view: &G::View,
         sends: Vec<impl Sending<G>>,
         wait: Option<Duration>,
         shown: Shown,
     ) -> anyhow::Result<()> {
         let me = &self.context.id;
-        let still_on = self.mind.in_phase(seq);
-        let open = still_on && !self.mind.closing(seq);
+        let latest = self
+            .mind
+            .announced()
+            .context("answered before any phase was announced")?;
+        let open = latest.seq == seq && !self.mind.closing(seq);
         for sending in sends {
-            if still_on && (sending.speaks() || open) {
-                let message = sending.message(seq, me, self.mind.number());
-                let to = G::receivers(&message, me, view);
+            if sending.speaks() || open {
+                let message = sending.message(latest.seq, me, self.mind.number());
+                let to = G::receivers(&message, me, &latest.view);
                 self.send(message, to, shown)?;
             } else {
                 self.context.log(Entry::Withheld {

@@ -983,12 +983,6 @@ pub(crate) mod tests {
                 seen: Some(5),
                 forgot: None,
             },
-            Entry::Withheld {
-                from: "seer".to_string(),
-                message: utterance(2, "seer", 0, "Too late."),
-                seen: Some(7),
-                forgot: None,
-            },
             Entry::Action {
                 from: "seer".to_string(),
                 n: 3,
@@ -1023,7 +1017,7 @@ pub(crate) mod tests {
         };
         let withheld: fn(Option<usize>) -> Entry = |forgot| Entry::Withheld {
             from: "seer".to_string(),
-            message: utterance(2, "seer", 0, "Too late."),
+            message: selection(2, "seer", 0, "wolf1"),
             seen: Some(7),
             forgot,
         };

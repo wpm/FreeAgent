@@ -74,10 +74,10 @@ does.
 
 `fixtures/` holds the logs of two prompted games played against a local
 model, with talk, thinking and Werewolf phases closing while players
-finish speaking, which random players never produce. `#avalon-prompted` and `#werewolf-prompted` open them. CI's Viewer
-job builds the page with `build-page.sh` and drives it in headless
-Chromium with `e2e/check.mjs`, which checks what each game shows and saves
-screenshots. To run it locally, from the root of a checkout:
+finish speaking, which random players never produce. `#avalon-prompted`
+and `#werewolf-prompted` open them. CI's Viewer job builds the page with
+`build-page.sh` and drives it in headless Chromium with `e2e/check.mjs`,
+which checks what each game shows and saves screenshots. To run it locally, from the root of a checkout:
 
 ```sh
 apps/social-deduction-gui/build-page.sh
