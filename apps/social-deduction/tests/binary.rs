@@ -889,8 +889,7 @@ fn the_models_command_with_check_asks_each_model_to_play_and_marks_its_answer() 
     // Refused as bad when made to call a tool, it was asked again to call
     // one, and refused again.
     let refused = format!(
-        "POST {base_url}/chat/completions was answered 400 Bad Request. \
-         The provider said: {}",
+        "POST {base_url}/chat/completions was answered 400 Bad Request: {}",
         refusal("zephyr-7b")
     );
     assert_eq!(
@@ -922,8 +921,7 @@ fn the_models_command_with_check_marks_a_model_that_plays_by_night_alone_as_not_
             "  qwen2.5-7b-instruct did not play Werewolf",
             "  did not answer a day's request",
             &format!(
-                "  POST {base_url}/chat/completions was answered 400 Bad Request. \
-                 The provider said: {}",
+                "  POST {base_url}/chat/completions was answered 400 Bad Request: {}",
                 day_refusal(EXAMPLE_MODEL)
             ),
         ],
@@ -947,8 +945,7 @@ fn the_models_command_with_check_marks_a_model_that_plays_werewolf_but_not_avalo
             "  qwen2.5-7b-instruct did not play Avalon",
             "  did not answer as a voter",
             &format!(
-                "  POST {base_url}/chat/completions was answered 400 Bad Request. \
-                 The provider said: {}",
+                "  POST {base_url}/chat/completions was answered 400 Bad Request: {}",
                 refusal(EXAMPLE_MODEL)
             ),
         ],

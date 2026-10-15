@@ -1835,8 +1835,7 @@ mod tests {
             not_playing(check_plays(&provider, MODEL_ID, ToolChoice::Required).await).unwrap();
         let shown = format!("{error:#}");
         let refused = format!(
-            "POST {base_url}/chat/completions was answered 400 Bad Request. \
-             The provider said: {}",
+            "POST {base_url}/chat/completions was answered 400 Bad Request: {}",
             canned::refusal(MODEL_ID)
         );
         assert_eq!(
