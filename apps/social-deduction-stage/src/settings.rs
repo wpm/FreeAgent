@@ -588,7 +588,7 @@ pub fn provider_at<'a>(providers: &'a [Provider], base_url: &str) -> Option<&'a 
 
 /// The host of `base_url`: `api.example.com` of
 /// `https://api.example.com/v1`.
-fn host(base_url: &str) -> &str {
+pub fn host(base_url: &str) -> &str {
     let base_url = base_url.trim();
     let rest = base_url
         .split_once("://")
@@ -658,7 +658,8 @@ pub struct Progress {
     pub base_url: String,
     /// How many models have been probed.
     pub checked: usize,
-    /// How many models there are to probe.
+    /// How many models there are to probe: those not probed once the
+    /// account failed are left for the next round.
     pub total: usize,
     /// Why the last of its models that could not be asked could not be,
     /// if one could not be.
@@ -667,35 +668,33 @@ pub struct Progress {
 }
 
 /// Why a model could not be asked to play, which says nothing about the
-/// model, each with what the provider said, or the error when it said
-/// nothing.
+/// model, and what the provider said, or the error when it said nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Unchecked {
+pub struct Unchecked {
+    /// What the trouble was.
+    pub trouble: Trouble,
+    /// What the provider said, or the error.
+    pub said: String,
+}
+
+/// What kept a model from being asked to play.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Trouble {
     /// The account has no credits left.
-    NoCredits(String),
+    NoCredits,
     /// The provider did not accept the API key.
-    KeyRefused(String),
+    KeyRefused,
     /// The API key is not allowed to use the provider's models.
-    KeyForbidden(String),
+    KeyForbidden,
     /// Anything else, such as a provider that could not be reached.
-    Failed(String),
+    Failed,
 }
 
 impl Unchecked {
     /// Whether every model of the provider would fail to be asked the
     /// same way, the account being the trouble.
     pub fn account_wide(&self) -> bool {
-        !matches!(self, Unchecked::Failed(_))
-    }
-
-    /// What the provider said, or the error.
-    pub fn said(&self) -> &str {
-        match self {
-            Unchecked::NoCredits(said)
-            | Unchecked::KeyRefused(said)
-            | Unchecked::KeyForbidden(said)
-            | Unchecked::Failed(said) => said,
-        }
+        self.trouble != Trouble::Failed
     }
 }
 
@@ -744,6 +743,20 @@ impl Check {
     /// Whether the model plays, made to call a tool or not.
     pub fn plays(&self) -> bool {
         !matches!(self, Check::DidNotPlay(_))
+    }
+
+    /// Why the model did not play, if it did not: the cause beneath the
+    /// request it did not answer, as its probe words the reason, or all
+    /// of the reason.
+    pub fn cause(&self) -> Option<&str> {
+        let Check::DidNotPlay(reason) = self else {
+            return None;
+        };
+        let cause = reason
+            .split_once(": did not answer ")
+            .and_then(|(_, rest)| rest.split_once(": "))
+            .map_or(reason.as_str(), |(_, cause)| cause);
+        Some(cause)
     }
 }
 
@@ -1073,21 +1086,28 @@ mod tests {
     fn a_model_plays_whether_or_not_it_is_made_to_call_a_tool() {
         let no = Check::DidNotPlay("no tools".to_string());
         assert!(Check::Plays.plays() && Check::PlaysUnforced.plays() && !no.plays());
+        assert_eq!(no.cause(), Some("no tools"));
+        let reason = "qwen did not play Avalon: did not answer as a voter: POST x: no: tools";
+        assert_eq!(
+            Check::DidNotPlay(reason.to_string()).cause(),
+            Some("POST x: no: tools")
+        );
     }
 
     #[test]
     fn only_a_failure_of_the_account_stops_a_provider_s_checks() {
-        let said = || "said".to_string();
-        for unchecked in [
-            Unchecked::NoCredits(said()),
-            Unchecked::KeyRefused(said()),
-            Unchecked::KeyForbidden(said()),
+        let unchecked = |trouble| Unchecked {
+            trouble,
+            said: String::new(),
+        };
+        for trouble in [
+            Trouble::NoCredits,
+            Trouble::KeyRefused,
+            Trouble::KeyForbidden,
         ] {
-            assert!(unchecked.account_wide(), "{unchecked:?}");
-            assert_eq!(unchecked.said(), "said");
+            assert!(unchecked(trouble).account_wide(), "{trouble:?}");
         }
-        assert!(!Unchecked::Failed(said()).account_wide());
-        assert_eq!(Unchecked::Failed(said()).said(), "said");
+        assert!(!unchecked(Trouble::Failed).account_wide());
     }
 
     #[test]

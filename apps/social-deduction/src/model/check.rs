@@ -306,6 +306,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_cause_of_a_model_not_playing_is_what_the_provider_answered_the_request() {
+        let model = "qwen2.5-7b-instruct";
+        let spec = qwen(&canned::refusing_days(&[model]), "");
+        let checked = check(&spec, &Environment).await.unwrap();
+        let cause = checked.cause().unwrap();
+        assert!(cause.starts_with("POST "), "{cause}");
+        assert!(
+            cause.ends_with(&format!("400 Bad Request: {}", canned::day_refusal(model))),
+            "{cause}"
+        );
+        assert_eq!(Check::Plays.cause(), None);
+    }
+
+    #[tokio::test]
     async fn a_model_not_served_or_without_its_key_is_an_error() {
         let spec = qwen(&canned::serving(&["llama"]), "");
         let error = check(&spec, &Environment).await.unwrap_err();

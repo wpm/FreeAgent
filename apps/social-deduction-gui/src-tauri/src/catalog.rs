@@ -160,6 +160,21 @@ pub fn check_in_background(app: &AppHandle) {
     });
 }
 
+/// Check in the background, as [`check_in_background`] does, if some
+/// models could not be checked.
+pub fn check_unchecked(app: &AppHandle) {
+    let catalog = app.state::<Catalog>();
+    let unchecked = catalog
+        .progress
+        .lock()
+        .unwrap()
+        .values()
+        .any(|p| p.unchecked.is_some());
+    if unchecked {
+        check_in_background(app);
+    }
+}
+
 /// Probe each model of the provider at `base_url`, asked with `key`, that
 /// its `listing` holds and that has not been probed, as many at once as
 /// [`catalog::at_once`] says, on a thread of its own, unless it is being

@@ -165,8 +165,8 @@ pub async fn settings_open(app: AppHandle, path: Option<Vec<String>>) -> Result<
 }
 
 /// Open the Settings window, or focus it if it is open, at the field
-/// `path` if one is given. Opening it checks the models not yet checked
-/// again, as those of a provider whose account failed.
+/// `path` if one is given. Opening it tries again to check the models
+/// that could not be checked, as those of a provider whose account failed.
 ///
 /// # Errors
 ///
@@ -195,7 +195,7 @@ pub fn show(app: &AppHandle, path: Option<Vec<String>>) -> tauri::Result<()> {
     .min_inner_size(520.0, 400.0)
     .resizable(true)
     .build()?;
-    crate::catalog::check_in_background(app);
+    crate::catalog::check_unchecked(app);
     Ok(())
 }
 

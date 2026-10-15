@@ -33,7 +33,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -245,18 +245,21 @@ impl fmt::Display for Rejection {
 impl std::error::Error for Rejection {}
 
 /// What a provider said about a failure: the start of its words, if it
-/// said any, and the code classifying the failure, if it gave one.
+/// said any, whether they are a JSON error's message, its own account of
+/// the failure, and that error's code and type, if it gave them.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Said {
     pub(crate) words: Option<String>,
+    pub(crate) accounted: bool,
     pub(crate) code: Option<String>,
+    pub(crate) kind: Option<String>,
 }
 
 impl Said {
     /// What the provider said in `text`, the body of its answer. A JSON
-    /// error in OpenAI's and Anthropic's shape gives its `message` and its
-    /// `code`, or failing that its `type`; any other text is its words,
-    /// trimmed, and nothing is nothing.
+    /// error in OpenAI's and Anthropic's shape gives its `message`, its
+    /// `code` and its `type`; any other text is its words, trimmed, and
+    /// nothing is nothing.
     fn read(text: &str) -> Self {
         #[derive(Deserialize)]
         struct Body {
@@ -272,19 +275,27 @@ impl Said {
         if text.is_empty() {
             return Self::default();
         }
+        let named = |value: Option<serde_json::Value>| value?.as_str().map(String::from);
         match serde_json::from_str::<Body>(text) {
             Ok(Body { error }) => Self {
                 words: Some(start(&error.message)),
-                code: [error.code, error.r#type]
-                    .into_iter()
-                    .flatten()
-                    .find_map(|code| code.as_str().map(String::from)),
+                accounted: true,
+                code: named(error.code),
+                kind: named(error.r#type),
             },
             Err(_) => Self {
                 words: Some(start(text)),
-                code: None,
+                ..Self::default()
             },
         }
+    }
+
+    /// Whether the provider classified the failure as `name`, by its code
+    /// or its type.
+    pub(crate) fn is(&self, name: &str) -> bool {
+        [&self.code, &self.kind]
+            .into_iter()
+            .any(|given| given.as_deref() == Some(name))
     }
 }
 
@@ -325,15 +336,16 @@ pub(crate) const NO_CREDITS: &str = "insufficient_quota";
 
 /// A status that is not success, in words: the status, what it is likely
 /// to mean coming from a provider that was sent a key or not, and what
-/// the provider `said` about it. Words the provider classified with a
-/// code are its own account of the failure, so they come first and the
-/// meaning of the status after; otherwise the meaning comes first. Only a
-/// rate limit, a 429 with no code or one saying so, is to be tried again
-/// shortly: OpenAI answers 429 to an account out of credits too.
+/// the provider `said` about it. Words that are the provider's own account
+/// of the failure come first and the meaning of the status after;
+/// otherwise the meaning comes first. Only a rate limit, a 429 with no
+/// code or one saying so, is to be tried again shortly: OpenAI answers 429
+/// to an account out of credits too.
 fn explained(status: StatusCode, keyed: bool, said: &Said) -> String {
-    let code = said.code.as_deref();
+    let limited =
+        said.code.is_none() || said.is("rate_limit_exceeded") || said.is("rate_limit_error");
     let meaning = match status {
-        _ if code == Some(NO_CREDITS) => {
+        _ if said.is(NO_CREDITS) => {
             Some("the account has no credits left; add credits to continue")
         }
         StatusCode::UNAUTHORIZED if keyed => Some("the API key was not accepted"),
@@ -342,12 +354,7 @@ fn explained(status: StatusCode, keyed: bool, said: &Said) -> String {
         StatusCode::NOT_FOUND => Some(
             "nothing is served at that path; the base URL is the root of the API, ending in /v1",
         ),
-        StatusCode::TOO_MANY_REQUESTS
-            if matches!(
-                code,
-                None | Some("rate_limit_exceeded" | "rate_limit_error")
-            ) =>
-        {
+        StatusCode::TOO_MANY_REQUESTS if limited => {
             Some("it is limiting the rate of requests; try again shortly")
         }
         StatusCode::TOO_MANY_REQUESTS => Some("it is turning requests away"),
@@ -358,18 +365,18 @@ fn explained(status: StatusCode, keyed: bool, said: &Said) -> String {
     };
     let mut explanation = status.to_string();
     match (&said.words, meaning) {
-        (Some(words), meaning) if code.is_some() => {
-            explanation.push_str(&format!(": {words}"));
+        (Some(words), meaning) if said.accounted => {
+            let _ = write!(explanation, ": {words}");
             if let Some(meaning) = meaning {
-                explanation.push_str(&format!(" ({meaning})"));
+                let _ = write!(explanation, " ({meaning})");
             }
         }
         (words, meaning) => {
             if let Some(meaning) = meaning {
-                explanation.push_str(&format!(": {meaning}"));
+                let _ = write!(explanation, ": {meaning}");
             }
             if let Some(words) = words {
-                explanation.push_str(&format!(". The provider said: {words}"));
+                let _ = write!(explanation, ". The provider said: {words}");
             }
         }
     }
@@ -887,14 +894,14 @@ mod tests {
 
     #[test]
     fn what_the_provider_said_is_its_message_when_it_is_json_and_its_text_when_not() {
-        // OpenAI's and Anthropic's shape.
+        // OpenAI's and Anthropic's shape, the provider's own account.
         assert_eq!(
             explanation(
                 "418 I'm a teapot",
                 false,
-                r#"{"type": "error", "error": {"message": "Brewing", "code": null}}"#
+                r#"{"type": "error", "error": {"type": "api_error", "message": "Brewing"}}"#
             ),
-            "418 I'm a teapot. The provider said: Brewing"
+            "418 I'm a teapot: Brewing"
         );
         // Anything else is quoted as it is, trimmed; nothing is not quoted.
         assert_eq!(
@@ -937,6 +944,12 @@ mod tests {
             explanation("429 Too Many Requests", true, limited),
             "429 Too Many Requests: Slow down (it is limiting the rate of requests; try again shortly)"
         );
+        // OpenAI's with no code, which carries a type.
+        let limited = r#"{"error": {"message": "Slow down", "type": "requests", "code": null}}"#;
+        assert_eq!(
+            explanation("429 Too Many Requests", true, limited),
+            "429 Too Many Requests: Slow down (it is limiting the rate of requests; try again shortly)"
+        );
         // A 429 with a code of another kind is not.
         let other = r#"{"error": {"message": "Not now", "code": "busy"}}"#;
         assert_eq!(
@@ -946,7 +959,7 @@ mod tests {
     }
 
     #[test]
-    fn what_the_provider_said_with_a_code_comes_before_the_meaning_of_the_status() {
+    fn what_the_provider_said_in_a_json_error_comes_before_the_meaning_of_the_status() {
         let missing = r#"{"error": {"message": "The model `gpt-9` does not exist", "type": "invalid_request_error", "code": "model_not_found"}}"#;
         assert_eq!(
             explanation("404 Not Found", true, missing),

@@ -12,7 +12,7 @@
 
 use crate::model::check;
 use crate::model::{self, Provider as Client, REQUEST_TIMEOUT};
-use crate::settings::{Check, Listed, Listing, Provider, Unchecked, is_remote};
+use crate::settings::{Check, Listed, Listing, Provider, Trouble, Unchecked, is_remote};
 use futures_util::StreamExt;
 use reqwest::StatusCode;
 use secrecy::SecretString;
@@ -189,24 +189,19 @@ pub async fn probe(base_url: &str, id: &str, key: Option<SecretString>) -> anyho
 }
 
 /// Why a model could not be asked to play, from `error`, its probe's:
-/// for what the provider said, or the error when it said nothing.
+/// with what the provider said, or the error when it said nothing.
 pub fn unchecked(error: &anyhow::Error) -> Unchecked {
     let rejection = model::rejection(error);
+    let trouble = match rejection {
+        Some(rejection) if rejection.said.is(model::NO_CREDITS) => Trouble::NoCredits,
+        Some(rejection) if rejection.status == StatusCode::UNAUTHORIZED => Trouble::KeyRefused,
+        Some(rejection) if rejection.status == StatusCode::FORBIDDEN => Trouble::KeyForbidden,
+        _ => Trouble::Failed,
+    };
     let said = rejection
         .and_then(|rejection| rejection.said.words.clone())
         .unwrap_or_else(|| format!("{error:#}"));
-    match rejection {
-        Some(rejection) if rejection.said.code.as_deref() == Some(model::NO_CREDITS) => {
-            Unchecked::NoCredits(said)
-        }
-        Some(rejection) if rejection.status == StatusCode::UNAUTHORIZED => {
-            Unchecked::KeyRefused(said)
-        }
-        Some(rejection) if rejection.status == StatusCode::FORBIDDEN => {
-            Unchecked::KeyForbidden(said)
-        }
-        _ => Unchecked::Failed(said),
-    }
+    Unchecked { trouble, said }
 }
 
 /// Probe each of `ids` with `probe`, `at_once` at a time, passing each id
@@ -569,43 +564,42 @@ mod tests {
     async fn a_model_that_could_not_be_asked_is_unchecked_for_what_the_provider_said() {
         let answered = async |status: &str, body: &str| {
             let (base_url, _served) = canned::answering(status, body);
-            let error = probe(&base_url, "gpt", None).await.unwrap_err();
-            unchecked(&error)
+            unchecked(&probe(&base_url, "gpt", None).await.unwrap_err())
+        };
+        let trouble = |trouble, said: &str| Unchecked {
+            trouble,
+            said: said.to_string(),
         };
         let said = r#"{"error": {"message": "Not you", "code": "nope"}}"#;
         assert_eq!(
             answered("429 Too Many Requests", canned::NO_CREDITS).await,
-            Unchecked::NoCredits(
+            trouble(
+                Trouble::NoCredits,
                 "You have no credits remaining. Add credits to continue using the API at \
                  https://platform.openai.com/settings/organization/billing/."
-                    .to_string()
             )
         );
         assert_eq!(
             answered("401 Unauthorized", said).await,
-            Unchecked::KeyRefused("Not you".to_string())
+            trouble(Trouble::KeyRefused, "Not you")
         );
         assert_eq!(
             answered("403 Forbidden", said).await,
-            Unchecked::KeyForbidden("Not you".to_string())
+            trouble(Trouble::KeyForbidden, "Not you")
         );
         assert_eq!(
             answered("500 Internal Server Error", said).await,
-            Unchecked::Failed("Not you".to_string())
+            trouble(Trouble::Failed, "Not you")
         );
         // A provider that said nothing, or was not reached, is unchecked
         // for the error.
         let error = answered("503 Service Unavailable", "").await;
-        assert!(
-            matches!(&error, Unchecked::Failed(why) if why.contains("503")),
-            "{error:?}"
-        );
+        assert_eq!(error.trouble, Trouble::Failed);
+        assert!(error.said.contains("503"), "{error:?}");
         let base_url = canned::unreachable();
         let error = unchecked(&probe(&base_url, "gpt", None).await.unwrap_err());
-        assert!(
-            matches!(&error, Unchecked::Failed(why) if why.contains(&base_url)),
-            "{error:?}"
-        );
+        assert_eq!(error.trouble, Trouble::Failed);
+        assert!(error.said.contains(&base_url), "{error:?}");
     }
 
     #[tokio::test]
@@ -630,9 +624,10 @@ mod tests {
         .await;
         let ids: Vec<&str> = recorded.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(ids, ["down", "a", "broke"]);
-        assert!(matches!(recorded[0].1, Err(Unchecked::Failed(_))));
+        let trouble = |probed: &Result<Check, Unchecked>| probed.as_ref().unwrap_err().trouble;
+        assert_eq!(trouble(&recorded[0].1), Trouble::Failed);
         assert_eq!(recorded[1].1, Ok(Check::Plays));
-        assert!(matches!(recorded[2].1, Err(Unchecked::NoCredits(_))));
+        assert_eq!(trouble(&recorded[2].1), Trouble::NoCredits);
     }
 
     #[tokio::test(start_paused = true)]

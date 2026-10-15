@@ -437,7 +437,7 @@ function backend(snapshot) {
         base_url: 'https://api.broke.example/v1',
         checked: 1,
         total: 1,
-        unchecked: { NoCredits: 'You have no credits remaining. Add credits at https://billing.broke.example/credits.' },
+        unchecked: { trouble: 'NoCredits', said: 'You have no credits remaining. Add credits at https://billing.broke.example/credits.' },
       },
     ],
     listing: ({ baseUrl }) => {

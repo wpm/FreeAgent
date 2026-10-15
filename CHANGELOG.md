@@ -201,8 +201,8 @@ workflow takes a version's notes from here.
   to be made to call a tool in Werewolf is asked to call one in Avalon. The
   reason a model did not play names the model once, then the game and the
   request it did not answer.
-- A provider's error gives the provider's own words first when it
-  classifies them with a code, and reads that code: an account out of
+- A provider's error gives the provider's own words first, then what its
+  status means, reading the error's code and type: an account out of
   credits is told to add credits, and only a rate limit is told to try
   again shortly.
 - Werewolf lists three or more players as Avalon does, "a, b and c": a
