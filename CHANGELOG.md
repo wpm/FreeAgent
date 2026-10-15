@@ -188,7 +188,8 @@ workflow takes a version's notes from here.
 ### Changed
 
 - A configuration file's `[text]` is `[prompt_parts]`, and a part's name is
-  letters, digits and underscores. The log's configuration calls them
+  letters, digits, underscores and spaces, pulled in with its spaces as
+  underscores (`"Seer only"` is `{{ Seer_only }}`). The log's configuration calls them
   `prompt_parts` too.
 - Each game's narrator tells its story in lines that say what they are:
   a phase heading, a player's vote or selection, a player's utterance with

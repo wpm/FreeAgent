@@ -10,7 +10,7 @@ use leptos::task::spawn_local;
 use social_deduction_stage::GameName;
 use social_deduction_stage::settings::{
     GameSettings, Policy, RANDOM, RoleSettings, StrategySettings, game_key, game_title,
-    is_part_name, label,
+    is_part_name, label, part_variable,
 };
 
 use super::{Choice, Editor, Problem, Tab, field_id, path};
@@ -86,12 +86,12 @@ pub fn uses_told(users: usize) -> String {
     }
 }
 
-/// Why `name` can't name a new prompt part when `taken` says which are
-/// taken, if it can't.
+/// Why `name` can't name a new prompt part when `taken` says which
+/// variables the parts already have are pulled in with, if it can't.
 pub fn refused_part(name: &str, taken: impl Fn(&str) -> bool) -> Option<&'static str> {
     if !is_part_name(name) {
-        Some("Use letters, digits and underscores, not starting with a digit.")
-    } else if taken(name) {
+        Some("Use letters, digits, underscores and spaces, not starting with a digit.")
+    } else if taken(&part_variable(name)) {
         Some("There is already a prompt part with that name.")
     } else {
         None
@@ -689,7 +689,12 @@ fn PromptParts(editor: Editor, game: GameName) -> impl IntoView {
     });
     let refuse = Callback::new(move |name: String| {
         editor.settings.with_untracked(|s| {
-            refused_part(&name, |name| s.game(game).prompt_parts.contains_key(name))
+            refused_part(&name, |variable| {
+                s.game(game)
+                    .prompt_parts
+                    .keys()
+                    .any(|part| part_variable(part) == variable)
+            })
         })
     });
     view! {
@@ -701,7 +706,7 @@ fn PromptParts(editor: Editor, game: GameName) -> impl IntoView {
                 <Adder
                     label="Add Prompt Part"
                     placeholder="Prompt part name"
-                    tip="Letters, digits and underscores, like rules or tone. A system prompt pulls it in with {{ name }}."
+                    tip="Letters, digits, underscores and spaces, like rules or Seer only. A system prompt pulls it in with {{ name }}, spaces written as underscores."
                     button_tip="Add an empty prompt part with this name."
                     add=add
                     refuse=refuse
@@ -737,7 +742,8 @@ fn PartItem(
             users.with(|users| {
                 if users.is_empty() {
                     format!(
-                        "No strategy pulls this in yet. Add {{{{ {name} }}}} to a system prompt."
+                        "No strategy pulls this in yet. Add {{{{ {} }}}} to a system prompt.",
+                        part_variable(&name)
                     )
                 } else {
                     format!("Pulled in by {}.", users.join(", "))
@@ -769,7 +775,7 @@ fn PartEditor(editor: Editor, game: GameName, name: String) -> impl IntoView {
     let at = game_path(game, &["prompt_parts", &name]);
     let error = editor.error(at.clone());
     let (written, removed) = (name.clone(), name.clone());
-    let pulled = format!("{{{{ {name} }}}}");
+    let pulled = format!("{{{{ {} }}}}", part_variable(&name));
     view! {
         <div class="sd-part-editor">
             <div class="sd-part-head">
@@ -855,9 +861,15 @@ mod tests {
             refused_part("rules", taken),
             Some("There is already a prompt part with that name.")
         );
+        assert_eq!(refused_part("the tone", taken), None);
         assert_eq!(
             refused_part("the-tone", taken),
-            Some("Use letters, digits and underscores, not starting with a digit.")
+            Some("Use letters, digits, underscores and spaces, not starting with a digit.")
+        );
+        let taken = |variable: &str| variable == "Seer_only";
+        assert_eq!(
+            refused_part("Seer only", taken),
+            Some("There is already a prompt part with that name.")
         );
     }
 

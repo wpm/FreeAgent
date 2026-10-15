@@ -418,8 +418,9 @@ pub fn save(app: &AppSettings, dir: &Path) -> io::Result<()> {
 /// be named [`RANDOM`], must name a model that exists when it is prompted,
 /// and its prompt must render for every role at the table, naming only
 /// variables and prompt parts. The strategy everyone plays and each role's
-/// must exist, and a prompt part is named by letters, digits and
-/// underscores, and not like a variable. Settings
+/// must exist, and a prompt part is named by words of letters, digits and
+/// underscores, and pulled in neither like a variable nor like another
+/// part. Settings
 /// with none of those wrong settle as the game's rules settle a table,
 /// whose error is the roles'.
 pub fn validate(app: &AppSettings) -> Vec<FieldError> {
@@ -545,11 +546,19 @@ fn game_errors<G: Tabled>(app: &AppSettings, models: &[FieldError]) -> Vec<Field
         }
     }
     let variables = variables::<G>(&BTreeMap::new());
+    let mut pulled = BTreeMap::new();
     for part in settings.prompt_parts.keys() {
-        let message = if variables.contains(part) {
+        let variable = part_variable(part);
+        let message = if !is_part_name(part) {
+            format!(
+                "the prompt part '{part}' needs a name of letters, digits, underscores and spaces"
+            )
+        } else if variables.contains(&variable) {
             format!("the prompt part '{part}' is named like a variable, which it can't be")
-        } else if !is_part_name(part) {
-            format!("the prompt part '{part}' needs a name of letters, digits and underscores")
+        } else if let Some(other) = pulled.insert(variable.clone(), part) {
+            format!(
+                "the prompt parts '{other}' and '{part}' are both pulled in with {{{{ {variable} }}}}"
+            )
         } else {
             continue;
         };
@@ -569,12 +578,17 @@ fn game_errors<G: Tabled>(app: &AppSettings, models: &[FieldError]) -> Vec<Field
 }
 
 /// What a prompt of a game of `G` is rendered with for `role`: the seat's
-/// name, the role's variables, and each of `prompt_parts`.
+/// name, the role's variables, and each of `prompt_parts`, by its
+/// [`part_variable`].
 fn told<G: Tabled>(prompt_parts: &BTreeMap<String, String>, role: G::Role) -> Value {
+    let parts: BTreeMap<String, String> = prompt_parts
+        .iter()
+        .map(|(name, text)| (part_variable(name), text.clone()))
+        .collect();
     merge_maps([
         context! { name => "Player 1" },
         G::variables(role),
-        Value::from(prompt_parts),
+        Value::from(parts),
     ])
 }
 
@@ -1058,16 +1072,43 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_part_named_but_by_letters_digits_and_underscores_is_an_error_at_the_part() {
+    fn a_prompt_part_named_but_by_letters_digits_underscores_and_spaces_is_an_error_at_the_part() {
         let mut app = defaults();
         app.avalon
             .prompt_parts
-            .insert("the tone".to_string(), "Calm.".to_string());
+            .insert("the-tone".to_string(), "Calm.".to_string());
         assert_eq!(
             only_error(&app),
             (
-                path(&["avalon", "prompt_parts", "the tone"]),
-                "the prompt part 'the tone' needs a name of letters, digits and underscores"
+                path(&["avalon", "prompt_parts", "the-tone"]),
+                "the prompt part 'the-tone' needs a name of letters, digits, underscores and spaces"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn a_prompt_part_with_spaces_is_pulled_in_with_underscores() {
+        let mut app = defaults();
+        app.werewolf
+            .prompt_parts
+            .insert("Seer only".to_string(), "Look.".to_string());
+        app.werewolf
+            .strategies
+            .get_mut("everyone")
+            .unwrap()
+            .system
+            .push_str("{{ Seer_only }}");
+        assert!(validate(&app).is_empty(), "{:?}", validate(&app));
+        app.werewolf
+            .prompt_parts
+            .insert("Seer_only".to_string(), "Look.".to_string());
+        assert_eq!(
+            only_error(&app),
+            (
+                path(&["werewolf", "prompt_parts", "Seer_only"]),
+                "the prompt parts 'Seer only' and 'Seer_only' are both pulled in with \
+                 {{ Seer_only }}"
                     .to_string()
             )
         );

@@ -162,7 +162,8 @@ Every table may be left out, and a key the file does not know is an error.
   is not allotted otherwise.
 - `[prompt_parts]`: named pieces of text the templates pull in with
   `{{ name }}`, so that the rules are written once. A part's name is
-  letters, digits and underscores.
+  letters, digits, underscores and spaces, and a template writes its
+  spaces as underscores: `"Seer only"` is `{{ Seer_only }}`.
 
 A role's `strategies` table allots its seats first, and the role's own
 `strategy` fills the rest, up to the role's count. These villagers are 2

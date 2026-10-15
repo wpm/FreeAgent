@@ -30,7 +30,7 @@ use minijinja::{Environment, UndefinedBehavior, Value, context};
 use rand::seq::SliceRandom;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use social_deduction_stage::settings::is_part_name;
+use social_deduction_stage::settings::{is_part_name, part_variable};
 use std::collections::{BTreeMap, HashMap, btree_map};
 use std::fmt;
 use std::hash::Hash;
@@ -144,8 +144,9 @@ where
 {
     /// Parse `file`, the text of a configuration file, and check what every
     /// game's file holds alike, with the game's template `variables`: a
-    /// `[prompt_parts]` part named like one of them, or by anything but
-    /// letters, digits and underscores, is an error, and so is a
+    /// `[prompt_parts]` part named like one of them, by anything but words of
+    /// letters, digits and underscores, or so that it is pulled in like
+    /// another, is an error, and so is a
     /// model's context window of 0, a strategy named [`RANDOM`], a file's
     /// `strategy` that is not defined, and a prompted strategy naming a
     /// model the file does not define, or naming none when the file does
@@ -180,14 +181,24 @@ fn check_common<Phases, Roles>(
         strategies,
         ..
     } = config;
-    if let Some(taken) = variables.iter().find(|v| prompt_parts.contains_key(**v)) {
-        bail!("[prompt_parts] has a part named {taken}, which is a template variable");
-    }
     if let Some(name) = prompt_parts.keys().find(|name| !is_part_name(name)) {
         bail!(
-            "[prompt_parts] has a part named {name:?}; a part's name is letters, digits and \
-             underscores, not starting with a digit"
+            "[prompt_parts] has a part named {name:?}; a part's name is words of letters, \
+             digits and underscores, not starting with a digit"
         );
+    }
+    let mut pulled = BTreeMap::new();
+    for name in prompt_parts.keys() {
+        let variable = part_variable(name);
+        if variables.contains(&variable.as_str()) {
+            bail!("[prompt_parts] has a part named {name:?}, which is a template variable");
+        }
+        if let Some(other) = pulled.insert(variable.clone(), name) {
+            bail!(
+                "[prompt_parts] has parts named {other:?} and {name:?}, which are both \
+                 pulled in with {{{{ {variable} }}}}"
+            );
+        }
     }
     if let Some((name, _)) = models
         .iter()
@@ -388,7 +399,7 @@ impl<R: Copy + Ord + Hash + fmt::Display> Lineup<R> {
     /// dealt any of them, in seat order and then the order of the pairs.
     /// A prompt is rendered from its strategy's `system` template, with the
     /// variable `name`, the variables `variables` gives for the role, and
-    /// every part of `prompt_parts`. An undefined variable is an error. A template
+    /// every part of `prompt_parts`, by its [`part_variable`]. An undefined variable is an error. A template
     /// that does not compile is an error naming the strategy; one that does
     /// not render, the strategy, the seat and the role.
     pub fn prompts(
@@ -403,7 +414,11 @@ impl<R: Copy + Ord + Hash + fmt::Display> Lineup<R> {
         let mut templates = BTreeMap::new();
         // Each pair's variables, with the prompt parts, are the same for
         // every seat.
-        let parts = Value::from(prompt_parts);
+        let parts: BTreeMap<String, String> = prompt_parts
+            .iter()
+            .map(|(name, text)| (part_variable(name), text.clone()))
+            .collect();
+        let parts = Value::from(parts);
         let mut pairs = Vec::new();
         for (role, name, strategy, _) in self.at_the_table() {
             if let Strategy::Prompted(prompted) = strategy {
@@ -967,7 +982,9 @@ system = "{{ name }} the {{ role }}"
             let file = format!("{PLAIN}[prompt_parts]\n{variable} = \"Taken.\"\n");
             assert_eq!(
                 parsed(&file).unwrap_err(),
-                format!("[prompt_parts] has a part named {variable}, which is a template variable")
+                format!(
+                    "[prompt_parts] has a part named \"{variable}\", which is a template variable"
+                )
             );
         }
     }
@@ -977,8 +994,18 @@ system = "{{ name }} the {{ role }}"
         let file = format!("{PLAIN}[prompt_parts]\n\"the-rules\" = \"Play.\"\n");
         assert_eq!(
             parsed(&file).unwrap_err(),
-            "[prompt_parts] has a part named \"the-rules\"; a part's name is letters, digits \
-             and underscores, not starting with a digit"
+            "[prompt_parts] has a part named \"the-rules\"; a part's name is words of letters, \
+             digits and underscores, not starting with a digit"
+        );
+    }
+
+    #[test]
+    fn a_prompt_part_pulled_in_like_another_is_an_error() {
+        let file = format!("{PLAIN}[prompt_parts]\n\"Seer only\" = \"A.\"\nSeer_only = \"B.\"\n");
+        assert_eq!(
+            parsed(&file).unwrap_err(),
+            "[prompt_parts] has parts named \"Seer only\" and \"Seer_only\", which are both \
+             pulled in with {{ Seer_only }}"
         );
     }
 
@@ -1252,9 +1279,9 @@ system = "{{ name }} the {{ role }}"
 
     #[test]
     fn every_prompt_part_is_a_variable_and_a_persona_is_not() {
-        let file = PLAIN.replace("{{ name }} the {{ role }}", "{{ rules }} {{ oath }}");
+        let file = PLAIN.replace("{{ name }} the {{ role }}", "{{ rules }} {{ the_oath }}");
         let file = format!(
-            "strategy = \"plain\"\n{file}[prompt_parts]\nrules = \"The rules.\"\noath = \"Serve.\"\n"
+            "strategy = \"plain\"\n{file}[prompt_parts]\nrules = \"The rules.\"\n\"the oath\" = \"Serve.\"\n"
         );
         let prompts = rendered(&file).unwrap();
         assert_eq!(

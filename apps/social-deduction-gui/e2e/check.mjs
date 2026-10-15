@@ -615,10 +615,10 @@ await section('desktop', async () => {
   check(wide.limit < 120, `desktop: a phase limit's field is short (${wide.limit}px)`);
   check(JSON.stringify(wide.uses) === JSON.stringify(['rules1 use']), `desktop: a prompt part shows its uses (${wide.uses})`);
   check(wide.pulled === '{{ rules }}', `desktop: a prompt part shows how to pull it in (${wide.pulled})`);
-  await settings.fill('.sd-adder-part input', 'the tone');
+  await settings.fill('.sd-adder-part input', 'the-tone');
   await settings.click('.sd-adder-part button');
   const refused = await settings.$eval('.sd-adder-part', (adder) => adder.textContent);
-  check(refused.includes('Use letters, digits and underscores'), `desktop: a prompt part's name is letters, digits and underscores (${refused})`);
+  check(refused.includes('Use letters, digits, underscores and spaces'), `desktop: a prompt part's name is letters, digits, underscores and spaces (${refused})`);
   await settings.screenshot({ path: join(shots, 'settings-werewolf-wide.png'), fullPage: true });
   // Every control on the General, Werewolf and Avalon tabs has help.
   const unhelped = [];

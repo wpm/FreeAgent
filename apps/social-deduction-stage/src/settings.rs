@@ -245,15 +245,20 @@ pub fn label(key: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Whether `name` can name a prompt part: letters, digits and
-/// underscores, not starting with a digit, so that a template can pull it
-/// in with `{{ name }}`.
+/// Whether `name` can name a prompt part: words of letters, digits and
+/// underscores with one space between them, not starting with a digit, so
+/// that a template can pull it in with its [`part_variable`].
 pub fn is_part_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    name.starts_with(|first: char| first.is_ascii_alphabetic() || first == '_')
+        && name.split(' ').all(|word| {
+            !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+}
+
+/// The variable a template pulls the prompt part `name` in with: its name
+/// with each space an underscore, so `Seer only` is `{{ Seer_only }}`.
+pub fn part_variable(name: &str) -> String {
+    name.replace(' ', "_")
 }
 
 /// `count` and the noun for it, `one` or `many`.
@@ -361,8 +366,8 @@ pub struct GameSettings {
     pub phases: Vec<PhaseSettings>,
     /// The strategies, by name, besides [`RANDOM`].
     pub strategies: BTreeMap<String, StrategySettings>,
-    /// Named pieces of text the system prompts pull in with `{{ name }}`,
-    /// read also from settings stored when they were called `text`.
+    /// Named pieces of text the system prompts pull in with their
+    /// [`part_variable`], read also from settings stored when they were called `text`.
     #[serde(alias = "text")]
     pub prompt_parts: BTreeMap<String, String>,
 }
@@ -429,6 +434,11 @@ impl GameSettings {
             .keys()
             .map(|part| (part.as_str(), Vec::new()))
             .collect();
+        let parts: BTreeMap<String, &str> = self
+            .prompt_parts
+            .keys()
+            .map(|part| (part_variable(part), part.as_str()))
+            .collect();
         let env = minijinja::Environment::new();
         for (name, strategy) in &self.strategies {
             if strategy.policy != Policy::Prompted {
@@ -438,8 +448,8 @@ impl GameSettings {
                 continue;
             };
             for variable in template.undeclared_variables(false) {
-                if let Some(users) = users.get_mut(variable.as_str()) {
-                    users.push(name);
+                if let Some(part) = parts.get(&variable) {
+                    users.get_mut(part).unwrap().push(name);
                 }
             }
         }
@@ -1040,13 +1050,34 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_part_s_name_is_letters_digits_and_underscores() {
-        for name in ["rules", "tone_2", "_aside", "Rules"] {
+    fn a_prompt_part_s_name_is_words_of_letters_digits_and_underscores() {
+        for name in [
+            "rules",
+            "tone_2",
+            "_aside",
+            "Rules",
+            "Seer only",
+            "the 2nd rule",
+        ] {
             assert!(is_part_name(name), "{name}");
         }
-        for name in ["", "2nd", "the rules", "tone-2", "règles"] {
+        for name in [
+            "",
+            "2nd",
+            " rules",
+            "rules ",
+            "the  rules",
+            "tone-2",
+            "règles",
+        ] {
             assert!(!is_part_name(name), "{name}");
         }
+    }
+
+    #[test]
+    fn a_prompt_part_is_pulled_in_by_its_name_with_underscores_for_spaces() {
+        assert_eq!(part_variable("rules"), "rules");
+        assert_eq!(part_variable("Seer only"), "Seer_only");
     }
 
     #[test]
@@ -1055,12 +1086,16 @@ mod tests {
         let system = |settings: &mut GameSettings, name: &str, system: &str| {
             settings.strategies.get_mut(name).unwrap().system = system.to_string();
         };
-        for part in ["rules", "ruleset", "tone", "rule", "aside"] {
+        for part in ["rules", "ruleset", "tone", "rule", "aside", "Seer only"] {
             settings
                 .prompt_parts
                 .insert(part.to_string(), String::new());
         }
-        system(&mut settings, "everyone", "{{ rules }}\nYou are {{name}}.");
+        system(
+            &mut settings,
+            "everyone",
+            "{{ rules }}\nYou are {{name}}.{{ Seer_only }}",
+        );
         system(
             &mut settings,
             "smart",
@@ -1080,7 +1115,8 @@ mod tests {
         assert_eq!(
             users,
             [
-                ("aside", &[][..]),
+                ("Seer only", &["everyone"][..]),
+                ("aside", &[]),
                 ("rule", &[]),
                 ("rules", &["everyone", "smart"]),
                 ("ruleset", &["smart"]),
