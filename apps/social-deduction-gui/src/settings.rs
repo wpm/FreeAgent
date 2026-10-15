@@ -406,7 +406,11 @@ fn Choice(
 
 /// A name field and a button that adds a thing of that name with `add`.
 #[component]
-fn Adder(#[prop(into)] label: String, add: Callback<String>) -> impl IntoView {
+fn Adder(
+    #[prop(into)] label: String,
+    add: Callback<String>,
+    #[prop(optional, into)] class: String,
+) -> impl IntoView {
     let field = NodeRef::<html::Input>::new();
     let added = move || {
         let Some(input) = field.get_untracked() else {
@@ -419,7 +423,7 @@ fn Adder(#[prop(into)] label: String, add: Callback<String>) -> impl IntoView {
         }
     };
     view! {
-        <div class="sd-row">
+        <div class=format!("sd-row {class}")>
             <input
                 type="text"
                 node_ref=field
@@ -568,7 +572,7 @@ fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
             <For each=move || block_names.get() key=Clone::clone let:block>
                 <TextBlock editor=editor game=game block=block />
             </For>
-            <Adder label="Add Text" add=add_block />
+            <Adder label="Add Text" add=add_block class="sd-adder-part" />
         </section>
     }
 }

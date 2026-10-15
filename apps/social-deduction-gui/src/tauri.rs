@@ -29,9 +29,21 @@ extern "C" {
     #[wasm_bindgen(method, setter)]
     fn set_onmessage(this: &Channel, handler: &js_sys::Function);
 
-    /// Tauri's `event.listen`: `handler` hears each `event`.
-    #[wasm_bindgen(catch, js_namespace = ["window", "__TAURI__", "event"], js_name = listen)]
-    async fn listen_to(event: &str, handler: &js_sys::Function) -> Result<JsValue, JsValue>;
+    /// The window the page is in.
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "webviewWindow"])]
+    type WebviewWindow;
+
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "webviewWindow"], js_name = getCurrentWebviewWindow)]
+    fn current_window() -> WebviewWindow;
+
+    /// `handler` hears each `event` sent to this window or to every
+    /// window.
+    #[wasm_bindgen(catch, method, js_name = listen)]
+    async fn listen_to(
+        this: &WebviewWindow,
+        event: &str,
+        handler: &js_sys::Function,
+    ) -> Result<JsValue, JsValue>;
 }
 
 /// Whether the page is inside the desktop app.
@@ -256,8 +268,10 @@ fn background(cmd: &'static str, args: serde_json::Value) {
     }
 }
 
-/// Have `handle` hear each `event` the backend sends, its payload as
-/// JSON, for as long as the page is open.
+/// Have `handle` hear each `event` the backend sends to this window or to
+/// every window, its payload as JSON, for as long as the page is open.
+/// What it sends another window, such as the main window's `settings`,
+/// goes by.
 pub fn listen<T: DeserializeOwned>(event: &'static str, mut handle: impl FnMut(T) + 'static) {
     let handler = Closure::<dyn FnMut(JsValue)>::new(move |received: JsValue| {
         let payload =
@@ -270,7 +284,7 @@ pub fn listen<T: DeserializeOwned>(event: &'static str, mut handle: impl FnMut(T
     // Kept for as long as the page is open.
     let handler: js_sys::Function = handler.into_js_value().unchecked_into();
     spawn_local(async move {
-        if let Err(failure) = listen_to(event, &handler).await {
+        if let Err(failure) = current_window().listen_to(event, &handler).await {
             web_sys::console::error_1(&format!("listening to {event}: {}", error(failure)).into());
         }
     });

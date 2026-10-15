@@ -13,8 +13,9 @@
 // day, and shows late speech faded. The prompted Avalon board names the
 // Assassin's target. At 420 px wide the board stacks under the chat and
 // nothing scrolls sideways. With a stand-in for the desktop app's backend,
-// the main window opens on its start state with Play, and #settings opens
-// the Settings window's four tabs. The console stays clean throughout.
+// the main window opens on its start state with Play, #settings opens the
+// Settings window's four tabs, and typing goes on in a field while each
+// change is stored. The console stays clean throughout.
 // Screenshots land in ./screenshots for a human to look at.
 //
 //   npm test                 # against ../dist, from this directory
@@ -396,23 +397,44 @@ const desktop = {
 
 /** The stand-in backend, set on the page before it loads. */
 function backend(snapshot) {
+  // This window's label, as the desktop app names its windows.
+  const label = location.hash.startsWith('#settings') ? 'settings' : 'main';
+  // As in Tauri, a listener for any window hears every event, and one for
+  // this window hears those sent to it or to every window.
+  const listeners = [];
+  const emit = (event, payload, to) =>
+    listeners
+      .filter((listener) => listener.event === event && (listener.target === null || to === null || listener.target === to))
+      .forEach((listener) => listener.handler({ event, payload }));
+  const listen = (target) => async (event, handler) => {
+    listeners.push({ event, handler, target });
+    return () => {};
+  };
   const answers = {
     settings_get: snapshot,
-    settings_set: [],
+    // The backend tells the main window of each change.
+    settings_set: ({ settings }) => {
+      emit('settings', { ...snapshot, settings: structuredClone(settings) }, 'main');
+      return [];
+    },
     providers: [{ name: 'OpenAI', base_url: 'https://api.openai.com/v1', api_key_env: 'OPENAI_API_KEY' }],
     listing: { models: [], error: null, checks: {} },
     key_status: 'Missing',
   };
   window.__TAURI__ = {
     core: {
-      invoke: async (command) => answers[command] ?? null,
+      invoke: async (command, args) => {
+        const answer = answers[command];
+        return typeof answer === 'function' ? answer(args) : (answer ?? null);
+      },
       Channel: class {
         set onmessage(handler) {
           this.handler = handler;
         }
       },
     },
-    event: { listen: async () => () => {} },
+    event: { listen: listen(null) },
+    webviewWindow: { getCurrentWebviewWindow: () => ({ label, listen: listen(label) }) },
   };
 }
 
@@ -451,6 +473,21 @@ await section('desktop', async () => {
   }
   const players = await settings.$$eval('.sd-stepper input', (inputs) => inputs.map((input) => input.value));
   check(JSON.stringify(players) === JSON.stringify(['2', '3', '1', '1']), `desktop: the Werewolf tab shows each role's count (${players.join(', ')})`);
+  // Typing goes on into a new prompt part and a phase limit, each change
+  // stored as it is made.
+  await settings.fill('.sd-adder-part input', 'tone');
+  await settings.click('.sd-adder-part button');
+  const part = '[id="field-werewolf.text.tone"]';
+  await settings.click(part);
+  await settings.keyboard.type('Speak briefly.', { delay: 30 });
+  const typed = await settings.$eval(part, (area) => ({ value: area.value, focused: document.activeElement === area }));
+  check(typed.value === 'Speak briefly.' && typed.focused, `desktop: typing goes on in a new prompt part (${JSON.stringify(typed)})`);
+  const limit = '[id="field-werewolf.phases.night_limit"]';
+  await settings.fill(limit, '');
+  await settings.click(limit);
+  await settings.keyboard.type('45s', { delay: 30 });
+  const limited = await settings.$eval(limit, (input) => ({ value: input.value, focused: document.activeElement === input }));
+  check(limited.value === '45s' && limited.focused, `desktop: typing goes on in a phase limit (${JSON.stringify(limited)})`);
   await app.close();
 });
 
