@@ -257,6 +257,9 @@ pub(crate) fn Viewer(
     let board = Memo::new(move |_| screen.with(Screen::board));
     let werewolf = Memo::new(move |_| screen.with(Screen::werewolf));
     let timer = Memo::new(move |_| screen.with(Screen::phase_timer));
+    let closing = Memo::new(move |_| screen.with(Screen::closing));
+    // Closing pulses while the cues arrive, and holds still at rest.
+    let running = Memo::new(move |_| screen.with(|screen| screen.clock.running));
     let rendering = options.clone();
     // Every thinker's dots share one text, which stays empty.
     let silence = RwSignal::new(String::new());
@@ -276,6 +279,17 @@ pub(crate) fn Viewer(
                 <p class="sd-phase">
                     {move || screen.with(|screen| screen.heading.clone())}
                     {move || timer.get().map(|timer| view! { <PhaseClock timer=timer now=now /> })}
+                    {move || {
+                        closing
+                            .get()
+                            .then(|| {
+                                view! {
+                                    <span class="sd-closing" class:sd-pulse=running>
+                                        {screen::CLOSING}
+                                    </span>
+                                }
+                            })
+                    }}
                 </p>
                 {move || screen.with(|screen| screen.outcome.clone()).map(outcome)}
                 {children()}
@@ -664,16 +678,15 @@ fn WerewolfBoard(board: Board<WerewolfPanel>, now: Signal<f64>) -> impl IntoView
     let panel = &board.panel;
     let day = panel.phase == WerewolfPhase::Day;
 
-    let decision = panel.ratify.clone().filter(|_| day).map(|ratify| {
-        let timer = Timer {
-            began: ratify.since,
-            limit_ms: ratify.limit_ms,
-        };
-        let chosen = ratify.target.clone().unwrap_or_default();
+    let decision = board.decision().map(|decision| {
+        let timer = decision.timer;
+        let chosen = decision.target.clone().unwrap_or_default();
         let (landing, style) = flash(&board, &Landed::Ratify, &chosen);
-        let target = ratify.target;
-        let left = seconds(timer, now);
-        let text = move || screen::ratify(target.as_deref(), left.get());
+        // A stopped decision's label never changes, so it needs no clock.
+        let text = match timer.stopped {
+            Some(_) => Signal::stored(decision.label(0.0)),
+            None => Signal::from(Memo::new(move |_| decision.label(now.get()))),
+        };
         view! {
             <h2>"Tentative decision"</h2>
             <div class=landed_class("sd-decision", landing) style=style>

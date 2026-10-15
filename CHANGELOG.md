@@ -186,6 +186,10 @@ workflow takes a version's notes from here.
   model call it had in flight, withholds the call's choices, and starts no
   new call while the phase closes. The console tells "Day 1 is closing."
   Avalon's phases end as before.
+- The viewer shows a Werewolf phase closing: the header reads "Closing…"
+  in place of the clock, the tentative decision stops counting down, and
+  the board holds still until the next phase. The recorded prompted
+  Werewolf game is a new one, with phases that close.
 - Each game's narrator tells its story in lines that say what they are:
   a phase heading, a player's vote or selection, a player's utterance with
   who spoke, a blank line, or anything else told. The console prints them

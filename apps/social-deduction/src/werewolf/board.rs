@@ -1,5 +1,6 @@
 //! The Werewolf board as the viewer draws it. Every choice moves it as the
-//! player sends it, read from the player's action, and each night's hunt
+//! player sends it, read from the player's action, until the phase begins
+//! closing, read from the environment's first `Closing`. Each night's hunt
 //! and each day's vote settle it.
 
 use super::{Entry, Hunt, Message, Move, Outcome, Phase, Role, View, Werewolf};
@@ -53,9 +54,13 @@ impl Board {
                 ..
             } if *seq > self.seq => self.announce(*seq, view, *limit, at),
             Entry::Action {
+                message: Message::Closing { seq, .. },
+                ..
+            } if *seq == self.seq => self.closing(at),
+            Entry::Action {
                 message: Message::Move(chosen),
                 ..
-            } if chosen.seq() == self.seq => self.chosen(chosen, at),
+            } if chosen.seq() == self.seq && !self.is_closing() => self.chosen(chosen, at),
             Entry::Event(Outcome::Hunted { hunt, .. }) => self.hunted(hunt),
             Entry::Event(Outcome::Voted { out: Some(out), .. }) => {
                 self.died(out, WerewolfPhase::Day)
@@ -76,6 +81,7 @@ impl Board {
             began: 0,
             limit_ms: 0,
             ratify: None,
+            closing: None,
             seats: seats
                 .iter()
                 .map(|name| SeatState {
@@ -95,7 +101,7 @@ impl Board {
     }
 
     /// The phase numbered `seq` opens at `at` for `limit`, as `view` shows
-    /// it: by day every living player undecided, and a night that elected
+    /// it, not closing: by day every living player undecided, and a night that elected
     /// nobody recorded with no victim; by night every living werewolf,
     /// doctor and seer still choosing.
     fn announce(&mut self, seq: u64, view: &View, limit: Duration, at: Millis) {
@@ -108,6 +114,7 @@ impl Board {
         panel.began = at;
         panel.limit_ms = millis_of(limit);
         panel.ratify = None;
+        panel.closing = None;
         let living = in_order(&view.alive);
         match view.phase {
             Phase::Day => {
@@ -134,6 +141,20 @@ impl Board {
                     .collect();
             }
         }
+    }
+
+    /// The phase underway begins closing at `at`, unless it already has.
+    fn closing(&mut self, at: Millis) {
+        if let Some(panel) = self.panel.as_mut() {
+            panel.closing.get_or_insert(at);
+        }
+    }
+
+    /// Whether the phase underway is closing, when no choice moves it.
+    fn is_closing(&self) -> bool {
+        self.panel
+            .as_ref()
+            .is_some_and(|panel| panel.closing.is_some())
     }
 
     /// A player, or the environment, sends `chosen` at `at` in the phase
@@ -241,8 +262,8 @@ mod tests {
     use crate::stage::Board as _;
     use crate::strategy::RANDOM;
     use crate::werewolf::Rules;
-    use crate::werewolf::tests::{retraction, selection, tentative};
-    use social_deduction_stage::Role as Shown;
+    use crate::werewolf::tests::{closing, retraction, selection, tentative};
+    use social_deduction_stage::{Beat, Role as Shown};
     use std::collections::HashSet;
     use std::num::NonZero;
 
@@ -642,6 +663,69 @@ mod tests {
             nights,
             [(1, Some(id("Player 2"))), (2, Some(id("Player 3")))]
         );
+    }
+
+    /// The environment's closing of the phase numbered `seq`, `seconds`
+    /// in.
+    fn close(seconds: u64, seq: u64) -> Event<Entry> {
+        sent_at(seconds, ENVIRONMENT, closing(seq, 1))
+    }
+
+    #[test]
+    fn a_day_closes_at_its_first_closing_its_choices_change_nothing_and_the_night_clears_it() {
+        let mut events = first_day();
+        events.push(select(2, "Player 1", "Player 5"));
+        events.push(decide(3, 2, Some("Player 5")));
+        assert_eq!(last(&events).closing, None);
+        events.push(close(23, 2));
+        assert_eq!(last(&events).closing, Some(23_000));
+        events.push(close(24, 2));
+        events.push(select(2, "Player 3", "Player 4"));
+        events.push(retract(2, "Player 1"));
+        events.push(decide(25, 2, None));
+        assert_eq!(
+            boards(&events)[events.len() - 4..],
+            [None, None, None, None]
+        );
+        events.push(voted(2, Some("Player 5")));
+        assert_eq!(last(&events).closing, Some(23_000));
+        events.push(announce(3, 2, Phase::Night, &[1, 3, 4, 6]));
+        assert_eq!(last(&events).closing, None);
+    }
+
+    #[test]
+    fn a_night_closes_at_its_first_closing_and_the_day_clears_it() {
+        let mut events = first_night();
+        events.push(select(1, "Player 1", "Player 2"));
+        events.push(close(30, 1));
+        assert_eq!(last(&events).closing, Some(30_000));
+        events.push(select(1, "Player 3", "Player 2"));
+        assert_eq!(boards(&events).last(), Some(&None));
+        events.push(hunted(1, "Player 2", &[]));
+        events.push(announce(2, 1, Phase::Day, &[1, 3, 4, 5, 6]));
+        assert_eq!(last(&events).closing, None);
+    }
+
+    #[test]
+    fn the_stage_tells_a_closing_day_in_the_chat_and_shows_it_on_the_board() {
+        let mut events = first_day();
+        events.push(close(23, 2));
+        let mut stage = stage::Stage::<Werewolf>::default();
+        let beats: Vec<Beat> = events
+            .iter()
+            .flat_map(|event| stage.fold(event))
+            .map(|cue| cue.beat)
+            .collect();
+        let (told, panel) = (&beats[beats.len() - 2], &beats[beats.len() - 1]);
+        assert_eq!(*told, Beat::Told(vec!["Day 1 is closing.".to_string()]));
+        assert!(matches!(panel, Beat::Panel(Panel::Werewolf(board)) if board.closing.is_some()));
+    }
+
+    #[test]
+    fn a_closing_of_another_phase_changes_nothing() {
+        let mut events = first_day();
+        events.push(close(5, 1));
+        assert_eq!(boards(&events).last(), Some(&None));
     }
 
     #[test]
