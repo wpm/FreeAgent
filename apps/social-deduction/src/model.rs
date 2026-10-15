@@ -114,12 +114,20 @@ struct Knowledge {
     /// context window under, in the order they are read.
     #[serde(default)]
     context_window_fields: Vec<String>,
+    /// The ports a local server is looked for on.
+    #[serde(default)]
+    local_ports: Vec<u16>,
+    /// Words in a model's id that say it does not chat.
+    #[serde(default)]
+    hide: Vec<String>,
 }
 
 /// A provider `src/models.toml` knows.
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct Known {
+    /// Its name, as the desktop app shows it.
+    name: String,
     /// The root of its OpenAI-compatible API, ending in `/v1`.
     base_url: String,
     /// The environment variable conventionally holding its API key, for a
@@ -146,15 +154,30 @@ fn known(base_url: &str) -> Option<&'static Known> {
     })
 }
 
-/// The providers `src/models.toml` knows, each as the root of its API and
-/// the environment variable conventionally holding its key, if any, in
-/// the file's order, for telling the user.
-pub fn known_providers() -> Vec<(&'static str, Option<&'static str>)> {
+/// The providers `src/models.toml` knows, each as its name, the root of
+/// its API and the environment variable conventionally holding its key, if
+/// any, in the file's order, for telling the user.
+pub fn known_providers() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
     KNOWLEDGE
         .providers
         .iter()
-        .map(|known| (known.base_url.as_str(), known.api_key_env.as_deref()))
+        .map(|known| {
+            let (name, base_url) = (known.name.as_str(), known.base_url.as_str());
+            (name, base_url, known.api_key_env.as_deref())
+        })
         .collect()
+}
+
+/// The ports `src/models.toml` says a local server is looked for on.
+pub fn local_ports() -> &'static [u16] {
+    &KNOWLEDGE.local_ports
+}
+
+/// Whether the model `id` does not chat, as a word `src/models.toml` hides
+/// in it says, whatever its case.
+pub fn hidden(id: &str) -> bool {
+    let id = id.to_lowercase();
+    KNOWLEDGE.hide.iter().any(|word| id.contains(word.as_str()))
 }
 
 /// The headers every request to the provider at `base_url` must carry,
@@ -232,7 +255,7 @@ pub(crate) fn refused(error: &anyhow::Error) -> bool {
 
 /// The status the provider answered with, if `error` is the provider
 /// answering a request with anything but success.
-fn rejected_with(error: &anyhow::Error) -> Option<StatusCode> {
+pub(crate) fn rejected_with(error: &anyhow::Error) -> Option<StatusCode> {
     error
         .chain()
         .find_map(|cause| cause.downcast_ref::<Rejection>())
@@ -557,12 +580,46 @@ mod tests {
         assert!(providers.len() >= 2, "{providers:?}");
         assert_eq!(
             providers[0],
-            ("https://api.openai.com/v1", Some("OPENAI_API_KEY"))
+            (
+                "OpenAI",
+                "https://api.openai.com/v1",
+                Some("OPENAI_API_KEY")
+            )
         );
         assert_eq!(
             providers[1],
-            ("https://api.anthropic.com/v1", Some("ANTHROPIC_API_KEY"))
+            (
+                "Anthropic",
+                "https://api.anthropic.com/v1",
+                Some("ANTHROPIC_API_KEY")
+            )
         );
+    }
+
+    #[test]
+    fn a_local_server_is_looked_for_on_the_ports_of_the_usual_servers() {
+        assert_eq!(local_ports(), [1234, 11434, 8080, 8000]);
+    }
+
+    #[test]
+    fn a_model_that_does_not_chat_is_hidden_by_a_word_in_its_id_whatever_its_case() {
+        for id in [
+            "text-embedding-3-small",
+            "tts-1",
+            "whisper-1",
+            "gpt-4o-transcribe",
+            "dall-e-3",
+            "gpt-image-1",
+            "omni-moderation-latest",
+            "gpt-4o-realtime-preview",
+            "gpt-4o-audio-preview",
+            "Text-Embedding-Nomic",
+        ] {
+            assert!(hidden(id), "{id}");
+        }
+        for id in ["gpt-4.1-mini", "claude-sonnet-4-5", "qwen2.5-7b-instruct"] {
+            assert!(!hidden(id), "{id}");
+        }
     }
 
     #[test]

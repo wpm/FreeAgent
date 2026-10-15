@@ -12,7 +12,9 @@
 // thinking player's dots until it speaks, turns dark by night and light by
 // day, and shows late speech faded. The prompted Avalon board names the
 // Assassin's target. At 420 px wide the board stacks under the chat and
-// nothing scrolls sideways. The console stays clean throughout.
+// nothing scrolls sideways. With a stand-in for the desktop app's backend,
+// the main window opens on its start state with Play, and #settings opens
+// the Settings window's four tabs. The console stays clean throughout.
 // Screenshots land in ./screenshots for a human to look at.
 //
 //   npm test                 # against ../dist, from this directory
@@ -351,6 +353,105 @@ await section('narrow', async () => {
   check(narrow.under, 'narrow: the board stacks under the chat');
   check(narrow.wide <= narrow.window, `narrow: nothing scrolls sideways (${narrow.wide} in ${narrow.window})`);
   await page.screenshot({ path: join(shots, 'avalon-narrow.png'), fullPage: true });
+});
+
+// The desktop app, its backend stood in for by an init script that
+// answers each command with what the app would start with.
+const desktop = {
+  settings: {
+    general: { appearance: 'system', game: 'Werewolf' },
+    models: { qwen: { base_url: 'http://localhost:1234/v1', id: 'qwen2.5-7b-instruct-1m' } },
+    werewolf: {
+      strategy: 'everyone',
+      roles: [
+        { key: 'werewolf', count: 2 },
+        { key: 'villager', count: 3 },
+        { key: 'doctor', count: 1 },
+        { key: 'seer', count: 1 },
+      ],
+      phases: [
+        { key: 'night_limit', limit: '1m' },
+        { key: 'day_limit', limit: '1m' },
+        { key: 'ratify_limit', limit: '20s' },
+      ],
+      strategies: { everyone: { policy: 'prompted', model: 'qwen', system: 'You are {{ name }}, a {{ role }}.' } },
+      text: { rules: 'Play well.' },
+    },
+    avalon: {
+      strategy: 'random',
+      roles: [
+        { key: 'merlin', count: 1 },
+        { key: 'servant', count: 2 },
+        { key: 'assassin', count: 1 },
+        { key: 'minion', count: 1 },
+      ],
+      phases: [{ key: 'vote_limit', limit: '1m' }],
+      strategies: {},
+      text: {},
+    },
+  },
+  errors: [],
+  logs: '/tmp/games',
+};
+
+/** The stand-in backend, set on the page before it loads. */
+function backend(snapshot) {
+  const answers = {
+    settings_get: snapshot,
+    settings_set: [],
+    providers: [{ name: 'OpenAI', base_url: 'https://api.openai.com/v1', api_key_env: 'OPENAI_API_KEY' }],
+    listing: { models: [], error: null, checks: {} },
+    key_status: 'Missing',
+  };
+  window.__TAURI__ = {
+    core: {
+      invoke: async (command) => answers[command] ?? null,
+      Channel: class {
+        set onmessage(handler) {
+          this.handler = handler;
+        }
+      },
+    },
+    event: { listen: async () => () => {} },
+  };
+}
+
+await section('desktop', async () => {
+  const app = await browser.newContext({ colorScheme: 'light', viewport: { width: 1100, height: 760 } });
+  await app.addInitScript(backend, desktop);
+  const watch = (opened) => {
+    opened.on('console', (message) => {
+      if (message.type() === 'error') errors.push(message.text());
+    });
+    opened.on('pageerror', (error) => errors.push(error.message));
+    return opened;
+  };
+  const main = watch(await app.newPage());
+  await main.goto(origin);
+  await main.waitForSelector('.sd-start .sd-play');
+  const play = await main.$eval('.sd-start .sd-play', (button) => ({ text: button.textContent.trim(), disabled: button.disabled }));
+  check(play.text === 'Play' && !play.disabled, `desktop: the start state shows Play (${JSON.stringify(play)})`);
+  const summary = await main.$eval('.sd-summary', (element) => element.textContent);
+  check(summary === '7 players · 1 strategy · qwen2.5-7b-instruct-1m', `desktop: the start state sums up the game (${summary})`);
+  await main.screenshot({ path: join(shots, 'desktop-start.png'), fullPage: true });
+  const settings = watch(await app.newPage());
+  await settings.setViewportSize({ width: 760, height: 560 });
+  await settings.goto(`${origin}#settings`);
+  await settings.waitForSelector('.sd-tabs [role="tab"]');
+  const tabs = await settings.$$eval('.sd-tabs [role="tab"]', (buttons) => buttons.map((button) => button.textContent.trim()));
+  check(
+    JSON.stringify(tabs) === JSON.stringify(['General', 'Models', 'Werewolf', 'Avalon']),
+    `desktop: #settings renders the four tabs (${tabs.join(', ')})`,
+  );
+  await settings.screenshot({ path: join(shots, 'settings-general.png'), fullPage: true });
+  for (const [index, name] of [[1, 'models'], [2, 'werewolf']]) {
+    await settings.click(`.sd-tabs [role="tab"]:nth-child(${index + 1})`);
+    await settings.waitForSelector('.sd-tab-head h2');
+    await settings.screenshot({ path: join(shots, `settings-${name}.png`), fullPage: true });
+  }
+  const players = await settings.$$eval('.sd-stepper input', (inputs) => inputs.map((input) => input.value));
+  check(JSON.stringify(players) === JSON.stringify(['2', '3', '1', '1']), `desktop: the Werewolf tab shows each role's count (${players.join(', ')})`);
+  await app.close();
 });
 
 check(errors.length === 0, `the console stays clean${errors.length ? `: ${errors.join('; ')}` : ''}`);

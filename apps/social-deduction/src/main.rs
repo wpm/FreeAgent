@@ -119,13 +119,13 @@ fn known_providers_help() -> String {
     let providers = known_providers();
     let width = providers
         .iter()
-        .map(|(root, _)| root.len())
+        .map(|(_, root, _)| root.len())
         .max()
         .unwrap_or_default();
     let mut help = String::from(
         "Providers known, with the environment variable their API key is read from:\n",
     );
-    for (root, variable) in providers {
+    for (_, root, variable) in providers {
         writeln!(help, "  {root:width$}  {}", variable.unwrap_or("-")).unwrap();
     }
     help

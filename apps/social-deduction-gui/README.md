@@ -35,18 +35,61 @@ as fast.
 
 ## The desktop app
 
-The desktop app plays a game live. Its settings screen is the
-configuration file as a form: the players, the phase limits, the
-strategies, who plays what, the models and the text blocks, with a **TOML**
-tab over the whole file. **Open** and **Save** read and write `.toml`
-files, and keep their comments and order. Pick a preset or open a file,
-press **Run**, and watch the game as it happens, with **Stop**. **Run**
-prepares the file as `social-deduction play` does, and an error that
-names a line offers to show it in the TOML tab. The configuration last run
-is kept as `last.toml` in the app's config directory and opens at the
-start. It is a
-[Tauri](https://tauri.app) shell, in `src-tauri`, around the same page. To
-run it in development, with Trunk and the Tauri CLI
+The desktop app plays a game live. Its main window opens on a start
+state: choose **Werewolf** or **Avalon**, read the line that sums up its
+settings, and press **Play**. A game whose settings have an error names
+the first one under **Play**, linked to its field in Settings. The game
+plays with **Stop**, and once it is over, **New game** and **Show log
+file** appear. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
+start state. The game last played is chosen at launch.
+
+**Settings…** (⌘, on macOS, **Edit ▸ Preferences…** and Ctrl+, elsewhere)
+opens the Settings window. Every change is stored as it is made and
+applies to the next game. Each field's error shows in red beneath it.
+
+- **General**: the folder game logs are saved in, with **Change…** and
+  **Show in Finder** (**Show in Explorer** elsewhere), and the
+  appearance: System, Light or Dark. System keeps Werewolf dark by night
+  and light by day.
+- **Models**: the models both games share, one card each, and their
+  providers. **Add Model** starts with the provider, which fills in the
+  base URL and the key variable: OpenAI, Anthropic, a local server, or
+  **Other…**. The model id is chosen from the provider's own listing,
+  which shows the models that pass the probe `social-deduction models
+  --check` runs: ✓ plays, ~ plays only when not made to call a tool.
+  **Show all** adds the rest, ✗ for a model that does not play. A
+  provider's context window fills in when the listing reports one. Each
+  provider that needs a key shows where it is and stores or removes it in
+  the keychain; storing one lists the provider's models again.
+- **Werewolf** and **Avalon**: the role counts, the phase limits (`45s`,
+  `2m`), the strategies, who plays what, and the text blocks. **Restore
+  Defaults…** brings back the game's example `prompted` configuration,
+  leaving the models as they are.
+
+When the Settings window opens, the app looks for a local server at
+`http://localhost:<port>/v1` on ports 1234, 11434, 8080 and 8000 (LM
+Studio's, Ollama's, llama.cpp's and vLLM's), and each one that answers is
+a provider, **Local (localhost:1234)**. A remote provider's models are
+probed in the background, four at a time, once its key is set. A local
+server's are probed one at a time when **Check all** is pressed, since the
+server loads each model it is asked about, and each model's card has its
+own **Check**. ↻ lists a provider's models again and probes them afresh.
+
+**File ▸ Import Configuration…** reads a configuration file. Its game's
+settings replace that game's, and its models join the shared ones; a model
+whose name is taken by another is added as `<name>-2`, with the
+strategies that ask it to match. **File ▸ Export Configuration…** writes a
+game's configuration file, with its models, and `social-deduction play`
+plays it as **Play** does.
+
+The settings are kept in `settings.toml` in the app's config directory,
+and what probing found in `probes.json` in its data directory: on macOS,
+both in `~/Library/Application Support/io.github.wpm.social-deduction/`.
+At the first launch, a `last.toml` an earlier version kept there is
+imported into its game.
+
+It is a [Tauri](https://tauri.app) shell, in `src-tauri`, around the same
+page. To run it in development, with Trunk and the Tauri CLI
 (`cargo install tauri-cli --locked`) installed:
 
 ```sh
@@ -57,18 +100,15 @@ cargo tauri dev
 On Linux, Tauri needs the WebKitGTK development packages:
 `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev`.
 
-Each game's log is saved as JSON Lines in the app's data directory, under
-`games/`, named for when the game started (in UTC) and which game it is:
-on macOS, `~/Library/Application Support/io.github.wpm.social-deduction/games/`.
-**Show log file** reveals it once the game is over.
+Each game's log is saved as JSON Lines in the logs folder, by default
+`games/` in the app's data directory, named for when the game started (in
+UTC) and which game it is. **Show log file** reveals it once the game is
+over.
 
 A model's API key comes from the OS keychain, then from the environment
-variable that names it, such as `OPENAI_API_KEY`. The Keys section lists
-each variable the models need and where its key is, and stores or removes
-it in the keychain. Each key is a keychain entry whose service is
-`io.github.wpm.social-deduction` and whose account is the variable's name.
-A model's **Check** asks it to play, as `social-deduction models --check`
-does.
+variable that names it, such as `OPENAI_API_KEY`. Each key is a keychain
+entry whose service is `io.github.wpm.social-deduction` and whose account
+is the variable's name.
 
 ## The screen check
 
@@ -76,8 +116,9 @@ does.
 model, with talk, thinking and late speech, which random players never
 produce. `#avalon-prompted` and `#werewolf-prompted` open them. CI's Viewer
 job builds the page with `build-page.sh` and drives it in headless
-Chromium with `e2e/check.mjs`, which checks what each game shows and saves
-screenshots. To run it locally, from the root of a checkout:
+Chromium with `e2e/check.mjs`, which checks what each game shows, opens
+the desktop app's start state and Settings window against a stand-in
+backend, and saves screenshots. To run it locally, from the root of a checkout:
 
 ```sh
 apps/social-deduction-gui/build-page.sh

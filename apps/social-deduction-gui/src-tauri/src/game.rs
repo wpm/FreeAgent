@@ -1,43 +1,34 @@
-//! The commands that play a game: the presets to choose from, playing
-//! one, stopping it, and revealing its log.
+//! The commands that play a game: playing the game chosen, stopping it,
+//! and revealing its log.
 
 use crate::secret::keychain;
-use social_deduction::editing::{self, PRESETS, Preset};
+use crate::settings::Store;
 use social_deduction::live::Session;
 use social_deduction::run::prepare;
-use social_deduction_stage::Cue;
+use social_deduction::settings;
+use social_deduction_stage::{Cue, GameName};
+use std::path::PathBuf;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, State, async_runtime};
+use tauri::{State, async_runtime};
 
-/// The example configurations.
-#[tauri::command]
-pub fn presets() -> Vec<Preset> {
-    PRESETS.to_vec()
-}
-
-/// Play the game the configuration `text` describes, its cues sent down
-/// `cues`, as [`Session::play`] does, with its keys from the keychain and
-/// its log in the app's data directory. The text is kept to open with
-/// next time.
+/// Play a game of `game` under the settings, its cues sent down `cues`,
+/// as [`Session::play`] does, from the configuration the settings make,
+/// as `social-deduction play` would play it, with its keys from the
+/// keychain and its log in the folder the settings name. The game is
+/// chosen to play next time. Settings with an error are not played.
 #[tauri::command]
 pub async fn play(
-    app: AppHandle,
     session: State<'_, Session>,
-    text: String,
+    store: State<'_, Store>,
+    game: GameName,
     cues: Channel<Cue>,
 ) -> Result<(), String> {
-    let kept = app
-        .path()
-        .app_config_dir()
-        .map_err(|error| error.to_string())
-        .and_then(|dir| editing::keep(&dir, &text));
-    if let Err(error) = kept {
-        tracing::warn!("{error}");
+    let snapshot = store.change(|held| held.general.game = game);
+    if let Some(error) = snapshot.settings.first_error(game, &snapshot.errors) {
+        return Err(error.message);
     }
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
+    let text = settings::text(&snapshot.settings, game);
+    let dir = PathBuf::from(snapshot.logs);
     // Preparing probes models through closures whose futures the compiler
     // cannot prove Send, so it runs on a thread of its own, with the
     // runtime's handle. A stop leaves that thread to finish unheard.

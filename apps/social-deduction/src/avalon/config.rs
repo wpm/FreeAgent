@@ -41,6 +41,13 @@ pub fn parse(file: &str) -> anyhow::Result<Config> {
     Config::parse(file, &VARIABLES)
 }
 
+/// The configuration `table` holds, as
+/// [`crate::config::Config::from_table`] makes it, with Avalon's
+/// template variables.
+pub fn from_table(table: toml::Table) -> anyhow::Result<Config> {
+    Config::from_table(table, &VARIABLES)
+}
+
 /// The `[phases]` table: how long each phase waits for the players, for
 /// those that say.
 #[derive(Debug, Default, Deserialize)]

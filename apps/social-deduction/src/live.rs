@@ -283,7 +283,7 @@ where
 }
 
 /// Create the log of a game of `game` started at `time`:
-/// `<dir>/games/<YYYY-MM-DDTHH-MM-SS>-<game>.jsonl`, with the time in UTC.
+/// `<dir>/<YYYY-MM-DDTHH-MM-SS>-<game>.jsonl`, with the time in UTC.
 /// A log of that name already there is kept, and the new one numbered
 /// `-2`, `-3` and on. The file comes back, written a line at a time, with
 /// its path.
@@ -296,8 +296,7 @@ pub fn create_log(
     game: Name,
     time: SystemTime,
 ) -> io::Result<(LineWriter<File>, PathBuf)> {
-    let games = dir.join("games");
-    fs::create_dir_all(&games)?;
+    fs::create_dir_all(dir)?;
     let stamp = humantime::format_rfc3339_seconds(time)
         .to_string()
         .trim_end_matches('Z')
@@ -312,7 +311,7 @@ pub fn create_log(
             1 => String::new(),
             n => format!("-{n}"),
         };
-        let path = games.join(format!("{stamp}-{game}{suffix}.jsonl"));
+        let path = dir.join(format!("{stamp}-{game}{suffix}.jsonl"));
         match File::create_new(&path) {
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => number += 1,
             file => return Ok((LineWriter::new(file?), path)),
@@ -376,7 +375,7 @@ mod tests {
             ("avalon/random.toml", Name::Avalon),
         ] {
             let dir = scratch(&format!("played-{name}").replace('/', "-"));
-            let (file, path) = create_log(&dir, game, SystemTime::now()).unwrap();
+            let (file, path) = create_log(&dir.join("games"), game, SystemTime::now()).unwrap();
             let shown = path.display().to_string();
             let (sender, receiver) = unbounded_channel();
             let playing = play(
@@ -461,7 +460,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_closed_channel_stops_the_game() {
         let dir = scratch("closed");
-        let (file, path) = create_log(&dir, Name::Avalon, SystemTime::now()).unwrap();
+        let (file, path) = create_log(&dir.join("games"), Name::Avalon, SystemTime::now()).unwrap();
         let mut shown = 0;
         play(
             prepared("avalon/random.toml").await,
@@ -540,14 +539,18 @@ mod tests {
         let (sender, receiver) = unbounded_channel();
         let preparing_avalon = preparing("avalon/random.toml");
         session
-            .play(preparing_avalon, &dir, sending(sender))
+            .play(preparing_avalon, &dir.join("games"), sending(sender))
             .await
             .unwrap();
         let path = session.log().unwrap();
         assert!(path.starts_with(dir.join("games")), "{}", path.display());
         let (refused, _) = unbounded_channel();
         let error = session
-            .play(preparing("avalon/random.toml"), &dir, sending(refused))
+            .play(
+                preparing("avalon/random.toml"),
+                &dir.join("games"),
+                sending(refused),
+            )
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), BUSY);
@@ -564,7 +567,11 @@ mod tests {
         assert!(!busy(&session));
         let (sender, receiver) = unbounded_channel();
         session
-            .play(preparing("werewolf/random.toml"), &dir, sending(sender))
+            .play(
+                preparing("werewolf/random.toml"),
+                &dir.join("games"),
+                sending(sender),
+            )
             .await
             .unwrap();
         assert_ne!(session.log().unwrap(), path);
@@ -576,14 +583,15 @@ mod tests {
     async fn a_game_stopped_while_it_is_prepared_never_starts() {
         let session = Session::default();
         let dir = scratch("stopped-preparing");
+        let games = dir.join("games");
         let (sender, receiver) = unbounded_channel();
         let (refused, _) = unbounded_channel();
         let hanging = std::future::pending();
-        let (played, ()) = tokio::join!(session.play(hanging, &dir, sending(sender)), async {
+        let (played, ()) = tokio::join!(session.play(hanging, &games, sending(sender)), async {
             tokio::task::yield_now().await;
             assert!(busy(&session));
             let error = session
-                .play(std::future::pending(), &dir, sending(refused))
+                .play(std::future::pending(), &games, sending(refused))
                 .await
                 .unwrap_err();
             assert_eq!(error.to_string(), BUSY);
@@ -608,7 +616,7 @@ mod tests {
             Ok(ready)
         };
         let error = session
-            .play(stopping, &dir, sending(sender))
+            .play(stopping, &dir.join("games"), sending(sender))
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), STOPPED);
@@ -625,14 +633,18 @@ mod tests {
         let (sender, _) = unbounded_channel();
         let failing = async { Err(anyhow::anyhow!("no model")) };
         let error = session
-            .play(failing, &dir, sending(sender.clone()))
+            .play(failing, &dir.join("games"), sending(sender.clone()))
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "no model");
         assert!(!busy(&session));
         fs::write(dir.join("games"), "").unwrap();
         let error = session
-            .play(preparing("avalon/random.toml"), &dir, sending(sender))
+            .play(
+                preparing("avalon/random.toml"),
+                &dir.join("games"),
+                sending(sender),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -648,10 +660,10 @@ mod tests {
     fn a_log_is_named_for_when_its_game_started_and_which_game_it_is() {
         let dir = scratch("named");
         let time = UNIX_EPOCH + Duration::from_secs(1_791_900_000);
-        let (_, path) = create_log(&dir, Name::Werewolf, time).unwrap();
+        let (_, path) = create_log(&dir.join("games"), Name::Werewolf, time).unwrap();
         assert_eq!(path, dir.join("games/2026-10-13T14-00-00-werewolf.jsonl"));
         assert!(path.exists());
-        let (_, path) = create_log(&dir, Name::Avalon, time).unwrap();
+        let (_, path) = create_log(&dir.join("games"), Name::Avalon, time).unwrap();
         assert!(path.ends_with("2026-10-13T14-00-00-avalon.jsonl"));
         fs::remove_dir_all(dir).unwrap();
     }
@@ -660,10 +672,10 @@ mod tests {
     fn a_second_log_started_the_same_second_is_numbered_and_the_first_is_kept() {
         let dir = scratch("same-second");
         let time = UNIX_EPOCH + Duration::from_secs(1_791_900_000);
-        let (mut first, path) = create_log(&dir, Name::Avalon, time).unwrap();
+        let (mut first, path) = create_log(&dir.join("games"), Name::Avalon, time).unwrap();
         writeln!(first, "first").unwrap();
-        let (_, second) = create_log(&dir, Name::Avalon, time).unwrap();
-        let (_, third) = create_log(&dir, Name::Avalon, time).unwrap();
+        let (_, second) = create_log(&dir.join("games"), Name::Avalon, time).unwrap();
+        let (_, third) = create_log(&dir.join("games"), Name::Avalon, time).unwrap();
         assert!(second.ends_with("2026-10-13T14-00-00-avalon-2.jsonl"));
         assert!(third.ends_with("2026-10-13T14-00-00-avalon-3.jsonl"));
         assert_eq!(fs::read_to_string(path).unwrap(), "first\n");
@@ -674,7 +686,7 @@ mod tests {
     fn a_log_that_cannot_be_created_is_an_error() {
         let dir = scratch("blocked");
         fs::write(dir.join("games"), "").unwrap();
-        assert!(create_log(&dir, Name::Avalon, SystemTime::now()).is_err());
+        assert!(create_log(&dir.join("games"), Name::Avalon, SystemTime::now()).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
 }
