@@ -7,15 +7,15 @@
 //! [`keychain`] looks a key up there first, then in the environment, as
 //! [`Keychain`] does.
 //!
-//! The settings screen stores and removes keys through [`key_store`] and
-//! [`key_remove`], and asks where each is through [`key_status`], which
-//! never answers with the key. A key from the screen is a
-//! [`SecretString`] from the first statement that holds it.
+//! The Models tab stores and removes each provider's key through
+//! [`key_store`] and [`key_remove`], and asks where it is through
+//! [`key_status`], which never answers with the key. A key from the
+//! window is a [`SecretString`] from the first statement that holds it.
 
 use keyring::Entry;
 use secrecy::{ExposeSecret, SecretString};
 use social_deduction::secret::{Keychain, SecretError, Store};
-use social_deduction_stage::form::KeyStatus;
+use social_deduction_stage::settings::KeyStatus;
 
 /// The service every key's entry is stored under: the app's identifier.
 pub const SERVICE: &str = "io.github.wpm.social-deduction";
@@ -69,7 +69,7 @@ impl Store for Os {
     }
 }
 
-/// Store `key` for `variable`, from the settings screen. The key arrives
+/// Store `key` for `variable`, from the Settings window. The key arrives
 /// as a plain string, which the first statement makes a secret.
 #[tauri::command(async)]
 pub fn key_store(variable: String, key: String) -> Result<(), SecretError> {
@@ -77,7 +77,7 @@ pub fn key_store(variable: String, key: String) -> Result<(), SecretError> {
     keychain().store(&variable, &key)
 }
 
-/// Remove the key stored for `variable`, from the settings screen.
+/// Remove the key stored for `variable`, from the Settings window.
 #[tauri::command(async)]
 pub fn key_remove(variable: String) -> Result<(), SecretError> {
     keychain().remove(&variable)

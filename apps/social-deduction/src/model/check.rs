@@ -5,7 +5,7 @@
 use super::spec::{Keys, Probed, Spec};
 use super::{Model, ToolChoice};
 use crate::config::Name;
-use social_deduction_stage::form::Check;
+use social_deduction_stage::settings::Check;
 use std::io::{self, Write};
 
 /// What asking `model` to play each game in [`Name::ALL`] as the model
@@ -37,7 +37,17 @@ pub async fn plays(model: &dyn Model, id: &str) -> anyhow::Result<Probed> {
 pub async fn check(spec: &Spec, keys: &dyn Keys) -> anyhow::Result<Check> {
     let provider = spec.provider(keys)?;
     provider.listed(&spec.id).await?;
-    Ok(match plays(&provider, &spec.id).await? {
+    probe(&provider, &spec.id).await
+}
+
+/// What asking `model` to play as the model `id` finds, as [`plays`]
+/// asks it.
+///
+/// # Errors
+///
+/// When the model could not be asked.
+pub async fn probe(model: &dyn Model, id: &str) -> anyhow::Result<Check> {
+    Ok(match plays(model, id).await? {
         Probed::Played(ToolChoice::Required) => Check::Plays,
         Probed::Played(ToolChoice::Auto) => Check::PlaysUnforced,
         Probed::DidNotPlay(error) => Check::DidNotPlay(format!("{error:#}")),
@@ -293,6 +303,20 @@ mod tests {
                 if reason.starts_with("qwen2.5-7b-instruct did not play Werewolf"))
         };
         assert!(did_not_play(&checked), "{checked:?}");
+    }
+
+    #[tokio::test]
+    async fn the_cause_of_a_model_not_playing_is_what_the_provider_answered_the_request() {
+        let model = "qwen2.5-7b-instruct";
+        let spec = qwen(&canned::refusing_days(&[model]), "");
+        let checked = check(&spec, &Environment).await.unwrap();
+        let cause = checked.cause().unwrap();
+        assert!(cause.starts_with("POST "), "{cause}");
+        assert!(
+            cause.ends_with(&format!("400 Bad Request: {}", canned::day_refusal(model))),
+            "{cause}"
+        );
+        assert_eq!(Check::Plays.cause(), None);
     }
 
     #[tokio::test]

@@ -33,7 +33,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -114,12 +114,23 @@ struct Knowledge {
     /// context window under, in the order they are read.
     #[serde(default)]
     context_window_fields: Vec<String>,
+    /// The ports a local server is looked for on.
+    #[serde(default)]
+    local_ports: Vec<u16>,
+    /// Words in a model's id that say it does not chat.
+    #[serde(default)]
+    hide: Vec<String>,
+    /// The families of models, most capable first.
+    #[serde(default)]
+    families: Vec<String>,
 }
 
 /// A provider `src/models.toml` knows.
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct Known {
+    /// Its name, as the desktop app shows it.
+    name: String,
     /// The root of its OpenAI-compatible API, ending in `/v1`.
     base_url: String,
     /// The environment variable conventionally holding its API key, for a
@@ -146,15 +157,36 @@ fn known(base_url: &str) -> Option<&'static Known> {
     })
 }
 
-/// The providers `src/models.toml` knows, each as the root of its API and
-/// the environment variable conventionally holding its key, if any, in
-/// the file's order, for telling the user.
-pub fn known_providers() -> Vec<(&'static str, Option<&'static str>)> {
+/// The providers `src/models.toml` knows, each as its name, the root of
+/// its API and the environment variable conventionally holding its key, if
+/// any, in the file's order, for telling the user.
+pub fn known_providers() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
     KNOWLEDGE
         .providers
         .iter()
-        .map(|known| (known.base_url.as_str(), known.api_key_env.as_deref()))
+        .map(|known| {
+            let (name, base_url) = (known.name.as_str(), known.base_url.as_str());
+            (name, base_url, known.api_key_env.as_deref())
+        })
         .collect()
+}
+
+/// The ports `src/models.toml` says a local server is looked for on.
+pub fn local_ports() -> &'static [u16] {
+    &KNOWLEDGE.local_ports
+}
+
+/// Whether the model `id` does not chat, as a word `src/models.toml` hides
+/// in it says, whatever its case.
+pub fn hidden(id: &str) -> bool {
+    let id = id.to_lowercase();
+    KNOWLEDGE.hide.iter().any(|word| id.contains(word.as_str()))
+}
+
+/// The families of models `src/models.toml` ranks, most capable first,
+/// each the start of its models' ids: `claude-opus`, `gpt-4.1`.
+pub fn families() -> &'static [String] {
+    &KNOWLEDGE.families
 }
 
 /// The headers every request to the provider at `base_url` must carry,
@@ -195,10 +227,12 @@ pub fn key_variable<'a>(base_url: &str, named: Option<&'a str>) -> Option<&'a st
 
 /// A request the provider answered with anything but success: the status,
 /// kept so a reader can tell a request the provider would not put to the
-/// model from one that never got that far, and the error's words.
+/// model from one that never got that far, what the provider said, and
+/// the error's words.
 #[derive(Debug)]
-struct Rejection {
-    status: StatusCode,
+pub(crate) struct Rejection {
+    pub(crate) status: StatusCode,
+    pub(crate) said: Said,
     message: String,
 }
 
@@ -209,6 +243,61 @@ impl fmt::Display for Rejection {
 }
 
 impl std::error::Error for Rejection {}
+
+/// What a provider said about a failure: the start of its words, if it
+/// said any, whether they are a JSON error's message, its own account of
+/// the failure, and that error's code and type, if it gave them.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Said {
+    pub(crate) words: Option<String>,
+    pub(crate) accounted: bool,
+    pub(crate) code: Option<String>,
+    pub(crate) kind: Option<String>,
+}
+
+impl Said {
+    /// What the provider said in `text`, the body of its answer. A JSON
+    /// error in OpenAI's and Anthropic's shape gives its `message`, its
+    /// `code` and its `type`; any other text is its words, trimmed, and
+    /// nothing is nothing.
+    fn read(text: &str) -> Self {
+        #[derive(Deserialize)]
+        struct Body {
+            error: Error,
+        }
+        #[derive(Deserialize)]
+        struct Error {
+            message: String,
+            code: Option<serde_json::Value>,
+            r#type: Option<serde_json::Value>,
+        }
+        let text = text.trim();
+        if text.is_empty() {
+            return Self::default();
+        }
+        let named = |value: Option<serde_json::Value>| value?.as_str().map(String::from);
+        match serde_json::from_str::<Body>(text) {
+            Ok(Body { error }) => Self {
+                words: Some(start(&error.message)),
+                accounted: true,
+                code: named(error.code),
+                kind: named(error.r#type),
+            },
+            Err(_) => Self {
+                words: Some(start(text)),
+                ..Self::default()
+            },
+        }
+    }
+
+    /// Whether the provider classified the failure as `name`, by its code
+    /// or its type.
+    pub(crate) fn is(&self, name: &str) -> bool {
+        [&self.code, &self.kind]
+            .into_iter()
+            .any(|given| given.as_deref() == Some(name))
+    }
+}
 
 /// Whether `error`, from a completion, concerns the model rather than the
 /// way to it. A request the provider refused as bad, 400, is one it would
@@ -232,67 +321,66 @@ pub(crate) fn refused(error: &anyhow::Error) -> bool {
 
 /// The status the provider answered with, if `error` is the provider
 /// answering a request with anything but success.
-fn rejected_with(error: &anyhow::Error) -> Option<StatusCode> {
-    error
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<Rejection>())
-        .map(|rejection| rejection.status)
+pub(crate) fn rejected_with(error: &anyhow::Error) -> Option<StatusCode> {
+    rejection(error).map(|rejection| rejection.status)
 }
 
+/// The provider's answer, if `error` is the provider answering a request
+/// with anything but success.
+pub(crate) fn rejection(error: &anyhow::Error) -> Option<&Rejection> {
+    error.chain().find_map(|cause| cause.downcast_ref())
+}
+
+/// The code a provider gives an account out of credits.
+pub(crate) const NO_CREDITS: &str = "insufficient_quota";
+
 /// A status that is not success, in words: the status, what it is likely
-/// to mean coming from a provider that was sent a key or not, and
-/// whatever the provider `said` about it. A provider's message comes as
-/// `error.message` in JSON, as OpenAI's and Anthropic's do; any other
-/// text is quoted as it is.
-fn explained(status: StatusCode, keyed: bool, said: &str) -> String {
+/// to mean coming from a provider that was sent a key or not, and what
+/// the provider `said` about it. Words that are the provider's own account
+/// of the failure come first and the meaning of the status after;
+/// otherwise the meaning comes first. Only a rate limit, a 429 with no
+/// code or one saying so, is to be tried again shortly: OpenAI answers 429
+/// to an account out of credits too.
+fn explained(status: StatusCode, keyed: bool, said: &Said) -> String {
+    let limited =
+        said.code.is_none() || said.is("rate_limit_exceeded") || said.is("rate_limit_error");
     let meaning = match status {
+        _ if said.is(NO_CREDITS) => {
+            Some("the account has no credits left; add credits to continue")
+        }
         StatusCode::UNAUTHORIZED if keyed => Some("the API key was not accepted"),
         StatusCode::UNAUTHORIZED => Some("it wants an API key"),
         StatusCode::FORBIDDEN => Some("the API key is not allowed to do that"),
         StatusCode::NOT_FOUND => Some(
             "nothing is served at that path; the base URL is the root of the API, ending in /v1",
         ),
-        StatusCode::TOO_MANY_REQUESTS => {
+        StatusCode::TOO_MANY_REQUESTS if limited => {
             Some("it is limiting the rate of requests; try again shortly")
         }
+        StatusCode::TOO_MANY_REQUESTS => Some("it is turning requests away"),
         status if status.is_server_error() => {
             Some("it is having trouble of its own; try again shortly")
         }
         _ => None,
     };
     let mut explanation = status.to_string();
-    if let Some(meaning) = meaning {
-        explanation.push_str(": ");
-        explanation.push_str(meaning);
-    }
-    if let Some(said) = message(said) {
-        explanation.push_str(". The provider said: ");
-        explanation.push_str(&said);
+    match (&said.words, meaning) {
+        (Some(words), meaning) if said.accounted => {
+            let _ = write!(explanation, ": {words}");
+            if let Some(meaning) = meaning {
+                let _ = write!(explanation, " ({meaning})");
+            }
+        }
+        (words, meaning) => {
+            if let Some(meaning) = meaning {
+                let _ = write!(explanation, ": {meaning}");
+            }
+            if let Some(words) = words {
+                let _ = write!(explanation, ". The provider said: {words}");
+            }
+        }
     }
     explanation
-}
-
-/// The start of what a provider said about a failure: the message of a
-/// JSON error in OpenAI's and Anthropic's shape, or else its text,
-/// trimmed, or nothing when it said nothing.
-fn message(said: &str) -> Option<String> {
-    #[derive(Deserialize)]
-    struct Said {
-        error: Error,
-    }
-    #[derive(Deserialize)]
-    struct Error {
-        message: String,
-    }
-    let said = said.trim();
-    if said.is_empty() {
-        return None;
-    }
-    let said = match serde_json::from_str::<Said>(said) {
-        Ok(json) => json.error.message,
-        Err(_) => said.to_string(),
-    };
-    Some(start(&said))
 }
 
 /// The start of `text`: all of it when it is short, else its first
@@ -321,9 +409,11 @@ struct Listing {
     data: Vec<Listed>,
 }
 
-/// One model as a provider lists it: its id, and its context window, in
-/// tokens, when its entry carries one. The window is the first of the
-/// fields `src/models.toml` names that holds a positive whole number.
+/// One model as a provider lists it: its id, its context window, in
+/// tokens, when its entry carries one, and when it was made, when its
+/// entry says. The window is the first of the fields `src/models.toml`
+/// names that holds a positive whole number. When it was made is OpenAI's
+/// `created`, in seconds since 1970, or Anthropic's `created_at`, a date.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(from = "Entry")]
 pub struct Listed {
@@ -331,6 +421,8 @@ pub struct Listed {
     pub id: String,
     /// The model's context window, in tokens, if its entry says.
     pub context_window: Option<u64>,
+    /// When the model was made, in seconds since 1970, if its entry says.
+    pub created: Option<u64>,
 }
 
 /// A model's entry in a [`Listing`], as written.
@@ -350,9 +442,19 @@ impl From<Entry> for Listed {
                 .as_u64()
                 .filter(|&tokens| tokens > 0)
         });
+        let created = entry
+            .fields
+            .get("created")
+            .and_then(serde_json::Value::as_u64)
+            .or_else(|| {
+                let date = entry.fields.get("created_at")?.as_str()?;
+                let made = humantime::parse_rfc3339_weak(date).ok()?;
+                Some(made.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs())
+            });
         Self {
             id: entry.id,
             context_window,
+            created,
         }
     }
 }
@@ -420,13 +522,14 @@ impl Provider {
         let response = request.send().await.with_context(|| sent.to_string())?;
         let status = response.status();
         if !status.is_success() {
-            let said = response.text().await.unwrap_or_default();
+            let said = Said::read(&response.text().await.unwrap_or_default());
             return Err(Rejection {
                 status,
                 message: format!(
                     "{sent} was answered {}",
                     explained(status, self.api_key.is_some(), &said)
                 ),
+                said,
             }
             .into());
         }
@@ -498,7 +601,7 @@ impl Model for Provider {
 
 #[cfg(test)]
 mod tests {
-    use super::canned::{answering, bound, completion, listing, reported, unreachable};
+    use super::canned::{self, answering, bound, completion, listing, reported, unreachable};
     use super::fake::selecting;
     use super::*;
     use serde_json::json;
@@ -557,12 +660,78 @@ mod tests {
         assert!(providers.len() >= 2, "{providers:?}");
         assert_eq!(
             providers[0],
-            ("https://api.openai.com/v1", Some("OPENAI_API_KEY"))
+            (
+                "OpenAI",
+                "https://api.openai.com/v1",
+                Some("OPENAI_API_KEY")
+            )
         );
         assert_eq!(
             providers[1],
-            ("https://api.anthropic.com/v1", Some("ANTHROPIC_API_KEY"))
+            (
+                "Anthropic",
+                "https://api.anthropic.com/v1",
+                Some("ANTHROPIC_API_KEY")
+            )
         );
+    }
+
+    #[test]
+    fn a_local_server_is_looked_for_on_the_ports_of_the_usual_servers() {
+        assert_eq!(local_ports(), [1234, 11434, 8080, 8000]);
+    }
+
+    #[test]
+    fn a_model_that_does_not_chat_is_hidden_by_a_word_in_its_id_whatever_its_case() {
+        for id in [
+            "text-embedding-3-small",
+            "tts-1",
+            "whisper-1",
+            "gpt-4o-transcribe",
+            "dall-e-3",
+            "gpt-image-1",
+            "omni-moderation-latest",
+            "gpt-4o-realtime-preview",
+            "gpt-4o-audio-preview",
+            "Text-Embedding-Nomic",
+        ] {
+            assert!(hidden(id), "{id}");
+        }
+        for id in ["gpt-4.1-mini", "claude-sonnet-4-5", "qwen2.5-7b-instruct"] {
+            assert!(!hidden(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn the_file_ranks_model_families_most_capable_first() {
+        let place = |family: &str| families().iter().position(|f| f == family).unwrap();
+        assert!(place("claude-fable") < place("claude-opus"));
+        assert!(place("claude-opus") < place("claude-sonnet"));
+        assert!(place("claude-sonnet") < place("claude-haiku"));
+        assert!(place("gpt-4.1") < place("gpt-4.1-mini"));
+    }
+
+    #[test]
+    fn a_model_s_creation_is_read_from_its_entry_in_seconds_or_as_a_date() {
+        let created = |fields: serde_json::Value| {
+            let mut model = json!({"id": "m"});
+            model
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            entry(model).created
+        };
+        assert_eq!(
+            created(json!({"created": 1_700_000_000})),
+            Some(1_700_000_000)
+        );
+        assert_eq!(
+            created(json!({"created_at": "2025-02-19T00:00:00Z"})),
+            Some(1_739_923_200)
+        );
+        assert_eq!(created(json!({"created_at": "yesterday"})), None);
+        assert_eq!(created(json!({"created": "soon"})), None);
+        assert_eq!(created(json!({})), None);
     }
 
     #[test]
@@ -676,8 +845,8 @@ mod tests {
         assert_eq!(
             shown,
             format!(
-                "GET {base_url}/models was answered 401 Unauthorized: the API key was not accepted. \
-                 The provider said: Incorrect API key provided"
+                "GET {base_url}/models was answered 401 Unauthorized: Incorrect API key provided \
+                 (the API key was not accepted)"
             )
         );
         assert!(!shown.contains("sk-secret"), "{shown}");
@@ -687,7 +856,7 @@ mod tests {
     /// key or not.
     fn explanation(status: &str, keyed: bool, said: &str) -> String {
         let status = StatusCode::from_bytes(status.split(' ').next().unwrap().as_bytes()).unwrap();
-        explained(status, keyed, said)
+        explained(status, keyed, &Said::read(said))
     }
 
     #[test]
@@ -725,14 +894,14 @@ mod tests {
 
     #[test]
     fn what_the_provider_said_is_its_message_when_it_is_json_and_its_text_when_not() {
-        // OpenAI's and Anthropic's shape.
+        // OpenAI's and Anthropic's shape, the provider's own account.
         assert_eq!(
             explanation(
                 "418 I'm a teapot",
                 false,
                 r#"{"type": "error", "error": {"type": "api_error", "message": "Brewing"}}"#
             ),
-            "418 I'm a teapot. The provider said: Brewing"
+            "418 I'm a teapot: Brewing"
         );
         // Anything else is quoted as it is, trimmed; nothing is not quoted.
         assert_eq!(
@@ -746,6 +915,62 @@ mod tests {
         assert_eq!(
             explanation("418 I'm a teapot", false, " \n"),
             "418 I'm a teapot"
+        );
+    }
+
+    #[test]
+    fn an_account_out_of_credits_is_explained_by_the_provider_s_words_first_and_not_as_a_rate_limit()
+     {
+        assert_eq!(
+            explanation("429 Too Many Requests", true, canned::NO_CREDITS),
+            "429 Too Many Requests: You have no credits remaining. Add credits to continue using \
+             the API at https://platform.openai.com/settings/organization/billing/. \
+             (the account has no credits left; add credits to continue)"
+        );
+    }
+
+    #[test]
+    fn only_a_rate_limit_is_to_be_tried_again_shortly() {
+        let limited = r#"{"error": {"message": "Rate limit reached", "type": "requests", "param": null, "code": "rate_limit_exceeded"}}"#;
+        assert_eq!(
+            explanation("429 Too Many Requests", true, limited),
+            "429 Too Many Requests: Rate limit reached \
+             (it is limiting the rate of requests; try again shortly)"
+        );
+        // Anthropic's, which carries a type and no code.
+        let limited =
+            r#"{"type": "error", "error": {"type": "rate_limit_error", "message": "Slow down"}}"#;
+        assert_eq!(
+            explanation("429 Too Many Requests", true, limited),
+            "429 Too Many Requests: Slow down (it is limiting the rate of requests; try again shortly)"
+        );
+        // OpenAI's with no code, which carries a type.
+        let limited = r#"{"error": {"message": "Slow down", "type": "requests", "code": null}}"#;
+        assert_eq!(
+            explanation("429 Too Many Requests", true, limited),
+            "429 Too Many Requests: Slow down (it is limiting the rate of requests; try again shortly)"
+        );
+        // A 429 with a code of another kind is not.
+        let other = r#"{"error": {"message": "Not now", "code": "busy"}}"#;
+        assert_eq!(
+            explanation("429 Too Many Requests", true, other),
+            "429 Too Many Requests: Not now (it is turning requests away)"
+        );
+    }
+
+    #[test]
+    fn what_the_provider_said_in_a_json_error_comes_before_the_meaning_of_the_status() {
+        let missing = r#"{"error": {"message": "The model `gpt-9` does not exist", "type": "invalid_request_error", "code": "model_not_found"}}"#;
+        assert_eq!(
+            explanation("404 Not Found", true, missing),
+            "404 Not Found: The model `gpt-9` does not exist (nothing is served at that path; \
+             the base URL is the root of the API, ending in /v1)"
+        );
+        // A status with no meaning is followed by the words alone.
+        let brewing = r#"{"error": {"message": "Brewing", "code": "teapot"}}"#;
+        assert_eq!(
+            explanation("418 I'm a teapot", false, brewing),
+            "418 I'm a teapot: Brewing"
         );
     }
 
@@ -800,6 +1025,7 @@ mod tests {
             Listed {
                 id: "qwen2.5-7b-instruct".to_string(),
                 context_window: None,
+                created: None,
             }
         );
         let (base_url, _served) =
@@ -864,6 +1090,7 @@ mod tests {
             Listed {
                 id: "b".to_string(),
                 context_window: Some(32768),
+                created: None,
             }
         );
     }
@@ -915,8 +1142,7 @@ mod tests {
     #[tokio::test]
     async fn a_completion_answered_with_anything_but_success_is_an_error_naming_the_url_and_the_status_not_the_key()
      {
-        let said = r#"{"error": {"message": "Rate limit reached", "type": "requests"}}"#;
-        let (base_url, _served) = answering("429 Too Many Requests", said);
+        let (base_url, _served) = answering("429 Too Many Requests", "Rate limit reached");
         let key = SecretString::from("sk-secret");
         let provider = Provider::new(base_url.clone(), Some(key), TIMEOUT).unwrap();
         let error = provider

@@ -81,7 +81,7 @@ pub trait Game: Debug + Clone + PartialEq + Send + Sync + 'static {
     fn rules(limits: &Self::Limits) -> Self::Rules;
 
     /// The variables a system prompt is rendered with for `role`, besides
-    /// the seat's `name` and the text blocks.
+    /// the seat's `name` and the prompt parts.
     fn variables(role: Self::Role) -> minijinja::Value;
 
     /// Everything the episode needs to run the environment for a game of

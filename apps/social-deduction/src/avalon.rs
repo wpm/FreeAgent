@@ -2027,7 +2027,7 @@ pub(crate) mod tests {
                 .into(),
             models: BTreeMap::new(),
             prompts: BTreeMap::new(),
-            text: BTreeMap::new(),
+            prompt_parts: BTreeMap::new(),
         }
     }
 

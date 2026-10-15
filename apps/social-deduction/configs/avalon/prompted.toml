@@ -1,5 +1,5 @@
 # The least a model-played game needs: one model and one prompted strategy
-# for everyone. The rules live in a text block the prompt pulls in. Run it
+# for everyone. The rules live in a prompt part the prompt pulls in. Run it
 # from the root of a release archive, or from apps/social-deduction in a
 # checkout, with
 #
@@ -18,7 +18,7 @@ id = "qwen2.5-7b-instruct-1m"
 # The model's context window in tokens, over what the provider reports.
 # context_window = 32768
 
-[text]
+[prompt_parts]
 rules = """
 Avalon is a game of hidden loyalties. The players are on two teams, good
 and evil, and play at most five quests. Each quest has a leader, who

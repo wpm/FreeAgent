@@ -13,20 +13,29 @@ workflow takes a version's notes from here.
   chat beside a live Avalon board, built with Leptos and Rich-Chat. Every
   push to `main` plays a random game of Avalon and deploys it to
   <https://wpm.github.io/FreeAgent/viewer/>.
-- The viewer as a desktop app, built with Tauri: pick a preset
-  configuration, press **Run**, and watch the game live, with **Stop**.
+- The viewer as a desktop app, built with Tauri: choose a game, press
+  **Play**, and watch it live, with **Stop**.
   Each game's log is saved, and API keys come from the OS keychain, then
   the environment.
 - Installers for the desktop app on each release: a `.dmg` for macOS, a
   setup `.exe` and an `.msi` for Windows, and an `.AppImage`, a `.deb` and
   an `.rpm` for Linux. The website links to the newest of each.
-- The desktop app's settings screen edits a configuration file as a form
-  or as TOML, with **Open** and **Save**, and keeps its comments and order.
-  Each model has a **Check**, and the Keys section stores and removes API
-  keys in the OS keychain. The configuration last run opens at the start.
-- `social_deduction::document`, a configuration file edited one value at a
-  time, and `social_deduction::model::check`, the probe `models --check`
-  runs, which the desktop app's **Check** runs too.
+- The desktop app's settings live in a standard Settings window (⌘, on
+  macOS, Ctrl+, elsewhere), stored as they change, with each field's error
+  beneath it. Both games share one list of models, grouped by provider:
+  each provider's card holds its key and the models it offers that pass
+  `models --check`, most capable first, checked in the background and kept
+  in `probes.json`. Local servers are found at launch, and any other
+  OpenAI-compatible provider can be added. API keys sit with their
+  provider, in the OS keychain. A provider whose models can't be checked,
+  as when its account has no credits left, says why on its card.
+  The main window opens on a start state with **Werewolf** or **Avalon**
+  and **Play**, and **File** imports and exports configuration files that
+  `social-deduction play` plays the same way.
+- `social_deduction::settings`, the desktop app's settings, which make
+  the configuration a game is played from; `social_deduction::catalog`,
+  the providers, listings and probes behind its Models tab; and
+  `social_deduction::model::check`, the probe `models --check` runs.
 - `social_deduction::live`, which plays a prepared game in the background,
   saving its log and folding it into cues as it happens.
 - `social_deduction::stage`, which folds a game's log into the viewer's
@@ -179,6 +188,10 @@ workflow takes a version's notes from here.
 
 ### Changed
 
+- A configuration file's `[text]` is `[prompt_parts]`, and a part's name is
+  letters, digits, underscores and spaces, pulled in with its spaces as
+  underscores (`"Seer only"` is `{{ Seer_only }}`). The log's configuration calls them
+  `prompt_parts` too.
 - A Werewolf phase closes before it ends, so no speech is cut off: the
   environment fixes the outcome, tells every living player the phase is
   `Closing`, and waits for each one's `Closed` before it logs the outcome
@@ -204,6 +217,10 @@ workflow takes a version's notes from here.
   to be made to call a tool in Werewolf is asked to call one in Avalon. The
   reason a model did not play names the model once, then the game and the
   request it did not answer.
+- A provider's error gives the provider's own words first, then what its
+  status means, reading the error's code and type: an account out of
+  credits is told to add credits, and only a rate limit is told to try
+  again shortly.
 - Werewolf lists three or more players as Avalon does, "a, b and c": a
   pack of werewolves, the doctors protecting one player, and the dead.
 - **Breaking:** `social-deduction play CONFIG` replaces

@@ -32,27 +32,36 @@ pub enum Source {
     Default,
 }
 
-/// The context window of the model `name`, which `spec` describes: the one
-/// its table gives, otherwise `reported`, the one the provider's listing
+/// The context window of a model of the provider at `base_url` whose
+/// configuration gives none: `reported`, the one the provider's listing
 /// reports for the model, otherwise the provider's default in
-/// `src/models.toml`, otherwise [`CONTEXT_WINDOW`]. A window smaller than
-/// `needed`, the tokens the game's largest request to the model takes
-/// before what the player remembers, by estimate, is an error naming the model and where
-/// the window came from.
+/// `src/models.toml`, otherwise [`CONTEXT_WINDOW`].
+pub fn unset(base_url: &str, reported: Option<u64>) -> ContextWindow {
+    let given = |tokens, source| ContextWindow { tokens, source };
+    reported
+        .map(|tokens| given(tokens, Source::Provider))
+        .or(known_context_window(base_url).map(|tokens| given(tokens, Source::ProviderDefault)))
+        .unwrap_or(given(CONTEXT_WINDOW, Source::Default))
+}
+
+/// The context window of the model `name`, which `spec` describes: the one
+/// its table gives, otherwise the one [`unset`] gives. A window smaller
+/// than `needed`, the tokens the game's largest request to the model
+/// takes before what the player remembers, by estimate, is an error naming
+/// the model and where the window came from.
 pub fn settle(
     name: &str,
     spec: &Spec,
     reported: Option<u64>,
     needed: u64,
 ) -> anyhow::Result<ContextWindow> {
-    let given = |tokens, source| ContextWindow { tokens, source };
-    let known = known_context_window(&spec.base_url);
-    let window = spec
-        .context_window
-        .map(|tokens| given(tokens, Source::File))
-        .or(reported.map(|tokens| given(tokens, Source::Provider)))
-        .or(known.map(|tokens| given(tokens, Source::ProviderDefault)))
-        .unwrap_or(given(CONTEXT_WINDOW, Source::Default));
+    let window = match spec.context_window {
+        Some(tokens) => ContextWindow {
+            tokens,
+            source: Source::File,
+        },
+        None => unset(&spec.base_url, reported),
+    };
     if window.tokens < needed {
         let setting = match window.source {
             Source::File => format!("[models.{name}] context_window"),

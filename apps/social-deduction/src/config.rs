@@ -30,6 +30,7 @@ use minijinja::{Environment, UndefinedBehavior, Value, context};
 use rand::seq::SliceRandom;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use social_deduction_stage::settings::{is_part_name, part_variable};
 use std::collections::{BTreeMap, HashMap, btree_map};
 use std::fmt;
 use std::hash::Hash;
@@ -126,9 +127,9 @@ pub struct Config<Phases, Roles> {
     /// The models, by name, and how to reach each.
     #[serde(default)]
     pub models: BTreeMap<String, Spec>,
-    /// Named blocks of text for the templates to use.
+    /// Named pieces of text the templates pull in with `{{ name }}`.
     #[serde(default)]
-    pub text: BTreeMap<String, String>,
+    pub prompt_parts: BTreeMap<String, String>,
     /// The strategies, by name, besides [`RANDOM`].
     #[serde(default)]
     pub strategies: BTreeMap<String, Strategy>,
@@ -143,7 +144,9 @@ where
 {
     /// Parse `file`, the text of a configuration file, and check what every
     /// game's file holds alike, with the game's template `variables`: a
-    /// `[text]` block named like one of them is an error, and so is a
+    /// `[prompt_parts]` part named like one of them, by anything but words of
+    /// letters, digits and underscores, or so that it is pulled in like
+    /// another, is an error, and so is a
     /// model's context window of 0, a strategy named [`RANDOM`], a file's
     /// `strategy` that is not defined, and a prompted strategy naming a
     /// model the file does not define, or naming none when the file does
@@ -151,6 +154,14 @@ where
     /// a file that defines one, is given that one.
     pub fn parse(file: &str, variables: &[&str]) -> anyhow::Result<Self> {
         let mut config: Self = toml::from_str(file)?;
+        check_common(&mut config, variables)?;
+        Ok(config)
+    }
+
+    /// The configuration `table` holds, as the desktop app's settings
+    /// make it, checked as [`Config::parse`] checks a file.
+    pub fn from_table(table: toml::Table, variables: &[&str]) -> anyhow::Result<Self> {
+        let mut config: Self = table.try_into()?;
         check_common(&mut config, variables)?;
         Ok(config)
     }
@@ -164,14 +175,30 @@ fn check_common<Phases, Roles>(
     variables: &[&str],
 ) -> anyhow::Result<()> {
     let Config {
-        text,
+        prompt_parts,
         models,
         strategy,
         strategies,
         ..
     } = config;
-    if let Some(taken) = variables.iter().find(|v| text.contains_key(**v)) {
-        bail!("[text] has a block named {taken}, which is a template variable");
+    if let Some(name) = prompt_parts.keys().find(|name| !is_part_name(name)) {
+        bail!(
+            "[prompt_parts] has a part named {name:?}; a part's name is words of letters, \
+             digits and underscores, not starting with a digit"
+        );
+    }
+    let mut pulled = BTreeMap::new();
+    for name in prompt_parts.keys() {
+        let variable = part_variable(name);
+        if variables.contains(&variable.as_str()) {
+            bail!("[prompt_parts] has a part named {name:?}, which is a template variable");
+        }
+        if let Some(other) = pulled.insert(variable.clone(), name) {
+            bail!(
+                "[prompt_parts] has parts named {other:?} and {name:?}, which are both \
+                 pulled in with {{{{ {variable} }}}}"
+            );
+        }
     }
     if let Some((name, _)) = models
         .iter()
@@ -372,12 +399,12 @@ impl<R: Copy + Ord + Hash + fmt::Display> Lineup<R> {
     /// dealt any of them, in seat order and then the order of the pairs.
     /// A prompt is rendered from its strategy's `system` template, with the
     /// variable `name`, the variables `variables` gives for the role, and
-    /// every block of `text`. An undefined variable is an error. A template
+    /// every part of `prompt_parts`, by its [`part_variable`]. An undefined variable is an error. A template
     /// that does not compile is an error naming the strategy; one that does
     /// not render, the strategy, the seat and the role.
     pub fn prompts(
         &self,
-        text: &BTreeMap<String, String>,
+        prompt_parts: &BTreeMap<String, String>,
         variables: impl Fn(R) -> Value,
     ) -> anyhow::Result<Vec<SystemPrompt<R>>> {
         let mut env = Environment::new();
@@ -385,9 +412,13 @@ impl<R: Copy + Ord + Hash + fmt::Display> Lineup<R> {
         // Each strategy's template is compiled once, and rendered once a
         // seat for each role it is allotted.
         let mut templates = BTreeMap::new();
-        // Each pair's variables, with the text blocks, are the same for
+        // Each pair's variables, with the prompt parts, are the same for
         // every seat.
-        let blocks = Value::from(text);
+        let parts: BTreeMap<String, String> = prompt_parts
+            .iter()
+            .map(|(name, text)| (part_variable(name), text.clone()))
+            .collect();
+        let parts = Value::from(parts);
         let mut pairs = Vec::new();
         for (role, name, strategy, _) in self.at_the_table() {
             if let Strategy::Prompted(prompted) = strategy {
@@ -397,7 +428,7 @@ impl<R: Copy + Ord + Hash + fmt::Display> Lineup<R> {
                     })?;
                     vacant.insert(template);
                 }
-                pairs.push((role, name, merge_maps([variables(role), blocks.clone()])));
+                pairs.push((role, name, merge_maps([variables(role), parts.clone()])));
             }
         }
         let mut prompts = Vec::new();
@@ -465,14 +496,14 @@ impl<R: Copy + Ord + Hash + fmt::Display> Lineup<R> {
 }
 
 /// The settings that took effect for a game of `G`: the models and the
-/// text blocks as the file defines them, and the limits and the lineup
+/// prompt parts as the file defines them, and the limits and the lineup
 /// the file and the code decided.
 #[derive(Debug)]
 pub struct Settings<G: game::Game> {
     /// The models, by name, and how to reach each.
     pub models: BTreeMap<String, Spec>,
-    /// The `[text]` blocks as written.
-    pub text: BTreeMap<String, String>,
+    /// The `[prompt_parts]` as written.
+    pub prompt_parts: BTreeMap<String, String>,
     /// How long each phase waits for the players.
     pub limits: G::Limits,
     /// Every strategy, and how many seats of each role play each.
@@ -490,7 +521,7 @@ impl<G: game::Game> Settings<G> {
     /// [`Lineup::prompts`] renders it, with the variables the game gives
     /// each role.
     pub fn prompts(&self) -> anyhow::Result<Vec<SystemPrompt<G::Role>>> {
-        self.lineup.prompts(&self.text, G::variables)
+        self.lineup.prompts(&self.prompt_parts, G::variables)
     }
 
     /// The rules a game is played under, with the limits that took effect.
@@ -545,7 +576,7 @@ impl<G: game::Game> Settings<G> {
     /// role, the limits, every strategy and the allotments, `models`, the
     /// models in play as [`Settings::set_up`] set them up, each prompted
     /// player's system prompt from `prompts` as [`Lineup::told`] tells it,
-    /// and the text blocks as written.
+    /// and the prompt parts as written.
     pub fn configuration(
         &self,
         deal: &HashMap<PlayerId, Dealt<G::Role>>,
@@ -561,7 +592,7 @@ impl<G: game::Game> Settings<G> {
             allotments: lineup.allotments.clone(),
             models,
             prompts: lineup.told(deal, prompts)?,
-            text: self.text.clone(),
+            prompt_parts: self.prompt_parts.clone(),
         })
     }
 }
@@ -592,8 +623,8 @@ pub struct Configuration<G: game::Game> {
     pub models: Models,
     /// Each prompted player's rendered system prompt.
     pub prompts: BTreeMap<PlayerId, String>,
-    /// The `[text]` blocks as written.
-    pub text: BTreeMap<String, String>,
+    /// The `[prompt_parts]` as written.
+    pub prompt_parts: BTreeMap<String, String>,
 }
 
 /// Each seat's player, as `deal` dealt it a strategy and `configuration`
@@ -874,7 +905,10 @@ mod tests {
         let config = parsed(file)?;
         let lineup = config.allot(COUNTS, Roles::get).unwrap();
         lineup
-            .prompts(&config.text, |role| context! { role => role.to_string() })
+            .prompts(
+                &config.prompt_parts,
+                |role| context! { role => role.to_string() },
+            )
             .map_err(|error| format!("{error:#}"))
     }
 
@@ -943,14 +977,36 @@ system = "{{ name }} the {{ role }}"
     }
 
     #[test]
-    fn a_text_block_named_like_a_variable_is_an_error_naming_it() {
+    fn a_prompt_part_named_like_a_variable_is_an_error_naming_it() {
         for variable in ["name", "role"] {
-            let file = format!("{PLAIN}[text]\n{variable} = \"Taken.\"\n");
+            let file = format!("{PLAIN}[prompt_parts]\n{variable} = \"Taken.\"\n");
             assert_eq!(
                 parsed(&file).unwrap_err(),
-                format!("[text] has a block named {variable}, which is a template variable")
+                format!(
+                    "[prompt_parts] has a part named \"{variable}\", which is a template variable"
+                )
             );
         }
+    }
+
+    #[test]
+    fn a_prompt_part_named_but_by_letters_digits_and_underscores_is_an_error() {
+        let file = format!("{PLAIN}[prompt_parts]\n\"the-rules\" = \"Play.\"\n");
+        assert_eq!(
+            parsed(&file).unwrap_err(),
+            "[prompt_parts] has a part named \"the-rules\"; a part's name is words of letters, \
+             digits and underscores, not starting with a digit"
+        );
+    }
+
+    #[test]
+    fn a_prompt_part_pulled_in_like_another_is_an_error() {
+        let file = format!("{PLAIN}[prompt_parts]\n\"Seer only\" = \"A.\"\nSeer_only = \"B.\"\n");
+        assert_eq!(
+            parsed(&file).unwrap_err(),
+            "[prompt_parts] has parts named \"Seer only\" and \"Seer_only\", which are both \
+             pulled in with {{ Seer_only }}"
+        );
     }
 
     #[test]
@@ -1222,10 +1278,10 @@ system = "{{ name }} the {{ role }}"
     }
 
     #[test]
-    fn every_text_block_is_a_variable_and_a_persona_is_not() {
-        let file = PLAIN.replace("{{ name }} the {{ role }}", "{{ rules }} {{ oath }}");
+    fn every_prompt_part_is_a_variable_and_a_persona_is_not() {
+        let file = PLAIN.replace("{{ name }} the {{ role }}", "{{ rules }} {{ the_oath }}");
         let file = format!(
-            "strategy = \"plain\"\n{file}[text]\nrules = \"The rules.\"\noath = \"Serve.\"\n"
+            "strategy = \"plain\"\n{file}[prompt_parts]\nrules = \"The rules.\"\n\"the oath\" = \"Serve.\"\n"
         );
         let prompts = rendered(&file).unwrap();
         assert_eq!(
