@@ -292,7 +292,7 @@ impl<G: Game> Message<G> {
 /// What the log holds: the deal, the configuration, every message sent as
 /// the action of its sender and the observation of its receiver, each model
 /// call going out and coming back, the usage the provider reported for each
-/// model call, each message a model player withheld because its phase had
+/// model call, each choice a model player withheld because its phase had
 /// ended or was closing, each failure of a model player to act, and the
 /// game's own events, such as how each phase came out and the result.
 /// Every actor logs its own actions and observations: the environment logs
@@ -355,12 +355,11 @@ pub enum Entry<G: Game> {
         /// in.
         seq: u64,
     },
-    /// `from` did not send `message`, which a model made from `seen`
+    /// `from` did not send `message`, a choice a model made from `seen`
     /// history entries, having forgotten `forgot` lines of talk, because
-    /// the phase it was made in had ended, or for a choice begun closing,
-    /// before the model answered. It was
-    /// never sent, so it has no number: its `n` is 0, and the player does
-    /// not remember it.
+    /// the phase it was made for had ended or begun closing before the
+    /// model answered. It was never sent, so it has no number: its `n` is
+    /// 0, and the player does not remember it. Speech is never withheld.
     Withheld {
         /// Who would have sent it.
         from: PlayerId,

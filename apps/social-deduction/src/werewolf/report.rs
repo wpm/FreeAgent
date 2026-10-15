@@ -85,9 +85,9 @@ enum Voice {
 /// since the player is not told of it. Talk is told as it comes: the
 /// omniscient narrator tells each utterance from its speaker's action, in
 /// order with the day's votes, while its phase lasts, and a player's
-/// narrator tells each it made or heard. A message that comes after its
-/// phase has ended, whether withheld or observed late, stays in the log
-/// and out of the account. A player's memory holds only the phases it
+/// narrator tells each it made or heard. A message observed after its
+/// phase has ended, and a withheld choice, stay in the log and out of the
+/// account. A player's memory holds only the phases it
 /// lived through, in order, so nothing in it is late.
 #[derive(Debug, Default)]
 pub struct Narrator {
@@ -1340,11 +1340,7 @@ mod tests {
         let everyone = ["wolf", "seer", "doctor", "ann"];
         narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
         narrator.narrate(&shown("wolf", 2, Phase::Night, &everyone));
-        for message in [
-            utterance(2, "wolf", 0, "Wait!"),
-            selection(2, "wolf", 0, "ann"),
-            retraction(2, "wolf", 0),
-        ] {
+        for message in [selection(2, "wolf", 0, "ann"), retraction(2, "wolf", 0)] {
             assert!(narrator.narrate(&withheld("wolf", message)).is_empty());
         }
     }
@@ -2784,11 +2780,6 @@ mod tests {
         assert!(
             narrator
                 .narrate(&spoke("ann", 2, 1, "Hello.", &["wolf"]))
-                .is_empty()
-        );
-        assert!(
-            narrator
-                .narrate(&withheld("wolf", utterance(2, "wolf", 0, "Wait!")))
                 .is_empty()
         );
     }

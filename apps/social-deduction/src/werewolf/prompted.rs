@@ -65,12 +65,12 @@ pub(crate) async fn play(
 
 /// Ask the model to select one of `candidates` in the night numbered
 /// `seq`, which `view` shows and which lasts `limit`, and send the
-/// selection to the environment, unless the night has ended by the time
-/// the model answers, and then it is withheld. The model's failure to
-/// select, as [`selected`] judges it, is an error, and no selection; so
-/// is a request that cannot be put together or a selection that cannot
-/// be sent, which are the player's own doing, and they read so in the
-/// error.
+/// selection to the environment, unless the night has begun closing by
+/// the time the model answers, and then it is withheld. The model's
+/// failure to select, as [`selected`] judges it, is an error, and no
+/// selection; so is a request that cannot be put together or a selection
+/// that cannot be sent, which are the player's own doing, and they read
+/// so in the error.
 async fn select_by_night(
     player: &Player,
     seq: u64,
@@ -83,7 +83,7 @@ async fn select_by_night(
     let (request, shown) = player.request(&situation, night_tools(candidates));
     let response = player.complete(seq, &request).await?;
     let target = selected(&response, candidates)?;
-    player.carry_out(seq, view, vec![Sending::Select(target)], None, shown)
+    player.carry_out(seq, vec![Sending::Select(target)], None, shown)
 }
 
 /// Ask the model what to do in the day numbered `seq`, which `view`
@@ -95,8 +95,9 @@ async fn select_by_night(
 /// Otherwise the messages are sent in the order the model asked for
 /// them, each utterance to every other living player and each
 /// selection and retraction to them and the environment, and a wait
-/// sets a reminder; unless the day has ended by the time the model
-/// answers, and then the messages are withheld and no reminder is set.
+/// sets a reminder; unless the day has begun closing by the time the
+/// model answers, and then the utterances are sent, the selections and
+/// retractions are withheld, and no reminder is set.
 async fn play_by_day(
     player: &Player,
     seq: u64,
@@ -110,7 +111,7 @@ async fn play_by_day(
     let (request, shown) = player.request(&situation, tools);
     let response = player.complete(seq, &request).await?;
     let Asked { sends, wait } = asked(&response, candidates, limit, voting)?;
-    player.carry_out(seq, view, sends, wait, shown)
+    player.carry_out(seq, sends, wait, shown)
 }
 
 /// Whether `player` has sent a selection in the phase numbered `seq`.
@@ -509,7 +510,6 @@ mod tests {
     };
     use crate::prompted::{ANSWER, Account, Mind, Shown};
     use crate::report::FORGOTTEN;
-    use crate::stage::tests::staged;
     use crate::strategy::{Prompted, Strategy};
     use crate::werewolf::Outcome;
     use crate::werewolf::config::{Configuration, players};
@@ -525,7 +525,6 @@ mod tests {
         to_the_players_but,
     };
     use free_agent::ActorId;
-    use social_deduction_stage::Beat;
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2600,16 +2599,6 @@ mod tests {
             })
             .unwrap();
         assert!(failure < closing, "{entries:?}");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_viewer_shows_no_late_utterance_when_the_day_closes_during_a_call() {
-        let (_, (_, entries, _)) = answered_while_the_day_closes().await;
-        let staged = staged(&entries).concat();
-        assert!(
-            !staged.iter().any(|beat| matches!(beat, Beat::Late { .. })),
-            "{staged:?}"
-        );
     }
 
     #[tokio::test(start_paused = true)]

@@ -388,7 +388,8 @@ approves. Each member of a team that goes supports or sabotages the quest
 in secret, and the quest fails when enough of them sabotage it: one,
 except two on the fourth quest with seven or more players. Only how many
 sabotaged it is told. `Player 1` leads first, and the lead passes in seat
-order after every proposal. Everyone may talk in every phase.
+order after every proposal. Talk is open for the whole game: everyone may
+talk in every phase.
 
 Good wins with three successful quests, unless the Assassin then names
 Merlin. Evil wins with three failed quests, five failed proposals in a row,
@@ -490,9 +491,10 @@ alone:
 
 The tool stays on offer, and the environment counts the player's first
 choice. A response with any call that is not well formed, such as a team of
-the wrong size, fails as a whole, and a response that comes after its
-phase has ended is withheld. Avalon's phases end at once, without
-closing.
+the wrong size, fails as a whole. Avalon's phases end at once, without
+closing, so a response may come after its phase has ended. Its speech is
+sent in the phase the game has reached, where every other player hears it,
+and its choice is withheld.
 [`configs/avalon/prompted.toml`](configs/avalon/prompted.toml) plays a
 game of model players against a local LM Studio server, once its
 `[models.qwen]` table names the model and server you have running:

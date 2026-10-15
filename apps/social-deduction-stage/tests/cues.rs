@@ -149,10 +149,6 @@ fn every_beat_round_trips() {
             who: player(1),
             text: "Not me.".into(),
         },
-        Beat::Late {
-            who: player(1),
-            text: "Wait.".into(),
-        },
         Beat::Thinking { who: player(1) },
         Beat::Thought { who: player(1) },
         Beat::Panel(Panel::Werewolf(werewolf_panel())),
