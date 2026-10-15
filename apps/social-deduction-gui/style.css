@@ -807,15 +807,6 @@ body,
   gap: 0.25rem;
 }
 
-.sd-stepper input {
-  width: 3.5rem;
-  text-align: center;
-}
-
-.sd-settings .sd-stepper button {
-  padding: 0 0.6rem;
-}
-
 .sd-card {
   display: flex;
   flex-direction: column;
@@ -838,16 +829,6 @@ body,
   font-size: 0.95rem;
 }
 
-.sd-area {
-  flex-direction: column;
-  align-items: stretch;
-}
-
-.sd-area > span {
-  flex: none;
-}
-
-.sd-area textarea,
 .sd-mono {
   min-height: 8rem;
   resize: vertical;
@@ -988,7 +969,7 @@ body,
   border-radius: 50%;
 }
 
-.sd-role .sd-stepper input {
+.sd-stepper input {
   box-sizing: border-box;
   width: 2.2rem;
   text-align: center;
@@ -997,13 +978,13 @@ body,
   appearance: textfield;
 }
 
-.sd-role .sd-stepper input::-webkit-inner-spin-button,
-.sd-role .sd-stepper input::-webkit-outer-spin-button {
+.sd-stepper input::-webkit-inner-spin-button,
+.sd-stepper input::-webkit-outer-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
 
-.sd-settings .sd-role .sd-stepper button {
+.sd-settings .sd-stepper button {
   width: 1.6rem;
   height: 1.6rem;
   justify-content: center;
@@ -1063,17 +1044,13 @@ body,
   max-width: 9rem;
 }
 
-.sd-strategy .sd-card-head .sd-field-error,
-.sd-strategy .sd-card-head .sd-field + .sd-field-error {
+.sd-strategy .sd-card-head .sd-field-error {
   flex-basis: 100%;
   margin: 0;
 }
 
 .sd-strategy textarea {
   min-height: 9rem;
-  resize: vertical;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85rem;
 }
 
 .sd-settings .sd-remove {
@@ -1261,10 +1238,7 @@ body,
 
 @media (max-width: 680px) {
   .sd-top,
-  .sd-parts {
-    grid-template-columns: 1fr;
-  }
-
+  .sd-parts,
   .sd-strategies {
     grid-template-columns: 1fr;
   }

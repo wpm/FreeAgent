@@ -12,8 +12,10 @@ publish = false
 [package.metadata.dist]
 dist = false
 
-# Serde alone, so the crate builds for wasm32-unknown-unknown.
+# Serde, and minijinja to read templates, so the crate builds for
+# wasm32-unknown-unknown.
 [dependencies]
+minijinja.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

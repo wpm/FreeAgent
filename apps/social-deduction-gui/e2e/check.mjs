@@ -523,7 +523,7 @@ await section('desktop', async () => {
     await settings.waitForTimeout(100);
     unhelped.push(
       ...(await settings.$$eval('.sd-settings button, .sd-settings input, .sd-settings select, .sd-settings textarea, .sd-settings h2, .sd-settings h3', (elements) =>
-        elements.filter((element) => !element.closest('[data-tip]') && !element.querySelector('[data-tip]')).map((element) => element.outerHTML.slice(0, 80)),
+        elements.filter((element) => !element.closest('[data-tip]:not([data-tip=""])') && !element.querySelector('[data-tip]:not([data-tip=""])')).map((element) => element.outerHTML.slice(0, 80)),
       )),
     );
   }

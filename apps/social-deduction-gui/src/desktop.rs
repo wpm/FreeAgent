@@ -150,7 +150,7 @@ fn Start(
     let choice = move |choice: GameName| {
         view! {
             <button
-                data-tip=format!("Play {} next. Its settings are on the {} tab of Settings.", game_title(choice), game_title(choice))
+                data-tip=format!("Play {0} next. Its settings are on the {0} tab of Settings.", game_title(choice))
                 class:sd-segment-on=move || game.get() == choice
                 aria-pressed=move || (game.get() == choice).to_string()
                 on:click=move |_| {

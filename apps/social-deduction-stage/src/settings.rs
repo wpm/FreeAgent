@@ -134,18 +134,6 @@ pub fn is_part_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Whether the template `system` pulls in `name` with `{{ name }}`, a
-/// filter after it or not.
-fn pulls_in(system: &str, name: &str) -> bool {
-    system.split("{{").skip(1).any(|after| {
-        let after = after.trim_start_matches(|c: char| c == '-' || c.is_whitespace());
-        let end = after
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .unwrap_or(after.len());
-        &after[..end] == name
-    })
-}
-
 /// `count` and the noun for it, `one` or `many`.
 fn plural(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
@@ -308,16 +296,30 @@ impl GameSettings {
             .collect()
     }
 
-    /// The names of the prompted strategies whose system prompts pull in
-    /// `part` with `{{ part }}`.
-    pub fn users_of(&self, part: &str) -> Vec<&str> {
-        self.strategies
-            .iter()
-            .filter(|(_, strategy)| {
-                strategy.policy == Policy::Prompted && pulls_in(&strategy.system, part)
-            })
-            .map(|(name, _)| name.as_str())
-            .collect()
+    /// Each prompt part, with the names of the prompted strategies whose
+    /// system prompts use it. A system prompt that doesn't compile uses
+    /// none.
+    pub fn part_users(&self) -> BTreeMap<&str, Vec<&str>> {
+        let mut users: BTreeMap<&str, Vec<&str>> = self
+            .prompt_parts
+            .keys()
+            .map(|part| (part.as_str(), Vec::new()))
+            .collect();
+        let env = minijinja::Environment::new();
+        for (name, strategy) in &self.strategies {
+            if strategy.policy != Policy::Prompted {
+                continue;
+            }
+            let Ok(template) = env.template_from_str(&strategy.system) else {
+                continue;
+            };
+            for variable in template.undeclared_variables(false) {
+                if let Some(users) = users.get_mut(variable.as_str()) {
+                    users.push(name);
+                }
+            }
+        }
+        users
     }
 
     /// The name of the model the strategy `name` asks, if it is defined
@@ -777,8 +779,18 @@ mod tests {
         let system = |settings: &mut GameSettings, name: &str, system: &str| {
             settings.strategies.get_mut(name).unwrap().system = system.to_string();
         };
+        for part in ["rules", "ruleset", "tone", "rule", "aside"] {
+            settings
+                .prompt_parts
+                .insert(part.to_string(), String::new());
+        }
         system(&mut settings, "everyone", "{{ rules }}\nYou are {{name}}.");
-        system(&mut settings, "smart", "{{rules|upper}} {{ ruleset }}");
+        system(
+            &mut settings,
+            "smart",
+            "{{rules|upper}} {% if tone %}{{ ruleset }}{% endif %}",
+        );
+        system(&mut settings, "idle", "{{ aside");
         settings.strategies.insert(
             "dumb".to_string(),
             StrategySettings {
@@ -787,11 +799,18 @@ mod tests {
                 ..StrategySettings::default()
             },
         );
-        assert_eq!(settings.users_of("rules"), ["everyone", "smart"]);
-        assert_eq!(settings.users_of("ruleset"), ["smart"]);
-        assert_eq!(settings.users_of("name"), ["everyone"]);
-        assert!(settings.users_of("rule").is_empty());
-        assert!(settings.users_of("tone").is_empty());
+        let users = settings.part_users();
+        let users: Vec<(&str, &[&str])> = users.iter().map(|(p, u)| (*p, &u[..])).collect();
+        assert_eq!(
+            users,
+            [
+                ("aside", &[][..]),
+                ("rule", &[]),
+                ("rules", &["everyone", "smart"]),
+                ("ruleset", &["smart"]),
+                ("tone", &["smart"]),
+            ]
+        );
     }
 
     #[test]

@@ -169,20 +169,21 @@ impl Editor {
         });
     }
 
-    /// The error at `path`, as it changes.
+    /// The error at `path`, telling of a change only when it changes.
     fn error(self, at: Vec<String>) -> Signal<Option<String>> {
         let errors = self.errors;
-        Signal::derive(move || errors.with(|errors| error_at(errors, &at)))
+        Memo::new(move |_| errors.with(|errors| error_at(errors, &at))).into()
     }
 
-    /// The settings of `game`, read with `read`, as they change.
-    fn game<T: Send + Sync + 'static>(
+    /// The settings of `game`, read with `read`, telling of a change only
+    /// when what is read changes.
+    fn game<T: Clone + PartialEq + Send + Sync + 'static>(
         self,
         game: GameName,
         read: impl Fn(&GameSettings) -> T + Send + Sync + 'static,
-    ) -> Signal<T> {
+    ) -> Memo<T> {
         let settings = self.settings;
-        Signal::derive(move || settings.with(|settings| read(settings.game(game))))
+        Memo::new(move |_| settings.with(|settings| read(settings.game(game))))
     }
 }
 
@@ -382,11 +383,11 @@ fn TextField(
 }
 
 /// A select among `options`, each a value and its label, over `value`,
-/// which `set` changes, with the error at `at` beneath it. A `label` left
-/// empty is not shown, and the select is named by its `tip`.
+/// which `set` changes, with the error at `at` beneath it. Without a
+/// `label`, the select is named by its `tip`.
 #[component]
 fn Choice(
-    #[prop(into)] label: String,
+    #[prop(optional, into)] label: Option<String>,
     value: Signal<String>,
     options: Signal<Vec<(String, String)>>,
     set: Callback<String>,
@@ -411,8 +412,8 @@ fn Choice(
             })
             .collect_view()
     };
-    let named = (label.is_empty()).then(|| tip.clone()).flatten();
-    let shown = (!label.is_empty()).then(|| view! { <span data-tip=label_tip>{label}</span> });
+    let named = label.is_none().then(|| tip.clone()).flatten();
+    let shown = label.map(|label| view! { <span data-tip=label_tip>{label}</span> });
     view! {
         <label class="sd-field">
             {shown}

@@ -43,10 +43,10 @@ pub fn placed(
 }
 
 /// The tip of the element `target` is in, and that element, if it has
-/// one.
+/// one that isn't empty.
 fn tipped(target: Option<web_sys::EventTarget>) -> Option<(web_sys::Element, String)> {
     let element = target?.dyn_into::<web_sys::Element>().ok()?;
-    let tipped = element.closest("[data-tip]").ok()??;
+    let tipped = element.closest("[data-tip]:not([data-tip=''])").ok()??;
     let tip = tipped.get_attribute("data-tip")?;
     Some((tipped, tip))
 }
@@ -56,14 +56,29 @@ fn tipped(target: Option<web_sys::EventTarget>) -> Option<(web_sys::Element, Str
 #[component]
 pub fn Tips() -> impl IntoView {
     let shown = NodeRef::<html::Div>::new();
+    // The element whose tip shows, if one does.
+    let current = StoredValue::new_local(None::<web_sys::Element>);
+    let hide = move || {
+        if current.get_value().is_some()
+            && let Some(tip) = shown.get_untracked()
+        {
+            tip.set_hidden(true);
+            current.set_value(None);
+        }
+    };
     let show = move |target: Option<web_sys::EventTarget>| {
         let Some(tip) = shown.get_untracked() else {
             return;
         };
         let Some((element, text)) = tipped(target) else {
-            tip.set_hidden(true);
+            hide();
             return;
         };
+        // Moving within the element leaves its tip where it is.
+        if current.with_value(|current| current.as_ref() == Some(&element)) {
+            return;
+        }
+        current.set_value(Some(element.clone()));
         tip.set_text_content(Some(&text));
         tip.set_hidden(false);
         let rect = element.get_bounding_client_rect();
@@ -86,11 +101,6 @@ pub fn Tips() -> impl IntoView {
         let style = web_sys::HtmlElement::style(&tip);
         let _ = style.set_property("left", &format!("{left}px"));
         let _ = style.set_property("top", &format!("{top}px"));
-    };
-    let hide = move || {
-        if let Some(tip) = shown.get_untracked() {
-            tip.set_hidden(true);
-        }
     };
     // Kept for as long as the page is open.
     let _ = window_event_listener(ev::mouseover, move |event| show(event.target()));

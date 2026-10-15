@@ -2,6 +2,8 @@
 //! strategies two across, who plays what as a grid, and its prompt parts
 //! as a list beside an editor, all in one column on a narrow window.
 
+use std::collections::BTreeMap;
+
 use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -108,15 +110,9 @@ pub fn refused_strategy(name: &str, taken: impl Fn(&str) -> bool) -> Option<&'st
     }
 }
 
-/// The settings of `game` in `editor`, read with `read`, as they change,
-/// telling of a change only when what is read changes.
-fn memo<T: Clone + PartialEq + Send + Sync + 'static>(
-    editor: Editor,
-    game: GameName,
-    read: impl Fn(&GameSettings) -> T + Send + Sync + 'static,
-) -> Memo<T> {
-    let settings = editor.settings;
-    Memo::new(move |_| settings.with(|settings| read(settings.game(game))))
+/// The path of the field `rest` of `game`'s settings.
+fn game_path(game: GameName, rest: &[&str]) -> Vec<String> {
+    path(&[&[game_key(game)], rest].concat())
 }
 
 /// A name field and a button that adds a thing of that name with `add`,
@@ -173,19 +169,17 @@ fn Adder(
 /// and prompt parts, with **Restore Defaults…**.
 #[component]
 pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
-    let key = game_key(game);
     let title = game_title(game);
-    let at = move |rest: &[&str]| path(&[&[key], rest].concat());
     let confirming = RwSignal::new(false);
     let restore = move |_| {
         confirming.set(false);
         spawn_local(async move {
             if let Ok(defaults) = tauri::game_defaults(game).await {
-                editor.edit(|settings| *settings.game_mut(game) = defaults);
+                editor.edit_game(game, |settings| *settings = defaults);
             }
         });
     };
-    let role_keys = memo(editor, game, |s| {
+    let role_keys = editor.game(game, |s| {
         s.roles
             .iter()
             .map(|role| role.key.clone())
@@ -193,25 +187,23 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
     });
     // The roles who plays what shows: those at the table, and any other
     // given a strategy, so that its error can be shown.
-    let assigned_keys = memo(editor, game, |s| {
+    let assigned_keys = editor.game(game, |s| {
         s.roles
             .iter()
             .filter(|role| role.count > 0 || role.strategy.is_some() || !role.strategies.is_empty())
             .map(|role| role.key.clone())
             .collect::<Vec<_>>()
     });
-    let phase_keys = memo(editor, game, |s| {
+    let phase_keys = editor.game(game, |s| {
         s.phases
             .iter()
             .map(|phase| phase.key.clone())
             .collect::<Vec<_>>()
     });
-    let strategy_names = memo(editor, game, |s| {
-        s.strategies.keys().cloned().collect::<Vec<_>>()
-    });
-    let players = memo(editor, game, GameSettings::players);
-    let table_error = editor.error(at(&["roles"]));
-    let strategy_options = Signal::derive(move || {
+    let strategy_names = editor.game(game, |s| s.strategies.keys().cloned().collect::<Vec<_>>());
+    let players = editor.game(game, GameSettings::players);
+    let table_error = editor.error(game_path(game, &["roles"]));
+    let strategy_options = Memo::new(move |_| {
         let mut names: Vec<(String, String)> = strategy_names
             .get()
             .into_iter()
@@ -265,7 +257,7 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
             <section class="sd-box">
                 <h3>
                     <span data-tip="How many players take each role. The total is the table's size.">"Players"</span>
-                    <span class="sd-note" id=field_id(&at(&["roles"])) data-tip="Everyone at the table, every role counted.">
+                    <span class="sd-note" id=field_id(&game_path(game, &["roles"])) data-tip="Everyone at the table, every role counted.">
                         {move || format!("{} at the table", players.get())}
                     </span>
                 </h3>
@@ -318,15 +310,15 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
                         label="Everyone"
                         label_tip="The strategy every role plays unless it is given its own."
                         tip="The strategy every role plays unless it is given its own. random chooses at random and needs no model."
-                        value=everyone
-                        options=strategy_options
+                        value=everyone.into()
+                        options=strategy_options.into()
                         set=Callback::new(move |name: String| editor.edit_game(game, |s| s.strategy = name))
                         editor=editor
-                        at=at(&["strategy"])
+                        at=game_path(game, &["strategy"])
                     />
                 </div>
                 <For each=move || assigned_keys.get() key=Clone::clone let:role>
-                    <RoleStrategy editor=editor game=game role=role strategies=strategy_options />
+                    <RoleStrategy editor=editor game=game role=role strategies=strategy_options.into() />
                 </For>
             </div>
         </section>
@@ -349,7 +341,7 @@ fn role_memo<T: Clone + PartialEq + Send + Sync + 'static>(
     role: String,
     read: impl Fn(&RoleSettings) -> T + Send + Sync + 'static,
 ) -> Memo<Option<T>> {
-    memo(editor, game, move |s| {
+    editor.game(game, move |s| {
         s.roles.iter().find(|r| r.key == role).map(&read)
     })
 }
@@ -369,7 +361,7 @@ fn RoleName(role: String) -> impl IntoView {
 #[component]
 fn RoleCount(editor: Editor, game: GameName, role: String) -> impl IntoView {
     let count = role_memo(editor, game, role.clone(), |r| r.count);
-    let at = path(&[game_key(game), "roles", &role, "count"]);
+    let at = game_path(game, &["roles", &role, "count"]);
     let title = label(&role);
     let step = {
         let role = role.clone();
@@ -422,7 +414,7 @@ fn RoleCount(editor: Editor, game: GameName, role: String) -> impl IntoView {
 #[component]
 fn PhaseLimit(editor: Editor, game: GameName, phase: String) -> impl IntoView {
     let read = phase.clone();
-    let value = memo(editor, game, move |s| {
+    let value = editor.game(game, move |s| {
         s.phases
             .iter()
             .find(|p| p.key == read)
@@ -438,7 +430,7 @@ fn PhaseLimit(editor: Editor, game: GameName, phase: String) -> impl IntoView {
             }
         });
     };
-    let at = path(&[game_key(game), "phases", &phase]);
+    let at = game_path(game, &["phases", &phase]);
     let id = field_id(&at);
     let error = editor.error(at);
     let tip = phase_tip(&phase);
@@ -471,10 +463,8 @@ fn RoleStrategy(
     strategies: Signal<Vec<(String, String)>>,
 ) -> impl IntoView {
     let title = label(&role);
-    let value = role_memo(editor, game, role.clone(), |r| {
-        r.strategy.clone().unwrap_or_default()
-    });
-    let value = Signal::derive(move || value.get().unwrap_or_default());
+    let value = role_memo(editor, game, role.clone(), |r| r.strategy.clone());
+    let value = Signal::derive(move || value.get().flatten().unwrap_or_default());
     let options = Signal::derive(move || {
         let mut options = vec![(String::new(), "Everyone's".to_string())];
         options.extend(strategies.get());
@@ -491,7 +481,7 @@ fn RoleStrategy(
             });
         })
     };
-    let at = path(&[game_key(game), "roles", &role, "strategy"]);
+    let at = game_path(game, &["roles", &role, "strategy"]);
     let seats = {
         let role = role.clone();
         move || {
@@ -501,7 +491,7 @@ fn RoleStrategy(
                 .into_iter()
                 .map(|(name, _)| {
                     let role = role.clone();
-                    let at = path(&[game_key(game), "roles", &role, "strategies", &name]);
+                    let at = game_path(game, &["roles", &role, "strategies", &name]);
                     let seats = allotted.get(&name).copied().unwrap_or_default();
                     let written = name.clone();
                     let set = move |event| {
@@ -531,7 +521,6 @@ fn RoleStrategy(
             <div class="sd-assigned-row">
                 <RoleName role=role.clone() />
                 <Choice
-                    label=""
                     tip=format!("The strategy {title}s play. Everyone's is the one chosen for everyone.")
                     value=value
                     options=options
@@ -566,7 +555,7 @@ fn StrategyCard(
 ) -> impl IntoView {
     let read = |pick: fn(&StrategySettings) -> String| {
         let name = name.clone();
-        memo(editor, game, move |s| {
+        editor.game(game, move |s| {
             s.strategies.get(&name).map(pick).unwrap_or_default()
         })
     };
@@ -595,15 +584,15 @@ fn StrategyCard(
         change(&|s| s.policy = policy);
     });
     let set_model = Callback::new(move |model: String| change(&|s| s.model.clone_from(&model)));
-    let at = |rest: &[&str]| path(&[&[game_key(game), "strategies", name.as_str()], rest].concat());
+    let at = |rest: &[&str]| game_path(game, &[&["strategies", name.as_str()], rest].concat());
     let (system_at, model_at, policy_at, name_at) =
         (at(&["system"]), at(&["model"]), at(&["policy"]), at(&[]));
     let system_error = editor.error(system_at.clone());
     let removed = name.clone();
     let remove = move |_| {
         let removed = removed.clone();
-        editor.edit(move |settings| {
-            settings.game_mut(game).strategies.remove(&removed);
+        editor.edit_game(game, |s| {
+            s.strategies.remove(&removed);
         });
     };
     let prompted = move || policy.get() == "prompted";
@@ -612,7 +601,6 @@ fn StrategyCard(
             <div class="sd-card-head">
                 <h4 data-tip="The name roles are given this strategy by.">{name.clone()}</h4>
                 <Choice
-                    label=""
                     tip="Prompted: a model decides, told the system prompt. Random: every choice is made at random, and nothing is said."
                     value=policy.into()
                     options=policies
@@ -622,7 +610,6 @@ fn StrategyCard(
                 />
                 <Show when=prompted>
                     <Choice
-                        label=""
                         tip="The model this strategy asks. The models are those on the Models tab."
                         value=model.into()
                         options=models.into()
@@ -641,6 +628,7 @@ fn StrategyCard(
                 fallback=|| view! { <p class="sd-note">"A random strategy needs no model or prompt."</p> }
             >
                 <textarea
+                    class="sd-mono"
                     id=field_id(&system_at)
                     spellcheck="false"
                     aria-label="System prompt"
@@ -662,8 +650,17 @@ fn StrategyCard(
 /// strategies use it, beside the editor of the one chosen.
 #[component]
 fn PromptParts(editor: Editor, game: GameName) -> impl IntoView {
-    let names = memo(editor, game, |s| {
-        s.prompt_parts.keys().cloned().collect::<Vec<_>>()
+    let names = editor.game(game, |s| s.prompt_parts.keys().cloned().collect::<Vec<_>>());
+    let users = editor.game(game, |s| {
+        s.part_users()
+            .into_iter()
+            .map(|(part, users)| {
+                (
+                    part.to_string(),
+                    users.into_iter().map(String::from).collect(),
+                )
+            })
+            .collect::<BTreeMap<String, Vec<String>>>()
     });
     let chosen = RwSignal::new(None::<String>);
     // The part the editor shows: the one chosen, or else the first.
@@ -679,7 +676,7 @@ fn PromptParts(editor: Editor, game: GameName) -> impl IntoView {
         editor.edit_game(game, |s| {
             s.prompt_parts.entry(name.clone()).or_default();
         });
-        let id = field_id(&path(&[game_key(game), "prompt_parts", &name]));
+        let id = field_id(&game_path(game, &["prompt_parts", &name]));
         chosen.set(Some(name));
         // Once its editor is drawn, it is ready to type in.
         request_animation_frame(move || {
@@ -699,7 +696,7 @@ fn PromptParts(editor: Editor, game: GameName) -> impl IntoView {
         <div class="sd-parts">
             <div class="sd-part-list">
                 <For each=move || names.get() key=Clone::clone let:name>
-                    <PartItem editor=editor game=game name=name chosen=chosen shown=shown />
+                    <PartItem users=users name=name chosen=chosen shown=shown />
                 </For>
                 <Adder
                     label="Add Prompt Part"
@@ -725,19 +722,14 @@ fn PromptParts(editor: Editor, game: GameName) -> impl IntoView {
 /// A prompt part in the list: its name and how many strategies use it.
 #[component]
 fn PartItem(
-    editor: Editor,
-    game: GameName,
+    users: Memo<BTreeMap<String, Vec<String>>>,
     name: String,
     chosen: RwSignal<Option<String>>,
     shown: Memo<Option<String>>,
 ) -> impl IntoView {
     let read = name.clone();
-    let users = memo(editor, game, move |s| {
-        s.users_of(&read)
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
-    });
+    let users =
+        Memo::new(move |_| users.with(|users| users.get(&read).cloned().unwrap_or_default()));
     let (current, picked) = (name.clone(), name.clone());
     let tip = {
         let name = name.clone();
@@ -771,10 +763,10 @@ fn PartItem(
 #[component]
 fn PartEditor(editor: Editor, game: GameName, name: String) -> impl IntoView {
     let read = name.clone();
-    let value = memo(editor, game, move |s| {
+    let value = editor.game(game, move |s| {
         s.prompt_parts.get(&read).cloned().unwrap_or_default()
     });
-    let at = path(&[game_key(game), "prompt_parts", &name]);
+    let at = game_path(game, &["prompt_parts", &name]);
     let error = editor.error(at.clone());
     let (written, removed) = (name.clone(), name.clone());
     let pulled = format!("{{{{ {name} }}}}");
@@ -787,9 +779,8 @@ fn PartEditor(editor: Editor, game: GameName, name: String) -> impl IntoView {
                     class="sd-danger"
                     data-tip="Remove this prompt part. A system prompt that pulls it in shows an error."
                     on:click=move |_| {
-                        let removed = removed.clone();
-                        editor.edit(move |s| {
-                            s.game_mut(game).prompt_parts.remove(&removed);
+                        editor.edit_game(game, |s| {
+                            s.prompt_parts.remove(&removed);
                         });
                     }
                 >
@@ -805,9 +796,9 @@ fn PartEditor(editor: Editor, game: GameName, name: String) -> impl IntoView {
                 class:sd-invalid=move || error.with(Option::is_some)
                 prop:value=move || value.get()
                 on:input=move |event| {
-                    let (text, written) = (event_target_value(&event), written.clone());
-                    editor.edit(move |s| {
-                        s.game_mut(game).prompt_parts.insert(written, text);
+                    let text = event_target_value(&event);
+                    editor.edit_game(game, |s| {
+                        s.prompt_parts.insert(written.clone(), text);
                     });
                 }
             ></textarea>
