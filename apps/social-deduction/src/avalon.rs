@@ -1354,7 +1354,7 @@ pub(crate) mod tests {
             },
             Entry::Withheld {
                 from: id("Player 2"),
-                message: utterance(2, "Player 2", 0, "Too late."),
+                message: Choice::Ballot(Ballot::Approve).message(2, id("Player 2"), 0),
                 seen: Some(7),
                 forgot: None,
             },

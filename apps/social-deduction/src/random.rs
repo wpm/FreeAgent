@@ -1,22 +1,24 @@
 //! The random policy, of any game: a player who answers each announcement
-//! of a phase it acts in at once with a move drawn at random, and does
-//! nothing about the rest. A player logs an [`Entry::Observation`] for
+//! of a phase it acts in at once with a move drawn at random, each word
+//! that a phase is closing at once by closing it, and does nothing about
+//! the rest. A player logs an [`Entry::Observation`] for
 //! each message it receives, in the latest phase it was announced, and an
-//! [`Entry::Action`] for each move it sends, numbering its moves from 1;
-//! no model made them, so `seen` is `None`.
+//! [`Entry::Action`] for each message it sends, numbering them from 1; no
+//! model made them, so `seen` is `None`.
 
-use crate::game::{Actor, Entry, Game, Message, Seat, act, observe};
+use crate::game::{Actor, Entry, Game, Message, Seat, act, close, observe};
 use async_trait::async_trait;
 use free_agent::{Behavior, Builder, Context};
 
 /// A player who answers each announcement of a phase it
 /// [acts](Game::acts) in at once, with the move its game
 /// [picks](Game::pick), and does nothing about one it does not act in.
-/// Its move goes to the game's [`receivers`](Game::receivers) of it. It
-/// has no think loop.
+/// Its move goes to the game's [`receivers`](Game::receivers) of it. Told
+/// a phase is closing, it closes it at once: its one move was made when the
+/// phase was announced. It has no think loop.
 pub struct Player<G: Game> {
     context: Context<Message<G>, Entry<G>>,
-    /// The number of the last move it sent.
+    /// The number of the last message it sent.
     n: u64,
     /// The number of the latest phase it was announced, and 0 before any.
     seq: u64,
@@ -49,7 +51,8 @@ impl<G: Game> Behavior for Player<G> {
     /// Log a message from another actor, which is any numbered one, as
     /// observed in the latest phase announced. Announced a phase it acts
     /// in, move at once; otherwise, or with no move to make, say nothing.
-    /// Anything else, another player's utterance or move above all, is
+    /// Told a phase is closing, close it. Anything else, another player's
+    /// utterance or move above all, is
     /// observed and nothing more, whatever phase it is tagged with: the
     /// player keeps nothing it could put it in.
     async fn receive(&mut self, message: &Message<G>) -> anyhow::Result<()> {
@@ -69,6 +72,10 @@ impl<G: Game> Behavior for Player<G> {
             let message = Message::Move(picked);
             let to = G::receivers(&message, me, view);
             act(&self.context, message, to, None, None)?;
+        }
+        if let Message::Closing { seq, .. } = message {
+            self.n += 1;
+            close(&self.context, *seq, self.n)?;
         }
         Ok(())
     }

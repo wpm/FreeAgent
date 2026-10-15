@@ -23,6 +23,7 @@ fn werewolf_panel() -> WerewolfPanel {
             since: 1_500,
             limit_ms: 10_000,
         }),
+        closing: Some(2_000),
         seats: vec![
             SeatState {
                 name: player(1),
@@ -147,10 +148,6 @@ fn every_beat_round_trips() {
         Beat::Said {
             who: player(1),
             text: "Not me.".into(),
-        },
-        Beat::Late {
-            who: player(1),
-            text: "Wait.".into(),
         },
         Beat::Thinking { who: player(1) },
         Beat::Thought { who: player(1) },

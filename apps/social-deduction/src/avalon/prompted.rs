@@ -52,9 +52,9 @@ pub type Memory = crate::prompted::Memory<Avalon>;
 /// [`asked`] judges it, is an error, and nothing in it is carried out.
 /// Otherwise the messages are sent in the order the model asked for
 /// them, each utterance to every other player and each choice to the
-/// environment, and a wait sets a reminder; unless the phase has ended
-/// by the time the model answers, and then the messages are withheld
-/// and no reminder is set.
+/// environment, and a wait sets a reminder. Speech is sent in whatever
+/// phase the game has reached by the time the model answers; if that is
+/// a later phase, the choice is withheld and no reminder is set.
 pub(crate) async fn play(
     player: &Player,
     seq: u64,
@@ -66,7 +66,7 @@ pub(crate) async fn play(
     let (request, shown) = player.request(&situation, tools(duty.as_ref(), limit));
     let response = player.complete(seq, &request).await?;
     let Asked { sends, wait } = asked(&response, duty.as_ref(), limit)?;
-    player.carry_out(seq, view, sends, wait, shown)
+    player.carry_out(seq, sends, wait, shown)
 }
 
 /// What a phase waits on a player to choose, with what it may choose from.
@@ -544,6 +544,10 @@ enum Sending {
 }
 
 impl crate::prompted::Sending<Avalon> for Sending {
+    fn speaks(&self) -> bool {
+        matches!(self, Sending::Say(_))
+    }
+
     /// The message `from` sends for this in the phase numbered `seq`,
     /// numbered `n`.
     fn message(self, seq: u64, from: &PlayerId, n: u64) -> Message {
@@ -758,6 +762,14 @@ pub(crate) mod tests {
                 Entry::Withheld { from, message, .. } if from == player => Some(message),
                 _ => None,
             })
+            .collect()
+    }
+
+    /// The requests in `asked` made in the first quest's `proposal`.
+    fn asked_in(asked: &[String], proposal: u8) -> Vec<&String> {
+        asked
+            .iter()
+            .filter(|asked| situated(asked).contains(&format!("proposal {proposal} of 5")))
             .collect()
     }
 
@@ -1432,27 +1444,63 @@ pub(crate) mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_response_that_comes_after_the_phase_ended_is_withheld_and_logged_as_such() {
-        // The leader's model takes fifteen seconds, and each proposal lapses
-        // after ten, so nothing it answers is sent.
-        let model = Arc::new(FakeModel::answering(choosing_first).taking(Duration::from_secs(15)));
-        let (winner, logged, took) = play_with(quick(), model, mute_but(&["Player 1"]))
-            .await
-            .unwrap();
+    async fn a_response_that_comes_after_the_phase_ended_sends_its_speech_and_withholds_the_rest() {
+        // The leader's model takes fifteen seconds to propose, and each
+        // proposal lapses after ten, so its answer comes in the second
+        // proposal: the speech is sent in it, and the proposal and the wait
+        // are not. Every other call is answered at once with speech alone,
+        // so a reminder set for the wait would bring one more call in the
+        // second proposal.
+        let model = Arc::new(
+            FakeModel::answering(|request| {
+                Ok(Response::calling(&if offers(request, PROPOSE) {
+                    vec![
+                        speaking("About that team..."),
+                        proposing(&["Player 1", "Player 2"]),
+                        waiting(1),
+                    ]
+                } else {
+                    vec![speaking("Hm.")]
+                }))
+            })
+            .taking_by(|request| {
+                if offers(request, PROPOSE) {
+                    Duration::from_secs(15)
+                } else {
+                    Duration::ZERO
+                }
+            }),
+        );
+        let (winner, logged, took) =
+            play_with(quick(), Arc::clone(&model), mute_but(&["Player 1"]))
+                .await
+                .unwrap();
         assert_eq!(winner, Team::Evil);
         assert_eq!(took, quick().propose_limit * 5);
-        assert!(sent_by(&logged, "Player 1").is_empty(), "{logged:?}");
-        let withheld = withheld_by(&logged, "Player 1");
+        let (late, to) = sent_by(&logged, "Player 1")[0];
+        assert_eq!(late, &utterance(2, "Player 1", 1, "About that team..."));
+        let seats = ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"];
+        let players: Vec<PlayerId> = seats.map(id).into();
+        assert_eq!(to, &to_the_players_but(&id("Player 1"), &players));
+        for other in &seats[1..] {
+            let observed = observed_by(&logged, other);
+            assert!(
+                observed.contains(&("Player 1", 1, 2)),
+                "{other}: {observed:?}"
+            );
+        }
         let team = Choice::Team(["Player 1", "Player 2"].map(id).into());
         assert_eq!(
-            withheld[..2],
-            [
-                &utterance(1, "Player 1", 0, SAID),
-                &team.clone().message(1, id("Player 1"), 0)
-            ]
+            withheld_by(&logged, "Player 1"),
+            [&team.message(1, id("Player 1"), 0)]
         );
+        let asked = asked_of(&model, "Player 1");
+        assert_eq!(asked_in(&asked, 2).len(), 1, "{asked:?}");
         let told = narrated(logged);
-        assert!(!told.iter().any(|line| line.contains(SAID)), "{told:?}");
+        assert!(
+            told.contains(&"Player 1 (Merlin) says, \"About that team...\"".to_string()),
+            "{told:?}"
+        );
         assert!(
             told.contains(&"Player 1 (Merlin) proposes nobody in time.".to_string()),
             "{told:?}"
@@ -1486,20 +1534,14 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let asked = asked_of(&model, "Player 3");
-        let in_phase = |proposal: u8| -> Vec<&String> {
-            asked
-                .iter()
-                .filter(|asked| situated(asked).contains(&format!("proposal {proposal} of 5")))
-                .collect()
-        };
-        let first = in_phase(1);
+        let first = asked_in(&asked, 1);
         assert_eq!(first.len(), 2, "{asked:?}");
         assert!(!first[0].contains("Player 4 says"), "{}", first[0]);
         for i in 1..=5 {
             let heard = format!("Player 4 says, \"Point {i}.\"");
             assert!(story(first[1]).contains(&heard), "{}", first[1]);
         }
-        assert_eq!(in_phase(2).len(), 1, "{asked:?}");
+        assert_eq!(asked_in(&asked, 2).len(), 1, "{asked:?}");
         assert!(asked.iter().all(|asked| !asked.contains("Old talk.")));
         let observed = observed_by(&logged, "Player 3");
         assert!(observed.contains(&("Player 4", 12, 2)), "{observed:?}");
@@ -1526,11 +1568,7 @@ pub(crate) mod tests {
             .unwrap();
         assert!(failed(&logged).is_empty(), "{logged:?}");
         let asked = asked_of(&model, "Player 3");
-        let in_first = asked
-            .iter()
-            .filter(|asked| situated(asked).contains("proposal 1 of 5"))
-            .count();
-        assert_eq!(in_first, 2, "{asked:?}");
+        assert_eq!(asked_in(&asked, 1).len(), 2, "{asked:?}");
         // One request a proposal after that, and five proposals lapse.
         assert_eq!(asked.len(), 6, "{asked:?}");
     }

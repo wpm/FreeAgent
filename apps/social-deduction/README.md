@@ -64,6 +64,11 @@ The table seats two werewolves, three villagers, a doctor and a seer unless
 the file's counts say otherwise, and each phase waits a minute for its
 selections unless the file's limits say otherwise.
 
+A phase that is over closes before it ends, so that every player finishes
+what it was saying. Its outcome is fixed as it begins to close, and no
+selection counts after that. Once every living player has finished, the
+outcome is told and the next phase begins.
+
 Each player plays a *strategy*, dealt to its seat with its role. A strategy
 is a *policy*, a kind of player written in Rust, with its parameters:
 
@@ -266,8 +271,13 @@ in the order the model made them. Wake-ups are debounced: a player has at
 most one model call in progress and one waiting, however fast the talk
 comes, and each call is made from everything the player had heard when it
 began. A model may answer from a context that is out of date by the time it
-answers; if the phase has ended by then, by night or by day, the player
-sends nothing and logs what it withheld. A player ignores talk and votes
+answers. When a phase is over, the environment tells every living player
+the phase is closing and waits for each to close it. A player closes it at
+once if it has no model call in flight, and otherwise once the call comes
+back: it sends what the model said, logs the votes and selections in the
+answer as withheld, and starts no new call for the phase. The console tells
+"Day 1 is closing." when the day begins to close, and the day's outcome
+once it ends. A player ignores talk and votes
 from a phase it is not in, and a tentative decision too: it logs the
 receipt and neither remembers the message nor wakes for it, so day talk
 that arrives by night is forgotten.
@@ -380,7 +390,8 @@ approves. Each member of a team that goes supports or sabotages the quest
 in secret, and the quest fails when enough of them sabotage it: one,
 except two on the fourth quest with seven or more players. Only how many
 sabotaged it is told. `Player 1` leads first, and the lead passes in seat
-order after every proposal. Everyone may talk in every phase.
+order after every proposal. Talk is open for the whole game: everyone may
+talk in every phase.
 
 Good wins with three successful quests, unless the Assassin then names
 Merlin. Evil wins with three failed quests, five failed proposals in a row,
@@ -482,8 +493,10 @@ alone:
 
 The tool stays on offer, and the environment counts the player's first
 choice. A response with any call that is not well formed, such as a team of
-the wrong size, fails as a whole, and a response that comes after its
-phase has ended is withheld, as in Werewolf.
+the wrong size, fails as a whole. Avalon's phases end at once, without
+closing, so a response may come after its phase has ended. Its speech is
+sent in the phase the game has reached, where every other player hears it,
+and its choice is withheld.
 [`configs/avalon/prompted.toml`](configs/avalon/prompted.toml) plays a
 game of model players against a local LM Studio server, once its
 `[models.qwen]` table names the model and server you have running:

@@ -192,6 +192,22 @@ workflow takes a version's notes from here.
   letters, digits, underscores and spaces, pulled in with its spaces as
   underscores (`"Seer only"` is `{{ Seer_only }}`). The log's configuration calls them
   `prompt_parts` too.
+- A Werewolf phase closes before it ends, so no speech is cut off: the
+  environment fixes the outcome, tells every living player the phase is
+  `Closing`, and waits for each one's `Closed` before it logs the outcome
+  and announces the next phase. A prompted player sends the speech of the
+  model call it had in flight, withholds the call's choices, and starts no
+  new call while the phase closes. The console tells "Day 1 is closing."
+  Avalon's phases end as before.
+- The viewer shows a Werewolf phase closing: the header reads "Closing…"
+  in place of the clock, the tentative decision stops counting down, and
+  the board holds still until the next phase. The recorded prompted
+  Werewolf game is a new one, with phases that close.
+- A prompted player always sends its model's speech, tagged with the
+  latest phase it was announced, and withholds only a choice whose phase
+  has ended or begun closing. Avalon's talk is one chat, open for the whole
+  game: a remark made as one phase ends lands in the next. `Withheld` now
+  records only choices, and the viewer's faded late bubble is gone.
 - Each game's narrator tells its story in lines that say what they are:
   a phase heading, a player's vote or selection, a player's utterance with
   who spoke, a blank line, or anything else told. The console prints them

@@ -10,9 +10,10 @@
 // are those the narration kills, and `data-theme` matches the last phase.
 // The prompted Werewolf game, played at ten times the pace, shows a
 // thinking player's dots until it speaks, turns dark by night and light by
-// day, and shows late speech faded. The prompted Avalon board names the
-// Assassin's target. At 420 px wide the board stacks under the chat and
-// nothing scrolls sideways. With a stand-in for the desktop app's backend,
+// day, and shows a day closing, with speech landing while it does, before
+// the night falls. The prompted Avalon board names the Assassin's target.
+// At 420 px wide the board stacks under the chat and nothing scrolls
+// sideways. With a stand-in for the desktop app's backend,
 // the main window opens on its start state with Play, #settings opens the
 // Settings window's four tabs, help shows on hover and on focus, and
 // typing goes on in a field while each change is stored. Its Models tab
@@ -263,11 +264,13 @@ await section('werewolf-prompted', async () => {
     const snapshot = () => {
       const phase = document.querySelector('.sd-phase');
       const clock = phase?.querySelector('.sd-clock')?.textContent ?? '';
+      const closing = phase?.querySelector('.sd-closing')?.textContent ?? '';
       const messages = [...document.querySelectorAll('.rc-message')];
       window.timeline.push({
         at: performance.now(),
         theme: document.documentElement.getAttribute('data-theme'),
-        phase: (phase?.textContent ?? '').replace(clock, '').trim(),
+        phase: (phase?.textContent ?? '').replace(clock, '').replace(closing, '').trim(),
+        closing,
         over: document.querySelector('.sd-outcome') !== null,
         thinking: messages
           .filter((message) => message.dataset.messageId.startsWith('think-') && message.querySelector('.rc-thinking'))
@@ -275,7 +278,6 @@ await section('werewolf-prompted', async () => {
         spoken: messages
           .filter((message) => !message.dataset.messageId.startsWith('think-') && message.dataset.name !== 'Narrator')
           .map((message) => message.dataset.name),
-        late: document.querySelectorAll('.rc-bubble.sd-late').length,
       });
     };
     new MutationObserver(snapshot).observe(document, {
@@ -331,9 +333,23 @@ await section('werewolf-prompted', async () => {
       ends.every((shot) => shot.theme === (shot.phase.startsWith('Night') ? 'dark' : 'light')),
     `werewolf-prompted: data-theme is dark by night and light by day (${ends.map((shot) => `${shot.phase} ${shot.theme}`).join(', ')})`,
   );
+  // Each day that closes and then gives way to the night, and whether a
+  // player spoke while it closed.
+  const closings = [];
+  for (let i = 1; i < playing.length; i += 1) {
+    const shot = playing[i];
+    if (!shot.closing || !shot.phase.startsWith('Day')) continue;
+    const before = playing[i - 1];
+    if (before.closing && before.phase === shot.phase) continue;
+    let j = i;
+    while (j + 1 < playing.length && playing[j + 1].closing && playing[j + 1].phase === shot.phase) j += 1;
+    const next = playing[j + 1];
+    if (!next || next.over || !next.phase.startsWith('Night')) continue;
+    closings.push({ phase: shot.phase, spoke: playing[j].spoken.length > before.spoken.length });
+  }
   check(
-    timeline.at(-1).late > 0,
-    `werewolf-prompted: late speech shows as a .sd-late bubble (${timeline.at(-1).late})`,
+    closings.some((closing) => closing.spoke),
+    `werewolf-prompted: a day shows Closing… until the night, and speech lands while it does (${closings.map((closing) => `${closing.phase} ${closing.spoke ? 'spoke' : 'silent'}`).join(', ')})`,
   );
 });
 

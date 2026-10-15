@@ -1,6 +1,6 @@
 # ADR-0011: Speech is never cut off at a phase end
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-14
 **Deciders:** Bill McNeill
 **Depends on:** [ADR-0003](0003-the-model-player.md),

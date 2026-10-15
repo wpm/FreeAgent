@@ -8,7 +8,7 @@
 //! game's [`Board`] shows them, whole, after every event that moves it.
 
 use crate::avalon::{self, Avalon};
-use crate::game::{Entry, Game, Message, Narrate};
+use crate::game::{Entry, Game, Narrate};
 use crate::report::{Line, in_order};
 use crate::seat::PlayerId;
 use crate::werewolf::{self, Werewolf};
@@ -72,11 +72,10 @@ impl<G: Staged> Stage<G> {
     /// what its narrator lines tell: each heading a heading, each run of
     /// told lines one block, each utterance a bubble from its speaker,
     /// votes and blank lines left out. A model call going out is its
-    /// player thinking, and coming back their thought; a withheld
-    /// utterance is late, and any other withheld message nothing. The
-    /// board follows when the event moves it. A player who dies with a
-    /// call out has thought, and so has everyone still thinking when the
-    /// game ends. The end of the game is its outcome, last, won as the
+    /// player thinking, and coming back their thought; a withheld choice
+    /// is nothing. The board follows when the event moves it. A player
+    /// who dies with a call out has thought, and so has everyone still
+    /// thinking when the game ends. The end of the game is its outcome, last, won as the
     /// narrator tells it.
     pub fn fold(&mut self, event: &Event<Entry<G>>) -> Vec<Cue> {
         let at = millis(event.time);
@@ -92,14 +91,6 @@ impl<G: Staged> Stage<G> {
                 }]
             }
             Entry::Thought { player, .. } => self.thought(player).into_iter().collect(),
-            Entry::Withheld {
-                from,
-                message: Message::Say { text, .. },
-                ..
-            } => vec![Beat::Late {
-                who: from.clone(),
-                text: text.clone(),
-            }],
             _ => beats(&lines),
         };
         beats.extend(self.board.fold(event).map(Beat::Panel));
@@ -346,8 +337,9 @@ fn team(team: werewolf::Team) -> Side {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
+    use crate::game::Message;
     use crate::game::tests::{Fixture, drained, episode, logged, seated};
     use crate::strategy::RANDOM;
     use social_deduction_stage::{AvalonPanel, WerewolfPanel};
@@ -673,7 +665,7 @@ pub(crate) mod tests {
     }
 
     /// `entries`, logged in order, each event's beats apart.
-    pub(crate) fn staged<G: Staged>(entries: &[Entry<G>]) -> Vec<Vec<Beat>> {
+    fn staged<G: Staged>(entries: &[Entry<G>]) -> Vec<Vec<Beat>> {
         let mut stage = Stage::<G>::default();
         entries
             .iter()
@@ -688,7 +680,7 @@ pub(crate) mod tests {
     /// `Thought` of its player before `Over`, and each utterance comes
     /// from its speaker's call that came back, after that call's `Thought`
     /// and before the speaker's next `Thinking`.
-    pub(crate) fn check_calls(beats: &[Beat]) {
+    fn check_calls(beats: &[Beat]) {
         let mut thinking = HashSet::new();
         let mut answered = HashSet::new();
         let mut calls = 0;
@@ -724,7 +716,7 @@ pub(crate) mod tests {
     }
 
     /// `message`, withheld by `Player 1`.
-    fn withheld(message: Message<Avalon>) -> Entry<Avalon> {
+    fn withheld<G: Game>(message: Message<G>) -> Entry<G> {
         Entry::Withheld {
             from: "Player 1".to_string(),
             message,
@@ -734,29 +726,21 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_withheld_utterance_is_late_and_a_withheld_move_is_nothing() {
-        let said = withheld(Message::Say {
-            seq: 1,
-            from: "Player 1".to_string(),
-            n: 0,
-            text: "Too slow.".to_string(),
-        });
-        let voted = withheld(Message::Move(avalon::Move::Vote {
+    fn a_withheld_choice_gives_no_cue_in_either_game() {
+        let voted = withheld::<Avalon>(Message::Move(avalon::Move::Vote {
             seq: 1,
             from: "Player 1".to_string(),
             n: 0,
             ballot: avalon::Ballot::Approve,
         }));
-        assert_eq!(
-            staged(&[said, voted]),
-            [
-                vec![Beat::Late {
-                    who: "Player 1".to_string(),
-                    text: "Too slow.".to_string()
-                }],
-                vec![]
-            ]
-        );
+        assert_eq!(staged(&[voted]), [vec![]]);
+        let selected = withheld::<Werewolf>(Message::Move(werewolf::Move::Select {
+            seq: 1,
+            from: "Player 1".to_string(),
+            n: 0,
+            target: "Player 2".to_string(),
+        }));
+        assert_eq!(staged(&[selected]), [vec![]]);
     }
 
     #[test]
@@ -779,6 +763,26 @@ pub(crate) mod tests {
                 vec![]
             ]
         );
+    }
+
+    #[test]
+    fn a_player_who_dies_with_a_call_out_has_thought() {
+        let thinking = Entry::<Werewolf>::Thinking {
+            player: "bob".to_string(),
+            seq: 2,
+        };
+        let hunted = Entry::<Werewolf>::Event(werewolf::Outcome::Hunted {
+            seq: 3,
+            hunt: werewolf::Hunt {
+                victim: "bob".to_string(),
+                protectors: HashSet::new(),
+            },
+        });
+        let staged = staged(&[thinking, hunted]);
+        let thought = Beat::Thought {
+            who: "bob".to_string(),
+        };
+        assert_eq!(staged[1].last(), Some(&thought));
     }
 
     #[test]

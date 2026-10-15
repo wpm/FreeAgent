@@ -11,12 +11,21 @@
 //! reach it as moves too. A timer that is the last move its phase waits
 //! for ends the phase at once.
 //!
+//! In a game whose phases [close](Announced::CLOSES), a phase that is over
+//! closes before it ends: the environment fixes what it comes to, tells
+//! each player it was announced to that it is closing with a
+//! [`Message::Closing`], and waits for each one's [`Message::Closed`].
+//! Nothing counts while a phase closes. Once every player has closed, the
+//! environment logs what the phase came to and opens the next one or ends
+//! the game. Players finish their words in the meantime.
+//!
 //! The environment logs the deal, then the configuration; an
 //! [`Entry::Action`] for each announcement and each message of its own it
 //! sends, numbered in one series from 1; an [`Entry::Observation`] for each
-//! move it receives from a player, counted or not, with the phase it was in
-//! when it arrived; how each phase came out, as the game records it; and the
-//! game's end. The reminders it sends itself are not logged.
+//! move and each close it receives from a player, counted or not, with the
+//! phase it was in when it arrived; how each phase came out, as the game
+//! records it; and the game's end. The reminders it sends itself are not
+//! logged.
 
 use crate::game::{Actor, Entry, Game, Message, Tagged, act, observe};
 use crate::seat::{Dealt, PlayerId};
@@ -31,6 +40,10 @@ use tokio::time::Instant;
 /// A game the announcing environment runs: the rules it supplies for each
 /// phase.
 pub trait Announced: Game<Environment = Environment<Self>> {
+    /// Whether a phase closes before it ends: the environment waits for
+    /// every player the phase was announced to to finish its model call in
+    /// flight.
+    const CLOSES: bool;
     /// What the environment holds of the game.
     type State: Send + 'static;
     /// What the environment tracks of the phase underway.
@@ -73,10 +86,23 @@ pub struct Core<G: Announced> {
     /// The phase underway, while one is: taken when it ends, so that
     /// nothing more counts until the next one opens.
     pub(crate) underway: Option<G::Underway>,
+    /// Each seat the current phase was announced to, in seat order.
+    announced: Vec<PlayerId>,
+    /// The current phase, while it closes.
+    closing: Option<Closing<G>>,
     /// Where the winning team goes when the game ends. Taken when sent.
     winner: Option<oneshot::Sender<G::Team>>,
     /// When the game was made, which is as good as when it was dealt.
     started: Instant,
+}
+
+/// A phase closing: what it came to, held until it ends, and the players
+/// it still waits on.
+struct Closing<G: Game> {
+    /// What the phase came to.
+    resolved: Resolved<G>,
+    /// The players it was announced to that have not yet closed it.
+    waiting: HashSet<PlayerId>,
 }
 
 /// A phase about to open, as the game opens it.
@@ -194,6 +220,8 @@ impl<G: Announced> Core<G> {
             seq: 0,
             n: 0,
             underway: None,
+            announced: Vec::new(),
+            closing: None,
             winner: Some(winner),
             started: Instant::now(),
         }
@@ -230,7 +258,8 @@ impl<G: Announced> Core<G> {
                 };
                 (to, message)
             })
-            .collect();
+            .collect::<Vec<_>>();
+        self.announced = announcements.iter().map(|(to, _)| to.clone()).collect();
         self.underway = Some(underway);
         Ok(Opened {
             seq: self.seq,
@@ -273,6 +302,38 @@ impl<G: Announced> Core<G> {
         }
         let underway = self.underway.take()?;
         Some(G::resolve(self, underway))
+    }
+
+    /// Close the current phase, which came to `resolved`: hold what it came
+    /// to, and wait on every seat it was announced to. Returns each seat's
+    /// word that the phase is closing, numbered in turn in seat order.
+    pub fn close(&mut self, resolved: Resolved<G>) -> Vec<(PlayerId, Message<G>)> {
+        let seq = self.seq;
+        let waiting = self.announced.iter().cloned().collect();
+        self.closing = Some(Closing { resolved, waiting });
+        std::mem::take(&mut self.announced)
+            .into_iter()
+            .map(|to| {
+                (
+                    to,
+                    Message::Closing {
+                        seq,
+                        n: self.number(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Note that `from` has closed the phase numbered `seq`, if that phase
+    /// is closing and waits on `from`. Returns what the phase came to once
+    /// `from` was the last it waited on, and nothing otherwise.
+    pub fn closed(&mut self, seq: u64, from: &PlayerId) -> Option<Resolved<G>> {
+        let closing = self.closing.as_mut().filter(|_| seq == self.seq)?;
+        if !closing.waiting.remove(from) || !closing.waiting.is_empty() {
+            return None;
+        }
+        self.closing.take().map(|closing| closing.resolved)
     }
 }
 
@@ -387,13 +448,27 @@ impl<G: Announced> Environment<G> {
         Ok(last)
     }
 
-    /// Carry out the end of a phase, if `ended` says it did: stop whoever
-    /// it put out, log what it came to, and then end the game or open the
-    /// next phase.
+    /// Carry out the end of a phase, if `ended` says it did: close it, if
+    /// the game's phases close, and otherwise conclude it at once.
     fn end_phase(&self, ended: Option<Resolved<G>>) -> anyhow::Result<()> {
-        let Some(Resolved { outcome, out, over }) = ended else {
+        let Some(resolved) = ended else {
             return Ok(());
         };
+        if !G::CLOSES {
+            return self.conclude(resolved);
+        }
+        let closings = self.core().close(resolved);
+        for (to, message) in closings {
+            act(&self.context, message, HashSet::from([to]), None, None)?;
+        }
+        Ok(())
+    }
+
+    /// Carry out what a phase that has ended came to: stop whoever it put
+    /// out, log what it came to, and then end the game or open the next
+    /// phase.
+    fn conclude(&self, resolved: Resolved<G>) -> anyhow::Result<()> {
+        let Resolved { outcome, out, over } = resolved;
         if let Some(out) = out {
             self.context.stop(&out)?;
         }
@@ -437,10 +512,19 @@ impl<G: Announced> Behavior for Environment<G> {
         &self.context
     }
 
-    /// Log a player's move as observed in the current phase, counted or
-    /// not, and carry out what it calls for if it counts, ending the phase
-    /// after the last move it waits for. Anything else is ignored.
+    /// Log a player's move or close as observed in the current phase,
+    /// counted or not. Carry out what a move calls for if it counts, ending
+    /// the phase after the last move it waits for, and conclude a closing
+    /// phase at the last close it waits for. Anything else is ignored.
     async fn receive(&mut self, message: &Message<G>) -> anyhow::Result<()> {
+        if let Message::Closed { seq, from, n } = message {
+            let (current, closed) = {
+                let mut core = self.core();
+                (core.seq, core.closed(*seq, from))
+            };
+            observe(&self.context, from.clone(), *n, current);
+            return closed.map_or(Ok(()), |resolved| self.conclude(resolved));
+        }
         let (Message::Move(played), Some(n)) = (message, message.number()) else {
             return Ok(());
         };

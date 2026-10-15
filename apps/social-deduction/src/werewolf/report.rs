@@ -67,6 +67,10 @@ enum Voice {
 /// account. In a day whose vote is not ratified, a player's first vote
 /// stands, and both tell a later one as not counting. Both tell a
 /// retraction with no vote standing for it to take back as not counting.
+/// The omniscient narrator tells that a phase is closing when the
+/// environment first says so, and the phase's outcome once it ends, after
+/// any speech made while it closed. A player's narrator tells nothing of
+/// closing, which no model is asked during.
 /// A phase begins at its first announcement and ends at the next phase's,
 /// or at the end of the game, and the omniscient
 /// narrator tells the time between, to the nearest second, after who died.
@@ -81,9 +85,9 @@ enum Voice {
 /// since the player is not told of it. Talk is told as it comes: the
 /// omniscient narrator tells each utterance from its speaker's action, in
 /// order with the day's votes, while its phase lasts, and a player's
-/// narrator tells each it made or heard. A message that comes after its
-/// phase has ended, whether withheld or observed late, stays in the log
-/// and out of the account. A player's memory holds only the phases it
+/// narrator tells each it made or heard. A message observed after its
+/// phase has ended, and a withheld choice, stay in the log and out of the
+/// account. A player's memory holds only the phases it
 /// lived through, in order, so nothing in it is late.
 #[derive(Debug, Default)]
 pub struct Narrator {
@@ -109,6 +113,8 @@ pub struct Narrator {
     resolution: Option<String>,
     /// Every phase announced so far, by its number.
     announced: BTreeMap<u64, (NonZero<u8>, Phase)>,
+    /// The latest phase told as closing.
+    closing: Option<u64>,
     /// Every ballot logged as its player's action and not yet observed by
     /// the environment, by the player and its number for the message: the
     /// phase it was for, and the ballot.
@@ -210,6 +216,15 @@ impl Narrate<Werewolf> for Narrator {
                 message: Message::Move(Move::Tentative { target, ratify, .. }),
                 ..
             } => vec![Line::Told(self.tentative(target.as_ref(), *ratify))],
+            Entry::Action {
+                message: Message::Closing { seq, .. },
+                ..
+            } if self.closing.replace(*seq) != Some(*seq) => self
+                .announced
+                .get(seq)
+                .map(|phase| Line::Told(format!("{} is closing.", title(phase))))
+                .into_iter()
+                .collect(),
             Entry::Action {
                 message: Message::Say {
                     seq, from, text, ..
@@ -820,7 +835,7 @@ mod tests {
     use crate::strategy::{RANDOM, Random, Strategy};
     use crate::werewolf::config::Configuration;
     use crate::werewolf::tests::{
-        announcement, logged, retraction, selection, tentative, utterance,
+        announcement, closed, closing, logged, retraction, selection, tentative, utterance,
     };
     use crate::werewolf::{Dealt, Rules};
     use std::collections::BTreeMap;
@@ -1261,6 +1276,63 @@ mod tests {
         );
     }
 
+    /// The environment's action of telling `to` that the phase numbered
+    /// `seq` is closing, the `n`th message it sent.
+    fn closing_to(to: &str, seq: u64, n: u64) -> Event<Entry> {
+        logged(Entry::Action {
+            from: ENVIRONMENT.to_string(),
+            n,
+            to: HashSet::from([id(to)]),
+            message: closing(seq, n),
+            seen: None,
+            forgot: None,
+        })
+    }
+
+    #[test]
+    fn a_phase_is_told_closing_once_after_its_speech_and_before_its_outcome() {
+        let mut narrator = Narrator::default();
+        narrator.narrate(&ratified());
+        let everyone = ["wolf", "seer", "doctor", "ann"];
+        narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
+        let others = ["seer", "doctor", "ann"];
+        narrator.narrate(&spoke("wolf", 2, 1, "Vote ann.", &others));
+        assert_eq!(
+            narrator.narrate(&closing_to("wolf", 2, 9)),
+            ["Day 1 is closing."]
+        );
+        // The rest of the day's closings, and the players' closes, tell
+        // nothing more.
+        assert!(narrator.narrate(&closing_to("ann", 2, 10)).is_empty());
+        let close = logged(Entry::Action {
+            from: id("ann"),
+            n: 2,
+            to: to_the_environment(),
+            message: closed(2, "ann", 2),
+            seen: None,
+            forgot: None,
+        });
+        assert!(narrator.narrate(&close).is_empty());
+        assert!(
+            narrator
+                .narrate(&observed_by_the_environment("ann", 2, 2))
+                .is_empty()
+        );
+        // Speech made while the day closes is told as it comes, and the
+        // outcome once the next phase begins.
+        assert_eq!(
+            narrator.narrate(&spoke("ann", 2, 1, "Not me!", &["wolf", "seer", "doctor"])),
+            ["ann (villager) says, \"Not me!\""]
+        );
+        assert!(
+            narrator
+                .narrate(&voted(2, None, Ending::DayLimit))
+                .is_empty()
+        );
+        let night = narrator.narrate(&shown("wolf", 2, Phase::Night, &everyone));
+        assert_eq!(night[0], "The day runs out.");
+    }
+
     #[test]
     fn a_withheld_message_goes_untold() {
         let mut narrator = Narrator::default();
@@ -1268,11 +1340,7 @@ mod tests {
         let everyone = ["wolf", "seer", "doctor", "ann"];
         narrator.narrate(&shown("wolf", 1, Phase::Day, &everyone));
         narrator.narrate(&shown("wolf", 2, Phase::Night, &everyone));
-        for message in [
-            utterance(2, "wolf", 0, "Wait!"),
-            selection(2, "wolf", 0, "ann"),
-            retraction(2, "wolf", 0),
-        ] {
+        for message in [selection(2, "wolf", 0, "ann"), retraction(2, "wolf", 0)] {
             assert!(narrator.narrate(&withheld("wolf", message)).is_empty());
         }
     }
@@ -2712,11 +2780,6 @@ mod tests {
         assert!(
             narrator
                 .narrate(&spoke("ann", 2, 1, "Hello.", &["wolf"]))
-                .is_empty()
-        );
-        assert!(
-            narrator
-                .narrate(&withheld("wolf", utterance(2, "wolf", 0, "Wait!")))
                 .is_empty()
         );
     }

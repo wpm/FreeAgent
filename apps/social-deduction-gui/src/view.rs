@@ -8,7 +8,7 @@ use std::time::Duration;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_rich_chat::{Message, RenderOptions, RichChatStyle, RichText, Transcript};
+use leptos_rich_chat::{Message, RenderOptions, RichChatStyle, Transcript};
 use social_deduction_stage::{
     Cue, Deed, GameName, NightDeed, Outcome, Side, WerewolfPanel, WerewolfPhase,
 };
@@ -256,11 +256,13 @@ pub(crate) fn Viewer(
     let board = Memo::new(move |_| screen.with(Screen::board));
     let werewolf = Memo::new(move |_| screen.with(Screen::werewolf));
     let timer = Memo::new(move |_| screen.with(Screen::phase_timer));
-    let rendering = options.clone();
+    let closing = Memo::new(move |_| screen.with(Screen::closing));
+    // Closing pulses while the cues arrive, and holds still at rest.
+    let running = Memo::new(move |_| screen.with(|screen| screen.clock.running));
     // Every thinker's dots share one text, which stays empty.
     let silence = RwSignal::new(String::new());
     let messages = Signal::derive(move || {
-        let mut messages = posts.with(|posts| messages(posts, &rendering));
+        let mut messages = posts.with(|posts| messages(posts));
         thinkers.with(|thinkers| {
             messages.extend(thinkers.iter().map(|thinker| dots(thinker, silence)));
         });
@@ -275,6 +277,17 @@ pub(crate) fn Viewer(
                 <p class="sd-phase">
                     {move || screen.with(|screen| screen.heading.clone())}
                     {move || timer.get().map(|timer| view! { <PhaseClock timer=timer now=now /> })}
+                    {move || {
+                        closing
+                            .get()
+                            .then(|| {
+                                view! {
+                                    <span class="sd-closing" class:sd-pulse=running>
+                                        {screen::CLOSING}
+                                    </span>
+                                }
+                            })
+                    }}
                 </p>
                 {move || screen.with(|screen| screen.outcome.clone()).map(outcome)}
                 {children()}
@@ -355,8 +368,8 @@ fn PhaseClock(timer: Timer, now: Signal<f64>) -> impl IntoView {
     }
 }
 
-/// `posts`, as Rich-Chat messages, rendered with `options`.
-fn messages(posts: &[Post], options: &RenderOptions) -> Vec<Message> {
+/// `posts`, as Rich-Chat messages.
+fn messages(posts: &[Post]) -> Vec<Message> {
     posts
         .iter()
         .map(|post| match &post.body {
@@ -367,18 +380,6 @@ fn messages(posts: &[Post], options: &RenderOptions) -> Vec<Message> {
                 })
             }
             Body::Text(text) => Message::new(post.id.clone(), post.name.clone(), text.clone()),
-            Body::Late(text) => {
-                let text = text.clone();
-                let options = options.clone();
-                Message::view(post.id.clone(), post.name.clone(), move || {
-                    view! {
-                        <div class="rc-bubble sd-late">
-                            <RichText content=text.clone() options=options.clone() />
-                            <p class="sd-late-caption">"Too late, never sent."</p>
-                        </div>
-                    }
-                })
-            }
         })
         .collect()
 }
@@ -663,16 +664,15 @@ fn WerewolfBoard(board: Board<WerewolfPanel>, now: Signal<f64>) -> impl IntoView
     let panel = &board.panel;
     let day = panel.phase == WerewolfPhase::Day;
 
-    let decision = panel.ratify.clone().filter(|_| day).map(|ratify| {
-        let timer = Timer {
-            began: ratify.since,
-            limit_ms: ratify.limit_ms,
-        };
-        let chosen = ratify.target.clone().unwrap_or_default();
+    let decision = board.decision().map(|decision| {
+        let timer = decision.timer;
+        let chosen = decision.target.clone().unwrap_or_default();
         let (landing, style) = flash(&board, &Landed::Ratify, &chosen);
-        let target = ratify.target;
-        let left = seconds(timer, now);
-        let text = move || screen::ratify(target.as_deref(), left.get());
+        // A stopped decision's label never changes, so it needs no clock.
+        let text = match timer.stopped {
+            Some(_) => Signal::stored(decision.label(0.0)),
+            None => Signal::from(Memo::new(move |_| decision.label(now.get()))),
+        };
         view! {
             <h2>"Tentative decision"</h2>
             <div class=landed_class("sd-decision", landing) style=style>

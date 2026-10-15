@@ -178,6 +178,24 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
+/* A Werewolf phase closing, in place of its clock: it pulses gently
+   while the cues arrive. */
+
+.sd-closing {
+  margin-left: 0.75rem;
+  color: var(--rc-muted);
+}
+
+@keyframes sd-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.sd-pulse {
+  animation: sd-pulse 1.6s ease-in-out infinite;
+}
+
 .sd-countdown {
   display: inline-block;
   width: 6rem;
@@ -281,20 +299,6 @@ body,
   content: "";
   flex: 1;
   border-top: 1px solid var(--rc-border);
-}
-
-/* Speech made too late to be sent: the speaker's bubble, faded and
-   dashed in its own ink. */
-
-.sd-late {
-  opacity: 0.5;
-  border: 1px dashed currentColor;
-}
-
-.sd-late-caption {
-  margin: 0.25rem 0 0;
-  font-size: 0.8em;
-  font-style: italic;
 }
 
 /* The board */
@@ -519,6 +523,10 @@ body,
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .sd-pulse {
+    animation: none;
+  }
+
   .sd-landed {
     animation: none;
     outline: 2px solid var(--sd-chooser-fg, var(--rc-fg));
