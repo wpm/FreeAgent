@@ -348,40 +348,6 @@ fn General(editor: Editor, logs: RwSignal<String>) -> impl IntoView {
     }
 }
 
-/// A text field over `value`, which `set` changes as it is typed, with
-/// the error at `at` beneath it.
-#[component]
-fn TextField(
-    #[prop(into)] label: String,
-    value: Signal<String>,
-    set: Callback<String>,
-    editor: Editor,
-    at: Vec<String>,
-    #[prop(optional, into)] placeholder: Signal<String>,
-    #[prop(optional, into)] list: Option<String>,
-    #[prop(optional, into)] tip: Option<String>,
-) -> impl IntoView {
-    let error = editor.error(at.clone());
-    view! {
-        <label class="sd-field">
-            <span>{label}</span>
-            <input
-                type="text"
-                id=field_id(&at)
-                data-tip=tip
-                spellcheck="false"
-                autocomplete="off"
-                list=list
-                placeholder=move || placeholder.get()
-                class:sd-invalid=move || error.with(Option::is_some)
-                prop:value=move || value.get()
-                on:input=move |event| set.run(event_target_value(&event))
-            />
-        </label>
-        <Problem error=error />
-    }
-}
-
 /// A select among `options`, each a value and its label, over `value`,
 /// which `set` changes, with the error at `at` beneath it. Without a
 /// `label`, the select is named by its `tip`.
