@@ -75,6 +75,15 @@ impl Name {
     }
 }
 
+impl From<Name> for social_deduction_stage::GameName {
+    fn from(name: Name) -> Self {
+        match name {
+            Name::Werewolf => Self::Werewolf,
+            Name::Avalon => Self::Avalon,
+        }
+    }
+}
+
 /// The one key [`load`] reads first, every other key ignored.
 #[derive(Deserialize)]
 struct Which {
@@ -151,6 +160,14 @@ where
     /// a file that defines one, is given that one.
     pub fn parse(file: &str, variables: &[&str]) -> anyhow::Result<Self> {
         let mut config: Self = toml::from_str(file)?;
+        check_common(&mut config, variables)?;
+        Ok(config)
+    }
+
+    /// The configuration `table` holds, as the desktop app's settings
+    /// make it, checked as [`Config::parse`] checks a file.
+    pub fn from_table(table: toml::Table, variables: &[&str]) -> anyhow::Result<Self> {
+        let mut config: Self = table.try_into()?;
         check_common(&mut config, variables)?;
         Ok(config)
     }

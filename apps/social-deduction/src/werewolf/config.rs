@@ -42,6 +42,13 @@ pub fn parse(file: &str) -> anyhow::Result<Config> {
     Config::parse(file, &VARIABLES)
 }
 
+/// The configuration `table` holds, as
+/// [`crate::config::Config::from_table`] makes it, with Werewolf's
+/// template variables.
+pub fn from_table(table: toml::Table) -> anyhow::Result<Config> {
+    Config::from_table(table, &VARIABLES)
+}
+
 /// The `[phases]` table: how long each phase waits for the players, and
 /// how long a day's votes must stand, for those that say.
 #[derive(Debug, Default, Deserialize)]
@@ -101,21 +108,14 @@ pub type Settings = crate::config::Settings<Werewolf>;
 
 impl Config {
     /// The settings that take effect: each limit from the file if given
-    /// there, otherwise from the code; and each role's allotment, as
-    /// [`crate::config::Config::allot`] allots it. A ratify limit longer
-    /// than the day limit is an error naming both, since the day would run
-    /// out before any vote stood.
+    /// there, otherwise from the code, the ratify limit checked as
+    /// [`within_the_day`] checks it; and each role's allotment, as
+    /// [`crate::config::Config::allot`] allots it.
     pub fn settle(self) -> anyhow::Result<Settings> {
         let rules = Rules::default();
         let day_limit = self.phases.day_limit.unwrap_or(rules.day_limit);
         let ratify_limit = self.phases.ratify_limit.unwrap_or(rules.ratify_limit);
-        if ratify_limit > day_limit {
-            bail!(
-                "the ratify limit ({}) is longer than the day limit ({})",
-                format_duration(ratify_limit),
-                format_duration(day_limit)
-            );
-        }
+        within_the_day(day_limit, ratify_limit)?;
         let lineup = self.allot(Table::default().counts(), Roles::get)?;
         Ok(Settings {
             limits: Limits {
@@ -128,6 +128,20 @@ impl Config {
             text: self.text,
         })
     }
+}
+
+/// Check that votes can stand for `ratify_limit` within a day of
+/// `day_limit`: a ratify limit longer than the day limit is an error naming
+/// both, since the day would run out before any vote stood.
+pub fn within_the_day(day_limit: Duration, ratify_limit: Duration) -> anyhow::Result<()> {
+    if ratify_limit > day_limit {
+        bail!(
+            "the ratify limit ({}) is longer than the day limit ({})",
+            format_duration(ratify_limit),
+            format_duration(day_limit)
+        );
+    }
+    Ok(())
 }
 
 /// The configuration a game ran under.
