@@ -39,7 +39,7 @@ const TABS: [Tab; 4] = [
 /// A tab of the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
-    /// The logs folder and the look.
+    /// The look.
     General,
     /// The shared models and their providers.
     Models,
@@ -60,7 +60,7 @@ impl Tab {
     /// What the tab holds, as its help says.
     pub fn tip(self) -> &'static str {
         match self {
-            Tab::General => "Where game logs go, and the app's appearance.",
+            Tab::General => "The app's appearance.",
             Tab::Models => "Model providers, their keys, and the models strategies can use.",
             Tab::Game(GameName::Werewolf) => {
                 "Werewolf's players, phase limits, strategies and prompt parts."
@@ -196,7 +196,6 @@ pub fn SettingsWindow() -> impl IntoView {
         sent: StoredValue::new(0),
     };
     let loaded = RwSignal::new(false);
-    let logs = RwSignal::new(String::new());
     let opened = hashed(&window().location().hash().unwrap_or_default(), |segment| {
         js_sys::decode_uri_component(segment)
             .ok()
@@ -208,7 +207,6 @@ pub fn SettingsWindow() -> impl IntoView {
     let take = move |got: Snapshot| {
         editor.settings.set(got.settings);
         editor.errors.set(got.errors);
-        logs.set(got.logs);
         loaded.set(true);
     };
     spawn_local(async move {
@@ -275,7 +273,7 @@ pub fn SettingsWindow() -> impl IntoView {
                 // that no change overwrites them.
                 {move || match (loaded.get(), tab.get()) {
                     (false, _) => ().into_any(),
-                    (true, Tab::General) => view! { <General editor=editor logs=logs /> }.into_any(),
+                    (true, Tab::General) => view! { <General editor=editor /> }.into_any(),
                     (true, Tab::Models) => view! { <Models editor=editor /> }.into_any(),
                     (true, Tab::Game(game)) => view! { <GameTab editor=editor game=game /> }.into_any(),
                 }}
@@ -294,26 +292,9 @@ fn Problem(error: Signal<Option<String>>) -> impl IntoView {
     }
 }
 
-/// The General tab: the folder logs go in, and the look.
+/// The General tab: the look.
 #[component]
-fn General(editor: Editor, logs: RwSignal<String>) -> impl IntoView {
-    let (reveal, manager) = if window()
-        .navigator()
-        .platform()
-        .is_ok_and(|platform| platform.starts_with("Mac"))
-    {
-        ("Show in Finder", "Finder")
-    } else {
-        ("Show in Explorer", "Explorer")
-    };
-    let change = move |_| {
-        spawn_local(async move {
-            if let Ok(Some(got)) = tauri::logs_choose().await {
-                editor.settings.set(got.settings);
-                logs.set(got.logs);
-            }
-        });
-    };
+fn General(editor: Editor) -> impl IntoView {
     let appearance = move |choice: Appearance, title: &'static str, tip: &'static str| {
         let chosen = move || editor.settings.with(|s| s.general.appearance == choice);
         view! {
@@ -328,14 +309,6 @@ fn General(editor: Editor, logs: RwSignal<String>) -> impl IntoView {
         }
     };
     view! {
-        <section class="sd-section">
-            <h2 data-tip="Each game's log is saved here as it plays, one file per game.">"Game logs"</h2>
-            <p class="sd-path" id=field_id(&path(&["general", "logs"])) data-tip="The folder game logs are saved in.">{move || logs.get()}</p>
-            <div class="sd-row">
-                <button on:click=change data-tip="Choose another folder for game logs. Logs already saved stay where they are.">"Change…"</button>
-                <button on:click=|_| tauri::logs_reveal() data-tip=format!("Open the logs folder in {manager}.")>{reveal}</button>
-            </div>
-        </section>
         <section class="sd-section">
             <h2 data-tip="How the app looks.">"Appearance"</h2>
             <div class="sd-segments" role="group" aria-label="Appearance">
@@ -411,7 +384,7 @@ mod tests {
             Tab::Game(GameName::Werewolf)
         );
         assert_eq!(Tab::of(&path(&["avalon"])), Tab::Game(GameName::Avalon));
-        assert_eq!(Tab::of(&path(&["general", "logs"])), Tab::General);
+        assert_eq!(Tab::of(&path(&["general", "appearance"])), Tab::General);
         assert_eq!(Tab::of(&[]), Tab::General);
         let titles: Vec<&str> = TABS.iter().map(|tab| tab.title()).collect();
         assert_eq!(titles, ["General", "Models", "Werewolf", "Avalon"]);

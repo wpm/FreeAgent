@@ -1,4 +1,4 @@
-//! The desktop app's settings: the folder logs go in, the look, the models
+//! The desktop app's settings: the look, the models
 //! both games share, and each game's table, phases, strategies and
 //! prompt parts.
 //! The backend stores them and checks them, and the Settings window edits
@@ -287,8 +287,6 @@ pub fn game_title(game: GameName) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct General {
-    /// The folder game logs are saved in, when it is not the app's own.
-    pub logs: Option<String>,
     /// How the app looks.
     pub appearance: Appearance,
     /// The game chosen to play.
@@ -296,10 +294,9 @@ pub struct General {
 }
 
 impl Default for General {
-    /// Logs in the app's folder, the system's look, and Werewolf.
+    /// The system's look, and Werewolf.
     fn default() -> Self {
         Self {
-            logs: None,
             appearance: Appearance::System,
             game: GameName::Werewolf,
         }
@@ -545,8 +542,6 @@ pub struct Snapshot {
     pub settings: AppSettings,
     /// Every field's error.
     pub errors: Vec<FieldError>,
-    /// The folder game logs are saved in.
-    pub logs: String,
 }
 
 /// A provider a model may be reached through.

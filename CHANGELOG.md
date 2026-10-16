@@ -19,9 +19,8 @@ workflow takes a version's notes from here.
   push to `main` plays a random game of Avalon and deploys it to
   <https://wpm.github.io/FreeAgent/viewer/>.
 - The viewer as a desktop app, built with Tauri: choose a game, press
-  **Play**, and watch it live, with **Stop**.
-  Each game's log is saved, and API keys come from the OS keychain, then
-  the environment.
+  **Play**, and watch it live, with **Stop**. API keys come from the OS
+  keychain, then the environment.
 - Installers for the desktop app on each release: a `.dmg` for macOS, a
   setup `.exe` and an `.msi` for Windows, and an `.AppImage`, a `.deb` and
   an `.rpm` for Linux. The website links to the newest of each.
@@ -42,7 +41,7 @@ workflow takes a version's notes from here.
   the providers, listings and probes behind its Models tab; and
   `social_deduction::model::check`, the probe `models --check` runs.
 - `social_deduction::live`, which plays a prepared game in the background,
-  saving its log and folding it into cues as it happens.
+  folding its log into cues as it happens.
 - `social_deduction::stage`, which folds a game's log into the viewer's
   cues, and the `stage` example, which folds a log file.
 - The release archives hold the example configurations in `configs/`,

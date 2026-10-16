@@ -99,7 +99,7 @@ impl<G: Staged> Stage<G> {
             if let Some((side, how)) = G::winner(own) {
                 beats.extend(self.hushed());
                 let outcome = Outcome::Won { side, how };
-                beats.push(Beat::Over { outcome, log: None });
+                beats.push(Beat::Over { outcome });
             }
         }
         beats.into_iter().map(|beat| Cue { at, beat }).collect()
@@ -443,7 +443,7 @@ mod tests {
             .unwrap();
         assert!(words.contains(&how), "{how}");
         let outcome = Outcome::Won { side, how };
-        let over = Beat::Over { outcome, log: None };
+        let over = Beat::Over { outcome };
         assert_eq!(cues.last().unwrap().beat, over);
         let overs = cues
             .iter()

@@ -39,8 +39,8 @@ The desktop app plays a game live. Its main window opens on a start
 state: choose **Werewolf** or **Avalon**, read the line that sums up its
 settings, and press **Play**. A game whose settings have an error names
 the first one under **Play**, linked to its field in Settings. The game
-plays with **Stop**, and once it is over, **New game** and **Show log
-file** appear. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
+plays live in the window, with **Stop**, and once it is over, **New
+game** appears. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
 start state. The game last played is chosen at launch.
 
 **Settings…** (⌘, on macOS, **Edit ▸ Preferences…** and Ctrl+, elsewhere)
@@ -49,10 +49,8 @@ applies to the next game. Each field's error shows in red beneath it, and
 hovering over anything, or focusing it, shows what it is and what changing
 it does.
 
-- **General**: the folder game logs are saved in, with **Change…** and
-  **Show in Finder** (**Show in Explorer** elsewhere), and the
-  appearance: System, Light or Dark. System keeps Werewolf dark by night
-  and light by day.
+- **General**: the appearance, System, Light or Dark. System keeps
+  Werewolf dark by night and light by day.
 - **Models**: a card for each provider, holding its base URL and key,
   **Your models** from it, and **Available**: its models that play and
   aren't added yet, most capable first, each with its context window and
@@ -118,10 +116,8 @@ cargo tauri dev
 On Linux, Tauri needs the WebKitGTK development packages:
 `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev`.
 
-Each game's log is saved as JSON Lines in the logs folder, by default
-`games/` in the app's data directory, named for when the game started (in
-UTC) and which game it is. **Show log file** reveals it once the game is
-over.
+A game played in the app is shown as it happens. Logs on disk come from
+`social-deduction play`.
 
 A model's API key comes from the OS keychain, then from the environment
 variable that names it, such as `OPENAI_API_KEY`. Each key is a keychain

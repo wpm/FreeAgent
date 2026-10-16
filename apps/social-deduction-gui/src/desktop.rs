@@ -1,8 +1,7 @@
 //! The desktop app's main window: a start state, where a game is chosen
 //! and **Play** pressed, with **Stop** while the game is prepared; then
-//! the game as it plays, with **Stop**, and once it is over, **New game**
-//! and **Show log file**. **File ▸ New Game** comes back to the start
-//! state from anywhere.
+//! the game as it plays, with **Stop**, and once it is over, **New game**.
+//! **File ▸ New Game** comes back to the start state from anywhere.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -116,7 +115,6 @@ pub fn Desktop() -> impl IntoView {
                     fallback=|| view! { <button on:click=|_| tauri::stop()>"Stop"</button> }
                 >
                     <button on:click=move |_| new_game()>"New game"</button>
-                    <button on:click=|_| tauri::show_log()>"Show log file"</button>
                 </Show>
             </Viewer>
         </Show>
@@ -176,7 +174,7 @@ fn Start(
             </div>
             <p class="sd-summary" data-tip="The players, strategies and models of the next game. Change them in Settings.">{summary}</p>
             <div class="sd-run">
-                <button class="sd-play" on:click=move |_| run.run(()) disabled=blocked data-tip="Start a game with these settings. It plays live here, and its log is saved.">
+                <button class="sd-play" on:click=move |_| run.run(()) disabled=blocked data-tip="Start a game with these settings. It plays live here.">
                     {move || pending.get().then(|| view! { <span class="sd-spinner"></span> })}
                     "Play"
                 </button>

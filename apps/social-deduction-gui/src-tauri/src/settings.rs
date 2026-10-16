@@ -10,7 +10,7 @@ use social_deduction::settings::{
     self, AppSettings, FieldError, GameSettings, Imported, Snapshot, game_title,
 };
 use social_deduction_stage::GameName;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{
@@ -23,7 +23,6 @@ pub const WINDOW: &str = "settings";
 /// The settings, as stored in the app's config directory.
 pub struct Store {
     dir: PathBuf,
-    logs: PathBuf,
     settings: Mutex<AppSettings>,
 }
 
@@ -33,10 +32,9 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// When the app has no config or data directory.
+    /// When the app has no config directory.
     pub fn open(app: &AppHandle) -> tauri::Result<Self> {
         let dir = app.path().app_config_dir()?;
-        let logs = app.path().app_data_dir()?.join("games");
         let first = !dir.join(settings::FILE).exists();
         let loaded = settings::load(&dir);
         if first && let Err(error) = settings::save(&loaded, &dir) {
@@ -44,28 +42,18 @@ impl Store {
         }
         Ok(Self {
             dir,
-            logs,
             settings: Mutex::new(loaded),
         })
     }
 
-    /// The settings, what is wrong with them, and where logs go.
+    /// The settings, and what is wrong with them.
     pub fn snapshot(&self) -> Snapshot {
-        snapshot(self.settings(), &self.logs)
+        snapshot(self.settings())
     }
 
     /// The settings.
     pub fn settings(&self) -> AppSettings {
         self.settings.lock().unwrap().clone()
-    }
-
-    /// The folder logs are saved in.
-    pub fn logs(&self) -> PathBuf {
-        let held = self.settings.lock().unwrap();
-        held.general
-            .logs
-            .as_ref()
-            .map_or_else(|| self.logs.clone(), PathBuf::from)
     }
 
     /// Change the settings with `change`, store them, and give back the
@@ -76,21 +64,15 @@ impl Store {
         if let Err(error) = settings::save(&held, &self.dir) {
             tracing::warn!("the settings could not be saved: {error}");
         }
-        snapshot(held.clone(), &self.logs)
+        snapshot(held.clone())
     }
 }
 
-/// `settings` with what is wrong with them, and where logs go: the folder
-/// they name, or `logs`.
-fn snapshot(settings: AppSettings, logs: &Path) -> Snapshot {
-    let logs = match &settings.general.logs {
-        Some(chosen) => chosen.clone(),
-        None => logs.display().to_string(),
-    };
+/// `settings` with what is wrong with them.
+fn snapshot(settings: AppSettings) -> Snapshot {
     Snapshot {
         errors: settings::validate(&settings),
         settings,
-        logs,
     }
 }
 
@@ -106,7 +88,7 @@ fn announce(app: &AppHandle, to: Option<&str>, snapshot: &Snapshot) {
     }
 }
 
-/// The settings, what is wrong with them, and where logs go.
+/// The settings, and what is wrong with them.
 #[tauri::command]
 pub fn settings_get(store: State<'_, Store>) -> Snapshot {
     store.snapshot()
@@ -136,25 +118,6 @@ pub fn game_choose(store: State<'_, Store>, game: GameName) {
 #[tauri::command]
 pub fn game_defaults(game: GameName) -> GameSettings {
     settings::game_defaults(game)
-}
-
-/// Choose the folder logs are saved in, and give back the snapshot after,
-/// or `None` when none is chosen.
-#[tauri::command(async)]
-pub fn logs_choose(app: AppHandle, store: State<'_, Store>) -> Option<Snapshot> {
-    let chosen = app.dialog().file().blocking_pick_folder()?;
-    let folder = chosen.into_path().ok()?.display().to_string();
-    let snapshot = store.change(|held| held.general.logs = Some(folder));
-    announce(&app, Some("main"), &snapshot);
-    Some(snapshot)
-}
-
-/// Reveal the folder logs are saved in, made if it is not there yet.
-#[tauri::command(async)]
-pub fn logs_reveal(store: State<'_, Store>) -> Result<(), String> {
-    let logs = store.logs();
-    std::fs::create_dir_all(&logs).map_err(|error| error.to_string())?;
-    tauri_plugin_opener::reveal_item_in_dir(logs).map_err(|error| error.to_string())
 }
 
 /// Open the Settings window at the field `path`, if one is given, or
@@ -321,19 +284,5 @@ mod tests {
             "werewolf/strategies/everyone"
         );
         assert_eq!(encoded("a b#é"), "a%20b%23%C3%A9");
-    }
-
-    #[test]
-    fn logs_go_to_the_folder_chosen_or_the_app_s() {
-        let mut settings = AppSettings::default();
-        assert_eq!(
-            snapshot(settings.clone(), Path::new("/data/games")).logs,
-            "/data/games"
-        );
-        settings.general.logs = Some("/elsewhere".to_string());
-        assert_eq!(
-            snapshot(settings, Path::new("/data/games")).logs,
-            "/elsewhere"
-        );
     }
 }
