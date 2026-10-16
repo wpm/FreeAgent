@@ -784,7 +784,7 @@ mod tests {
     #[tokio::test]
     async fn each_game_s_defaults_make_a_configuration_that_parses_and_prepares() {
         let app = served(defaults());
-        for game in [GameName::Werewolf, GameName::Avalon] {
+        for game in GameName::ALL {
             let text = text(&app, game);
             config::parse(&text).unwrap_or_else(|e| panic!("{e:#}\n{text}"));
             let prepared = prepare(&text, &Environment).await.unwrap();
@@ -812,7 +812,7 @@ mod tests {
         );
         app.avalon.roles[2].strategy = Some("dice".to_string());
         app.models.get_mut("qwen").unwrap().request_timeout = Some("2m".to_string());
-        for game in [GameName::Werewolf, GameName::Avalon] {
+        for game in GameName::ALL {
             let structured = format!("{:?}", settle(&app, game).unwrap());
             let parsed = format!("{:?}", config::parse(&text(&app, game)).unwrap());
             assert_eq!(structured, parsed);
@@ -827,7 +827,7 @@ mod tests {
             .strategies
             .insert(RANDOM.to_string(), 1);
         app.werewolf.roles[0].strategy = Some("everyone".to_string());
-        for game in [GameName::Werewolf, GameName::Avalon] {
+        for game in GameName::ALL {
             let mut back = app.clone();
             import(&mut back, Imported::parse(&text(&app, game)).unwrap());
             back.general.game = app.general.game;

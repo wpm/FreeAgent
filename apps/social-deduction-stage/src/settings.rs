@@ -142,7 +142,7 @@ impl AppSettings {
     /// The prompted strategies that ask the model `name`, each as its game
     /// and its name: `Werewolf “everyone”`.
     pub fn users_of_model(&self, name: &str) -> Vec<String> {
-        [GameName::Werewolf, GameName::Avalon]
+        GameName::ALL
             .into_iter()
             .flat_map(|game| {
                 let settings = self.game(game);
