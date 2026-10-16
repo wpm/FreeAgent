@@ -579,7 +579,7 @@ body,
 
 .sd-logo svg {
   width: 7rem;
-  height: 7rem;
+  height: auto;
 }
 
 .sd-summary {
