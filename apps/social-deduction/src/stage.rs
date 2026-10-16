@@ -354,6 +354,34 @@ mod tests {
         drained(log).await
     }
 
+    #[test]
+    fn the_viewer_puts_every_role_on_the_side_it_wins_with() {
+        for role in [
+            avalon::Role::Merlin,
+            avalon::Role::Percival,
+            avalon::Role::Servant,
+            avalon::Role::Assassin,
+            avalon::Role::Morgana,
+            avalon::Role::Mordred,
+            avalon::Role::Oberon,
+            avalon::Role::Minion,
+        ] {
+            assert_eq!(Avalon::role(role).side(), Avalon::side(role), "{role:?}");
+        }
+        for role in [
+            werewolf::Role::Werewolf,
+            werewolf::Role::Villager,
+            werewolf::Role::Doctor,
+            werewolf::Role::Seer,
+        ] {
+            assert_eq!(
+                Werewolf::role(role).side(),
+                Werewolf::side(role),
+                "{role:?}"
+            );
+        }
+    }
+
     /// The cues a fresh stage folds `events` into.
     fn folded<G: Staged>(events: &[Event<Entry<G>>]) -> Vec<Cue> {
         let mut stage = Stage::<G>::default();

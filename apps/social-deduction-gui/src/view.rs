@@ -10,7 +10,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_rich_chat::{Message, RenderOptions, RichChatStyle, Transcript};
 use social_deduction_stage::{
-    Cue, Deed, GameName, NightDeed, Outcome, Side, WerewolfPanel, WerewolfPhase,
+    Cue, Deed, GameName, NightDeed, Outcome, WerewolfPanel, WerewolfPhase,
 };
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -19,7 +19,7 @@ use crate::address::{Address, GAMES};
 use crate::desktop::{Desktop, set_theme};
 use crate::screen::{
     self, Board, Body, Landed, NARRATOR, Post, Screen, THINKING_DELAY, Thinker, Timer, dots_due,
-    entry, role_key,
+    entry, side_key,
 };
 use crate::settings::SettingsWindow;
 use crate::tauri;
@@ -403,16 +403,9 @@ fn game_name(game: Option<GameName>) -> &'static str {
 /// How the game ended, in the winning side's color.
 fn outcome(outcome: Outcome) -> impl IntoView {
     let (class, text) = match outcome {
-        Outcome::Won {
-            side: Side::Good,
-            how,
-        } => ("sd-outcome sd-good", how),
-        Outcome::Won {
-            side: Side::Evil,
-            how,
-        } => ("sd-outcome sd-evil", how),
-        Outcome::Stopped => ("sd-outcome", "Stopped.".to_string()),
-        Outcome::Failed(error) => ("sd-outcome", format!("Failed: {error}")),
+        Outcome::Won { side, how } => (format!("sd-outcome sd-{}", side_key(side)), how),
+        Outcome::Stopped => ("sd-outcome".to_string(), "Stopped.".to_string()),
+        Outcome::Failed(error) => ("sd-outcome".to_string(), format!("Failed: {error}")),
     };
     view! { <p class=class>{text}</p> }
 }
@@ -435,32 +428,24 @@ fn short(player: &str) -> String {
     player.replace("Player ", "P")
 }
 
-/// The custom properties that give `player`'s role colors to a flash.
+/// The custom property that gives `player`'s side color to a flash.
 fn chooser<P>(board: &Board<P>, player: &str) -> String {
     board
         .seat(player)
-        .map(|seat| {
-            let role = role_key(seat.role);
-            format!(
-                "--sd-chooser-bg: var(--role-{role}-bg); --sd-chooser-fg: var(--role-{role}-fg);"
-            )
-        })
+        .map(|seat| format!("--sd-chooser: var(--sd-{});", side_key(seat.side)))
         .unwrap_or_default()
 }
 
-/// The style of a swatch in `player`'s role colors.
+/// The style of a swatch in `player`'s side color.
 fn swatch<P>(board: &Board<P>, player: &str) -> String {
     board
         .seat(player)
-        .map(|seat| {
-            let role = role_key(seat.role);
-            format!("background: var(--role-{role}-bg); border-color: var(--role-{role}-fg);")
-        })
+        .map(|seat| format!("background: var(--sd-{});", side_key(seat.side)))
         .unwrap_or_default()
 }
 
 /// Whether `choice`, which `player` made, is landing, and the style that
-/// flashes it in `player`'s colors when it is.
+/// flashes it in `player`'s side color when it is.
 fn flash<P>(board: &Board<P>, choice: &Landed, player: &str) -> (bool, String) {
     let landing = board.is_landed(choice);
     let style = if landing {

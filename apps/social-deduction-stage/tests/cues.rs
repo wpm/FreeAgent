@@ -207,3 +207,28 @@ fn roles_display_as_the_console_names_them() {
         round_trips(role);
     }
 }
+
+#[test]
+fn every_role_is_on_its_side_and_found_by_its_key() {
+    for role in Role::ALL {
+        let key = role.to_string().to_lowercase();
+        assert_eq!(Role::from_key(&key), Some(role), "{key}");
+    }
+    let evil = [
+        Role::Werewolf,
+        Role::Assassin,
+        Role::Morgana,
+        Role::Mordred,
+        Role::Oberon,
+        Role::Minion,
+    ];
+    for role in Role::ALL {
+        let side = if evil.contains(&role) {
+            Side::Evil
+        } else {
+            Side::Good
+        };
+        assert_eq!(role.side(), side, "{role}");
+    }
+    assert_eq!(Role::from_key("jester"), None);
+}

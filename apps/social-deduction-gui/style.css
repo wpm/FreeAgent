@@ -1,107 +1,68 @@
-/* The viewer's own look. Rich-Chat's stylesheets are in cascade layers,
-   so these unlayered rules win over them. */
+/* The viewer's own look: black ink on white paper, in the Free Agent
+   site's type. Red means evil and ultramarine means good, marigold flags
+   a problem, and nothing else has a color. Rich-Chat's stylesheets are in
+   cascade layers, so these unlayered rules win over them. */
 
 :root {
-  --sd-good: #1d4ed8;
-  --sd-good-fg: #ffffff;
-  --sd-evil: #b91c1c;
-  --sd-evil-fg: #ffffff;
-  --tip-bg: #1d2230;
-  --tip-ink: #f3f5f9;
+  --sd-ink: #0a0a0a;
+  --sd-paper: #ffffff;
+  --sd-muted: #5c5c5c;
+  --sd-rule: #e2e2e2;
+  --sd-line: #cfcfcf;
+  --sd-good: #2438e8;
+  --sd-good-text: #2438e8;
+  --sd-evil: #d2001f;
+  --sd-evil-text: #d2001f;
+  --sd-warn: #f2b300;
 
-  --role-villager-bg: #dde6f2;
-  --role-villager-fg: #1e3a5f;
-  --role-seer-bg: #e6e0fb;
-  --role-seer-fg: #3b2a86;
-  --role-doctor-bg: #d3f1ec;
-  --role-doctor-fg: #134e4a;
-  --role-werewolf-bg: #fbdcdc;
-  --role-werewolf-fg: #7f1d1d;
-  --role-merlin-bg: #dbe7fe;
-  --role-merlin-fg: #1e3a8a;
-  --role-percival-bg: #d0f4fb;
-  --role-percival-fg: #155e75;
-  --role-servant-bg: #e2e8f0;
-  --role-servant-fg: #334155;
-  --role-assassin-bg: #fbdcdc;
-  --role-assassin-fg: #7f1d1d;
-  --role-morgana-bg: #fbe0f0;
-  --role-morgana-fg: #831843;
-  --role-mordred-bg: #6b1320;
-  --role-mordred-fg: #ffe4e6;
-  --role-mordred-outline: none;
-  --role-oberon-bg: #fde3d3;
-  --role-oberon-fg: #7c2d12;
-  --role-minion-bg: #fde4df;
-  --role-minion-fg: #8a3b2e;
+  --sd-serif: Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  --sd-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+
+  --tip-bg: var(--sd-ink);
+  --tip-ink: var(--sd-paper);
+
+  --rc-bg: var(--sd-paper);
+  --rc-chat-bg: var(--sd-paper);
+  --rc-fg: var(--sd-ink);
+  --rc-muted: var(--sd-muted);
+  --rc-border: var(--sd-line);
+  --rc-accent: var(--sd-ink);
+  --rc-accent-fg: var(--sd-paper);
+  --rc-surface: var(--sd-paper);
+  --rc-error: var(--sd-ink);
+  --rc-selection: color-mix(in srgb, var(--sd-ink) 18%, transparent);
+  --rc-font: var(--sd-serif);
+  --rc-font-size: 17px;
+  --rc-line-height: 1.5;
+  --rc-radius: 16px;
+  --rc-tail: 3px;
+  --rc-bubble-max-width: 64%;
+
+  accent-color: var(--sd-ink);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --sd-good: #3b82f6;
-    --sd-evil: #dc2626;
-    --tip-bg: #eef0f4;
-    --tip-ink: #1a1d24;
-
-    --role-villager-bg: #22344c;
-    --role-villager-fg: #d7e3f3;
-    --role-seer-bg: #342a6b;
-    --role-seer-fg: #ddd6fe;
-    --role-doctor-bg: #164a46;
-    --role-doctor-fg: #c9f7ee;
-    --role-werewolf-bg: #5a1b1b;
-    --role-werewolf-fg: #fecaca;
-    --role-merlin-bg: #1f3270;
-    --role-merlin-fg: #dbe7fe;
-    --role-percival-bg: #14485a;
-    --role-percival-fg: #cff6fd;
-    --role-servant-bg: #2b3647;
-    --role-servant-fg: #e2e8f0;
-    --role-assassin-bg: #5a1b1b;
-    --role-assassin-fg: #fecaca;
-    --role-morgana-bg: #5c1838;
-    --role-morgana-fg: #fbcfe8;
-    --role-mordred-bg: #7a1a28;
-    --role-mordred-fg: #ffe4e6;
-    --role-mordred-outline: inset 0 0 0 2px #ffe4e6;
-    --role-oberon-bg: #5a2510;
-    --role-oberon-fg: #fed7c3;
-    --role-minion-bg: #4d2620;
-    --role-minion-fg: #fcd5cc;
+    --sd-ink: #f2f2f2;
+    --sd-paper: #0a0a0a;
+    --sd-muted: #a3a3a3;
+    --sd-rule: #333333;
+    --sd-line: #3d3d3d;
+    --sd-good: #4a5cff;
+    --sd-good-text: #8c9bff;
+    --sd-evil-text: #ff4d5e;
   }
 }
 
 :root[data-theme="dark"] {
-  --sd-good: #3b82f6;
-  --sd-evil: #dc2626;
-  --tip-bg: #eef0f4;
-  --tip-ink: #1a1d24;
-
-  --role-villager-bg: #22344c;
-  --role-villager-fg: #d7e3f3;
-  --role-seer-bg: #342a6b;
-  --role-seer-fg: #ddd6fe;
-  --role-doctor-bg: #164a46;
-  --role-doctor-fg: #c9f7ee;
-  --role-werewolf-bg: #5a1b1b;
-  --role-werewolf-fg: #fecaca;
-  --role-merlin-bg: #1f3270;
-  --role-merlin-fg: #dbe7fe;
-  --role-percival-bg: #14485a;
-  --role-percival-fg: #cff6fd;
-  --role-servant-bg: #2b3647;
-  --role-servant-fg: #e2e8f0;
-  --role-assassin-bg: #5a1b1b;
-  --role-assassin-fg: #fecaca;
-  --role-morgana-bg: #5c1838;
-  --role-morgana-fg: #fbcfe8;
-  --role-mordred-bg: #7a1a28;
-  --role-mordred-fg: #ffe4e6;
-  --role-mordred-outline: inset 0 0 0 2px #ffe4e6;
-  --role-oberon-bg: #5a2510;
-  --role-oberon-fg: #fed7c3;
-  --role-minion-bg: #4d2620;
-  --role-minion-fg: #fcd5cc;
+  --sd-ink: #f2f2f2;
+  --sd-paper: #0a0a0a;
+  --sd-muted: #a3a3a3;
+  --sd-rule: #333333;
+  --sd-line: #3d3d3d;
+  --sd-good: #4a5cff;
+  --sd-good-text: #8c9bff;
+  --sd-evil-text: #ff4d5e;
 }
 
 /* The page */
@@ -115,7 +76,12 @@ body {
 body {
   background: var(--rc-bg);
   color: var(--rc-fg);
-  font-family: var(--rc-font);
+  font-family: var(--sd-sans);
+}
+
+:focus-visible {
+  outline: 2px solid var(--sd-ink);
+  outline-offset: 2px;
 }
 
 /* Night falls and day breaks over 600 ms. */
@@ -143,31 +109,53 @@ body,
   align-items: baseline;
   gap: 0.25rem 1rem;
   padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--rc-border);
+  border-bottom: 2px solid var(--sd-ink);
+}
+
+/* Titles are the serif, bold and set tight. */
+
+.sd-header h1,
+.sd-tab-head h2 {
+  margin: 0;
+  font-family: var(--sd-serif);
+  font-weight: 700;
+  letter-spacing: -0.03em;
 }
 
 .sd-header h1 {
-  margin: 0;
-  font-size: 1.25rem;
+  font-size: 1.75rem;
+}
+
+/* Section labels and phase names are small bold capitals. */
+
+.sd-heading,
+.sd-board h2,
+.sd-label {
+  font-family: var(--sd-sans);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 .sd-phase {
   margin: 0;
   flex: 1;
-  color: var(--rc-muted);
+  font-size: 14px;
 }
 
 .sd-outcome {
   margin: 0;
-  font-weight: 600;
+  font-family: var(--sd-serif);
+  font-weight: 700;
 }
 
 .sd-outcome.sd-good {
-  color: var(--sd-good);
+  color: var(--sd-good-text);
 }
 
 .sd-outcome.sd-evil {
-  color: var(--sd-evil);
+  color: var(--sd-evil-text);
 }
 
 .sd-clock {
@@ -201,7 +189,7 @@ body,
   width: 6rem;
   height: 0.35rem;
   border-radius: 999px;
-  background: var(--rc-border);
+  background: var(--sd-rule);
   overflow: hidden;
 }
 
@@ -262,9 +250,36 @@ body,
   color: inherit;
 }
 
+/* A problem: ink beside a marigold square holding a black "!". A bad
+   API key isn't evil, so it is never red. */
+
+.sd-error,
+.sd-field-error,
+.sd-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  color: var(--sd-ink);
+}
+
+.sd-error::before,
+.sd-field-error::before,
+.sd-warning::before,
+.sd-chip-bad::before {
+  content: "!";
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--sd-warn);
+  color: #000000;
+  font: 700 12px/1 var(--sd-sans);
+}
+
 .sd-error {
   padding: 1rem;
-  color: var(--rc-error);
 }
 
 /* The chat */
@@ -273,24 +288,37 @@ body,
   display: none;
 }
 
+.rc-sender {
+  font-family: var(--sd-sans);
+}
+
+/* Every player's bubble is unfilled, drawn by its outline; the side is
+   told by where it sits. */
+
+.rc-bubble {
+  border: 1px solid var(--sd-line);
+}
+
 .rc-message[data-name="Narrator"] > .rc-bubble {
-  font-size: 0.85em;
+  border: none;
+  font-size: 16px;
+  font-style: italic;
+  text-align: center;
   padding-block: 0.1em;
 }
 
-.rc-message[data-name$="· Mordred"] > .rc-bubble {
-  box-shadow: var(--role-mordred-outline);
+.rc-thinking {
+  color: var(--sd-muted);
 }
 
 .sd-heading {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 1rem;
   width: 100%;
   margin: 0.75rem 0 0.25rem;
-  color: var(--rc-muted);
-  font-size: 0.85em;
-  font-weight: 600;
+  color: var(--sd-ink);
+  font-style: normal;
   text-align: center;
 }
 
@@ -298,7 +326,7 @@ body,
 .sd-heading::after {
   content: "";
   flex: 1;
-  border-top: 1px solid var(--rc-border);
+  border-top: 1px solid var(--sd-ink);
 }
 
 /* The board */
@@ -310,11 +338,7 @@ body,
 }
 
 .sd-board h2 {
-  margin: 1rem 0 0.5rem;
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--rc-muted);
+  margin: 1.25rem 0 0.5rem;
 }
 
 .sd-board h2:first-child {
@@ -350,13 +374,13 @@ body,
 .sd-token.sd-succeeded {
   background: var(--sd-good);
   border-color: var(--sd-good);
-  color: var(--sd-good-fg);
+  color: #ffffff;
 }
 
 .sd-token.sd-failed {
   background: var(--sd-evil);
   border-color: var(--sd-evil);
-  color: var(--sd-evil-fg);
+  color: #ffffff;
 }
 
 .sd-pips {
@@ -367,7 +391,7 @@ body,
 .sd-pip {
   width: 0.9rem;
   height: 0.9rem;
-  border: 2px solid var(--rc-border);
+  border: 2px solid var(--sd-rule);
   border-radius: 50%;
 }
 
@@ -408,8 +432,6 @@ body,
   display: inline-block;
   width: 0.8rem;
   height: 0.8rem;
-  border-radius: 50%;
-  border: 2px solid;
 }
 
 .sd-votes-scroll {
@@ -454,13 +476,15 @@ body,
 }
 
 .sd-players .sd-detail {
-  color: var(--rc-muted);
-  font-size: 0.85rem;
+  color: var(--sd-muted);
+  font-family: var(--sd-serif);
+  font-style: italic;
 }
 
 .sd-rows {
   margin: 0 0 0.5rem;
   padding: 0;
+  font-family: var(--sd-serif);
   list-style: none;
 }
 
@@ -502,16 +526,17 @@ body,
 .sd-assassination {
   margin-top: 1rem;
   padding: 0.5rem 0.75rem;
+  border: 1px solid var(--sd-line);
   border-radius: var(--rc-radius);
-  background: var(--sd-evil);
-  color: var(--sd-evil-fg);
+  color: var(--sd-evil-text);
+  font-weight: 700;
 }
 
-/* A choice landing: a flash of the chooser's role color, fading out. */
+/* A choice landing: a flash of the chooser's side color, fading out. */
 
 @keyframes sd-land {
   from {
-    background-color: var(--sd-chooser-bg, var(--rc-border));
+    background-color: color-mix(in srgb, var(--sd-chooser, var(--sd-ink)) 22%, transparent);
   }
   to {
     background-color: transparent;
@@ -529,7 +554,7 @@ body,
 
   .sd-landed {
     animation: none;
-    outline: 2px solid var(--sd-chooser-fg, var(--rc-fg));
+    outline: 2px solid var(--sd-chooser, var(--sd-ink));
     outline-offset: -2px;
   }
 }
@@ -646,7 +671,7 @@ body,
   padding: 0;
   border: none;
   background: none;
-  color: var(--rc-error);
+  color: var(--sd-ink);
   text-align: inherit;
   text-decoration: underline;
   cursor: pointer;
@@ -654,6 +679,7 @@ body,
 
 .sd-start .sd-error {
   max-width: 40rem;
+  margin: 0;
   white-space: pre-wrap;
   text-align: left;
 }
@@ -723,9 +749,8 @@ body,
 }
 
 .sd-tab-head h2 {
-  margin: 0;
   flex: 1;
-  font-size: 1.1rem;
+  font-size: 1.6rem;
 }
 
 .sd-section {
@@ -771,7 +796,8 @@ body,
 }
 
 .sd-settings .sd-invalid {
-  border-color: var(--rc-error);
+  border-color: var(--sd-warn);
+  box-shadow: 0 0 0 1px var(--sd-warn);
 }
 
 .sd-field {
@@ -795,7 +821,6 @@ body,
 
 .sd-field-error {
   margin: 0 0 0 9.5rem;
-  color: var(--rc-error);
   font-size: 0.85rem;
   white-space: pre-wrap;
 }
@@ -859,8 +884,16 @@ body,
 .sd-note,
 .sd-url {
   margin: 0;
-  color: var(--rc-muted);
+  color: var(--sd-muted);
   font-size: 0.85rem;
+}
+
+/* Descriptions are the serif, in italic. */
+
+.sd-note,
+.sd-summary {
+  font-family: var(--sd-serif);
+  font-style: italic;
 }
 
 .sd-confirm {
@@ -869,13 +902,13 @@ body,
   flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--rc-error);
+  border: 1px solid var(--sd-warn);
   border-radius: 0.5rem;
 }
 
 .sd-settings .sd-danger {
-  border-color: var(--rc-error);
-  color: var(--rc-error);
+  border-color: var(--sd-ink);
+  color: var(--sd-ink);
 }
 
 /* A game's tab */
@@ -959,9 +992,8 @@ body,
 
 .sd-dot {
   flex: none;
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
+  width: 0.6rem;
+  height: 0.6rem;
 }
 
 .sd-stepper input {
@@ -1061,7 +1093,7 @@ body,
 
 .sd-settings .sd-remove:hover {
   border-color: var(--rc-border);
-  color: var(--rc-error);
+  color: var(--sd-ink);
 }
 
 .sd-adder {
@@ -1190,7 +1222,7 @@ body,
 }
 
 .sd-uses {
-  font-family: var(--rc-font);
+  font-family: var(--sd-sans);
   font-size: 0.75rem;
   opacity: 0.75;
 }
@@ -1329,16 +1361,25 @@ label[data-tip] {
   white-space: nowrap;
 }
 
+/* A key that is in place: the neutral chip, with a small check. */
+
 .sd-chip-good {
   border-color: transparent;
-  background: color-mix(in srgb, #16a34a 15%, transparent);
-  color: color-mix(in srgb, #16a34a 75%, var(--rc-fg));
+  background: var(--sd-rule);
+  color: var(--sd-ink);
+}
+
+.sd-chip-good::before {
+  content: "✓";
+  font-weight: 700;
 }
 
 .sd-chip-bad {
+  display: inline-flex;
+  align-items: center;
   border-color: transparent;
-  background: color-mix(in srgb, var(--rc-error) 15%, transparent);
-  color: var(--rc-error);
+  padding-left: 0;
+  color: var(--sd-ink);
 }
 
 .sd-settings button.sd-link {
@@ -1361,11 +1402,7 @@ label[data-tip] {
 
 .sd-label {
   margin: 0.4rem 0 0;
-  color: var(--rc-muted);
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  color: var(--sd-muted);
 }
 
 .sd-models {
@@ -1398,11 +1435,10 @@ label[data-tip] {
 }
 
 .sd-warned {
-  border-color: #d97706;
+  border-color: var(--sd-warn);
 }
 
 .sd-warning {
-  color: #b45309;
   font-size: 0.85rem;
 }
 

@@ -123,15 +123,16 @@ pub struct Seat {
     /// The name with its role, `Player 3 · Seer`: the bubble's name and its
     /// key in the list of names.
     pub label: String,
-    /// The player's role, which colors their bubbles.
+    /// The player's role, which the board names.
     pub role: Role,
-    /// The player's side, which seats them left or right.
+    /// The player's side, which seats them left or right and colors their
+    /// marks.
     pub side: Side,
     /// The strategy the player was dealt.
     pub strategy: String,
 }
 
-/// Every role of every game, so colors can be keyed by role.
+/// Every role of every game.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
     /// Werewolf's villager.
@@ -158,6 +159,49 @@ pub enum Role {
     Oberon,
     /// Avalon's minion of Mordred.
     Minion,
+}
+
+impl Role {
+    /// Every role, Werewolf's then Avalon's.
+    pub const ALL: [Role; 12] = [
+        Role::Villager,
+        Role::Seer,
+        Role::Doctor,
+        Role::Werewolf,
+        Role::Merlin,
+        Role::Percival,
+        Role::Servant,
+        Role::Assassin,
+        Role::Morgana,
+        Role::Mordred,
+        Role::Oberon,
+        Role::Minion,
+    ];
+
+    /// The side the role plays on.
+    pub fn side(self) -> Side {
+        match self {
+            Role::Villager
+            | Role::Seer
+            | Role::Doctor
+            | Role::Merlin
+            | Role::Percival
+            | Role::Servant => Side::Good,
+            Role::Werewolf
+            | Role::Assassin
+            | Role::Morgana
+            | Role::Mordred
+            | Role::Oberon
+            | Role::Minion => Side::Evil,
+        }
+    }
+
+    /// The role whose settings key is `key`: `seer`, `merlin`.
+    pub fn from_key(key: &str) -> Option<Role> {
+        Role::ALL
+            .into_iter()
+            .find(|role| role.to_string().eq_ignore_ascii_case(key))
+    }
 }
 
 /// A role displays as the console names it: `seer`, `werewolf`, `Merlin`,

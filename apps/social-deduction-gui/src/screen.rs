@@ -8,7 +8,7 @@
 use leptos_rich_chat::{Look, Names, Position};
 use social_deduction_stage::{
     AvalonPanel, Beat, Cue, Death, GameName, Learned, Millis, NightDeed, NightOutcome, Outcome,
-    Panel, PlayerId, Role, Seat, Side, WerewolfPanel, WerewolfPhase,
+    Panel, PlayerId, Seat, Side, WerewolfPanel, WerewolfPhase,
 };
 
 /// The name narration is posted under, centered between the sides.
@@ -549,7 +549,7 @@ pub fn entry<T: Copy>(entries: &[(PlayerId, Option<T>)], player: &str) -> Option
 }
 
 /// The names table for `seats`: evil on the left and good on the right,
-/// each in its role's colors, and the narrator centered and muted.
+/// every bubble unfilled in ink, and the narrator centered and muted.
 fn names(seats: &[Seat]) -> Names {
     let narrator = Look::at(Position::Center)
         .background("transparent")
@@ -561,29 +561,18 @@ fn names(seats: &[Seat]) -> Names {
                 Side::Evil => Position::Left,
                 Side::Good => Position::Right,
             };
-            let role = role_key(seat.role);
             let look = Look::at(position)
-                .background(format!("var(--role-{role}-bg)"))
-                .foreground(format!("var(--role-{role}-fg)"));
+                .background("transparent")
+                .foreground("var(--rc-fg)");
             names.name(seat.label.clone(), look)
         })
 }
 
-/// `role` as the stylesheet's custom properties name it: `--role-seer-bg`.
-pub fn role_key(role: Role) -> &'static str {
-    match role {
-        Role::Villager => "villager",
-        Role::Seer => "seer",
-        Role::Doctor => "doctor",
-        Role::Werewolf => "werewolf",
-        Role::Merlin => "merlin",
-        Role::Percival => "percival",
-        Role::Servant => "servant",
-        Role::Assassin => "assassin",
-        Role::Morgana => "morgana",
-        Role::Mordred => "mordred",
-        Role::Oberon => "oberon",
-        Role::Minion => "minion",
+/// `side` as the stylesheet's custom properties name it: `--sd-evil`.
+pub fn side_key(side: Side) -> &'static str {
+    match side {
+        Side::Good => "good",
+        Side::Evil => "evil",
     }
 }
 
@@ -671,7 +660,8 @@ pub fn werewolf_landings(before: Option<&WerewolfPanel>, after: &WerewolfPanel) 
 mod tests {
     use super::*;
     use social_deduction_stage::{
-        Assassination, AvalonPhase, AvalonSeat, Deed, ProposalRow, QuestToken, Ratify, SeatState,
+        Assassination, AvalonPhase, AvalonSeat, Deed, ProposalRow, QuestToken, Ratify, Role,
+        SeatState,
     };
 
     /// `beat` at time 0.
@@ -781,17 +771,22 @@ mod tests {
     }
 
     #[test]
-    fn the_cast_sets_the_names_table_with_evil_left_and_good_right() {
+    fn the_cast_sets_the_names_table_with_evil_left_and_good_right_all_unfilled() {
         let screen = shown(&[cast()]);
         assert_eq!(screen.game, Some(GameName::Avalon));
         let look = |name: &str| screen.names.get(name).cloned().unwrap();
         assert_eq!(
             look("Player 1 · Merlin"),
             Look::at(Position::Right)
-                .background("var(--role-merlin-bg)")
-                .foreground("var(--role-merlin-fg)")
+                .background("transparent")
+                .foreground("var(--rc-fg)")
         );
-        assert_eq!(look("Player 2 · Assassin").position, Position::Left);
+        assert_eq!(
+            look("Player 2 · Assassin"),
+            Look::at(Position::Left)
+                .background("transparent")
+                .foreground("var(--rc-fg)")
+        );
         assert_eq!(look("Player 3 · Servant").position, Position::Right);
         assert_eq!(
             look(NARRATOR),
@@ -1478,27 +1473,14 @@ mod tests {
     }
 
     #[test]
-    fn every_role_has_its_own_colors() {
-        let roles = [
-            Role::Villager,
-            Role::Seer,
-            Role::Doctor,
-            Role::Werewolf,
-            Role::Merlin,
-            Role::Percival,
-            Role::Servant,
-            Role::Assassin,
-            Role::Morgana,
-            Role::Mordred,
-            Role::Oberon,
-            Role::Minion,
-        ];
-        let keys: std::collections::HashSet<&str> = roles.map(role_key).into();
-        assert_eq!(keys.len(), roles.len());
+    fn each_side_has_its_colors_and_no_role_has_any() {
+        assert_eq!(side_key(Side::Good), "good");
+        assert_eq!(side_key(Side::Evil), "evil");
         let css = include_str!("../style.css");
-        for key in keys {
-            assert!(css.contains(&format!("--role-{key}-bg:")), "{key}");
-            assert!(css.contains(&format!("--role-{key}-fg:")), "{key}");
+        for key in ["good", "evil"] {
+            assert!(css.contains(&format!("--sd-{key}:")), "{key}");
+            assert!(css.contains(&format!("--sd-{key}-text:")), "{key}");
         }
+        assert!(!css.contains("--role-"));
     }
 }
