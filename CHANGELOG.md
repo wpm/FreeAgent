@@ -19,8 +19,8 @@ workflow takes a version's notes from here.
   push to `main` plays a random game of Avalon and deploys it to
   <https://wpm.github.io/FreeAgent/viewer/>.
 - The viewer as a desktop app, built with Tauri: choose a game, press
-  **Play**, and watch it live, with **Stop**. The game plays in memory,
-  and API keys come from the OS keychain, then the environment.
+  **Play**, and watch it live, with **Stop**. API keys come from the OS
+  keychain, then the environment.
 - Installers for the desktop app on each release: a `.dmg` for macOS, a
   setup `.exe` and an `.msi` for Windows, and an `.AppImage`, a `.deb` and
   an `.rpm` for Linux. The website links to the newest of each.

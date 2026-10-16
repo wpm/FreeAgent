@@ -13,8 +13,7 @@ use tauri::{State, async_runtime};
 /// Play a game of `game` under the settings, its cues sent down `cues`,
 /// as [`Session::play`] does, from the configuration the settings make,
 /// as `social-deduction play` would play it, with its keys from the
-/// keychain. The game plays in memory and writes no log. The game is
-/// chosen to play next time. Settings with an error are not played.
+/// keychain. The game is chosen to play next time. Settings with an error are not played.
 #[tauri::command]
 pub async fn play(
     session: State<'_, Session>,

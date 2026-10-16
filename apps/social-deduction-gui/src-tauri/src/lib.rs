@@ -3,13 +3,13 @@
 //! the Models tab's providers and listings, and the checks run on their
 //! models in the background from launch, are in [`catalog`]; API keys are
 //! stored through [`secret`]; and [`play`](game::play) runs the
-//! chosen game as `social-deduction play` runs it, its log saved and
-//! folded into cues sent to the main window. The [`menu`] opens Settings,
+//! chosen game as `social-deduction play` runs it, its log folded into
+//! cues sent to the main window. The [`menu`] opens Settings,
 //! starts a new game, and imports and exports configuration files.
 //! Closing the main window stops the game, whether it is being prepared or
 //! playing, and closes Settings. The opener plugin hands links to the
-//! system browser and reveals folders, and the dialog plugin picks files
-//! and asks before an import.
+//! system browser, and the dialog plugin picks files and asks before an
+//! import.
 
 #![warn(missing_docs)]
 

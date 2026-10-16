@@ -39,7 +39,7 @@ const TABS: [Tab; 4] = [
 /// A tab of the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
-    /// The logs folder and the look.
+    /// The look.
     General,
     /// The shared models and their providers.
     Models,
@@ -384,7 +384,7 @@ mod tests {
             Tab::Game(GameName::Werewolf)
         );
         assert_eq!(Tab::of(&path(&["avalon"])), Tab::Game(GameName::Avalon));
-        assert_eq!(Tab::of(&path(&["general", "logs"])), Tab::General);
+        assert_eq!(Tab::of(&path(&["general", "appearance"])), Tab::General);
         assert_eq!(Tab::of(&[]), Tab::General);
         let titles: Vec<&str> = TABS.iter().map(|tab| tab.title()).collect();
         assert_eq!(titles, ["General", "Models", "Werewolf", "Avalon"]);

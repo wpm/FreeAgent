@@ -1,7 +1,6 @@
 //! A game played live for a viewer. [`play`] starts a [`Prepared`] game in
 //! the background and folds each event through the game's [`Stage`] into
-//! cues as it happens, ending with [`Beat::Over`]. The game plays in
-//! memory, and nothing of it is written to disk. A [`Session`] plays one
+//! cues as it happens, ending with [`Beat::Over`]. A [`Session`] plays one
 //! game at a time, from preparing it to its end.
 
 use crate::game::{Actor, Entry};
@@ -243,6 +242,7 @@ mod tests {
     use crate::game::tests::logged;
     use crate::model::spec::Environment;
     use crate::run::prepare;
+    use crate::stage::cues;
     use free_agent::Episode;
     use std::collections::HashMap;
     use std::path::Path;
@@ -275,33 +275,69 @@ mod tests {
         prepare(&example(name), &Environment).await.unwrap()
     }
 
+    /// Play the game of `G` that is `ready` as [`start`] does, its events
+    /// also written as JSON Lines: the cues shown, and the log written.
+    async fn teed<G: Staged>(ready: Ready<G>) -> (Vec<Cue>, String)
+    where
+        Actor<G>: 'static,
+    {
+        let (logger, mut log) = unbounded_channel();
+        let episode = ready.episode(logger);
+        let stopper = episode.stopper();
+        let run = tokio::spawn(episode.run(PATIENCE));
+        let (forward, events) = unbounded_channel();
+        let copying = async move {
+            let mut written = Vec::new();
+            while let Some(event) = log.recv().await {
+                event.write(&mut written).unwrap();
+                forward.send(event).unwrap();
+            }
+            String::from_utf8(written).unwrap()
+        };
+        let (sender, receiver) = unbounded_channel();
+        let reader = Reader {
+            show: sending(sender),
+            stopper,
+        };
+        let ((), written) =
+            tokio::join!(reader.read::<G>(events, async move { run.await? }), copying);
+        (received(receiver).await, written)
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_game_is_shown_as_its_log_folds_and_ends_with_its_outcome() {
         for name in ["werewolf/random.toml", "avalon/random.toml"] {
-            let (sender, receiver) = unbounded_channel();
-            let playing = play(prepared(name).await, sending(sender));
-            assert!(!playing.is_finished());
-            playing.finished().await;
-            let live = received(receiver).await;
-            let over: Vec<&Beat> = live
-                .iter()
-                .map(|cue| &cue.beat)
-                .filter(|beat| matches!(beat, Beat::Over { .. }))
-                .collect();
+            let (live, written) = match prepared(name).await {
+                Prepared::Werewolf(ready) => teed(*ready).await,
+                Prepared::Avalon(ready) => teed(*ready).await,
+            };
+            let expected = cues(&written).unwrap();
+            let beats =
+                |cues: &[Cue]| -> Vec<Beat> { cues.iter().map(|c| c.beat.clone()).collect() };
+            assert_eq!(beats(&live), beats(&expected), "{name}");
             assert!(
                 matches!(
-                    over[..],
-                    [Beat::Over {
+                    live.last().map(|cue| &cue.beat),
+                    Some(Beat::Over {
                         outcome: Outcome::Won { .. }
-                    }]
+                    })
                 ),
-                "{name}: {over:?}"
-            );
-            assert!(
-                matches!(live.last().map(|cue| &cue.beat), Some(Beat::Over { .. })),
                 "{name}"
             );
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_game_playing_is_not_finished_until_its_last_cue() {
+        let (sender, receiver) = unbounded_channel();
+        let playing = play(prepared("avalon/random.toml").await, sending(sender));
+        assert!(!playing.is_finished());
+        playing.finished().await;
+        let cues = received(receiver).await;
+        assert!(matches!(
+            cues.last().map(|cue| &cue.beat),
+            Some(Beat::Over { .. })
+        ));
     }
 
     #[tokio::test(start_paused = true)]

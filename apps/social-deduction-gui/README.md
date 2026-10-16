@@ -49,8 +49,8 @@ applies to the next game. Each field's error shows in red beneath it, and
 hovering over anything, or focusing it, shows what it is and what changing
 it does.
 
-- **General**: the appearance: System, Light or Dark. System keeps Werewolf dark by night
-  and light by day.
+- **General**: the appearance, System, Light or Dark. System keeps
+  Werewolf dark by night and light by day.
 - **Models**: a card for each provider, holding its base URL and key,
   **Your models** from it, and **Available**: its models that play and
   aren't added yet, most capable first, each with its context window and
@@ -116,8 +116,8 @@ cargo tauri dev
 On Linux, Tauri needs the WebKitGTK development packages:
 `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev`.
 
-A game played in the app plays in memory, and its events are shown as
-they happen. Logs on disk come from `social-deduction play`.
+A game played in the app is shown as it happens. Logs on disk come from
+`social-deduction play`.
 
 A model's API key comes from the OS keychain, then from the environment
 variable that names it, such as `OPENAI_API_KEY`. Each key is a keychain
