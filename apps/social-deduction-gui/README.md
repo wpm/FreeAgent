@@ -101,8 +101,6 @@ plays it as **Play** does.
 The settings are kept in `settings.toml` in the app's config directory,
 and what probing found in `probes.json` in its data directory: on macOS,
 both in `~/Library/Application Support/io.github.wpm.social-deduction/`.
-At the first launch, a `last.toml` an earlier version kept there is
-imported into its game.
 
 It is a [Tauri](https://tauri.app) shell, in `src-tauri`, around the same
 page. To run it in development, with Trunk and the Tauri CLI

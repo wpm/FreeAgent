@@ -31,10 +31,6 @@ use std::time::Duration;
 /// The file the settings are stored in, in the app's config directory.
 pub const FILE: &str = "settings.toml";
 
-/// The configuration the desktop app ran last before it owned its
-/// settings, which the first launch imports.
-pub const LAST: &str = "last.toml";
-
 /// The example configuration each game's settings start from.
 const EXAMPLES: [(GameName, &str); 2] = [
     (
@@ -377,22 +373,14 @@ pub fn defaults() -> AppSettings {
 }
 
 /// The settings stored in the config directory `dir`, or, the first time,
-/// the [`defaults`] with the configuration last run there imported, if it
-/// is one. Settings that cannot be read are the defaults.
+/// the [`defaults`]. Settings that cannot be read are the defaults.
 pub fn load(dir: &Path) -> AppSettings {
     match std::fs::read_to_string(dir.join(FILE)) {
         Ok(text) => toml::from_str(&text).unwrap_or_else(|error| {
             tracing::warn!("{FILE} could not be read, so the settings are the defaults: {error}");
             defaults()
         }),
-        Err(_) => {
-            let mut app = defaults();
-            let last = std::fs::read_to_string(dir.join(LAST));
-            if let Some(imported) = last.ok().and_then(|text| Imported::parse(&text).ok()) {
-                import(&mut app, imported);
-            }
-            app
-        }
+        Err(_) => defaults(),
     }
 }
 
@@ -772,24 +760,15 @@ mod tests {
     }
 
     #[test]
-    fn the_first_launch_imports_the_configuration_last_run_into_its_game() {
+    fn the_first_launch_starts_from_the_defaults_whatever_else_is_there() {
         let dir = scratch("first-launch");
         assert_eq!(load(&dir), defaults());
         std::fs::create_dir_all(&dir).unwrap();
-        let last = include_str!("../configs/avalon/random.toml").replace(
-            "game = \"avalon\"",
-            "game = \"avalon\"\n[phases]\nvote_limit = \"90s\"\n",
-        );
-        std::fs::write(dir.join(LAST), &last).unwrap();
-        let app = load(&dir);
-        assert_eq!(app.general.game, GameName::Avalon);
-        assert_eq!(app.werewolf, defaults().werewolf);
-        assert_eq!(app.avalon.strategy, RANDOM);
-        assert!(app.avalon.strategies.is_empty());
-        assert_eq!(app.avalon.phases[1].limit, "90s");
-        assert_eq!(app.avalon.roles[0].strategy.as_deref(), Some(RANDOM));
-        // A configuration that does not parse is left out.
-        std::fs::write(dir.join(LAST), "game = ").unwrap();
+        std::fs::write(
+            dir.join("last.toml"),
+            include_str!("../configs/avalon/random.toml"),
+        )
+        .unwrap();
         assert_eq!(load(&dir), defaults());
         std::fs::remove_dir_all(dir).unwrap();
     }
