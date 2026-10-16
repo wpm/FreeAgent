@@ -4,7 +4,9 @@
 // random Avalon and Werewolf games, and the recorded prompted ones. Every
 // game at rest has evil bubbles on the left, good on the right and the
 // narrator in the center, each bubble labeled `Player N · Role` and
-// unfilled, every player the board names marked by a seat square numbered
+// unfilled, the line over it holding the seat square on the side away from
+// the speaker's edge, the player in their side's text color, light or
+// dark, and the role in muted italics, every player the board names marked by a seat square numbered
 // from the seat in its side's color, and the winner in the header. The
 // random Avalon board's quest squares agree with the narrated quests, and
 // it has a mark or blank per seat in every vote row, with no `data-theme`.
@@ -106,7 +108,12 @@ async function atRest(page, game) {
         return {
           name,
           role,
-          sender: message.querySelector('.rc-sender')?.textContent,
+          // What a screen reader reads, decoration left out.
+          sender: (() => {
+            const line = message.querySelector('.rc-sender')?.cloneNode(true);
+            line?.querySelectorAll('[aria-hidden="true"]').forEach((mark) => mark.remove());
+            return line?.textContent;
+          })(),
           left: bubble.left - pane.left,
           right: pane.right - bubble.right,
           background: getComputedStyle(element).backgroundColor,
@@ -128,9 +135,10 @@ async function atRest(page, game) {
     `${game}: the narrator sits in the center`,
   );
   check(
-    players.every((bubble) => /^Player \d+ · [A-Z][a-z]+$/.test(bubble.name) && bubble.sender === bubble.name),
-    `${game}: every bubble is labeled Player N · Role`,
+    players.every((bubble) => /^Player \d+ · [A-Z][a-z]+$/.test(bubble.name) && bubble.sender === bubble.name.replace(' · ', ', ')),
+    `${game}: every bubble is labeled Player N · Role and its line reads Player N, Role`,
   );
+  await senderLines(page, game);
   const filled = players.filter((bubble) => bubble.background !== 'rgba(0, 0, 0, 0)' || bubble.border !== '1px');
   check(
     filled.length === 0,
@@ -193,11 +201,69 @@ async function atRest(page, game) {
   check(named !== null && named === outcome.side, `${game}: the header names the winner (${outcome.text})`);
 }
 
+/** Checks the line over every player's bubble: a decorative seat square
+ * in the side's fill, before the player for evil and after the role for
+ * good, the player in the side's text color, and the role in muted italics. */
+async function senderLines(page, label) {
+  const wrong = await page.$$eval(
+    '.rc-message:not([data-name="Narrator"]) > .rc-sender',
+    (lines, evil) => {
+      // A custom property's color, resolved the way the browser resolves one.
+      const probe = document.createElement('span');
+      document.body.append(probe);
+      const color = (name) => {
+        probe.style.color = `var(${name})`;
+        return getComputedStyle(probe).color;
+      };
+      const muted = color('--sd-muted');
+      const sides = Object.fromEntries(
+        ['good', 'evil'].map((side) => [side, { text: color(`--sd-${side}-text`), fill: color(`--sd-${side}`) }]),
+      );
+      probe.remove();
+      return lines.flatMap((line) => {
+        const [player, role] = line.parentElement.dataset.name.split(' · ');
+        const side = evil.includes(role) ? 'evil' : 'good';
+        const parts = [...line.children].filter((child) => !child.matches('.sd-unseen'));
+        const square = side === 'evil' ? parts[0] : parts.at(-1);
+        const [name, title] = side === 'evil' ? parts.slice(1) : parts;
+        const shown = {
+          parts: parts.length,
+          square: square?.matches('.sd-seat') && square.getAttribute('aria-hidden') === 'true' ? square.textContent : null,
+          fill: square && getComputedStyle(square).backgroundColor,
+          player: name?.textContent,
+          color: name && getComputedStyle(name).color,
+          weight: name && getComputedStyle(name).fontWeight,
+          role: title?.textContent,
+          italic: title && getComputedStyle(title).fontStyle,
+          muted: title && getComputedStyle(title).color,
+        };
+        const right =
+          shown.parts === 3 &&
+          shown.square === player.replace('Player ', '') &&
+          shown.fill === sides[side].fill &&
+          shown.player === player &&
+          shown.color === sides[side].text &&
+          shown.weight === '700' &&
+          shown.role === role &&
+          shown.italic === 'italic' &&
+          shown.muted === muted;
+        return right ? [] : [`${player} (${side}): ${JSON.stringify(shown)}`];
+      });
+    },
+    [...evil],
+  );
+  check(
+    wrong.length === 0,
+    `${label}: every player's line has their seat square, before the name if evil and after the role if good, the player in their side's color and the role in muted italics${wrong.map((line) => `; ${line}`).join('')}`,
+  );
+}
+
 /** Screenshots the game as it stands, light and dark, and goes back to light. */
 async function screenshots(page, hash) {
   await page.screenshot({ path: join(shots, `${hash}-light.png`), fullPage: true });
   await page.emulateMedia({ colorScheme: 'dark' });
   await page.waitForTimeout(SETTLE);
+  await senderLines(page, `${hash} dark`);
   await page.screenshot({ path: join(shots, `${hash}-dark.png`), fullPage: true });
   await page.emulateMedia({ colorScheme: 'light' });
 }

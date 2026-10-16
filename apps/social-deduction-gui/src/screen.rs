@@ -382,6 +382,12 @@ impl Screen {
         }
     }
 
+    /// The seat of the player whose label is `label`, or `None` for a
+    /// name that is not a player's.
+    pub fn seat(&self, label: &str) -> Option<Seat> {
+        self.seats.iter().find(|seat| seat.label == label).cloned()
+    }
+
     /// `player`'s label, or the name alone before the cast.
     fn label(&self, player: &str) -> String {
         self.seats
@@ -619,6 +625,8 @@ pub fn entry<T: Copy>(entries: &[(PlayerId, Option<T>)], player: &str) -> Option
 
 /// The names table for `seats`: evil on the left and good on the right,
 /// every bubble unfilled in ink, and the narrator centered and muted.
+/// Each player's messages carry their side's colors, `--side` for text
+/// and `--side-fill` for a square, for the stylesheet to read.
 fn names(seats: &[Seat]) -> Names {
     let narrator = Look::at(Position::Center)
         .background("transparent")
@@ -630,9 +638,12 @@ fn names(seats: &[Seat]) -> Names {
                 Side::Evil => Position::Left,
                 Side::Good => Position::Right,
             };
+            let side = side_key(seat.side);
             let look = Look::at(position)
                 .background("transparent")
-                .foreground("var(--rc-fg)");
+                .foreground("var(--rc-fg)")
+                .property("--side", format!("var(--sd-{side}-text)"))
+                .property("--side-fill", format!("var(--sd-{side})"));
             names.name(seat.label.clone(), look)
         })
 }
@@ -849,12 +860,16 @@ mod tests {
             Look::at(Position::Right)
                 .background("transparent")
                 .foreground("var(--rc-fg)")
+                .property("--side", "var(--sd-good-text)")
+                .property("--side-fill", "var(--sd-good)")
         );
         assert_eq!(
             look("Player 2 · Assassin"),
             Look::at(Position::Left)
                 .background("transparent")
                 .foreground("var(--rc-fg)")
+                .property("--side", "var(--sd-evil-text)")
+                .property("--side-fill", "var(--sd-evil)")
         );
         assert_eq!(look("Player 3 · Servant").position, Position::Right);
         assert_eq!(
@@ -1579,6 +1594,16 @@ mod tests {
         assert_eq!(SeatMark::of(&screen.seats[0]).number, "1");
         assert_eq!(board.mark("Player 9"), None);
         assert_eq!(seat_number("Player 10"), "10");
+    }
+
+    #[test]
+    fn a_players_label_finds_their_seat() {
+        let screen = shown(&[cast()]);
+        assert_eq!(
+            screen.seat("Player 2 · Assassin"),
+            Some(screen.seats[1].clone())
+        );
+        assert_eq!(screen.seat(NARRATOR), None);
     }
 
     #[test]

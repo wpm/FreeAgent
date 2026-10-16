@@ -9,8 +9,9 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_rich_chat::{Message, RenderOptions, RichChatStyle, Transcript};
+use social_deduction_stage::settings::label;
 use social_deduction_stage::{
-    Cue, Deed, GameName, NightDeed, Outcome, WerewolfPanel, WerewolfPhase,
+    Cue, Deed, GameName, NightDeed, Outcome, Seat, Side, WerewolfPanel, WerewolfPhase,
 };
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -261,6 +262,13 @@ pub(crate) fn Viewer(
     let running = Memo::new(move |_| screen.with(|screen| screen.clock.running));
     // Every thinker's dots share one text, which stays empty.
     let silence = RwSignal::new(String::new());
+    // The line over a player's bubbles; the narrator's is the name, hidden.
+    let sender = Callback::new(move |name: String| {
+        match screen.with_untracked(|screen| screen.seat(&name)) {
+            Some(seat) => view! { <SenderLine seat=seat /> }.into_any(),
+            None => name.into_any(),
+        }
+    });
     let messages = Signal::derive(move || {
         let mut messages = posts.with(|posts| messages(posts));
         thinkers.with(|thinkers| {
@@ -297,7 +305,13 @@ pub(crate) fn Viewer(
             <main class="sd-main">
                 <div class="sd-chat">
                     {move || failure.get().map(|error| view! { <p class="sd-error">{error}</p> })}
-                    <Transcript messages=messages show_names=true options=options on_link=on_link />
+                    <Transcript
+                        messages=messages
+                        show_names=true
+                        sender=sender
+                        options=options
+                        on_link=on_link
+                    />
                 </div>
                 <aside class="sd-board">
                     {move || board.get().map(|board| view! { <AvalonBoard board=board /> })}
@@ -431,6 +445,26 @@ fn footer() -> impl IntoView {
 pub(crate) fn SeatSquare(mark: SeatMark, #[prop(optional)] out: bool) -> impl IntoView {
     let class = mark.class(out);
     view! { <span class=class>{mark.number}</span> }
+}
+
+/// The line over a player's bubbles: their seat square, on the side away
+/// from the speaker's edge, then their name and role. The square is in
+/// `--side-fill` and only decorates, since the name holds the number; a
+/// screen reader reads "Player 6, Seer".
+#[component]
+fn SenderLine(seat: Seat) -> impl IntoView {
+    let number = screen::seat_number(&seat.name).to_string();
+    let square = |number: String| {
+        view! { <span class="sd-seat" aria-hidden="true">{number}</span> }
+    };
+    let evil = seat.side == Side::Evil;
+    view! {
+        {evil.then(|| square(number.clone()))}
+        <span class="sd-sender-player">{seat.name}</span>
+        <span class="sd-unseen">", "</span>
+        <span class="sd-sender-role">{label(&seat.role.to_string())}</span>
+        {(!evil).then(|| square(number))}
+    }
 }
 
 /// `player`'s seat square on `board`.

@@ -318,8 +318,38 @@ body,
   display: none;
 }
 
+/* The line over a player's bubble: their seat square on the side away
+   from their edge, then the player in their side's text color and the
+   role in a muted italic serif. Each player's messages carry --side and
+   --side-fill. */
+
 .rc-sender {
-  font-family: var(--sd-sans);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: var(--side, var(--sd-muted));
+  font: 700 13px/1 var(--sd-sans);
+}
+
+.rc-sender .sd-seat {
+  background-color: var(--side-fill);
+}
+
+.sd-sender-role {
+  color: var(--sd-muted);
+  font: italic 400 15px/1 var(--sd-serif);
+}
+
+/* Read aloud, never drawn. */
+
+.sd-unseen {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* Every player's bubble is unfilled, drawn by its outline; the side is
