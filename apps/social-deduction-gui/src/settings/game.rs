@@ -7,13 +7,14 @@ use std::collections::BTreeMap;
 use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use social_deduction_stage::GameName;
 use social_deduction_stage::settings::{
     GameSettings, Policy, RANDOM, RoleSettings, StrategySettings, game_key, game_title,
     is_part_name, label, part_variable,
 };
+use social_deduction_stage::{GameName, Role};
 
 use super::{Choice, Editor, Problem, Tab, field_id, path};
+use crate::screen::side_key;
 use crate::tauri;
 
 /// What a role does, as its help says.
@@ -346,12 +347,20 @@ fn role_memo<T: Clone + PartialEq + Send + Sync + 'static>(
     })
 }
 
-/// A role's name, in its color, with what it does as its help.
+/// The style of a role's dot, in its side's color.
+fn dot(role: &str) -> String {
+    Role::from_key(role)
+        .map(|role| format!("background: var(--sd-{})", side_key(role.side())))
+        .unwrap_or_default()
+}
+
+/// A role's name, marked in its side's color, with what it does as its
+/// help.
 #[component]
 fn RoleName(role: String) -> impl IntoView {
     view! {
         <span class="sd-role-name" data-tip=role_tip(&role)>
-            <span class="sd-dot" style=format!("background: var(--role-{role}-fg)")></span>
+            <span class="sd-dot" style=dot(&role)></span>
             {label(&role)}
         </span>
     }

@@ -3,8 +3,9 @@
 // Serves a `dist` that build-page.sh built and opens each game in it: the
 // random Avalon and Werewolf games, and the recorded prompted ones. Every
 // game at rest has evil bubbles on the left, good on the right and the
-// narrator in the center, each bubble labeled `Player N · Role` in its
-// role's color, and the winner in the header. The random Avalon board
+// narrator in the center, each bubble labeled `Player N · Role` and
+// unfilled, each board swatch in its seat's side color, and the winner in
+// the header. The random Avalon board
 // agrees with the narrated quests and has a mark or blank per seat in
 // every vote row, with no `data-theme`. The random Werewolf board's dead
 // are those the narration kills, and `data-theme` matches the last phase.
@@ -91,14 +92,7 @@ const narrated = (page) =>
 async function atRest(page, game) {
   const bubbles = await page.$$eval('.rc-message', (messages) => {
     const pane = document.querySelector('.rc-messages').getBoundingClientRect();
-    // A role's color, resolved the way the browser resolves a background.
-    const probe = document.createElement('div');
-    document.body.append(probe);
-    const color = (role) => {
-      probe.style.background = `var(--role-${role}-bg)`;
-      return getComputedStyle(probe).backgroundColor;
-    };
-    const drawn = messages
+    return messages
       .filter((message) => message.querySelector(':scope > .rc-bubble'))
       .map((message) => {
         const element = message.querySelector(':scope > .rc-bubble');
@@ -112,11 +106,9 @@ async function atRest(page, game) {
           left: bubble.left - pane.left,
           right: pane.right - bubble.right,
           background: getComputedStyle(element).backgroundColor,
-          expected: role ? color(role.toLowerCase()) : null,
+          border: getComputedStyle(element).borderTopWidth,
         };
       });
-    probe.remove();
-    return drawn;
   });
   const players = bubbles.filter((bubble) => bubble.name !== 'Narrator');
   const narrator = bubbles.filter((bubble) => bubble.name === 'Narrator');
@@ -135,12 +127,36 @@ async function atRest(page, game) {
     players.every((bubble) => /^Player \d+ · [A-Z][a-z]+$/.test(bubble.name) && bubble.sender === bubble.name),
     `${game}: every bubble is labeled Player N · Role`,
   );
-  const miscolored = players.filter(
-    (bubble) => !bubble.expected || bubble.expected === 'rgba(0, 0, 0, 0)' || bubble.background !== bubble.expected,
+  const filled = players.filter((bubble) => bubble.background !== 'rgba(0, 0, 0, 0)' || bubble.border !== '1px');
+  check(
+    filled.length === 0,
+    `${game}: every player's bubble is unfilled and outlined${filled.map((bubble) => `; ${bubble.name} is ${bubble.background} with ${bubble.border}`).join('')}`,
+  );
+  const { sides, swatches } = await page.$$eval('.sd-players li', (rows) => {
+    // A side's color, resolved the way the browser resolves a background.
+    const probe = document.createElement('div');
+    document.body.append(probe);
+    const color = (side) => {
+      probe.style.background = `var(--sd-${side})`;
+      return getComputedStyle(probe).backgroundColor;
+    };
+    const sides = { good: color('good'), evil: color('evil') };
+    probe.remove();
+    return {
+      sides,
+      swatches: rows.map((row) => ({
+        role: row.querySelector('.sd-detail').textContent.split(',')[0],
+        background: getComputedStyle(row.querySelector('.sd-swatch')).backgroundColor,
+      })),
+    };
+  });
+  const capitalized = (role) => role.charAt(0).toUpperCase() + role.slice(1);
+  const offside = swatches.filter(
+    (swatch) => swatch.background !== sides[evil.has(capitalized(swatch.role)) ? 'evil' : 'good'],
   );
   check(
-    miscolored.length === 0,
-    `${game}: every bubble is in its role's color${miscolored.map((bubble) => `; ${bubble.name} is ${bubble.background}, not ${bubble.expected}`).join('')}`,
+    swatches.length > 0 && sides.good !== sides.evil && offside.length === 0,
+    `${game}: every seat's swatch is in its side's color${offside.map((swatch) => `; ${swatch.role} is ${swatch.background}`).join('')}`,
   );
   const outcome = await page.$eval('.sd-outcome', (element) => ({
     text: element.textContent,
