@@ -256,7 +256,7 @@ impl Screen {
                     return Some(number);
                 }
             }
-            Beat::Over { outcome, .. } => {
+            Beat::Over { outcome } => {
                 self.outcome = Some(outcome.clone());
                 self.thinking.clear();
                 self.thinkers.clear();
@@ -767,7 +767,6 @@ mod tests {
                     side: Side::Evil,
                     how: "Evil wins by naming Merlin.".to_string(),
                 },
-                log: None,
             }),
         ]
     }
@@ -1284,7 +1283,6 @@ mod tests {
         );
         let over = cue(Beat::Over {
             outcome: Outcome::Stopped,
-            log: None,
         });
         let ended = [werewolf_cast(), day, over];
         // A saved game at rest takes its final phase's theme, and one

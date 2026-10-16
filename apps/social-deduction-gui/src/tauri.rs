@@ -144,21 +144,6 @@ pub async fn game_defaults(game: GameName) -> Result<GameSettings, String> {
     call("game_defaults", json!({ "game": game })).await
 }
 
-/// Choose the folder logs are saved in, and the snapshot after, if one
-/// was chosen.
-///
-/// # Errors
-///
-/// When the backend cannot be reached.
-pub async fn logs_choose() -> Result<Option<Snapshot>, String> {
-    call("logs_choose", json!({})).await
-}
-
-/// Reveal the folder logs are saved in.
-pub fn logs_reveal() {
-    background("logs_reveal", json!({}));
-}
-
 /// The providers, local servers that answer among them.
 ///
 /// # Errors
@@ -235,11 +220,6 @@ pub async fn play(game: GameName, cues: &Cues) -> Result<(), String> {
 /// Stop the game being prepared or playing.
 pub fn stop() {
     command("stop", object(&[]));
-}
-
-/// Reveal the last game's log in the system's file manager.
-pub fn show_log() {
-    command("show_log", object(&[]));
 }
 
 /// Open `url` in the system browser.

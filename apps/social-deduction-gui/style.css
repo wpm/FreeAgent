@@ -863,13 +863,6 @@ body,
   font-size: 0.85rem;
 }
 
-.sd-path {
-  margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85rem;
-  overflow-wrap: anywhere;
-}
-
 .sd-confirm {
   display: flex;
   align-items: center;

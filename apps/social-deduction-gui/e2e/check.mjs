@@ -417,7 +417,6 @@ const desktop = {
     },
   },
   errors: [],
-  logs: '/tmp/games',
 };
 
 /** The stand-in backend, set on the page before it loads. */
@@ -622,13 +621,18 @@ await section('desktop', async () => {
     `desktop: #settings renders the four tabs (${tabs.join(', ')})`,
   );
   await settings.screenshot({ path: join(shots, 'settings-general.png'), fullPage: true });
+  const headings = await settings.$$eval('.sd-settings h2', (elements) => elements.map((element) => element.textContent.trim()));
+  check(
+    JSON.stringify(headings) === JSON.stringify(['Appearance']),
+    `desktop: General has the look alone (${headings.join(', ')})`,
+  );
   // Help shows under what the pointer is over, and under what has the
   // keyboard's focus.
   const tip = () =>
     settings.$eval('.sd-tip', (element) => ({ text: element.textContent, shown: !element.hidden, top: element.getBoundingClientRect().top }));
-  await settings.hover('.sd-settings button:has-text("Change…")');
+  await settings.hover('.sd-segments button:has-text("Light")');
   const hovered = await tip();
-  check(hovered.shown && hovered.text.startsWith('Choose another folder'), `desktop: hovering shows help (${JSON.stringify(hovered)})`);
+  check(hovered.shown && hovered.text.startsWith('Always light'), `desktop: hovering shows help (${JSON.stringify(hovered)})`);
   await settings.mouse.move(0, 0);
   await settings.focus('.sd-segments button:has-text("Dark")');
   const focused = await tip();

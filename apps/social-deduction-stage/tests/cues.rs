@@ -158,15 +158,12 @@ fn every_beat_round_trips() {
                 side: Side::Evil,
                 how: "The werewolves outnumber the villagers.".into(),
             },
-            log: Some("game.jsonl".into()),
         },
         Beat::Over {
             outcome: Outcome::Stopped,
-            log: None,
         },
         Beat::Over {
             outcome: Outcome::Failed("The model is unreachable.".into()),
-            log: None,
         },
     ];
     for (at, beat) in beats.into_iter().enumerate() {

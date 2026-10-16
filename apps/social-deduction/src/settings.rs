@@ -721,7 +721,6 @@ mod tests {
     fn the_settings_round_trip_through_their_file() {
         let dir = scratch("round-trip");
         let mut app = defaults();
-        app.general.logs = Some("/tmp/logs".to_string());
         app.general.appearance = Appearance::Dark;
         app.werewolf.roles[0]
             .strategies
@@ -745,6 +744,19 @@ mod tests {
             load(&dir).werewolf.prompt_parts["rules"],
             "Werewolves hunt."
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_stored_with_a_logs_folder_are_read_without_it() {
+        let dir = scratch("logs");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(FILE),
+            "[general]\nlogs = \"/tmp/logs\"\nappearance = \"dark\"\n",
+        )
+        .unwrap();
+        assert_eq!(load(&dir).general.appearance, Appearance::Dark);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

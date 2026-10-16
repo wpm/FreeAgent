@@ -77,8 +77,6 @@ pub enum Beat {
     Over {
         /// How it ended.
         outcome: Outcome,
-        /// Where the game's log was saved, when it was.
-        log: Option<String>,
     },
 }
 
