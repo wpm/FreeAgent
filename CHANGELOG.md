@@ -192,6 +192,9 @@ workflow takes a version's notes from here.
 
 ### Changed
 
+- The desktop app's first launch starts from each game's prompted
+  defaults. **Import Configuration…** brings in a configuration played
+  before, such as an earlier version's `last.toml`.
 - A configuration file's `[text]` is `[prompt_parts]`, and a part's name is
   letters, digits, underscores and spaces, pulled in with its spaces as
   underscores (`"Seer only"` is `{{ Seer_only }}`). The log's configuration calls them
