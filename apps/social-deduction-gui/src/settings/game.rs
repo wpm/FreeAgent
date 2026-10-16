@@ -1,6 +1,5 @@
-//! A game's tab: its players and phase limits side by side, its
-//! strategies two across, who plays what as a grid, and its prompt parts
-//! as a list beside an editor, all in one column on a narrow window.
+//! A game's page: its players, phase limits, strategies, who plays what,
+//! and prompt parts, each a section of grouped lists.
 
 use std::collections::BTreeMap;
 
@@ -13,63 +12,70 @@ use social_deduction_stage::settings::{
 };
 use social_deduction_stage::{GameName, Role};
 
-use super::{Choice, Cross, Editor, Problem, Tab, field_id, path};
+use super::{
+    Choice, Cross, Editor, Named, PageHead, Problem, Section, Segments, Tab, field_id, path,
+};
 use crate::screen::side_key;
 use crate::tauri;
 
-/// What a role does, as its help says.
-pub fn role_tip(role: &str) -> &'static str {
+/// What a role does, as written under its name. Its square tells its
+/// side.
+pub fn role_note(role: &str) -> &'static str {
     match role {
-        "villager" => "Knows only their own role. The villagers win when every werewolf is dead.",
-        "seer" => "A villager who learns one player's side each night.",
-        "doctor" => "A villager who picks one player each night to save from the werewolves.",
-        "werewolf" => {
-            "Knows the other werewolves. Each night they kill a villager, and they win once they \
-             are as many as the villagers."
-        }
-        "merlin" => {
-            "Good. Sees every evil player but Mordred, and must stay hidden from the Assassin."
-        }
-        "percival" => "Good. Sees Merlin and Morgana, without knowing which is which.",
-        "servant" => "Good. A loyal servant of Arthur, who knows only their own role.",
+        "villager" => "Knows only their own role.",
+        "seer" => "Learns one player's side each night.",
+        "doctor" => "Picks one player each night to save from the werewolves.",
+        "werewolf" => "Knows the other werewolves. Each night they kill a villager.",
+        "merlin" => "Sees every evil player but Mordred, and must stay hidden from the Assassin.",
+        "percival" => "Sees Merlin and Morgana, without knowing which is which.",
+        "servant" => "A loyal servant of Arthur, who knows only their own role.",
         "assassin" => {
-            "Evil. Sees the other evil players but Oberon. If good wins three quests, gets one \
-             guess at Merlin."
+            "Sees the other evil players but Oberon. If good wins three quests, gets one guess \
+             at Merlin."
         }
-        "morgana" => "Evil. Appears to Percival as Merlin might.",
-        "mordred" => "Evil. Hidden from Merlin.",
-        "oberon" => "Evil, but unseen by the other evil players, and sees none of them.",
-        "minion" => "Evil. A minion of Mordred, who sees the other evil players but Oberon.",
+        "morgana" => "Appears to Percival as Merlin might.",
+        "mordred" => "Hidden from Merlin.",
+        "oberon" => "Unseen by the other evil players, and sees none of them.",
+        "minion" => "A minion of Mordred, who sees the other evil players but Oberon.",
         _ => "",
     }
 }
 
-/// What a phase's limit ends, as its help says.
-pub fn phase_tip(phase: &str) -> &'static str {
+/// What a phase's limit ends, as written under its name.
+pub fn phase_note(phase: &str) -> &'static str {
     match phase {
-        "night_limit" => {
-            "How long the werewolves, the doctor and the seer have to choose. The night ends \
-             sooner once all have chosen."
-        }
-        "day_limit" => "The longest a day can run. At the limit it ends, and nobody is voted out.",
-        "ratify_limit" => {
-            "How long the most-voted player must stay most-voted to be voted out. At 0s each \
-             player's first vote counts instead. No longer than the day."
-        }
-        "propose_limit" => {
-            "How long the leader has to propose a team. Proposing nobody in time fails the \
-             proposal."
-        }
-        "vote_limit" => {
-            "How long everyone has to vote on the proposed team. Not voting doesn't approve."
-        }
-        "quest_limit" => {
-            "How long the team has to support or sabotage the quest. A member who does neither \
-             supports."
-        }
+        "night_limit" => "How long the werewolves, the doctor and the seer have to choose.",
+        "day_limit" => "The longest a day can run. At the limit nobody is voted out.",
+        "ratify_limit" => "How long the most-voted player must stay most-voted to be voted out.",
+        "propose_limit" => "How long the leader has to propose a team.",
+        "vote_limit" => "How long everyone has to vote on the proposed team.",
+        "quest_limit" => "How long the team has to support or sabotage the quest.",
         "assassinate_limit" => "How long the Assassin has to name Merlin.",
         _ => "",
     }
+}
+
+/// What more a phase's field's help tells than its note: how its limit
+/// plays out, or nothing.
+pub fn phase_more(phase: &str) -> &'static str {
+    match phase {
+        "night_limit" => "The night ends sooner once all have chosen.",
+        "ratify_limit" => "At 0s each player's first vote counts instead. No longer than the day.",
+        "propose_limit" => "Proposing nobody in time fails the proposal.",
+        "vote_limit" => "Not voting doesn't approve.",
+        "quest_limit" => "A member who does neither supports.",
+        _ => "",
+    }
+}
+
+/// The help of a phase's field: its note, what more there is, and how to
+/// write a duration.
+pub fn phase_tip(phase: &str) -> String {
+    [phase_note(phase), phase_more(phase), "Like 45s or 2m."]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A phase's name, from its limit's key: `day_limit` as `Day`.
@@ -78,12 +84,12 @@ pub fn phase_title(phase: &str) -> String {
 }
 
 /// How many strategies use a prompt part, `users` of them: `unused`,
-/// `1 use`, `2 uses`.
+/// `used by 1 strategy`, `used by 2 strategies`.
 pub fn uses_told(users: usize) -> String {
     match users {
         0 => "unused".to_string(),
-        1 => "1 use".to_string(),
-        n => format!("{n} uses"),
+        1 => "used by 1 strategy".to_string(),
+        n => format!("used by {n} strategies"),
     }
 }
 
@@ -166,7 +172,7 @@ fn Adder(
     }
 }
 
-/// A game's tab: its players, phase limits, strategies, who plays what,
+/// A game's page: its players, phase limits, strategies, who plays what,
 /// and prompt parts, with **Restore defaults…**.
 #[component]
 pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
@@ -233,9 +239,18 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
         })
     });
     let everyone = editor.game(game, |s| s.strategy.clone());
+    let table = view! {
+        <span class="sd-note" id=field_id(&game_path(game, &["roles"])) data-tip="Everyone at the table, every role counted.">
+            {move || format!("{} at the table", players.get())}
+        </span>
+    };
+    let pulled = view! {
+        <span class="sd-note" data-tip="Write {{ name }} in a system prompt, spaces as underscores, to pull a part in.">
+            "pulled into a system prompt with {{ name }}"
+        </span>
+    };
     view! {
-        <div class="sd-tab-head">
-            <h2 data-tip=Tab::Game(game).tip()>{title}</h2>
+        <PageHead title=title tip=Tab::Game(game).tip()>
             <Show
                 when=move || confirming.get()
                 fallback=move || view! {
@@ -253,63 +268,41 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
                     <button on:click=move |_| confirming.set(false) data-tip="Keep the settings as they are.">"Cancel"</button>
                 </div>
             </Show>
-        </div>
-        <div class="sd-top">
-            <section class="sd-box">
-                <h3>
-                    <span data-tip="How many players take each role. The total is the table's size.">"Players"</span>
-                    <span class="sd-note" id=field_id(&game_path(game, &["roles"])) data-tip="Everyone at the table, every role counted.">
-                        {move || format!("{} at the table", players.get())}
-                    </span>
-                </h3>
-                <div class="sd-roles">
-                    <For each=move || role_keys.get() key=Clone::clone let:role>
-                        <RoleCount editor=editor game=game role=role />
-                    </For>
-                </div>
-                <Problem error=table_error />
-            </section>
-            <section class="sd-box">
-                <h3><span data-tip="The longest each phase can run. Write a duration, like 45s or 2m.">"Phase limits"</span></h3>
-                <div class="sd-limits">
-                    <For each=move || phase_keys.get() key=Clone::clone let:phase>
-                        <PhaseLimit editor=editor game=game phase=phase />
-                    </For>
-                </div>
-            </section>
-        </div>
-        <section class="sd-box">
-            <h3>
-                <span data-tip="How players decide what to do. A prompted strategy asks a model, told its system prompt. A random one chooses at random.">
-                    "Strategies"
-                </span>
-            </h3>
-            <div class="sd-strategies">
-                <For each=move || strategy_names.get() key=Clone::clone let:name>
-                    <StrategyCard editor=editor game=game name=name models=model_options />
+        </PageHead>
+        <Section title="Players" tip="How many players take each role. The total is the table's size." note=table.into_any()>
+            <div class="sd-list sd-roles">
+                <For each=move || role_keys.get() key=Clone::clone let:role>
+                    <RoleCount editor=editor game=game role=role />
                 </For>
             </div>
+            <Problem error=table_error />
+        </Section>
+        <Section title="Phase limits" tip="The longest each phase can run. Write a duration, like 45s or 2m.">
+            <div class="sd-list sd-limits">
+                <For each=move || phase_keys.get() key=Clone::clone let:phase>
+                    <PhaseLimit editor=editor game=game phase=phase />
+                </For>
+            </div>
+        </Section>
+        <Section title="Strategies" tip="How players decide what to do. A prompted strategy asks a model, told its system prompt. A random one chooses at random.">
+            <For each=move || strategy_names.get() key=Clone::clone let:name>
+                <StrategyCard editor=editor game=game name=name models=model_options />
+            </For>
             <Adder
                 label="Add strategy"
-                placeholder="Strategy name"
+                placeholder="New strategy: cautious, bluffer…"
                 tip="A name for the new strategy, like cautious or bluffer."
                 button_tip="Add a prompted strategy with this name."
                 add=add_strategy
                 refuse=refuse_strategy
                 class="sd-adder-strategy"
             />
-        </section>
-        <section class="sd-box">
-            <h3>
-                <span data-tip="Which strategy plays each role. A role left as Everyone's plays the strategy chosen for everyone.">
-                    "Who plays what"
-                </span>
-            </h3>
-            <div class="sd-assign">
-                <div class="sd-everyone">
+        </Section>
+        <Section title="Who plays what" tip="Which strategy plays each role. A role left the same as everyone plays the strategy chosen for everyone.">
+            <div class="sd-list sd-assign">
+                <div class="sd-item">
+                    <Named name="Everyone" note="Every role plays this unless it is given its own." />
                     <Choice
-                        label="Everyone"
-                        label_tip="The strategy every role plays unless it is given its own."
                         tip="The strategy every role plays unless it is given its own. random chooses at random and needs no model."
                         value=everyone.into()
                         options=strategy_options.into()
@@ -322,15 +315,10 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
                     <RoleStrategy editor=editor game=game role=role strategies=strategy_options.into() />
                 </For>
             </div>
-        </section>
-        <section class="sd-box">
-            <h3>
-                <span data-tip="Named pieces of text that system prompts pull in with {{ name }}, like the rules, so several strategies can share them.">
-                    "Prompt parts"
-                </span>
-            </h3>
+        </Section>
+        <Section title="Prompt parts" tip="Named pieces of text that system prompts pull in with {{ name }}, like the rules, so several strategies can share them." note=pulled.into_any()>
             <PromptParts editor=editor game=game />
-        </section>
+        </Section>
     }
 }
 
@@ -347,26 +335,17 @@ fn role_memo<T: Clone + PartialEq + Send + Sync + 'static>(
     })
 }
 
-/// The style of a role's dot, in its side's color.
-fn dot(role: &str) -> String {
-    Role::from_key(role)
-        .map(|role| format!("background: var(--sd-{})", side_key(role.side())))
-        .unwrap_or_default()
-}
-
-/// A role's name, marked in its side's color, with what it does as its
-/// help.
+/// The square of a role, in its side's color.
 #[component]
-fn RoleName(role: String) -> impl IntoView {
-    view! {
-        <span class="sd-role-name" data-tip=role_tip(&role)>
-            <span class="sd-dot" style=dot(&role)></span>
-            {label(&role)}
-        </span>
-    }
+fn Square(role: String) -> impl IntoView {
+    let style = Role::from_key(&role)
+        .map(|role| format!("background: var(--sd-{})", side_key(role.side())))
+        .unwrap_or_default();
+    view! { <span class="sd-square" style=style></span> }
 }
 
-/// A role's count, as a stepper.
+/// A role's row: its square, its name and what it does, and its count as
+/// a stepper.
 #[component]
 fn RoleCount(editor: Editor, game: GameName, role: String) -> impl IntoView {
     let count = role_memo(editor, game, role.clone(), |r| r.count);
@@ -390,8 +369,9 @@ fn RoleCount(editor: Editor, game: GameName, role: String) -> impl IntoView {
     };
     let down = step.clone();
     view! {
-        <div class="sd-role">
-            <RoleName role=role.clone() />
+        <div class="sd-item sd-role">
+            <Square role=role.clone() />
+            <Named name=title.clone() note=role_note(&role) />
             <div class="sd-stepper">
                 <button
                     aria-label=format!("Fewer {title}s")
@@ -414,12 +394,12 @@ fn RoleCount(editor: Editor, game: GameName, role: String) -> impl IntoView {
                     "+"
                 </button>
             </div>
+            <Problem error=editor.error(at) />
         </div>
-        <Problem error=editor.error(at) />
     }
 }
 
-/// A phase's limit: a short field, as written.
+/// A phase's row: its name, what its limit ends, and a short field.
 #[component]
 fn PhaseLimit(editor: Editor, game: GameName, phase: String) -> impl IntoView {
     let read = phase.clone();
@@ -442,17 +422,16 @@ fn PhaseLimit(editor: Editor, game: GameName, phase: String) -> impl IntoView {
     let at = game_path(game, &["phases", &phase]);
     let id = field_id(&at);
     let error = editor.error(at);
-    let tip = phase_tip(&phase);
     view! {
-        <div class="sd-limit">
-            <label for=id.clone() data-tip=tip>{phase_title(&phase)}</label>
+        <div class="sd-item sd-limit">
+            <Named name=phase_title(&phase) note=phase_note(&phase) field=id.clone() />
             <input
                 type="text"
                 id=id
                 spellcheck="false"
                 autocomplete="off"
                 placeholder="45s, 2m"
-                data-tip=format!("{tip} Like 45s or 2m.")
+                data-tip=phase_tip(&phase)
                 class:sd-invalid=move || error.with(Option::is_some)
                 prop:value=move || value.get()
                 on:input=set
@@ -462,7 +441,8 @@ fn PhaseLimit(editor: Editor, game: GameName, phase: String) -> impl IntoView {
     }
 }
 
-/// Which strategy a role's seats play, and, once split, how many of them
+/// A role's row in who plays what: its square and name, **Split seats…**,
+/// and the strategy its seats play, and, once split, how many of them
 /// play each of the others.
 #[component]
 fn RoleStrategy(
@@ -475,7 +455,7 @@ fn RoleStrategy(
     let value = role_memo(editor, game, role.clone(), |r| r.strategy.clone());
     let value = Signal::derive(move || value.get().flatten().unwrap_or_default());
     let options = Signal::derive(move || {
-        let mut options = vec![(String::new(), "Everyone's".to_string())];
+        let mut options = vec![(String::new(), "Same as everyone".to_string())];
         options.extend(strategies.get());
         options
     });
@@ -526,26 +506,25 @@ fn RoleStrategy(
         }
     };
     view! {
-        <div class="sd-assigned">
-            <div class="sd-assigned-row">
-                <RoleName role=role.clone() />
-                <Choice
-                    tip=format!("The strategy {title}s play. Everyone's is the one chosen for everyone.")
-                    value=value
-                    options=options
-                    set=set
-                    editor=editor
-                    at=at
-                />
-                <button
-                    class="sd-link"
-                    aria-expanded=move || split.get().to_string()
-                    data-tip="Give some of this role's seats to other strategies. The seats left play the strategy chosen here."
-                    on:click=move |_| split.update(|split| *split = !*split)
-                >
-                    "Split seats…"
-                </button>
-            </div>
+        <div class="sd-item sd-assigned">
+            <Square role=role.clone() />
+            <span class="sd-item-name">{title.clone()}</span>
+            <button
+                class="sd-link"
+                aria-expanded=move || split.get().to_string()
+                data-tip="Give some of this role's seats to other strategies. The seats left play the strategy chosen here."
+                on:click=move |_| split.update(|split| *split = !*split)
+            >
+                "Split seats…"
+            </button>
+            <Choice
+                tip=format!("The strategy {title}s play. Same as everyone is the one chosen for everyone.")
+                value=value
+                options=options
+                set=set
+                editor=editor
+                at=at
+            />
             <Show when=move || split.get()>
                 <div class="sd-split">{seats.clone()}</div>
             </Show>
@@ -553,8 +532,9 @@ fn RoleStrategy(
     }
 }
 
-/// A strategy's card: a header row with its name, kind, model and
-/// remove button, and, for a prompted one, its system prompt.
+/// A strategy's grouped list: its name, **Prompted | Random**, its model
+/// and its remove button, and under them, for a prompted one, its system
+/// prompt.
 #[component]
 fn StrategyCard(
     editor: Editor,
@@ -568,30 +548,22 @@ fn StrategyCard(
             s.strategies.get(&name).map(pick).unwrap_or_default()
         })
     };
-    let policy = read(|s| match s.policy {
-        Policy::Prompted => "prompted".to_string(),
-        Policy::Random => "random".to_string(),
-    });
+    let policy = {
+        let name = name.clone();
+        editor.game(game, move |s| {
+            s.strategies
+                .get(&name)
+                .map(|s| s.policy)
+                .unwrap_or_default()
+        })
+    };
+    let prompted = move || policy.get() == Policy::Prompted;
     let model = read(|s| s.model.clone());
     let system = read(|s| s.system.clone());
     let key = StoredValue::new(name.clone());
     let change = move |change: &dyn Fn(&mut StrategySettings)| {
         editor.edit_strategy(game, &key.read_value(), change);
     };
-    let policies = Signal::derive(|| {
-        vec![
-            ("prompted".to_string(), "Prompted".to_string()),
-            ("random".to_string(), "Random".to_string()),
-        ]
-    });
-    let set_policy = Callback::new(move |policy: String| {
-        let policy = if policy == "random" {
-            Policy::Random
-        } else {
-            Policy::Prompted
-        };
-        change(&|s| s.policy = policy);
-    });
     let set_model = Callback::new(move |model: String| change(&|s| s.model.clone_from(&model)));
     let at = |rest: &[&str]| game_path(game, &[&["strategies", name.as_str()], rest].concat());
     let (system_at, model_at, policy_at, name_at) =
@@ -604,22 +576,23 @@ fn StrategyCard(
             s.strategies.remove(&removed);
         });
     };
-    let prompted = move || policy.get() == "prompted";
     view! {
-        <div class="sd-card sd-strategy" id=field_id(&name_at)>
-            <div class="sd-card-head">
-                <h4 data-tip="The name roles are given this strategy by.">{name.clone()}</h4>
-                <Choice
-                    tip="Prompted: a model decides, told the system prompt. Random: every choice is made at random, and nothing is said."
+        <div class="sd-list sd-strategy" id=field_id(&name_at)>
+            <div class="sd-item">
+                <h3 class="sd-item-name" data-tip="The name roles are given this strategy by.">{name.clone()}</h3>
+                <Segments
+                    label="Policy"
+                    options=vec![
+                        (Policy::Prompted, "Prompted", "A model decides, told the system prompt."),
+                        (Policy::Random, "Random", "Every choice is made at random, and nothing is said."),
+                    ]
                     value=policy.into()
-                    options=policies
-                    set=set_policy
-                    editor=editor
-                    at=policy_at
+                    set=Callback::new(move |choice| change(&|s| s.policy = choice))
+                    id=field_id(&policy_at)
                 />
                 <Show when=prompted>
                     <Choice
-                        tip="The model this strategy asks. The models are those on the Models tab."
+                        tip="The model this strategy asks. The models are those on the Models page."
                         value=model.into()
                         options=models.into()
                         set=set_model
@@ -630,33 +603,33 @@ fn StrategyCard(
                 <button class="sd-remove" aria-label=format!("Remove {name}") data-tip="Remove this strategy. A role that plays it needs another." on:click=remove>
                     <Cross />
                 </button>
+                <Problem error=editor.error(policy_at.clone()) />
+                <Problem error=editor.error(name_at.clone()) />
+                <Show
+                    when=prompted
+                    fallback=|| view! { <p class="sd-note">"A random strategy needs no model or prompt."</p> }
+                >
+                    <textarea
+                        class="sd-mono"
+                        id=field_id(&system_at)
+                        spellcheck="false"
+                        aria-label="System prompt"
+                        data-tip="What the model is told before the game. It can pull in prompt parts with {{ name }}, and use {{ name }}, {{ role }} and {% if %} for the player it is playing."
+                        class:sd-invalid=move || system_error.with(Option::is_some)
+                        prop:value=move || system.get()
+                        on:input=move |event| {
+                            let text = event_target_value(&event);
+                            change(&|s| s.system.clone_from(&text));
+                        }
+                    ></textarea>
+                    <Problem error=system_error />
+                </Show>
             </div>
-            <Problem error=editor.error(name_at.clone()) />
-            <Show
-                when=prompted
-                fallback=|| view! { <p class="sd-note">"A random strategy needs no model or prompt."</p> }
-            >
-                <textarea
-                    class="sd-mono"
-                    id=field_id(&system_at)
-                    spellcheck="false"
-                    aria-label="System prompt"
-                    data-tip="What the model is told before the game. It can pull in prompt parts with {{ name }}, and use {{ name }}, {{ role }} and {% if %} for the player it is playing."
-                    class:sd-invalid=move || system_error.with(Option::is_some)
-                    prop:value=move || system.get()
-                    on:input=move |event| {
-                        let text = event_target_value(&event);
-                        change(&|s| s.system.clone_from(&text));
-                    }
-                ></textarea>
-                <Problem error=system_error />
-            </Show>
         </div>
     }
 }
 
-/// The prompt parts: a list of their names, each with how many
-/// strategies use it, beside the editor of the one chosen.
+/// The prompt parts, a grouped list each, and a field to add another.
 #[component]
 fn PromptParts(editor: Editor, game: GameName) -> impl IntoView {
     let names = editor.game(game, |s| s.prompt_parts.keys().cloned().collect::<Vec<_>>());
@@ -671,23 +644,12 @@ fn PromptParts(editor: Editor, game: GameName) -> impl IntoView {
             })
             .collect::<BTreeMap<String, Vec<String>>>()
     });
-    let chosen = RwSignal::new(None::<String>);
-    // The part the editor shows: the one chosen, or else the first.
-    let shown = Memo::new(move |_| {
-        names.with(|names| {
-            chosen
-                .get()
-                .filter(|name| names.contains(name))
-                .or_else(|| names.first().cloned())
-        })
-    });
     let add = Callback::new(move |name: String| {
         editor.edit_game(game, |s| {
             s.prompt_parts.entry(name.clone()).or_default();
         });
         let id = field_id(&game_path(game, &["prompt_parts", &name]));
-        chosen.set(Some(name));
-        // Once its editor is drawn, it is ready to type in.
+        // Once its text is drawn, it is ready to type in.
         request_animation_frame(move || {
             if let Some(element) = document().get_element_by_id(&id)
                 && let Ok(element) = wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlElement>(element)
@@ -707,53 +669,47 @@ fn PromptParts(editor: Editor, game: GameName) -> impl IntoView {
         })
     });
     view! {
-        <div class="sd-parts">
-            <div class="sd-part-list">
-                <For each=move || names.get() key=Clone::clone let:name>
-                    <PartItem users=users name=name chosen=chosen shown=shown />
-                </For>
-                <Adder
-                    label="Add prompt part"
-                    placeholder="Prompt part name"
-                    tip="Letters, digits, underscores and spaces, like rules or Seer only. A system prompt pulls it in with {{ name }}, spaces written as underscores."
-                    button_tip="Add an empty prompt part with this name."
-                    add=add
-                    refuse=refuse
-                    class="sd-adder-part"
-                />
-            </div>
-            {move || match shown.get() {
-                Some(name) => view! { <PartEditor editor=editor game=game name=name /> }.into_any(),
-                None => view! {
-                    <div class="sd-part-editor"><p class="sd-note">"No prompt parts. Add one on the left."</p></div>
-                }
-                .into_any(),
-            }}
-        </div>
+        <For each=move || names.get() key=Clone::clone let:name>
+            <PartEditor editor=editor game=game name=name users=users />
+        </For>
+        <Adder
+            label="Add prompt part"
+            placeholder="New prompt part"
+            tip="Letters, digits, underscores and spaces, like rules or Seer only. A system prompt pulls it in with {{ name }}, spaces written as underscores."
+            button_tip="Add an empty prompt part with this name."
+            add=add
+            refuse=refuse
+            class="sd-adder-part"
+        />
     }
 }
 
-/// A prompt part in the list: its name and how many strategies use it.
+/// A prompt part's grouped list: the `{{ name }}` that pulls it in, how
+/// many strategies use it, and **Remove**, and under them its text.
 #[component]
-fn PartItem(
-    users: Memo<BTreeMap<String, Vec<String>>>,
+fn PartEditor(
+    editor: Editor,
+    game: GameName,
     name: String,
-    chosen: RwSignal<Option<String>>,
-    shown: Memo<Option<String>>,
+    users: Memo<BTreeMap<String, Vec<String>>>,
 ) -> impl IntoView {
+    let read = name.clone();
+    let value = editor.game(game, move |s| {
+        s.prompt_parts.get(&read).cloned().unwrap_or_default()
+    });
     let read = name.clone();
     let users =
         Memo::new(move |_| users.with(|users| users.get(&read).cloned().unwrap_or_default()));
-    let (current, picked) = (name.clone(), name.clone());
-    let tip = {
-        let name = name.clone();
+    let at = game_path(game, &["prompt_parts", &name]);
+    let error = editor.error(at.clone());
+    let (written, removed) = (name.clone(), name.clone());
+    let pulled = format!("{{{{ {} }}}}", part_variable(&name));
+    let uses_tip = {
+        let pulled = pulled.clone();
         move || {
             users.with(|users| {
                 if users.is_empty() {
-                    format!(
-                        "No strategy pulls this in yet. Add {{{{ {} }}}} to a system prompt.",
-                        part_variable(&name)
-                    )
+                    format!("No strategy pulls this in yet. Add {pulled} to a system prompt.")
                 } else {
                     format!("Pulled in by {}.", users.join(", "))
                 }
@@ -761,36 +717,12 @@ fn PartItem(
         }
     };
     view! {
-        <button
-            class="sd-part"
-            aria-current=move || shown.with(|shown| shown.as_deref() == Some(current.as_str())).to_string()
-            data-tip=tip
-            on:click=move |_| chosen.set(Some(picked.clone()))
-        >
-            <span>{name}</span>
-            <span class="sd-uses">{move || uses_told(users.with(Vec::len))}</span>
-        </button>
-    }
-}
-
-/// A prompt part's editor: the `{{ name }}` that pulls it in, its text,
-/// and **Remove**.
-#[component]
-fn PartEditor(editor: Editor, game: GameName, name: String) -> impl IntoView {
-    let read = name.clone();
-    let value = editor.game(game, move |s| {
-        s.prompt_parts.get(&read).cloned().unwrap_or_default()
-    });
-    let at = game_path(game, &["prompt_parts", &name]);
-    let error = editor.error(at.clone());
-    let (written, removed) = (name.clone(), name.clone());
-    let pulled = format!("{{{{ {} }}}}", part_variable(&name));
-    view! {
-        <div class="sd-part-editor">
-            <div class="sd-part-head">
-                <code data-tip="Write this in a system prompt to pull in this part.">{pulled.clone()}</code>
-                <span class="sd-note">"Pull it into a system prompt by writing this."</span>
+        <div class="sd-list sd-part">
+            <div class="sd-item">
+                <code class="sd-item-name" data-tip="Write this in a system prompt to pull in this part.">{pulled.clone()}</code>
+                <span class="sd-note sd-uses" data-tip=uses_tip>{move || uses_told(users.with(Vec::len))}</span>
                 <button
+                    class="sd-link"
                     data-tip="Remove this prompt part. A system prompt that pulls it in shows an error."
                     on:click=move |_| {
                         editor.edit_game(game, |s| {
@@ -800,23 +732,23 @@ fn PartEditor(editor: Editor, game: GameName, name: String) -> impl IntoView {
                 >
                     "Remove"
                 </button>
+                <textarea
+                    class="sd-mono"
+                    id=field_id(&at)
+                    spellcheck="false"
+                    aria-label=format!("Text of {name}")
+                    data-tip=format!("The text that replaces {pulled} wherever a system prompt uses it.")
+                    class:sd-invalid=move || error.with(Option::is_some)
+                    prop:value=move || value.get()
+                    on:input=move |event| {
+                        let text = event_target_value(&event);
+                        editor.edit_game(game, |s| {
+                            s.prompt_parts.insert(written.clone(), text);
+                        });
+                    }
+                ></textarea>
+                <Problem error=error />
             </div>
-            <textarea
-                class="sd-mono"
-                id=field_id(&at)
-                spellcheck="false"
-                aria-label=format!("Text of {name}")
-                data-tip=format!("The text that replaces {pulled} wherever a system prompt uses it.")
-                class:sd-invalid=move || error.with(Option::is_some)
-                prop:value=move || value.get()
-                on:input=move |event| {
-                    let text = event_target_value(&event);
-                    editor.edit_game(game, |s| {
-                        s.prompt_parts.insert(written.clone(), text);
-                    });
-                }
-            ></textarea>
-            <Problem error=error />
         </div>
     }
 }
@@ -831,7 +763,7 @@ mod tests {
             "villager", "seer", "doctor", "werewolf", "merlin", "percival", "servant", "assassin",
             "morgana", "mordred", "oberon", "minion",
         ] {
-            assert!(!role_tip(role).is_empty(), "{role}");
+            assert!(!role_note(role).is_empty(), "{role}");
         }
         for phase in [
             "night_limit",
@@ -842,10 +774,23 @@ mod tests {
             "quest_limit",
             "assassinate_limit",
         ] {
-            assert!(!phase_tip(phase).is_empty(), "{phase}");
+            assert!(!phase_note(phase).is_empty(), "{phase}");
         }
-        assert_eq!(role_tip("jester"), "");
-        assert_eq!(phase_tip("lunch_limit"), "");
+        assert_eq!(role_note("jester"), "");
+        assert_eq!(phase_note("lunch_limit"), "");
+    }
+
+    #[test]
+    fn a_phase_s_help_is_its_note_then_more_then_how_to_write_it() {
+        assert_eq!(
+            phase_tip("night_limit"),
+            "How long the werewolves, the doctor and the seer have to choose. The night ends \
+             sooner once all have chosen. Like 45s or 2m."
+        );
+        assert_eq!(
+            phase_tip("assassinate_limit"),
+            "How long the Assassin has to name Merlin. Like 45s or 2m."
+        );
     }
 
     #[test]
@@ -857,8 +802,8 @@ mod tests {
     #[test]
     fn a_prompt_part_s_uses_are_counted() {
         assert_eq!(uses_told(0), "unused");
-        assert_eq!(uses_told(1), "1 use");
-        assert_eq!(uses_told(3), "3 uses");
+        assert_eq!(uses_told(1), "used by 1 strategy");
+        assert_eq!(uses_told(3), "used by 3 strategies");
     }
 
     #[test]

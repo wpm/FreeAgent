@@ -89,6 +89,11 @@ pub enum GameName {
     Avalon,
 }
 
+impl GameName {
+    /// Every game, in the order the app lists them.
+    pub const ALL: [GameName; 2] = [GameName::Werewolf, GameName::Avalon];
+}
+
 /// A side of the game: good players speak from the right, evil from the
 /// left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

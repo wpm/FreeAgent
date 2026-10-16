@@ -17,8 +17,10 @@
 // At 420 px wide the board stacks under the chat and nothing scrolls
 // sideways. The tab shows the mark. With a stand-in for the desktop app's backend,
 // the main window opens on its start state with the mark and Play, #settings opens the
-// Settings window's four tabs, help shows on hover and on focus, and
-// typing goes on in a field while each change is stored. Its Models tab
+// Settings window's four pages in a vertical tablist the arrows move
+// through, each page a few grouped lists with no box inside them and what
+// each role and phase does written under its name, help shows on hover and
+// on focus, and typing goes on in a field while each change is stored. Its Models tab
 // shows each provider by name with where its key comes from, why it lists
 // nothing, or the models that play; adding one asks for its name, and a
 // name taken or empty is refused; a context window typed overrides the
@@ -646,7 +648,7 @@ async function ringed(page, count) {
 /** Check the Models tab of the Settings window `settings`, then go back
  * to the Werewolf tab. */
 async function models(settings) {
-  await settings.click('.sd-tabs [role="tab"]:nth-child(2)');
+  await settings.click('#tab-models');
   await settings.waitForSelector('.sd-offered');
   const providers = await settings.$$eval('.sd-provider h4', (names) => names.map((name) => name.textContent.trim()));
   check(
@@ -738,7 +740,7 @@ async function models(settings) {
   await settings.screenshot({ path: join(shots, 'settings-models-added.png'), fullPage: true });
   await settings.click(`${card('Local (localhost:1234)')} .sd-window button`);
   check((await shown())[0] === '', 'desktop: Reset goes back to the provider\'s figure');
-  await settings.click('.sd-tabs [role="tab"]:nth-child(3)');
+  await settings.click('#tab-werewolf');
   await settings.waitForSelector('.sd-stepper input');
 }
 
@@ -790,11 +792,28 @@ await section('desktop', async () => {
   const settings = watch(await app.newPage());
   await settings.setViewportSize({ width: 760, height: 560 });
   await settings.goto(`${origin}#settings`);
-  await settings.waitForSelector('.sd-tabs [role="tab"]');
-  const tabs = await settings.$$eval('.sd-tabs [role="tab"]', (buttons) => buttons.map((button) => button.textContent.trim()));
+  await settings.waitForSelector('.sd-sidebar [role="tab"]');
+  const tabs = await settings.$$eval('.sd-sidebar[role="tablist"][aria-orientation="vertical"] [role="tab"]', (buttons) =>
+    buttons.map((button) => button.textContent.trim()),
+  );
   check(
     JSON.stringify(tabs) === JSON.stringify(['General', 'Models', 'Werewolf', 'Avalon']),
-    `desktop: #settings renders the four tabs (${tabs.join(', ')})`,
+    `desktop: #settings renders the four pages as a vertical tablist (${tabs.join(', ')})`,
+  );
+  // The arrows move between the pages, and the focus goes with them.
+  const current = () =>
+    settings.evaluate(() => ({
+      selected: document.querySelector('[role="tab"][aria-selected="true"]').textContent,
+      focused: document.activeElement.textContent,
+    }));
+  await settings.focus('#tab-general');
+  await settings.keyboard.press('ArrowDown');
+  const down = await current();
+  await settings.keyboard.press('ArrowUp');
+  const up = await current();
+  check(
+    down.selected === 'Models' && down.focused === 'Models' && up.selected === 'General' && up.focused === 'General',
+    `desktop: the arrow keys move between the pages (${JSON.stringify([down, up])})`,
   );
   await settings.screenshot({ path: join(shots, 'settings-general.png'), fullPage: true });
   const headings = await settings.$$eval('.sd-settings h2', (elements) => elements.map((element) => element.textContent.trim()));
@@ -816,15 +835,25 @@ await section('desktop', async () => {
   await settings.screenshot({ path: join(shots, 'settings-tip.png') });
   await settings.keyboard.press('Escape');
   check(!(await tip()).shown, 'desktop: Escape hides help');
-  for (const [index, name] of [[2, 'werewolf']]) {
-    await settings.click(`.sd-tabs [role="tab"]:nth-child(${index + 1})`);
-    await settings.waitForSelector('.sd-tab-head h2');
-    await settings.screenshot({ path: join(shots, `settings-${name}.png`), fullPage: true });
-  }
+  await settings.click('#tab-werewolf');
+  await settings.waitForSelector('.sd-page-head h1');
+  await settings.screenshot({ path: join(shots, 'settings-werewolf.png'), fullPage: true });
   await models(settings);
   const players = await settings.$$eval('.sd-stepper input', (inputs) => inputs.map((input) => input.value));
   check(JSON.stringify(players) === JSON.stringify(['2', '3', '1', '1']), `desktop: the Werewolf tab shows each role's count (${players.join(', ')})`);
-  const [restore] = await shapes(settings, '.sd-tab-head > button');
+  const notes = await settings.$$eval('.sd-role, .sd-limit', (rows) =>
+    rows.map((row) => {
+      const note = row.querySelector('.sd-note');
+      return `${row.querySelector('.sd-item-name').textContent}: ${note.checkVisibility() ? note.textContent : ''}`;
+    }),
+  );
+  check(
+    notes[0] === 'Werewolf: Knows the other werewolves. Each night they kill a villager.' &&
+      notes[4] === 'Night: How long the werewolves, the doctor and the seer have to choose.' &&
+      notes.every((note) => !note.endsWith(': ')),
+    `desktop: what each role and phase does is written under its name (${notes.join('; ')})`,
+  );
+  const [restore] = await shapes(settings, '.sd-page-head > button');
   check(
     restore.text === 'Restore defaults…' && restore.height === 40 && restore.radius === '10px' && restore.border === '1px rgb(196, 196, 196)' &&
       restore.background === 'rgb(255, 255, 255)' && restore.shadow !== 'none',
@@ -850,7 +879,7 @@ await section('desktop', async () => {
     remove.width === 32 && remove.height === 32 && remove.radius === '8px' && remove.icon && remove.shadow === 'none',
     `desktop: a remove button is a square drawn with an icon (${JSON.stringify(remove)})`,
   );
-  const [quiet] = await shapes(settings, '.sd-assigned-row .sd-link');
+  const [quiet] = await shapes(settings, '.sd-assigned .sd-link');
   check(
     quiet.background === 'rgba(0, 0, 0, 0)' && quiet.shadow === 'none' && quiet.border.startsWith('0px'),
     `desktop: Split seats… is a quiet button, with no box (${JSON.stringify(quiet)})`,
@@ -859,36 +888,43 @@ await section('desktop', async () => {
   check(sided.length === 0, `desktop: no control on the Werewolf tab is red or blue (${sided.join(' ')})`);
   const unringed = await ringed(settings, 30);
   check(unringed.length === 0, `desktop: every control on the Werewolf tab shows a focus ring (${unringed.join(' ')})`);
-  // The tab uses the window's width: players beside phase limits, short
-  // limit fields, strategies two across, and the prompt parts' list beside
-  // their editor.
+  // Each section is grouped lists, rows on hairlines, with no box inside
+  // a list but its controls.
   await settings.fill('.sd-adder-strategy input', 'bold');
   await settings.click('.sd-adder-strategy button');
-  await settings.waitForSelector('.sd-strategy:nth-child(2)');
-  const wide = await settings.evaluate(() => {
-    const box = (selector, index = 0) => document.querySelectorAll(selector)[index].getBoundingClientRect();
+  await settings.waitForSelector('.sd-strategy >> nth=1');
+  const page = await settings.evaluate(() => {
+    const controls = 'button, input, select, textarea, .sd-stepper, .sd-segments, .sd-select-box';
+    const boxed = (element) => {
+      const style = getComputedStyle(element);
+      return ['Top', 'Right', 'Bottom', 'Left'].every((side) => style[`border${side}Width`] !== '0px' && style[`border${side}Style`] !== 'none');
+    };
+    const lists = [...document.querySelectorAll('.sd-list')];
     return {
-      players: box('.sd-top > .sd-box').right <= box('.sd-top > .sd-box', 1).left,
-      limit: box('.sd-limit input').width,
-      strategies: box('.sd-strategy').right <= box('.sd-strategy', 1).left,
-      parts: box('.sd-part-list').right <= box('.sd-part-editor').left,
-      uses: [...document.querySelectorAll('.sd-part')].map((part) => part.textContent),
-      pulled: document.querySelector('.sd-part-head code').textContent,
+      sidebar: document.querySelector('.sd-sidebar').getBoundingClientRect().width,
+      lists: lists.length,
+      nested: lists.flatMap((list) =>
+        [...list.querySelectorAll('*')].filter((inner) => !inner.closest(controls) && boxed(inner)).map((inner) => inner.outerHTML.slice(0, 60)),
+      ),
+      limit: document.querySelector('.sd-limit input').getBoundingClientRect().width,
+      uses: [...document.querySelectorAll('.sd-part .sd-uses')].map((uses) => uses.textContent),
+      pulled: document.querySelector('.sd-part code').textContent,
     };
   });
-  check(wide.players && wide.strategies && wide.parts, `desktop: the Werewolf tab lays out side by side (${JSON.stringify(wide)})`);
-  check(wide.limit < 120, `desktop: a phase limit's field is short (${wide.limit}px)`);
-  check(JSON.stringify(wide.uses) === JSON.stringify(['rules1 use']), `desktop: a prompt part shows its uses (${wide.uses})`);
-  check(wide.pulled === '{{ rules }}', `desktop: a prompt part shows how to pull it in (${wide.pulled})`);
+  check(page.sidebar === 220 && page.lists >= 6, `desktop: the Werewolf page is a sidebar beside grouped lists (${JSON.stringify(page)})`);
+  check(page.nested.length === 0, `desktop: no grouped list holds another box (${page.nested.join(' ')})`);
+  check(page.limit === 80, `desktop: a phase limit's field is short (${page.limit}px)`);
+  check(JSON.stringify(page.uses) === JSON.stringify(['used by 1 strategy']), `desktop: a prompt part shows its uses (${page.uses})`);
+  check(page.pulled === '{{ rules }}', `desktop: a prompt part shows how to pull it in (${page.pulled})`);
   await settings.fill('.sd-adder-part input', 'the-tone');
   await settings.click('.sd-adder-part button');
   const refused = await settings.$eval('.sd-adder-part', (adder) => adder.textContent);
   check(refused.includes('Use letters, digits, underscores and spaces'), `desktop: a prompt part's name is letters, digits, underscores and spaces (${refused})`);
   await settings.screenshot({ path: join(shots, 'settings-werewolf-wide.png'), fullPage: true });
-  // Every control on the General, Werewolf and Avalon tabs has help.
+  // Every control on the General, Werewolf and Avalon pages has help.
   const unhelped = [];
-  for (const index of [0, 2, 3]) {
-    await settings.click(`.sd-tabs [role="tab"]:nth-child(${index + 1})`);
+  for (const tab of ['general', 'werewolf', 'avalon']) {
+    await settings.click(`#tab-${tab}`);
     await settings.waitForTimeout(100);
     unhelped.push(
       ...(await settings.$$eval('.sd-settings button, .sd-settings input, .sd-settings select, .sd-settings textarea, .sd-settings h2, .sd-settings h3', (elements) =>
@@ -898,20 +934,20 @@ await section('desktop', async () => {
   }
   check(unhelped.length === 0, `desktop: everything on General, Werewolf and Avalon has help${unhelped.map((element) => `; ${element}`).join('')}`);
   await settings.screenshot({ path: join(shots, 'settings-avalon.png'), fullPage: true });
-  // On a narrow window it all falls back to one column.
-  await settings.click('.sd-tabs [role="tab"]:nth-child(3)');
+  // On a narrow window the sidebar stacks above the page.
+  await settings.click('#tab-werewolf');
   await settings.setViewportSize({ width: 520, height: 700 });
   await settings.waitForTimeout(100);
   const narrowSettings = await settings.evaluate(() => {
-    const box = (selector, index = 0) => document.querySelectorAll(selector)[index].getBoundingClientRect();
-    const pane = document.querySelector('.sd-settings');
+    const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+    const pane = document.scrollingElement;
     return {
-      stacked: box('.sd-top > .sd-box', 1).top >= box('.sd-top > .sd-box').bottom && box('.sd-strategy', 1).top >= box('.sd-strategy').bottom,
-      wide: pane.scrollWidth,
+      stacked: box('.sd-page').top >= box('.sd-sidebar').bottom,
+      wide: Math.max(pane.scrollWidth, document.querySelector('.sd-settings').scrollWidth),
       window: pane.clientWidth,
     };
   });
-  check(narrowSettings.stacked, 'desktop: a narrow Settings window stacks the boxes');
+  check(narrowSettings.stacked, 'desktop: a narrow Settings window stacks the sidebar above the page');
   check(narrowSettings.wide <= narrowSettings.window, `desktop: a narrow Settings window scrolls only down (${narrowSettings.wide} in ${narrowSettings.window})`);
   await settings.screenshot({ path: join(shots, 'settings-werewolf-narrow.png'), fullPage: true });
   await settings.setViewportSize({ width: 760, height: 560 });

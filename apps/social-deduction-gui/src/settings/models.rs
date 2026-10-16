@@ -14,7 +14,7 @@ use social_deduction_stage::settings::{
     Provider, Trouble, Unchecked, host, is_remote, provider_at,
 };
 
-use super::{Cross, Editor, field_id, path};
+use super::{Cross, Editor, PageHead, Tab, field_id, path};
 use crate::tauri;
 
 /// What a provider is, which its card's name explains.
@@ -370,9 +370,7 @@ pub(super) fn Models(editor: Editor) -> impl IntoView {
         }
     };
     view! {
-        <div class="sd-tab-head">
-            <h2>"Models"</h2>
-        </div>
+        <PageHead title="Models" tip=Tab::Models.tip() />
         {status}
         <For
             each=move || shown.get()
