@@ -13,8 +13,8 @@
 // day, and shows a day closing, with speech landing while it does, before
 // the night falls. The prompted Avalon board names the Assassin's target.
 // At 420 px wide the board stacks under the chat and nothing scrolls
-// sideways. With a stand-in for the desktop app's backend,
-// the main window opens on its start state with Play, #settings opens the
+// sideways. The tab shows the mark. With a stand-in for the desktop app's backend,
+// the main window opens on its start state with the mark and Play, #settings opens the
 // Settings window's four tabs, help shows on hover and on focus, and
 // typing goes on in a field while each change is stored. Its Models tab
 // shows each provider by name with where its key comes from, why it lists
@@ -45,6 +45,7 @@ const types = {
   '.wasm': 'application/wasm',
   '.css': 'text/css',
   '.json': 'application/json',
+  '.svg': 'image/svg+xml',
 };
 const server = createServer(async (request, response) => {
   const path = normalize(decodeURIComponent(new URL(request.url, 'http://x').pathname));
@@ -377,6 +378,16 @@ await section('narrow', async () => {
   await page.screenshot({ path: join(shots, 'avalon-narrow.png'), fullPage: true });
 });
 
+await section('favicon', async () => {
+  const link = await page.$eval('link[rel="icon"]', (icon) => ({ href: icon.href, type: icon.type }));
+  const served = await page.request.get(link.href);
+  const mark = await served.text();
+  check(
+    served.ok() && link.type === 'image/svg+xml' && mark.includes('viewBox="6 20 76 56"'),
+    `favicon: the tab shows the mark (${link.href})`,
+  );
+});
+
 // The desktop app, its backend stood in for by an init script that
 // answers each command with what the app would start with.
 const desktop = {
@@ -607,6 +618,16 @@ await section('desktop', async () => {
   check(play.text === 'Play' && !play.disabled, `desktop: the start state shows Play (${JSON.stringify(play)})`);
   const summary = await main.$eval('.sd-summary', (element) => element.textContent);
   check(summary === '7 players · 1 strategy · qwen2.5-7b-instruct-1m', `desktop: the start state sums up the game (${summary})`);
+  const logo = await main.$eval('.sd-logo svg', (svg) => ({
+    tiles: svg.querySelectorAll('rect:not(mask rect)').length,
+    evil: getComputedStyle(svg.querySelector(':scope > path')).fill,
+    good: getComputedStyle(svg.querySelector(':scope > use')).fill,
+    gap: getComputedStyle(svg.querySelector(':scope > path')).mask,
+  }));
+  check(
+    logo.tiles === 0 && logo.evil === 'rgb(210, 0, 31)' && logo.good === 'rgb(36, 56, 232)' && logo.gap !== 'none',
+    `desktop: the start state shows the red and blue balloons, a gap cut between them (${JSON.stringify(logo)})`,
+  );
   await main.screenshot({ path: join(shots, 'desktop-start.png'), fullPage: true });
   await main.hover('.sd-play');
   const played = await main.$eval('.sd-tip', (element) => !element.hidden && element.textContent);

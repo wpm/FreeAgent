@@ -14,8 +14,8 @@ use crate::tauri::{self, Cues};
 use crate::tip::Tips;
 use crate::view::{Live, Viewer};
 
-/// The app's logo.
-const LOGO: &str = include_str!("../src-tauri/icon.svg");
+/// The app's mark: its two balloons, without the tile.
+const LOGO: &str = include_str!("../src-tauri/mark.svg");
 
 /// Hold the page to `theme`, or leave it to the system.
 pub(crate) fn set_theme(theme: Option<&str>) {
