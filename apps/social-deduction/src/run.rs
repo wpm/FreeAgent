@@ -2,13 +2,13 @@
 //! [`Keys`] its models' API keys come from. [`prepare`] does everything
 //! that can fail before the game starts: it settles the configuration,
 //! renders every prompt, sets up and probes every model in play, and deals
-//! the seats. What it gives back builds the episode, logging to a logger
-//! its caller owns.
+//! the seats. What it gives back builds each episode, logging to a logger
+//! its caller owns, and deals the seats again between episodes.
 
 use crate::avalon::Avalon;
-use crate::config::{self, Configuration, Name, Settings, Settled};
+use crate::config::{self, Configuration, Name, Settings, Settled, SystemPrompt};
 use crate::game::{self, Actor, Entry, Game};
-use crate::model::spec::{Handles, Keys};
+use crate::model::spec::{Handles, Keys, Models};
 use crate::seat::{Dealt, PlayerId};
 use crate::werewolf::Werewolf;
 use free_agent::{Episode, Logger};
@@ -54,13 +54,17 @@ pub async fn prepare(text: &str, keys: &dyn Keys) -> anyhow::Result<Prepared> {
     Prepared::new(config::parse(text)?, keys).await
 }
 
-/// A game of `G` ready to start: its deal, its rules, the configuration
-/// the log records, and the handle each model in play is asked through.
+/// A game of `G` ready to start: the settings it is played under, every
+/// system prompt they render, the models in play as they were set up, the
+/// handle each is asked through, and the deal of the next episode with the
+/// configuration its log records.
 pub struct Ready<G: Game> {
-    deal: HashMap<PlayerId, Dealt<G::Role>>,
-    rules: G::Rules,
-    configuration: Configuration<G>,
+    settings: Settings<G>,
+    prompts: Vec<SystemPrompt<G::Role>>,
+    models: Models,
     handles: Handles,
+    deal: HashMap<PlayerId, Dealt<G::Role>>,
+    configuration: Configuration<G>,
 }
 
 impl<G: Game> Ready<G> {
@@ -72,23 +76,37 @@ impl<G: Game> Ready<G> {
         let prompts = settings.prompts()?;
         let (models, handles) = settings.set_up(&prompts, keys).await?;
         let deal = settings.lineup.deal();
-        let configuration = settings.configuration(&deal, &prompts, models)?;
+        let configuration = settings.configuration(&deal, &prompts, models.clone())?;
         Ok(Ready {
-            deal,
-            rules: settings.rules(),
-            configuration,
+            settings,
+            prompts,
+            models,
             handles,
+            deal,
+            configuration,
         })
     }
 
-    /// The episode that plays this game, logging to `logger`.
-    pub fn episode(self, logger: Logger<Entry<G>>) -> Episode<Actor<G>> {
+    /// Deal the same (role, strategy) pairs to the same seats again, in a
+    /// new random order, for the next episode. The models stay as they were
+    /// set up.
+    pub fn redeal(&mut self) -> anyhow::Result<()> {
+        self.deal = self.settings.lineup.deal();
+        self.configuration =
+            self.settings
+                .configuration(&self.deal, &self.prompts, self.models.clone())?;
+        Ok(())
+    }
+
+    /// The episode that plays this game as it is dealt, logging to
+    /// `logger`.
+    pub fn episode(&self, logger: Logger<Entry<G>>) -> Episode<Actor<G>> {
         let players = config::players(&self.configuration, &self.deal, &self.handles);
         let (winner, _) = oneshot::channel();
         game::game(
-            self.deal,
-            self.rules,
-            self.configuration,
+            self.deal.clone(),
+            self.settings.rules(),
+            self.configuration.clone(),
             winner,
             players,
             logger,
@@ -99,10 +117,12 @@ impl<G: Game> Ready<G> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::canned::playing;
     use crate::model::spec::Environment;
     use crate::{avalon, werewolf};
     use free_agent::Event;
     use secrecy::SecretString;
+    use std::collections::HashSet;
     use std::path::Path;
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
@@ -159,6 +179,81 @@ mod tests {
             .err()
             .unwrap();
         assert!(format!("{error:#}").contains("unknown variant `chess`"));
+    }
+
+    /// Every seat in `deal`, with the role and the strategy dealt it, in
+    /// seat order.
+    fn seated<R: std::fmt::Display>(deal: &HashMap<PlayerId, Dealt<R>>) -> Vec<String> {
+        let mut seated: Vec<String> = deal
+            .iter()
+            .map(|(seat, dealt)| format!("{seat}: {} {}", dealt.role, dealt.strategy))
+            .collect();
+        seated.sort();
+        seated
+    }
+
+    /// The seats of `deal`, in order.
+    fn seats<R>(deal: &HashMap<PlayerId, Dealt<R>>) -> Vec<&PlayerId> {
+        let mut seats: Vec<&PlayerId> = deal.keys().collect();
+        seats.sort();
+        seats
+    }
+
+    /// The (role, strategy) pairs `deal` deals, in order.
+    fn pairs<R: Copy + Ord>(deal: &HashMap<PlayerId, Dealt<R>>) -> Vec<(R, &str)> {
+        let mut pairs: Vec<(R, &str)> = deal
+            .values()
+            .map(|dealt| (dealt.role, dealt.strategy.as_str()))
+            .collect();
+        pairs.sort();
+        pairs
+    }
+
+    /// The game of Werewolf the file `text` describes, made ready.
+    async fn werewolf(text: &str) -> Ready<Werewolf> {
+        let settings = werewolf::config::parse(text).unwrap().settle().unwrap();
+        Ready::new(settings, &Environment).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_redeal_gives_the_same_pairs_to_the_same_seats_in_a_new_order() {
+        let text = "[strategies.dice]\npolicy = \"random\"\n\
+                    [strategies.coin]\npolicy = \"random\"\n\
+                    [roles.werewolf.strategies]\ndice = 1\ncoin = 1\n\
+                    [roles.villager.strategies]\ndice = 2\ncoin = 1\n";
+        let mut ready = werewolf(text).await;
+        let first = ready.deal.clone();
+        let mut deals = HashSet::from([seated(&first)]);
+        for _ in 0..50 {
+            ready.redeal().unwrap();
+            assert_eq!(seats(&ready.deal), seats(&first));
+            assert_eq!(pairs(&ready.deal), pairs(&first));
+            deals.insert(seated(&ready.deal));
+        }
+        // Seven seats dealt fifty times over are not dealt alike every time.
+        assert!(deals.len() > 1, "{deals:?}");
+    }
+
+    #[tokio::test]
+    async fn a_redeal_tells_each_prompted_player_the_prompt_of_its_new_role() {
+        let base_url = playing(&["qwen2.5-7b-instruct"]);
+        let text = format!(
+            "[models.qwen]\nbase_url = \"{base_url}\"\nid = \"qwen2.5-7b-instruct\"\n\
+             [strategies.plain]\npolicy = \"prompted\"\nsystem = \"{{{{ name }}}} the {{{{ role }}}}\"\n\
+             [roles.werewolf]\nstrategy = \"plain\"\n\
+             [roles.villager]\nstrategy = \"plain\"\n\
+             [roles.doctor]\nstrategy = \"plain\"\n\
+             [roles.seer]\nstrategy = \"plain\"\n"
+        );
+        let mut ready = werewolf(&text).await;
+        for _ in 0..3 {
+            ready.redeal().unwrap();
+            assert_eq!(ready.configuration.prompts.len(), ready.deal.len());
+            for (seat, dealt) in &ready.deal {
+                let told = format!("{seat} the {}", dealt.role);
+                assert_eq!(ready.configuration.prompts[seat], told);
+            }
+        }
     }
 
     /// Keys that hold none.
