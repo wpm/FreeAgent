@@ -786,35 +786,168 @@ body,
   }
 }
 
-/* The desktop app's start state */
+/* The desktop app's start state: the header stays put and the list of
+   games scrolls under it. */
 
 .sd-start {
-  min-height: 100vh;
+  height: 100vh;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  padding: 2rem 1rem;
   background: var(--rc-bg);
   color: var(--rc-fg);
-  text-align: center;
+}
+
+.sd-start-head,
+.sd-start-body {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: calc(920px + 4rem);
+  margin: 0 auto;
+  padding: 0 2rem;
+}
+
+.sd-start-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 36px;
+  padding-bottom: 24px;
+}
+
+.sd-logo {
+  display: flex;
 }
 
 .sd-logo svg {
-  width: 7rem;
-  height: auto;
+  width: 44px;
+  height: 32px;
 }
 
-.sd-summary {
+.sd-start-head h1 {
   margin: 0;
-  color: var(--rc-muted);
+  font: 700 22px/1.2 var(--sd-serif);
+}
+
+.sd-start .sd-open-settings {
+  margin-left: auto;
+  font: 500 13px/1 var(--sd-sans);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-underline-offset: 3px;
+}
+
+.sd-start-body {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 3rem;
+}
+
+.sd-tagline {
+  margin: 0 0 28px;
+  color: var(--sd-muted);
+  font: italic 20px/1.4 var(--sd-serif);
+}
+
+.sd-start .sd-error {
+  margin: 0 0 1.5rem;
+  white-space: pre-wrap;
+}
+
+.sd-game-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-bottom: 1px solid var(--sd-ink);
+}
+
+.sd-game {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 1rem 2rem;
+  padding: 28px 0;
+  border-top: 1px solid var(--sd-ink);
+}
+
+.sd-game h2 {
+  margin: 0 0 12px;
+  font: 700 44px/1.1 var(--sd-serif);
+  letter-spacing: -0.01em;
+}
+
+.sd-game-list:has(> :nth-child(3)) h2 {
+  font-size: 32px;
+}
+
+.sd-description {
+  max-width: 600px;
+  margin: 0 0 14px;
+  font: 18px/1.5 var(--sd-serif);
+}
+
+.sd-game-table {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.sd-game-seats {
+  display: flex;
+  gap: 4px;
+}
+
+.sd-game-seats > span {
+  width: 14px;
+  height: 14px;
+}
+
+.sd-game-seats > .sd-good {
+  background: var(--sd-good);
+}
+
+.sd-game-seats > .sd-evil {
+  background: var(--sd-evil);
+}
+
+.sd-game-summary {
+  color: var(--sd-muted);
+  font: 700 11px/1 var(--sd-sans);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 .sd-run {
   display: flex;
   gap: 0.5rem;
+}
+
+.sd-start .sd-game-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  font: 17px/1.4 var(--sd-serif);
+}
+
+.sd-game-error .sd-link {
+  font: inherit;
+}
+
+@media (max-width: 600px) {
+  .sd-start-head,
+  .sd-start-body {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .sd-start-head {
+    padding-top: 20px;
+  }
+
+  .sd-game {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Controls, all ink. Every button is a secondary one, white on a
@@ -1041,13 +1174,6 @@ body,
 
 .sd-chip code {
   font-family: var(--sd-mono);
-}
-
-.sd-start .sd-error {
-  max-width: 40rem;
-  margin: 0;
-  white-space: pre-wrap;
-  text-align: left;
 }
 
 .sd-spinner {
@@ -1305,8 +1431,7 @@ body,
 
 /* Descriptions are the serif, in italic. */
 
-.sd-note,
-.sd-summary {
+.sd-note {
   font-family: var(--sd-serif);
   font-style: italic;
 }

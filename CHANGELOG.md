@@ -18,8 +18,8 @@ workflow takes a version's notes from here.
   chat beside a live Avalon board, built with Leptos and Rich-Chat. Every
   push to `main` plays a random game of Avalon and deploys it to
   <https://wpm.github.io/FreeAgent/viewer/>.
-- The viewer as a desktop app, built with Tauri: choose a game, press
-  **Play**, and watch it live, with **Stop**. API keys come from the OS
+- The viewer as a desktop app, built with Tauri: press a game's **Play**
+  and watch it live, with **Stop**. API keys come from the OS
   keychain, then the environment.
 - Installers for the desktop app on each release: a `.dmg` for macOS, a
   setup `.exe` and an `.msi` for Windows, and an `.AppImage`, a `.deb` and
@@ -33,8 +33,8 @@ workflow takes a version's notes from here.
   OpenAI-compatible provider can be added. API keys sit with their
   provider, in the OS keychain. A provider whose models can't be checked,
   as when its account has no credits left, says why on its card.
-  The main window opens on a start state with **Werewolf** or **Avalon**
-  and **Play**, and **File** imports and exports configuration files that
+  The main window opens on a start state listing the games, each with
+  what it is, its seats and its own **Play**, and **File** imports and exports configuration files that
   `social-deduction play` plays the same way.
 - `social_deduction::settings`, the desktop app's settings, which make
   the configuration a game is played from; `social_deduction::catalog`,

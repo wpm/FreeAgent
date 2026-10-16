@@ -53,7 +53,6 @@ pub fn run() {
             settings::settings_get,
             settings::settings_set,
             settings::settings_open,
-            settings::game_choose,
             settings::game_defaults,
             catalog::providers,
             catalog::listing,

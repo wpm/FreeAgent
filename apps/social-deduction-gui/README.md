@@ -36,12 +36,13 @@ as fast.
 ## The desktop app
 
 The desktop app plays a game live. Its main window opens on a start
-state: choose **Werewolf** or **Avalon**, read the line that sums up its
-settings, and press **Play**. A game whose settings have an error names
-the first one under **Play**, linked to its field in Settings. The game
-plays live in the window, with **Stop**, and once it is over, **New
+state that lists the games, each with what it is, a square per seat in
+its side's color, a line summing up its settings, and its own **Play**. A
+game whose settings have an error names the first one under its row,
+linked to its field in Settings, and the other games stay playable. The
+game plays live in the window, with **Stop**, and once it is over, **New
 game** appears. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
-start state. The game last played is chosen at launch.
+start state.
 
 **Settings…** (⌘, on macOS, **Edit ▸ Preferences…** and Ctrl+, elsewhere)
 opens the Settings window. Every change is stored as it is made and

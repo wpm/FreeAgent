@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::GameName;
+use crate::{GameName, Role, Side};
 
 /// The strategy that is always defined, with the random policy.
 pub const RANDOM: &str = "random";
@@ -386,6 +386,20 @@ impl GameSettings {
     /// How many players sit at the table.
     pub fn players(&self) -> usize {
         self.roles.iter().map(|role| role.count).sum()
+    }
+
+    /// The side of each seat at the table, evil first.
+    pub fn seats(&self) -> Vec<Side> {
+        let count = |side| {
+            self.roles
+                .iter()
+                .filter(|role| Role::from_key(&role.key).map(Role::side) == Some(side))
+                .map(|role| role.count)
+                .sum()
+        };
+        std::iter::repeat_n(Side::Evil, count(Side::Evil))
+            .chain(std::iter::repeat_n(Side::Good, count(Side::Good)))
+            .collect()
     }
 
     /// The names of the strategies allotted a seat, as a game allots them:
@@ -826,6 +840,23 @@ mod tests {
         assert_eq!(
             settings.summary(GameName::Avalon),
             "1 player · 1 strategy · ghost"
+        );
+    }
+
+    #[test]
+    fn a_game_s_seats_are_its_roles_sides_evil_first() {
+        let settings = GameSettings {
+            roles: vec![
+                role("villager", 2, None),
+                role("werewolf", 1, None),
+                role("seer", 1, None),
+                role("doctor", 0, None),
+            ],
+            ..GameSettings::default()
+        };
+        assert_eq!(
+            settings.seats(),
+            [Side::Evil, Side::Good, Side::Good, Side::Good]
         );
     }
 
