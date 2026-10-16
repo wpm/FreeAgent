@@ -46,13 +46,13 @@ start state.
 
 **Settings…** (⌘, on macOS, **Edit ▸ Preferences…** and Ctrl+, elsewhere)
 opens the Settings window. Every change is stored as it is made and
-applies to the next game. Each field's error shows in red beneath it, and
+applies to the next game. Each field's error shows in marigold beneath it, and
 hovering over anything, or focusing it, shows what it is and what changing
 it does.
 
 - **General**: the appearance, System, Light or Dark. System keeps
   Werewolf dark by night and light by day.
-- **Models**: a card for each provider, holding its base URL and key,
+- **Models**: a section for each provider, holding its base URL and key,
   **Your models** from it, and **Available**: its models that play and
   aren't added yet, most capable first, each with its context window and
   **Add**. Adding one asks for its name, filled in with the model id. A
@@ -62,7 +62,7 @@ it does.
   stays under **Your models** with "No longer plays" and the strategies
   that use it. The key line names the variable and where its key comes
   from, the environment or the keychain, which takes priority, and stores
-  or removes it there. **Add provider…** adds any other OpenAI-compatible
+  or removes it there. **Add provider…**, by the page's title, adds any other OpenAI-compatible
   service by name, base URL and key variable. Hovering over or focusing
   anything shows what it does.
 - **Werewolf** and **Avalon**: the role counts beside the phase limits
@@ -82,9 +82,9 @@ and after each update, a model a provider lists for the first time, and a
 provider's models again when its key changes. A remote provider's are
 checked four at a time; a local server's one at a time, since it loads
 each model it is asked about, and never while a game plays. A line at the
-top of the Models tab says what is being checked. A model that can't be
+top of the Models page says what is being checked. A model that can't be
 asked, as when the provider doesn't accept the key, is asked again when
-Settings next opens, and its provider's card says why in red, the
+Settings next opens, and its provider says why in a marigold warning, the
 provider's own words in its help. When the account is the reason, such as
 no credits left, the provider's other models wait for the next try too. A
 provider none of whose models play says why most of them didn't, and its

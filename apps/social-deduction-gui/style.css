@@ -31,6 +31,7 @@
   --sd-sidebar-on: #e6e6e6;
   --sd-list-line: #dedede;
   --sd-list-rule: #ececec;
+  --sd-well: #f5f5f5;
 
   --sd-serif: Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
   --sd-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
@@ -81,6 +82,7 @@
     --sd-sidebar-on: #262626;
     --sd-list-line: #333333;
     --sd-list-rule: #262626;
+    --sd-well: #1c1c1c;
   }
 }
 
@@ -105,6 +107,7 @@
   --sd-sidebar-on: #262626;
   --sd-list-line: #333333;
   --sd-list-rule: #262626;
+  --sd-well: #1c1c1c;
 }
 
 /* The page */
@@ -173,8 +176,7 @@ body,
 
 .sd-heading,
 .sd-phase-name,
-.sd-board h2,
-.sd-label {
+.sd-board h2 {
   font-family: var(--sd-sans);
   font-size: 12px;
   font-weight: 700;
@@ -325,6 +327,11 @@ body,
 
 .sd-error {
   padding: 1rem;
+}
+
+.sd-warning {
+  margin: 0;
+  font-size: 15px;
 }
 
 /* The chat */
@@ -1232,6 +1239,10 @@ body,
 
 .sd-sidebar-label {
   margin: 18px 14px 6px;
+}
+
+.sd-sidebar-label,
+.sd-label {
   color: var(--sd-muted);
   font: 700 10px/1 var(--sd-sans);
   letter-spacing: 0.12em;
@@ -1354,54 +1365,10 @@ body,
   box-shadow: 0 0 0 1px var(--sd-warn);
 }
 
-.sd-field {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.sd-field > span {
-  flex: 0 0 9rem;
-}
-
-.sd-field > input {
-  flex: 1;
-}
-
-.sd-field > input[type="number"] {
-  flex: 0 0 7rem;
-}
-
 .sd-field-error {
   margin: 0;
   font-size: 0.85rem;
   white-space: pre-wrap;
-}
-
-.sd-field + .sd-field-error {
-  margin-left: 9.5rem;
-}
-
-.sd-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  padding: 0.75rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.5rem;
-}
-
-.sd-card-head {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.sd-card-head h4 {
-  margin: 0;
-  flex: 1;
-  font-size: 0.95rem;
 }
 
 .sd-mono {
@@ -1410,20 +1377,7 @@ body,
   font: 13px/1.5 var(--sd-mono);
 }
 
-.sd-row,
-.sd-key {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.sd-row input[type="text"],
-.sd-row input[type="password"] {
-  flex: 1;
-}
-
-.sd-note,
-.sd-url {
+.sd-note {
   margin: 0;
   color: var(--sd-muted);
   font-size: 0.85rem;
@@ -1581,40 +1535,66 @@ label[data-tip] {
   cursor: help;
 }
 
-/* The Models tab */
+/* The Models page: the checking line in a gray well, then a section
+   per provider under a rule. */
 
 .sd-status {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.5rem;
-  background: color-mix(in srgb, var(--rc-accent) 12%, transparent);
-  font-size: 0.85rem;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: var(--sd-well);
+  font: 15px/1.4 var(--sd-serif);
 }
 
 .sd-status .sd-spinner {
   flex: none;
-  color: var(--rc-accent);
 }
 
-.sd-provider h4 {
-  flex: 0 1 auto;
+.sd-provider {
+  gap: 16px;
+  padding: 24px 0;
+  border-top: 1px solid var(--sd-rule);
 }
 
-.sd-provider .sd-url {
+/* A label over its grouped list. */
+
+.sd-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sd-group .sd-label {
+  margin: 0;
+}
+
+.sd-url {
   flex: 1;
-  font-family: var(--sd-mono);
+  color: var(--sd-muted);
+  font: 13px var(--sd-mono);
   overflow-wrap: anywhere;
 }
 
-.sd-key {
+/* The key: a gray chip saying where it is, then its quiet action, and
+   the keychain's field below. */
+
+.sd-key,
+.sd-key-form {
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  font-size: 0.85rem;
+  gap: 8px 16px;
 }
 
-.sd-key input[type="password"] {
+.sd-key-form input,
+.sd-add-provider input {
   flex: 1 1 14rem;
+}
+
+.sd-key-form input {
   max-width: 22rem;
 }
 
@@ -1630,83 +1610,56 @@ label[data-tip] {
   background: none;
 }
 
-.sd-label {
-  margin: 0.4rem 0 0;
-  color: var(--sd-muted);
-}
-
-.sd-models {
-  display: grid;
-  gap: 0.25rem;
-}
-
-.sd-model {
-  display: grid;
-  grid-template-columns: minmax(7rem, 1fr) minmax(9rem, 1.3fr) auto auto;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.3rem 0.5rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.4rem;
-}
-
-.sd-model > p {
-  grid-column: 1 / -1;
-  margin: 0;
-}
-
-.sd-offered {
-  grid-template-columns: minmax(9rem, 1fr) auto auto;
-  border-style: dashed;
-}
-
-.sd-adding {
-  grid-template-columns: minmax(9rem, 1fr) minmax(8rem, 1fr) auto auto;
-}
-
-.sd-warned {
-  border-color: var(--sd-warn);
-}
-
-.sd-warning {
-  font-size: 0.85rem;
-}
+/* A model's row: its name, its id, its context window and what resets or
+   removes it. A model offered has its id, its window and Add. */
 
 .sd-id {
+  flex: 1 1 10rem;
   min-width: 0;
-  color: var(--rc-muted);
-  font-family: var(--sd-mono);
-  font-size: 0.8rem;
+  color: var(--sd-muted);
+  font: 13px/1.4 var(--sd-mono);
   overflow-wrap: anywhere;
 }
 
 .sd-settings input.sd-name {
+  flex: none;
+  width: 140px;
+  font-size: 15px;
   font-weight: 600;
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-}
-
-.sd-settings input.sd-name:hover,
-.sd-settings input.sd-name:focus {
-  border-color: var(--rc-border);
 }
 
 .sd-window {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 12px;
 }
 
 .sd-window input {
-  width: 7.5rem;
+  width: 120px;
   text-align: right;
 }
 
-@media (max-width: 600px) {
-  .sd-model,
-  .sd-offered,
-  .sd-adding {
-    grid-template-columns: 1fr auto;
-  }
+.sd-window input {
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-window > span,
+.sd-tokens {
+  color: var(--sd-muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-adding input {
+  flex: 1 1 10rem;
+}
+
+.sd-add-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sd-add-provider .sd-item-name {
+  flex: 0 0 8rem;
 }
