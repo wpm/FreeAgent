@@ -1,6 +1,6 @@
-//! The binary names a game and its configuration file, plays one game,
-//! tells it on standard output, and logs it to standard error as JSON
-//! lines.
+//! The binary names a game and its configuration file, plays one game or
+//! as many episodes as it is asked, tells them on standard output, and logs
+//! them to standard error as JSON lines.
 
 use free_agent::Event;
 use serde::de::DeserializeOwned;
@@ -233,7 +233,7 @@ fn the_settings_the_file_holds_are_unknown_arguments() {
 }
 
 #[test]
-fn help_lists_play_and_models_and_play_the_file_and_the_log_flags_alone() {
+fn help_lists_play_and_models_and_play_the_file_the_episodes_and_the_log_flags_alone() {
     let help = printed(&["--help"]);
     let commands: Vec<&str> = help
         .split("Commands:")
@@ -252,7 +252,11 @@ fn help_lists_play_and_models_and_play_the_file_and_the_log_flags_alone() {
         .split_whitespace()
         .filter(|word| word.starts_with("--"))
         .collect();
-    assert_eq!(flags, ["--log", "--no-log", "--help"], "{help}");
+    assert_eq!(
+        flags,
+        ["--episodes", "--log", "--no-log", "--help"],
+        "{help}"
+    );
 }
 
 #[test]
@@ -1256,6 +1260,73 @@ fn no_log_leaves_standard_error_empty_and_the_game_is_still_told_in_werewolf() {
 #[test]
 fn no_log_leaves_standard_error_empty_and_the_game_is_still_told_in_avalon() {
     assert_no_log_leaves_standard_error_empty::<Avalon>();
+}
+
+/// Each (role, strategy) pair a deal of `roles` and `strategies` deals, in
+/// order.
+fn pairs<R: ToString>(
+    roles: &HashMap<PlayerId, R>,
+    strategies: &HashMap<PlayerId, String>,
+) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = roles
+        .iter()
+        .map(|(id, role)| (role.to_string(), strategies[id].clone()))
+        .collect();
+    pairs.sort();
+    pairs
+}
+
+/// Play the random example of `G` for three episodes, and check that they
+/// are logged one after another, each under an episode id of its own and
+/// opening with its deal, that every deal gives the same pairs to the same
+/// players, and that the episodes are told in turn, set off by a blank
+/// line.
+fn assert_episodes_play_in_turn<G: Tested>() {
+    let random = example(G::KEY, "random.toml");
+    let (events, printed) = played::<game::Entry<G>>(&[&random, "--episodes", "3"]);
+    let mut episodes: Vec<_> = events.iter().map(|event| event.episode).collect();
+    episodes.dedup();
+    assert_eq!(episodes.len(), 3, "{episodes:?}");
+    assert_eq!(HashSet::<_>::from_iter(&episodes).len(), 3, "{episodes:?}");
+    let mut deals = Vec::new();
+    for episode in episodes {
+        let logged: Vec<_> = events
+            .iter()
+            .filter(|event| event.episode == episode)
+            .cloned()
+            .collect();
+        let (roles, strategies) = start(&logged);
+        let mut players: Vec<PlayerId> = roles.keys().cloned().collect();
+        players.sort();
+        deals.push((players, pairs(roles, strategies)));
+    }
+    assert!(deals.iter().all(|deal| *deal == deals[0]), "{deals:?}");
+    assert_eq!(deals[0].0.len(), G::SEATS);
+    let seated = format!("{} players:\n", G::SEATS);
+    assert!(printed.starts_with(&seated), "{printed}");
+    assert_eq!(printed.matches(&seated).count(), 3, "{printed}");
+    assert_eq!(
+        printed.matches(&format!("\n\n{seated}")).count(),
+        2,
+        "{printed}"
+    );
+}
+
+#[test]
+fn episodes_play_one_after_another_with_the_same_players_and_pairs_in_werewolf() {
+    assert_episodes_play_in_turn::<Werewolf>();
+}
+
+#[test]
+fn episodes_play_one_after_another_with_the_same_players_and_pairs_in_avalon() {
+    assert_episodes_play_in_turn::<Avalon>();
+}
+
+#[test]
+fn no_episodes_is_a_usage_error() {
+    let random = example("werewolf", "random.toml");
+    let stderr = assert_usage_error(&["play", &random, "--episodes", "0"]);
+    assert!(stderr.contains("--episodes"), "{stderr}");
 }
 
 /// Check that a game of `G` whose model does not play when asked is

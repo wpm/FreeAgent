@@ -9,6 +9,11 @@ workflow takes a version's notes from here.
 
 ### Added
 
+- `social-deduction play --episodes N` plays N games in one run, one after
+  another, for training data. Models are set up once, and every episode
+  deals the same roles and strategies to the same players in a new random
+  order, so a player's name and seat say nothing about their role. Each
+  episode logs under an episode ID of its own.
 - A viewer for social deduction games, in the browser: the game as a group
   chat beside a live Avalon board, built with Leptos and Rich-Chat. Every
   push to `main` plays a random game of Avalon and deploys it to

@@ -1,7 +1,8 @@
 //! Play a social deduction game: name its configuration file, which names
-//! the game, deal the roles and strategies, run one game, log it to standard error as
-//! JSON lines, and tell it on standard output as it happens. Or list the
-//! models a provider serves, which belongs to no game.
+//! the game, deal the roles and strategies, run one game or as many
+//! episodes as asked, log them to standard error as JSON lines, and tell
+//! them on standard output as they happen. Or list the models a provider
+//! serves, which belongs to no game.
 
 use clap::{Args, Parser};
 use free_agent::{Behavior, Episode, Event, Logger};
@@ -18,6 +19,7 @@ use social_deduction::report::Line;
 use social_deduction::run::{Prepared, Ready};
 use std::fmt::Write as _;
 use std::io::{self, Write};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -45,11 +47,16 @@ enum CommandLine {
     },
 }
 
-/// A game to play: its configuration file, and whether it is logged.
+/// A game to play: its configuration file, how many episodes of it, and
+/// whether it is logged.
 #[derive(Args, Debug, PartialEq)]
 struct Play {
     /// The TOML configuration file, whose `game` key names the game
     config: PathBuf,
+    /// Play this many episodes, one after another, each dealing the same
+    /// roles and strategies to the same players in a new random order
+    #[arg(long, value_name = "N", default_value_t = NonZeroUsize::MIN)]
+    episodes: NonZeroUsize,
     #[command(flatten)]
     logging: Logging,
 }
@@ -78,12 +85,14 @@ impl Logging {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match CommandLine::parse() {
-        CommandLine::Play(Play { config, logging }) => {
-            match Prepared::new(config::load(&config)?, &Environment).await? {
-                Prepared::Werewolf(ready) => run(*ready, logging.enabled()).await,
-                Prepared::Avalon(ready) => run(*ready, logging.enabled()).await,
-            }
-        }
+        CommandLine::Play(Play {
+            config,
+            episodes,
+            logging,
+        }) => match Prepared::new(config::load(&config)?, &Environment).await? {
+            Prepared::Werewolf(ready) => run(*ready, episodes, logging.enabled()).await,
+            Prepared::Avalon(ready) => run(*ready, episodes, logging.enabled()).await,
+        },
         CommandLine::Models {
             base_url,
             api_key_env,
@@ -159,15 +168,27 @@ fn listing(models: &[(String, Option<Mark>)]) -> String {
     listing
 }
 
-/// Play the game of `G` that is `ready`, logged when `logging` is on.
-async fn run<G: Game>(ready: Ready<G>, logging: bool) -> anyhow::Result<()> {
-    let mut narrator = G::Narrator::default();
-    play(
-        logging,
-        move |event| narrator.narrate(event),
-        |logger| ready.episode(logger),
-    )
-    .await
+/// Play `episodes` episodes of the game of `G` that is `ready`, one after
+/// another, each dealt afresh, logged when `logging` is on. Each episode's
+/// account is set off from the one before it by a blank line.
+async fn run<G: Game>(
+    ready: Ready<G>,
+    episodes: NonZeroUsize,
+    logging: bool,
+) -> anyhow::Result<()> {
+    for episode in 0..episodes.get() {
+        if episode > 0 {
+            writeln!(io::stdout())?;
+        }
+        let mut narrator = G::Narrator::default();
+        play(
+            logging,
+            move |event| narrator.narrate(event),
+            |logger| ready.episode(logger),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Play one game, the episode `game` builds once given the logger the
@@ -225,6 +246,7 @@ mod tests {
     fn logged(logging: Logging) -> CommandLine {
         CommandLine::Play(Play {
             config: PathBuf::from("game.toml"),
+            episodes: NonZeroUsize::MIN,
             logging,
         })
     }
@@ -285,6 +307,25 @@ mod tests {
     }
 
     #[test]
+    fn play_plays_one_episode_unless_episodes_says_how_many() {
+        assert_eq!(play(&["game.toml"]), logged(Logging::default()));
+        let three = CommandLine::Play(Play {
+            config: PathBuf::from("game.toml"),
+            episodes: NonZeroUsize::new(3).unwrap(),
+            logging: Logging::default(),
+        });
+        assert_eq!(play(&["game.toml", "--episodes", "3"]), three);
+    }
+
+    #[test]
+    fn no_episodes_is_refused() {
+        assert_eq!(
+            refused(&["play", "game.toml", "--episodes", "0"]),
+            Some(ErrorKind::ValueValidation)
+        );
+    }
+
+    #[test]
     fn the_game_is_logged_unless_no_log_says_otherwise() {
         assert!(Logging::default().enabled());
         assert!(
@@ -340,7 +381,8 @@ mod tests {
     }
 
     #[test]
-    fn the_commands_are_play_and_models_and_play_lists_the_file_and_the_log_flags_alone() {
+    fn the_commands_are_play_and_models_and_play_lists_the_file_the_episodes_and_the_log_flags_alone()
+     {
         let mut command = CommandLine::command();
         let commands: Vec<&str> = command
             .get_subcommands()
@@ -357,7 +399,7 @@ mod tests {
             .get_arguments()
             .map(|argument| argument.get_id().to_string())
             .collect();
-        assert_eq!(arguments, ["config", "log", "no_log"]);
+        assert_eq!(arguments, ["config", "episodes", "log", "no_log"]);
         let help = play.render_help().to_string();
         assert!(help.contains("<CONFIG>"), "{help}");
         assert!(

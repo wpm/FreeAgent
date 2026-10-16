@@ -37,12 +37,17 @@ The file's `game` key names the game it describes, `"werewolf"` or
 `"avalon"`, and `play` plays that game:
 
 ```sh
-social-deduction play CONFIG [--log | --no-log]
+social-deduction play CONFIG [--episodes N] [--log | --no-log]
 ```
 
 The game is told on standard output as it happens and logged to standard
 error as JSON Lines. `--no-log` leaves the log out, and `--log` keeps it;
-the last one given wins. A file is checked whole before the game begins: a
+the last one given wins. `--episodes N` plays N games one after another,
+for training data. The models are set up once, and every episode deals the
+same roles and strategies to the same players in a new random order, a role
+and its strategy together, so a player's name and seat say nothing about
+their role. Each episode logs under an episode ID of its own, in one JSON
+Lines stream, and its account follows the one before it after a blank line. A file is checked whole before the game begins: a
 missing or unknown `game`, a setting of the other game's or any other key
 the game does not know, a TOML syntax error, or settings that do not fit
 together stop the program with `invalid configuration file` and the cause,

@@ -2,13 +2,13 @@
 //! [`Keys`] its models' API keys come from. [`prepare`] does everything
 //! that can fail before the game starts: it settles the configuration,
 //! renders every prompt, sets up and probes every model in play, and deals
-//! the seats. What it gives back builds the episode, logging to a logger
-//! its caller owns.
+//! the seats. What it gives back builds each episode, dealt afresh and
+//! logging to a logger its caller owns.
 
 use crate::avalon::Avalon;
-use crate::config::{self, Configuration, Name, Settings, Settled};
+use crate::config::{self, Configuration, Name, Settings, Settled, SystemPrompt};
 use crate::game::{self, Actor, Entry, Game};
-use crate::model::spec::{Handles, Keys};
+use crate::model::spec::{Handles, Keys, Models};
 use crate::seat::{Dealt, PlayerId};
 use crate::werewolf::Werewolf;
 use free_agent::{Episode, Logger};
@@ -54,41 +54,55 @@ pub async fn prepare(text: &str, keys: &dyn Keys) -> anyhow::Result<Prepared> {
     Prepared::new(config::parse(text)?, keys).await
 }
 
-/// A game of `G` ready to start: its deal, its rules, the configuration
-/// the log records, and the handle each model in play is asked through.
+/// A game of `G` ready to start: the settings it is played under, every
+/// system prompt they render, the models in play as they were set up, and
+/// the handle each is asked through.
 pub struct Ready<G: Game> {
-    deal: HashMap<PlayerId, Dealt<G::Role>>,
-    rules: G::Rules,
-    configuration: Configuration<G>,
+    settings: Settings<G>,
+    prompts: Vec<SystemPrompt<G::Role>>,
+    models: Models,
     handles: Handles,
 }
 
 impl<G: Game> Ready<G> {
     /// A game under `settings`, made ready. Every prompt is rendered, and
-    /// every model in play set up with its key looked up in `keys`, before
-    /// the seats are dealt, so that a template that is broken or a model
-    /// that does not play fails before any actor is built.
+    /// every model in play set up with its key looked up in `keys`, so that
+    /// a template that is broken or a model that does not play fails before
+    /// any actor is built.
     pub async fn new(settings: Settings<G>, keys: &dyn Keys) -> anyhow::Result<Self> {
         let prompts = settings.prompts()?;
         let (models, handles) = settings.set_up(&prompts, keys).await?;
-        let deal = settings.lineup.deal();
-        let configuration = settings.configuration(&deal, &prompts, models)?;
         Ok(Ready {
-            deal,
-            rules: settings.rules(),
-            configuration,
+            settings,
+            prompts,
+            models,
             handles,
         })
     }
 
-    /// The episode that plays this game, logging to `logger`.
-    pub fn episode(self, logger: Logger<Entry<G>>) -> Episode<Actor<G>> {
-        let players = config::players(&self.configuration, &self.deal, &self.handles);
+    /// A fresh deal of the (role, strategy) pairs to the seats, in a new
+    /// random order, with the configuration its log records. Every seat's
+    /// prompt is rendered for every pair, so any deal has its prompts.
+    fn dealt(&self) -> (HashMap<PlayerId, Dealt<G::Role>>, Configuration<G>) {
+        let deal = self.settings.lineup.deal();
+        let configuration = self
+            .settings
+            .configuration(&deal, &self.prompts, self.models.clone())
+            .expect("every seat's prompt is rendered for every pair");
+        (deal, configuration)
+    }
+
+    /// An episode of this game, dealt afresh, logging to `logger`. Every
+    /// episode has the same seats and the same (role, strategy) pairs, and
+    /// asks the models as they were set up.
+    pub fn episode(&self, logger: Logger<Entry<G>>) -> Episode<Actor<G>> {
+        let (deal, configuration) = self.dealt();
+        let players = config::players(&configuration, &deal, &self.handles);
         let (winner, _) = oneshot::channel();
         game::game(
-            self.deal,
-            self.rules,
-            self.configuration,
+            deal,
+            self.settings.rules(),
+            configuration,
             winner,
             players,
             logger,
@@ -99,10 +113,12 @@ impl<G: Game> Ready<G> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::canned::playing;
     use crate::model::spec::Environment;
     use crate::{avalon, werewolf};
     use free_agent::Event;
     use secrecy::SecretString;
+    use std::collections::HashSet;
     use std::path::Path;
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
@@ -159,6 +175,73 @@ mod tests {
             .err()
             .unwrap();
         assert!(format!("{error:#}").contains("unknown variant `chess`"));
+    }
+
+    /// Every seat in `deal`, with the role and the strategy dealt it, in
+    /// seat order.
+    fn described<R: std::fmt::Display>(deal: &HashMap<PlayerId, Dealt<R>>) -> Vec<String> {
+        let mut described: Vec<String> = deal
+            .iter()
+            .map(|(seat, dealt)| format!("{seat}: {} {}", dealt.role, dealt.strategy))
+            .collect();
+        described.sort();
+        described
+    }
+
+    /// The (role, strategy) pairs `deal` deals, in order.
+    fn pairs<R: Copy + Ord>(deal: &HashMap<PlayerId, Dealt<R>>) -> Vec<(R, &str)> {
+        let mut pairs: Vec<(R, &str)> = deal
+            .values()
+            .map(|dealt| (dealt.role, dealt.strategy.as_str()))
+            .collect();
+        pairs.sort();
+        pairs
+    }
+
+    /// The game of Werewolf the file `text` describes, made ready.
+    async fn werewolf(text: &str) -> Ready<Werewolf> {
+        let settings = werewolf::config::parse(text).unwrap().settle().unwrap();
+        Ready::new(settings, &Environment).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn each_deal_gives_the_same_pairs_to_the_same_seats_in_a_new_order() {
+        let text = "[strategies.dice]\npolicy = \"random\"\n\
+                    [strategies.coin]\npolicy = \"random\"\n\
+                    [roles.werewolf.strategies]\ndice = 1\ncoin = 1\n\
+                    [roles.villager.strategies]\ndice = 2\ncoin = 1\n";
+        let ready = werewolf(text).await;
+        let (first, _) = ready.dealt();
+        let mut deals = HashSet::from([described(&first)]);
+        for _ in 0..50 {
+            let (deal, _) = ready.dealt();
+            assert_eq!(pairs(&deal), pairs(&first));
+            deals.insert(described(&deal));
+        }
+        // Seven seats dealt fifty times over are not dealt alike every time.
+        assert!(deals.len() > 1, "{deals:?}");
+    }
+
+    #[tokio::test]
+    async fn each_deal_tells_each_prompted_player_the_prompt_of_its_role() {
+        let base_url = playing(&["qwen2.5-7b-instruct"]);
+        let text = format!(
+            "[models.qwen]\nbase_url = \"{base_url}\"\nid = \"qwen2.5-7b-instruct\"\n\
+             [strategies.plain]\npolicy = \"prompted\"\nsystem = \"{{{{ name }}}} the {{{{ role }}}}\"\n\
+             [roles.werewolf]\nstrategy = \"plain\"\n\
+             [roles.villager]\nstrategy = \"plain\"\n\
+             [roles.doctor]\nstrategy = \"plain\"\n\
+             [roles.seer]\nstrategy = \"plain\"\n"
+        );
+        let ready = werewolf(&text).await;
+        for _ in 0..3 {
+            let (deal, configuration) = ready.dealt();
+            assert_eq!(configuration.prompts.len(), deal.len());
+            for (seat, dealt) in &deal {
+                let told = format!("{seat} the {}", dealt.role);
+                assert_eq!(configuration.prompts[seat], told);
+            }
+        }
     }
 
     /// Keys that hold none.
