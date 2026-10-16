@@ -13,7 +13,7 @@ use social_deduction_stage::settings::{
 };
 use social_deduction_stage::{GameName, Role};
 
-use super::{Choice, Editor, Problem, Tab, field_id, path};
+use super::{Choice, Cross, Editor, Problem, Tab, field_id, path};
 use crate::screen::side_key;
 use crate::tauri;
 
@@ -167,7 +167,7 @@ fn Adder(
 }
 
 /// A game's tab: its players, phase limits, strategies, who plays what,
-/// and prompt parts, with **Restore Defaults…**.
+/// and prompt parts, with **Restore defaults…**.
 #[component]
 pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
     let title = game_title(game);
@@ -243,13 +243,13 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
                         on:click=move |_| confirming.set(true)
                         data-tip=format!("Put back the {title} settings the app came with. The models stay as they are. You confirm first.")
                     >
-                        "Restore Defaults…"
+                        "Restore defaults…"
                     </button>
                 }
             >
                 <div class="sd-confirm" role="alertdialog">
                     <span>{format!("Replace the {title} settings with the defaults? The models stay as they are.")}</span>
-                    <button class="sd-danger" on:click=restore data-tip=format!("Replace the {title} settings with the defaults.")>"Restore"</button>
+                    <button on:click=restore data-tip=format!("Replace the {title} settings with the defaults.")>"Restore"</button>
                     <button on:click=move |_| confirming.set(false) data-tip="Keep the settings as they are.">"Cancel"</button>
                 </div>
             </Show>
@@ -290,7 +290,7 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
                 </For>
             </div>
             <Adder
-                label="Add Strategy"
+                label="Add strategy"
                 placeholder="Strategy name"
                 tip="A name for the new strategy, like cautious or bluffer."
                 button_tip="Add a prompted strategy with this name."
@@ -628,7 +628,7 @@ fn StrategyCard(
                     />
                 </Show>
                 <button class="sd-remove" aria-label=format!("Remove {name}") data-tip="Remove this strategy. A role that plays it needs another." on:click=remove>
-                    "×"
+                    <Cross />
                 </button>
             </div>
             <Problem error=editor.error(name_at.clone()) />
@@ -713,7 +713,7 @@ fn PromptParts(editor: Editor, game: GameName) -> impl IntoView {
                     <PartItem users=users name=name chosen=chosen shown=shown />
                 </For>
                 <Adder
-                    label="Add Prompt Part"
+                    label="Add prompt part"
                     placeholder="Prompt part name"
                     tip="Letters, digits, underscores and spaces, like rules or Seer only. A system prompt pulls it in with {{ name }}, spaces written as underscores."
                     button_tip="Add an empty prompt part with this name."
@@ -791,7 +791,6 @@ fn PartEditor(editor: Editor, game: GameName, name: String) -> impl IntoView {
                 <code data-tip="Write this in a system prompt to pull in this part.">{pulled.clone()}</code>
                 <span class="sd-note">"Pull it into a system prompt by writing this."</span>
                 <button
-                    class="sd-danger"
                     data-tip="Remove this prompt part. A system prompt that pulls it in shows an error."
                     on:click=move |_| {
                         editor.edit_game(game, |s| {

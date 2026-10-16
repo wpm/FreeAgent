@@ -15,8 +15,20 @@
   --sd-evil-text: #d2001f;
   --sd-warn: #f2b300;
 
+  /* Controls: a white face on a hairline, sunk into a gray track, or
+     filled with ink. */
+  --sd-control: #ffffff;
+  --sd-control-line: #c4c4c4;
+  --sd-raised: #ffffff;
+  --sd-sunken: #ececec;
+  --sd-tint: #f0f0f0;
+  --sd-off: #7a7a7a;
+  --sd-primary: #111111;
+  --sd-on-primary: #ffffff;
+
   --sd-serif: Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
   --sd-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --sd-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   --tip-bg: var(--sd-ink);
   --tip-ink: var(--sd-paper);
@@ -51,6 +63,14 @@
     --sd-good: #4a5cff;
     --sd-good-text: #8c9bff;
     --sd-evil-text: #ff4d5e;
+    --sd-control: #1c1c1c;
+    --sd-control-line: #4a4a4a;
+    --sd-raised: #3a3a3a;
+    --sd-sunken: #262626;
+    --sd-tint: #262626;
+    --sd-off: #8a8a8a;
+    --sd-primary: #f2f2f2;
+    --sd-on-primary: #0a0a0a;
   }
 }
 
@@ -63,6 +83,14 @@
   --sd-good: #4a5cff;
   --sd-good-text: #8c9bff;
   --sd-evil-text: #ff4d5e;
+  --sd-control: #1c1c1c;
+  --sd-control-line: #4a4a4a;
+  --sd-raised: #3a3a3a;
+  --sd-sunken: #262626;
+  --sd-tint: #262626;
+  --sd-off: #8a8a8a;
+  --sd-primary: #f2f2f2;
+  --sd-on-primary: #0a0a0a;
 }
 
 /* The page */
@@ -81,7 +109,7 @@ body {
 
 :focus-visible {
   outline: 2px solid var(--sd-ink);
-  outline-offset: 2px;
+  outline-offset: 3px;
 }
 
 /* Night falls and day breaks over 600 ms. */
@@ -213,16 +241,6 @@ body,
   color: var(--rc-fg);
   font-weight: 600;
   text-decoration: none;
-}
-
-.sd-header button {
-  font: inherit;
-  padding: 0.25rem 1rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-  background: var(--rc-accent);
-  color: var(--rc-accent-fg);
-  cursor: pointer;
 }
 
 .sd-main {
@@ -419,15 +437,6 @@ body,
   gap: 0.4rem;
 }
 
-.sd-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.15rem 0.6rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-}
-
 .sd-swatch {
   display: inline-block;
   width: 0.8rem;
@@ -612,69 +621,235 @@ body,
   color: var(--rc-muted);
 }
 
-.sd-segments {
-  display: inline-flex;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-  overflow: hidden;
-}
-
-.sd-segments button {
-  font: inherit;
-  padding: 0.3rem 1.1rem;
-  border: none;
-  background: var(--rc-bg);
-  color: var(--rc-fg);
-  cursor: pointer;
-}
-
-.sd-segments button + button {
-  border-left: 1px solid var(--rc-border);
-}
-
-.sd-segments .sd-segment-on {
-  background: var(--rc-accent);
-  color: var(--rc-accent-fg);
-}
-
 .sd-run {
   display: flex;
   gap: 0.5rem;
 }
 
-.sd-run button {
+/* Controls, all ink. Every button is a secondary one, white on a
+   hairline, unless it is primary, quiet, an icon, or part of a segmented
+   control or a stepper. The chat's own buttons are Rich Chat's. */
+
+:where(.sd-header, .sd-start, .sd-settings) button {
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.5rem;
-  font: inherit;
-  padding: 0.375rem 1.5rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-  background: var(--rc-bg);
-  color: var(--rc-fg);
-  cursor: pointer;
-}
-
-.sd-run .sd-play {
-  background: var(--rc-accent);
-  color: var(--rc-accent-fg);
-  font-weight: 600;
-}
-
-.sd-run button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.sd-link {
-  font: inherit;
   padding: 0;
   border: none;
   background: none;
   color: var(--sd-ink);
+  font: 500 15px/1 var(--sd-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+:where(.sd-header, .sd-start, .sd-settings) button:where(:not(.sd-link, .sd-remove, .sd-part, .sd-segments *, .sd-stepper *)) {
+  height: 40px;
+  padding: 0 18px;
+  border: 1px solid var(--sd-control-line);
+  border-radius: 10px;
+  background: var(--sd-control);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.sd-primary {
+  border-color: var(--sd-primary);
+  background: var(--sd-primary);
+  color: var(--sd-on-primary);
+  font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.sd-large {
+  height: 48px;
+  padding: 0 24px;
+  border-radius: 12px;
+  font-size: 16px;
+}
+
+.sd-small {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+:where(.sd-header, .sd-start, .sd-settings) button:disabled {
+  color: var(--sd-off);
+  cursor: default;
+}
+
+:where(.sd-header, .sd-start, .sd-settings) button:disabled:where(:not(.sd-link, .sd-remove, .sd-part, .sd-segments *, .sd-stepper *)) {
+  border-color: var(--sd-sunken);
+  background: var(--sd-sunken);
+  box-shadow: none;
+}
+
+/* Quiet: underlined ink, with no box. */
+
+.sd-link {
+  font: 14px/1.3 var(--sd-sans);
   text-align: inherit;
   text-decoration: underline;
+  white-space: normal;
+}
+
+/* An icon button: a muted × in a square that shows on hover. */
+
+.sd-remove {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--sd-muted);
+}
+
+.sd-remove:hover {
+  background: var(--sd-sunken);
+  color: var(--sd-ink);
+}
+
+/* Segmented: the choice is raised out of a sunken track. */
+
+.sd-segments {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--sd-sunken);
+}
+
+.sd-segments button {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 8px;
+  color: var(--sd-muted);
+}
+
+.sd-segments .sd-segment-on {
+  background: var(--sd-raised);
+  color: var(--sd-ink);
+  font-weight: 600;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.15),
+    0 1px 6px rgba(0, 0, 0, 0.06);
+}
+
+/* Stepper: − and + either side of the number, joined in one piece. */
+
+.sd-stepper {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: none;
+  height: 36px;
+  border: 1px solid var(--sd-control-line);
+  border-radius: 10px;
+  background: var(--sd-control);
+}
+
+.sd-stepper button {
+  width: 36px;
+  height: 100%;
+  font-size: 16px;
+}
+
+.sd-stepper button:first-child {
+  border-radius: 9px 0 0 9px;
+}
+
+.sd-stepper button:last-child {
+  border-radius: 0 9px 9px 0;
+}
+
+.sd-stepper input {
+  box-sizing: border-box;
+  width: 40px;
+  height: 100%;
+  padding: 0;
+  border: none;
+  border-inline: 1px solid var(--sd-control-line);
+  background: transparent;
+  color: var(--sd-ink);
+  font: 14px var(--sd-sans);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.sd-stepper input::-webkit-inner-spin-button,
+.sd-stepper input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Fields and selects are sunk slightly into the page. */
+
+:where(.sd-settings) :is(input, select, textarea):where(:not(.sd-stepper input)) {
+  box-sizing: border-box;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--sd-control-line);
+  border-radius: 8px;
+  background: var(--sd-control);
+  color: var(--sd-ink);
+  font: 14px var(--sd-sans);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+:where(.sd-settings) textarea {
+  height: auto;
+  padding: 8px 10px;
+  line-height: 1.5;
+}
+
+.sd-select-box {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.sd-select {
+  width: 100%;
+  padding-right: 30px;
+  appearance: none;
   cursor: pointer;
+}
+
+.sd-chevron {
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  translate: 0 -50%;
+  color: var(--sd-ink);
+  pointer-events: none;
+}
+
+/* Chip: a status, in a gray lozenge. */
+
+.sd-chip {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 13px;
+  background: var(--sd-tint);
+  color: var(--sd-ink);
+  font: 600 12px/1 var(--sd-sans);
+  white-space: nowrap;
+}
+
+.sd-chip code {
+  font-family: var(--sd-mono);
 }
 
 .sd-start .sd-error {
@@ -765,36 +940,6 @@ body,
   font-size: 0.95rem;
 }
 
-.sd-settings button {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  font: inherit;
-  padding: 0.2rem 0.9rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-  background: var(--rc-bg);
-  color: var(--rc-fg);
-  cursor: pointer;
-}
-
-.sd-settings button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.sd-settings input,
-.sd-settings select,
-.sd-settings textarea {
-  font: inherit;
-  padding: 0.25rem 0.5rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.375rem;
-  background: var(--rc-bg);
-  color: var(--rc-fg);
-  min-width: 0;
-}
-
 .sd-settings .sd-invalid {
   border-color: var(--sd-warn);
   box-shadow: 0 0 0 1px var(--sd-warn);
@@ -811,7 +956,7 @@ body,
 }
 
 .sd-field > input,
-.sd-field > select {
+.sd-field > .sd-select-box {
   flex: 1;
 }
 
@@ -832,12 +977,6 @@ body,
 
 .sd-field + .sd-field-error {
   margin-left: 9.5rem;
-}
-
-.sd-stepper {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
 }
 
 .sd-card {
@@ -865,8 +1004,7 @@ body,
 .sd-mono {
   min-height: 8rem;
   resize: vertical;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85rem;
+  font: 13px/1.5 var(--sd-mono);
 }
 
 .sd-row,
@@ -906,24 +1044,10 @@ body,
   border-radius: 0.5rem;
 }
 
-.sd-settings .sd-danger {
-  border-color: var(--sd-ink);
-  color: var(--sd-ink);
-}
-
 /* A game's tab */
 
 .sd-settings .sd-segments {
   align-self: flex-start;
-}
-
-.sd-settings .sd-segments button {
-  border: none;
-  border-radius: 0;
-}
-
-.sd-settings .sd-segments button + button {
-  border-left: 1px solid var(--rc-border);
 }
 
 .sd-top {
@@ -955,15 +1079,9 @@ body,
   font-weight: 400;
 }
 
-.sd-box select,
-.sd-box input,
-.sd-box textarea {
-  font-size: 0.85rem;
-}
-
 .sd-roles {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(11.5rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
   gap: 0.5rem;
 }
 
@@ -994,29 +1112,6 @@ body,
   flex: none;
   width: 0.6rem;
   height: 0.6rem;
-}
-
-.sd-stepper input {
-  box-sizing: border-box;
-  width: 2.2rem;
-  text-align: center;
-  padding: 0.15rem 0.1rem;
-  -moz-appearance: textfield;
-  appearance: textfield;
-}
-
-.sd-stepper input::-webkit-inner-spin-button,
-.sd-stepper input::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-.sd-settings .sd-stepper button {
-  width: 1.6rem;
-  height: 1.6rem;
-  justify-content: center;
-  padding: 0;
-  border-radius: 0.35rem;
 }
 
 .sd-limits {
@@ -1067,7 +1162,7 @@ body,
   min-width: 0;
 }
 
-.sd-strategy .sd-card-head select {
+.sd-strategy .sd-card-head .sd-select-box {
   max-width: 9rem;
 }
 
@@ -1078,22 +1173,6 @@ body,
 
 .sd-strategy textarea {
   min-height: 9rem;
-}
-
-.sd-settings .sd-remove {
-  justify-content: center;
-  width: 1.7rem;
-  height: 1.7rem;
-  padding: 0;
-  border-color: transparent;
-  border-radius: 0.35rem;
-  color: var(--rc-muted);
-  font-size: 1.1rem;
-}
-
-.sd-settings .sd-remove:hover {
-  border-color: var(--rc-border);
-  color: var(--sd-ink);
 }
 
 .sd-adder {
@@ -1127,7 +1206,7 @@ body,
   font-weight: 600;
 }
 
-.sd-everyone .sd-field > select {
+.sd-everyone .sd-field > .sd-select-box {
   flex: 0 1 16rem;
 }
 
@@ -1153,22 +1232,9 @@ body,
   min-width: 0;
 }
 
-.sd-assigned-row .sd-field > select {
-  width: 100%;
-}
-
 .sd-assigned-row .sd-field-error {
   grid-column: 1 / -1;
   margin: 0;
-}
-
-.sd-settings .sd-link {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--rc-accent);
-  font-size: 0.8rem;
-  white-space: nowrap;
 }
 
 .sd-split {
@@ -1211,7 +1277,7 @@ body,
   border: none;
   border-radius: 0.35rem;
   background: none;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--sd-mono);
   font-size: 0.85rem;
   text-align: left;
 }
@@ -1287,7 +1353,7 @@ body,
   z-index: 10;
   max-width: 300px;
   padding: 7px 10px;
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--tip-bg);
   color: var(--tip-ink);
   font-size: 12.5px;
@@ -1335,7 +1401,7 @@ label[data-tip] {
 
 .sd-provider .sd-url {
   flex: 1;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--sd-mono);
   overflow-wrap: anywhere;
 }
 
@@ -1349,25 +1415,7 @@ label[data-tip] {
   max-width: 22rem;
 }
 
-.sd-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.1rem 0.6rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-  color: var(--rc-muted);
-  font-size: 0.8rem;
-  white-space: nowrap;
-}
-
-/* A key that is in place: the neutral chip, with a small check. */
-
-.sd-chip-good {
-  border-color: transparent;
-  background: var(--sd-rule);
-  color: var(--sd-ink);
-}
+/* A key that is in place: the chip, with a small check. */
 
 .sd-chip-good::before {
   content: "✓";
@@ -1375,29 +1423,8 @@ label[data-tip] {
 }
 
 .sd-chip-bad {
-  display: inline-flex;
-  align-items: center;
-  border-color: transparent;
   padding-left: 0;
-  color: var(--sd-ink);
-}
-
-.sd-settings button.sd-link {
-  padding: 0;
-  border: none;
   background: none;
-  color: var(--rc-accent);
-  font-size: 0.85rem;
-}
-
-.sd-settings button.sd-link:hover {
-  text-decoration: underline;
-}
-
-.sd-settings button.sd-primary {
-  border-color: var(--rc-accent);
-  background: var(--rc-accent);
-  color: var(--rc-accent-fg);
 }
 
 .sd-label {
@@ -1445,7 +1472,7 @@ label[data-tip] {
 .sd-id {
   min-width: 0;
   color: var(--rc-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--sd-mono);
   font-size: 0.8rem;
   overflow-wrap: anywhere;
 }
@@ -1454,6 +1481,7 @@ label[data-tip] {
   font-weight: 600;
   border-color: transparent;
   background: transparent;
+  box-shadow: none;
 }
 
 .sd-settings input.sd-name:hover,
@@ -1470,11 +1498,6 @@ label[data-tip] {
 .sd-window input {
   width: 7.5rem;
   text-align: right;
-}
-
-.sd-settings button.sd-remove {
-  padding: 0 0.5rem;
-  border-color: transparent;
 }
 
 @media (max-width: 600px) {

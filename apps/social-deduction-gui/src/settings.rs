@@ -282,7 +282,7 @@ pub fn SettingsWindow() -> impl IntoView {
     }
 }
 
-/// An error beneath a field, in red.
+/// An error beneath a field, flagged in marigold.
 #[component]
 fn Problem(error: Signal<Option<String>>) -> impl IntoView {
     move || {
@@ -321,6 +321,17 @@ fn General(editor: Editor) -> impl IntoView {
     }
 }
 
+/// The × of a remove button, a muted stroke the button's `aria-label`
+/// names.
+#[component]
+fn Cross() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
+            <path d="M3 3l8 8M11 3l-8 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
+    }
+}
+
 /// A select among `options`, each a value and its label, over `value`,
 /// which `set` changes, with the error at `at` beneath it. Without a
 /// `label`, the select is named by its `tip`.
@@ -356,17 +367,22 @@ fn Choice(
     view! {
         <label class="sd-field">
             {shown}
-            <select
-                class="sd-select"
-                id=field_id(&at)
-                aria-label=named
-                data-tip=tip
-                class:sd-invalid=move || error.with(Option::is_some)
-                prop:value=move || value.get()
-                on:change=move |event| set.run(event_target_value(&event))
-            >
-                {choices}
-            </select>
+            <span class="sd-select-box">
+                <select
+                    class="sd-select"
+                    id=field_id(&at)
+                    aria-label=named
+                    data-tip=tip
+                    class:sd-invalid=move || error.with(Option::is_some)
+                    prop:value=move || value.get()
+                    on:change=move |event| set.run(event_target_value(&event))
+                >
+                    {choices}
+                </select>
+                <svg class="sd-chevron" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+                    <path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+            </span>
         </label>
         <Problem error=error />
     }

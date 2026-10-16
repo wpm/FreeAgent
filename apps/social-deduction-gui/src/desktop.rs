@@ -114,7 +114,7 @@ pub fn Desktop() -> impl IntoView {
                     when=over
                     fallback=|| view! { <button on:click=|_| tauri::stop()>"Stop"</button> }
                 >
-                    <button on:click=move |_| new_game()>"New game"</button>
+                    <button class="sd-primary" on:click=move |_| new_game()>"New game"</button>
                 </Show>
             </Viewer>
         </Show>
@@ -174,11 +174,11 @@ fn Start(
             </div>
             <p class="sd-summary" data-tip="The players, strategies and models of the next game. Change them in Settings.">{summary}</p>
             <div class="sd-run">
-                <button class="sd-play" on:click=move |_| run.run(()) disabled=blocked data-tip="Start a game with these settings. It plays live here.">
+                <button class="sd-play sd-primary sd-large" on:click=move |_| run.run(()) disabled=blocked data-tip="Start a game with these settings. It plays live here.">
                     {move || pending.get().then(|| view! { <span class="sd-spinner"></span> })}
                     "Play"
                 </button>
-                {move || pending.get().then(|| view! { <button on:click=|_| tauri::stop() data-tip="Stop starting the game.">"Stop"</button> })}
+                {move || pending.get().then(|| view! { <button class="sd-large" on:click=|_| tauri::stop() data-tip="Stop starting the game.">"Stop"</button> })}
             </div>
             {move || {
                 first_error.get().map(|(message, path)| {
