@@ -69,7 +69,7 @@ it does.
   seats…** to share a role among strategies, and the prompt parts: named
   pieces of text a system prompt pulls in with `{{ name }}`, each listed
   with how many strategies use it. On a narrow window it is one column.
-  **Restore Defaults…** brings back the game's example `prompted`
+  **Restore defaults…** brings back the game's example `prompted`
   configuration, leaving the models as they are.
 
 The app looks for a local server at `http://localhost:<port>/v1` on ports

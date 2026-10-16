@@ -21,8 +21,11 @@
 // shows each provider by name with where its key comes from, why it lists
 // nothing, or the models that play; adding one asks for its name, and a
 // name taken or empty is refused; a context window typed overrides the
-// provider's, and Reset puts it back; and everything on it has help. The
-// console stays clean throughout.
+// provider's, and Reset puts it back; and everything on it has help. Its
+// controls are ink only, each with a focus ring: Play a large primary
+// button, the others secondary, quiet or icon buttons, a segmented control
+// raised out of a sunken track, a joined stepper, fields and selects sunk
+// into the page, and chips in gray. The console stays clean throughout.
 // Screenshots land in ./screenshots for a human to look at.
 //
 //   npm test                 # against ../dist, from this directory
@@ -527,6 +530,71 @@ function backend(snapshot) {
   };
 }
 
+/** The shape of each element `selector` matches on `page`: its box and
+ * the computed styles the controls are drawn with. */
+function shapes(page, selector) {
+  return page.$$eval(selector, (elements) =>
+    elements.map((element) => {
+      const style = getComputedStyle(element);
+      const { height, width } = element.getBoundingClientRect();
+      return {
+        text: element.textContent.trim(),
+        height,
+        width,
+        radius: style.borderTopLeftRadius,
+        border: `${style.borderTopWidth} ${style.borderTopColor}`,
+        background: style.backgroundColor,
+        color: style.color,
+        shadow: style.boxShadow,
+        weight: style.fontWeight,
+        font: style.fontFamily,
+        appearance: style.appearance,
+        icon: element.querySelector('svg') !== null || element.parentElement.querySelector(':scope > svg') !== null,
+      };
+    }),
+  );
+}
+
+/** The sides' colors, which no control on `page` uses. */
+async function sideColored(page) {
+  return page.$$eval('button, input, select, textarea, .sd-chip', (controls) => {
+    const sides = ['--sd-good', '--sd-good-text', '--sd-evil', '--sd-evil-text'].map((name) => {
+      const probe = document.createElement('span');
+      probe.style.color = `var(${name})`;
+      document.body.append(probe);
+      const color = getComputedStyle(probe).color;
+      probe.remove();
+      return color;
+    });
+    return controls
+      .filter((control) => !control.closest('.rc-chat'))
+      .filter((control) => {
+        const style = getComputedStyle(control);
+        return [style.color, style.backgroundColor, style.borderTopColor].some((color) => sides.includes(color));
+      })
+      .map((control) => control.outerHTML.slice(0, 80));
+  });
+}
+
+/** What has the focus on `page` after each of `count` presses of Tab,
+ * and whether it shows the ink focus ring. */
+async function ringed(page, count) {
+  const unringed = [];
+  for (let press = 0; press < count; press += 1) {
+    await page.keyboard.press('Tab');
+    const focused = await page.evaluate(() => {
+      const element = document.activeElement;
+      const style = getComputedStyle(element);
+      return {
+        html: element.outerHTML.slice(0, 60),
+        ring: style.outlineStyle === 'solid' && style.outlineWidth === '2px' && style.outlineOffset === '3px',
+      };
+    });
+    if (!focused.ring) unringed.push(focused.html);
+  }
+  return unringed;
+}
+
 /** Check the Models tab of the Settings window `settings`, then go back
  * to the Werewolf tab. */
 async function models(settings) {
@@ -579,6 +647,15 @@ async function models(settings) {
     all.filter((element) => !element.closest('[data-tip]')).map((element) => element.outerHTML.slice(0, 80)),
   );
   check(untipped.length === 0, `desktop: everything on the Models tab has help (${untipped.join(' ')})`);
+  const [chip] = await shapes(settings, `${card('OpenAI')} .sd-chip`);
+  check(
+    chip.height === 26 && chip.radius === '13px' && chip.background === 'rgb(240, 240, 240)' && chip.weight === '600',
+    `desktop: where a key comes from is a gray chip (${JSON.stringify(chip)})`,
+  );
+  const [add] = await shapes(settings, `${card('Anthropic')} .sd-offered button`);
+  check(add.height === 32 && add.radius === '8px', `desktop: a model's Add is a small secondary button (${JSON.stringify(add)})`);
+  const sided = await sideColored(settings);
+  check(sided.length === 0, `desktop: no control on the Models tab is red or blue (${sided.join(' ')})`);
   await settings.screenshot({ path: join(shots, 'settings-models.png'), fullPage: true });
   // Adding a model asks for its name, filled in with its id.
   await settings.click(`${card('Anthropic')} .sd-offered button`);
@@ -645,6 +722,20 @@ await section('desktop', async () => {
     `desktop: the start state shows the red and blue balloons, a gap cut between them (${JSON.stringify(logo)})`,
   );
   await main.screenshot({ path: join(shots, 'desktop-start.png'), fullPage: true });
+  const [big] = await shapes(main, '.sd-start .sd-play');
+  check(
+    big.height === 48 && big.radius === '12px' && big.background === 'rgb(17, 17, 17)' && big.color === 'rgb(255, 255, 255)' && big.shadow.includes('inset'),
+    `desktop: Play is a large primary button, filled with ink and lifted (${JSON.stringify(big)})`,
+  );
+  const [track, on, off] = await shapes(main, '.sd-start .sd-segments, .sd-start .sd-segments button');
+  check(
+    track.background === 'rgb(236, 236, 236)' && track.radius === '11px' && on.background === 'rgb(255, 255, 255)' && on.radius === '8px' && on.height === 32 && on.shadow !== 'none' && off.shadow === 'none',
+    `desktop: the game is chosen by a segment raised out of a sunken track (${JSON.stringify([track, on, off])})`,
+  );
+  const startSided = await sideColored(main);
+  check(startSided.length === 0, `desktop: no control on the start state is red or blue (${startSided.join(' ')})`);
+  const startUnringed = await ringed(main, 3);
+  check(startUnringed.length === 0, `desktop: every control on the start state shows a focus ring (${startUnringed.join(' ')})`);
   await main.hover('.sd-play');
   const played = await main.$eval('.sd-tip', (element) => !element.hidden && element.textContent);
   check(typeof played === 'string' && played.startsWith('Start a game'), `desktop: Play has help (${played})`);
@@ -685,6 +776,41 @@ await section('desktop', async () => {
   await models(settings);
   const players = await settings.$$eval('.sd-stepper input', (inputs) => inputs.map((input) => input.value));
   check(JSON.stringify(players) === JSON.stringify(['2', '3', '1', '1']), `desktop: the Werewolf tab shows each role's count (${players.join(', ')})`);
+  const [restore] = await shapes(settings, '.sd-tab-head > button');
+  check(
+    restore.text === 'Restore defaults…' && restore.height === 40 && restore.radius === '10px' && restore.border === '1px rgb(196, 196, 196)' &&
+      restore.background === 'rgb(255, 255, 255)' && restore.shadow !== 'none',
+    `desktop: Restore defaults… is a secondary button, white with a hairline (${JSON.stringify(restore)})`,
+  );
+  const [stepper] = await shapes(settings, '.sd-stepper');
+  const [fewer, count] = await shapes(settings, '.sd-stepper > *');
+  check(
+    stepper.height === 36 && stepper.radius === '10px' && stepper.border === '1px rgb(196, 196, 196)' && fewer.width === 36 && count.width === 40,
+    `desktop: a stepper is one joined control (${JSON.stringify([stepper, fewer, count])})`,
+  );
+  const [select] = await shapes(settings, '.sd-select');
+  check(
+    select.appearance === 'none' && select.icon && select.height === 36 && select.radius === '8px',
+    `desktop: a select is a field with a chevron drawn beside it (${JSON.stringify(select)})`,
+  );
+  const [field] = await shapes(settings, '.sd-adder-strategy input');
+  check(field.height === 36 && field.radius === '8px' && field.shadow.includes('inset'), `desktop: a text field is sunk into the page (${JSON.stringify(field)})`);
+  const [prompt] = await shapes(settings, '.sd-strategy textarea');
+  check(prompt.font.includes('monospace'), `desktop: a prompt is monospace (${prompt.font})`);
+  const [remove] = await shapes(settings, '.sd-remove');
+  check(
+    remove.width === 32 && remove.height === 32 && remove.radius === '8px' && remove.icon && remove.shadow === 'none',
+    `desktop: a remove button is a square drawn with an icon (${JSON.stringify(remove)})`,
+  );
+  const [quiet] = await shapes(settings, '.sd-assigned-row .sd-link');
+  check(
+    quiet.background === 'rgba(0, 0, 0, 0)' && quiet.shadow === 'none' && quiet.border.startsWith('0px'),
+    `desktop: Split seats… is a quiet button, with no box (${JSON.stringify(quiet)})`,
+  );
+  const sided = await sideColored(settings);
+  check(sided.length === 0, `desktop: no control on the Werewolf tab is red or blue (${sided.join(' ')})`);
+  const unringed = await ringed(settings, 30);
+  check(unringed.length === 0, `desktop: every control on the Werewolf tab shows a focus ring (${unringed.join(' ')})`);
   // The tab uses the window's width: players beside phase limits, short
   // limit fields, strategies two across, and the prompt parts' list beside
   // their editor.

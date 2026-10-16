@@ -14,7 +14,7 @@ use social_deduction_stage::settings::{
     Provider, Trouble, Unchecked, host, is_remote, provider_at,
 };
 
-use super::{Editor, field_id, path};
+use super::{Cross, Editor, field_id, path};
 use crate::tauri;
 
 /// What a provider is, which its card's name explains.
@@ -643,7 +643,7 @@ fn Offered(
                 <div class="sd-model sd-offered">
                     <code class="sd-id">{id.clone()}</code>
                     <span class="sd-note" data-tip="The context window the provider reports.">{format!("{} tokens", grouped(context_window))}</span>
-                    <button on:click=open.clone() data-tip="Make this model available to strategies. You name it next.">"Add"</button>
+                    <button class="sd-small" on:click=open.clone() data-tip="Make this model available to strategies. You name it next.">"Add"</button>
                 </div>
             }
         >
@@ -666,11 +666,11 @@ fn Offered(
                         }
                     }
                 />
-                <button class="sd-primary" on:click={
+                <button class="sd-primary sd-small" on:click={
                     let confirm = confirm.clone();
                     move |_| confirm()
                 }>"Add"</button>
-                <button on:click=move |_| adding.set(None)>"Cancel"</button>
+                <button class="sd-small" on:click=move |_| adding.set(None)>"Cancel"</button>
             </div>
             {move || problem.get().map(|why| view! { <p class="sd-field-error">{why}</p> })}
         </Show>
@@ -815,7 +815,9 @@ fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> imp
                         s.models.remove(&removed);
                     });
                 }
-            >"×"</button>
+            >
+                <Cross />
+            </button>
             {move || listed.get().is_some_and(|(_, stopped)| stopped).then(|| {
                 let users = users.get();
                 let used = if users.is_empty() { String::new() } else { format!(" Used by {}.", users.join(", ")) };

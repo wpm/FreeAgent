@@ -113,7 +113,7 @@ pub fn game_choose(store: State<'_, Store>, game: GameName) {
     store.change(|held| held.general.game = game);
 }
 
-/// The settings `game` starts from, which **Restore Defaults** brings
+/// The settings `game` starts from, which **Restore defaults** brings
 /// back.
 #[tauri::command]
 pub fn game_defaults(game: GameName) -> GameSettings {

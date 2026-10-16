@@ -135,7 +135,7 @@ fn Web() -> impl IntoView {
                     })
                     .collect_view()}
             </nav>
-            <button on:click=play>
+            <button class="sd-primary" on:click=play>
                 {move || if replayed.get() { "Replay" } else { "Play" }}
             </button>
         </Viewer>
