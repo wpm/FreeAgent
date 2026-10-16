@@ -107,12 +107,6 @@ pub fn settings_set(
     snapshot.errors
 }
 
-/// Choose `game` to play.
-#[tauri::command(async)]
-pub fn game_choose(store: State<'_, Store>, game: GameName) {
-    store.change(|held| held.general.game = game);
-}
-
 /// The settings `game` starts from, which **Restore defaults** brings
 /// back.
 #[tauri::command]

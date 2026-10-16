@@ -18,7 +18,9 @@
 // landing while it does, before the night falls. The prompted Avalon board names the Assassin's target.
 // At 420 px wide the board stacks under the chat and nothing scrolls
 // sideways. The tab shows the mark. With a stand-in for the desktop app's backend,
-// the main window opens on its start state with the mark and Play, #settings opens the
+// the main window opens on its start state: the mark, then one row per game
+// with what it is, its seats, its summary and its own Play, which a
+// settings error disables, linked to its field. #settings opens the
 // Settings window's four pages in a vertical tablist the arrows move
 // through, each page a few grouped lists with no box inside them and what
 // each role and phase does written under its name, help shows on hover and
@@ -810,23 +812,69 @@ async function models(settings) {
   await settings.waitForSelector('.sd-stepper input');
 }
 
+/** `opened`, its console errors and page errors recorded. */
+function watch(opened) {
+  opened.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  opened.on('pageerror', (error) => errors.push(error.message));
+  return opened;
+}
+
 await section('desktop', async () => {
   const app = await browser.newContext({ colorScheme: 'light', viewport: { width: 1100, height: 760 } });
   await app.addInitScript(backend, desktop);
-  const watch = (opened) => {
-    opened.on('console', (message) => {
-      if (message.type() === 'error') errors.push(message.text());
-    });
-    opened.on('pageerror', (error) => errors.push(error.message));
-    return opened;
-  };
   const main = watch(await app.newPage());
   await main.goto(origin);
-  await main.waitForSelector('.sd-start .sd-play');
-  const play = await main.$eval('.sd-start .sd-play', (button) => ({ text: button.textContent.trim(), disabled: button.disabled }));
-  check(play.text === 'Play' && !play.disabled, `desktop: the start state shows Play (${JSON.stringify(play)})`);
-  const summary = await main.$eval('.sd-summary', (element) => element.textContent);
-  check(summary === '7 players · 1 strategy · qwen2.5-7b-instruct-1m', `desktop: the start state sums up the game (${summary})`);
+  await main.waitForSelector('.sd-start .sd-game-summary:not(:empty)');
+  const games = await main.$$eval('.sd-game-list > .sd-game', (rows) =>
+    rows.map((row) => ({
+      name: row.querySelector('h2').textContent,
+      described: row.querySelector('.sd-description').textContent.length > 0,
+      seats: [...row.querySelectorAll('.sd-game-seats > span')].map((seat) => seat.className).join(' '),
+      summary: row.querySelector('.sd-game-summary').textContent,
+      play: row.querySelector('.sd-play').textContent.trim(),
+      enabled: !row.querySelector('.sd-play').disabled,
+      warned: row.querySelector('.sd-warning') !== null,
+    })),
+  );
+  check(
+    JSON.stringify(games) ===
+      JSON.stringify([
+        {
+          name: 'Werewolf',
+          described: true,
+          seats: 'sd-evil sd-evil sd-good sd-good sd-good sd-good sd-good',
+          summary: '7 players · 1 strategy · qwen2.5-7b-instruct-1m',
+          play: 'Play Werewolf',
+          enabled: true,
+          warned: false,
+        },
+        { name: 'Avalon', described: true, seats: 'sd-evil sd-evil sd-good sd-good sd-good', summary: '5 players · 1 strategy', play: 'Play Avalon', enabled: true, warned: false },
+      ]),
+    `desktop: the start state lists each game with what it is, its seats, its summary and its own Play (${JSON.stringify(games)})`,
+  );
+  check((await main.$$('.sd-start .sd-segments')).length === 0, 'desktop: the start state has no game chooser');
+  const look = await main.evaluate(() => {
+    const style = (selector) => getComputedStyle(document.querySelector(selector));
+    return {
+      title: [style('.sd-start-head h1').fontSize, style('.sd-start-head h1').fontWeight],
+      tagline: style('.sd-tagline').fontStyle,
+      name: style('.sd-game h2').fontSize,
+      settings: document.querySelector('.sd-open-settings').textContent,
+    };
+  });
+  check(
+    JSON.stringify(look) === JSON.stringify({ title: ['22px', '700'], tagline: 'italic', name: '44px', settings: look.settings }) &&
+      /^Settings (⌘|Ctrl\+),$/.test(look.settings),
+    `desktop: the start state is drawn as designed (${JSON.stringify(look)})`,
+  );
+  const squares = await shapes(main, '.sd-game-seats > span');
+  const colors = new Set(squares.map((square) => square.background));
+  check(
+    squares.every((square) => square.width === 14 && square.height === 14) && colors.size === 2 && colors.has('rgb(210, 0, 31)') && colors.has('rgb(36, 56, 232)'),
+    `desktop: each seat is a 14px square, red or blue by side (${JSON.stringify([...colors])})`,
+  );
   const logo = await main.$eval('.sd-logo svg', (svg) => ({
     tiles: svg.querySelectorAll('rect:not(mask rect)').length,
     evil: getComputedStyle(svg.querySelector(':scope > path')).fill,
@@ -843,18 +891,13 @@ await section('desktop', async () => {
     big.height === 48 && big.radius === '12px' && big.background === 'rgb(17, 17, 17)' && big.color === 'rgb(255, 255, 255)' && big.shadow.includes('inset'),
     `desktop: Play is a large primary button, filled with ink and lifted (${JSON.stringify(big)})`,
   );
-  const [track, on, off] = await shapes(main, '.sd-start .sd-segments, .sd-start .sd-segments button');
-  check(
-    track.background === 'rgb(236, 236, 236)' && track.radius === '11px' && on.background === 'rgb(255, 255, 255)' && on.radius === '8px' && on.height === 32 && on.shadow !== 'none' && off.shadow === 'none',
-    `desktop: the game is chosen by a segment raised out of a sunken track (${JSON.stringify([track, on, off])})`,
-  );
   const startSided = await sideColored(main);
   check(startSided.length === 0, `desktop: no control on the start state is red or blue (${startSided.join(' ')})`);
   const startUnringed = await ringed(main, 3);
   check(startUnringed.length === 0, `desktop: every control on the start state shows a focus ring (${startUnringed.join(' ')})`);
   await main.hover('.sd-play');
   const played = await main.$eval('.sd-tip', (element) => !element.hidden && element.textContent);
-  check(typeof played === 'string' && played.startsWith('Start a game'), `desktop: Play has help (${played})`);
+  check(typeof played === 'string' && played.startsWith('Start a game of Werewolf'), `desktop: Play has help (${played})`);
   const settings = watch(await app.newPage());
   await settings.setViewportSize({ width: 760, height: 560 });
   await settings.goto(`${origin}#settings`);
@@ -1032,6 +1075,40 @@ await section('desktop', async () => {
   await settings.keyboard.type('45s', { delay: 30 });
   const limited = await settings.$eval(limit, (input) => ({ value: input.value, focused: document.activeElement === input }));
   check(limited.value === '45s' && limited.focused, `desktop: typing goes on in a phase limit (${JSON.stringify(limited)})`);
+  await app.close();
+});
+
+await section('desktop with an error', async () => {
+  const app = await browser.newContext({ colorScheme: 'light', viewport: { width: 1100, height: 760 } });
+  await app.addInitScript(backend, { ...desktop, errors: [{ path: ['avalon', 'phases', 'vote_limit'], message: 'Give a duration, as 1m or 30s.' }] });
+  const main = watch(await app.newPage());
+  await main.goto(origin);
+  await main.waitForSelector('.sd-start .sd-game-summary:not(:empty)');
+  const rows = await main.$$eval('.sd-game-list > .sd-game', (games) =>
+    games.map((game) => ({
+      enabled: !game.querySelector('.sd-play').disabled,
+      warning: game.querySelector('.sd-warning')?.textContent.trim() ?? null,
+    })),
+  );
+  check(
+    JSON.stringify(rows) === JSON.stringify([{ enabled: true, warning: null }, { enabled: false, warning: 'Give a duration, as 1m or 30s. Fix it in Settings' }]),
+    `desktop: a game with a settings error can't be played and says why, and the others can (${JSON.stringify(rows)})`,
+  );
+  const opened = await main.evaluate(async () => {
+    const asked = [];
+    const invoke = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = async (command, args) => {
+      asked.push([command, args]);
+      return invoke(command, args);
+    };
+    document.querySelector('.sd-warning .sd-link').click();
+    return asked;
+  });
+  check(
+    JSON.stringify(opened) === JSON.stringify([['settings_open', { path: ['avalon', 'phases', 'vote_limit'] }]]),
+    `desktop: the error links to its field in Settings (${JSON.stringify(opened)})`,
+  );
+  await main.screenshot({ path: join(shots, 'desktop-start-error.png'), fullPage: true });
   await app.close();
 });
 

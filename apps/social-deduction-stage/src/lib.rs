@@ -92,6 +92,21 @@ pub enum GameName {
 impl GameName {
     /// Every game, in the order the app lists them.
     pub const ALL: [GameName; 2] = [GameName::Werewolf, GameName::Avalon];
+
+    /// What the game is, in a sentence or two.
+    pub fn description(self) -> &'static str {
+        match self {
+            GameName::Werewolf => {
+                "A village hides its werewolves. Each night the wolves kill, the seer learns one \
+                 player’s nature and the doctor saves one life. Each day the village argues and \
+                 votes someone out."
+            }
+            GameName::Avalon => {
+                "Arthur’s servants send teams on quests; Mordred’s minions slip onto them and \
+                 sabotage. Three good quests win it, unless the Assassin can name Merlin."
+            }
+        }
+    }
 }
 
 /// A side of the game: good players speak from the right, evil from the
@@ -456,4 +471,16 @@ pub struct Assassination {
     pub target: Option<PlayerId>,
     /// Whether the target was Merlin, `None` until resolved.
     pub merlin: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_game_says_what_it_is() {
+        for game in GameName::ALL {
+            assert!(!game.description().is_empty());
+        }
+    }
 }
