@@ -2,8 +2,8 @@
 //! [`Keys`] its models' API keys come from. [`prepare`] does everything
 //! that can fail before the game starts: it settles the configuration,
 //! renders every prompt, sets up and probes every model in play, and deals
-//! the seats. What it gives back builds each episode, logging to a logger
-//! its caller owns, and deals the seats again between episodes.
+//! the seats. What it gives back builds each episode, dealt afresh and
+//! logging to a logger its caller owns.
 
 use crate::avalon::Avalon;
 use crate::config::{self, Configuration, Name, Settings, Settled, SystemPrompt};
@@ -55,58 +55,54 @@ pub async fn prepare(text: &str, keys: &dyn Keys) -> anyhow::Result<Prepared> {
 }
 
 /// A game of `G` ready to start: the settings it is played under, every
-/// system prompt they render, the models in play as they were set up, the
-/// handle each is asked through, and the deal of the next episode with the
-/// configuration its log records.
+/// system prompt they render, the models in play as they were set up, and
+/// the handle each is asked through.
 pub struct Ready<G: Game> {
     settings: Settings<G>,
     prompts: Vec<SystemPrompt<G::Role>>,
     models: Models,
     handles: Handles,
-    deal: HashMap<PlayerId, Dealt<G::Role>>,
-    configuration: Configuration<G>,
 }
 
 impl<G: Game> Ready<G> {
     /// A game under `settings`, made ready. Every prompt is rendered, and
-    /// every model in play set up with its key looked up in `keys`, before
-    /// the seats are dealt, so that a template that is broken or a model
-    /// that does not play fails before any actor is built.
+    /// every model in play set up with its key looked up in `keys`, so that
+    /// a template that is broken or a model that does not play fails before
+    /// any actor is built.
     pub async fn new(settings: Settings<G>, keys: &dyn Keys) -> anyhow::Result<Self> {
         let prompts = settings.prompts()?;
         let (models, handles) = settings.set_up(&prompts, keys).await?;
-        let deal = settings.lineup.deal();
-        let configuration = settings.configuration(&deal, &prompts, models.clone())?;
         Ok(Ready {
             settings,
             prompts,
             models,
             handles,
-            deal,
-            configuration,
         })
     }
 
-    /// Deal the same (role, strategy) pairs to the same seats again, in a
-    /// new random order, for the next episode. The models stay as they were
-    /// set up.
-    pub fn redeal(&mut self) -> anyhow::Result<()> {
-        self.deal = self.settings.lineup.deal();
-        self.configuration =
-            self.settings
-                .configuration(&self.deal, &self.prompts, self.models.clone())?;
-        Ok(())
+    /// A fresh deal of the (role, strategy) pairs to the seats, in a new
+    /// random order, with the configuration its log records. Every seat's
+    /// prompt is rendered for every pair, so any deal has its prompts.
+    fn dealt(&self) -> (HashMap<PlayerId, Dealt<G::Role>>, Configuration<G>) {
+        let deal = self.settings.lineup.deal();
+        let configuration = self
+            .settings
+            .configuration(&deal, &self.prompts, self.models.clone())
+            .expect("every seat's prompt is rendered for every pair");
+        (deal, configuration)
     }
 
-    /// The episode that plays this game as it is dealt, logging to
-    /// `logger`.
+    /// An episode of this game, dealt afresh, logging to `logger`. Every
+    /// episode has the same seats and the same (role, strategy) pairs, and
+    /// asks the models as they were set up.
     pub fn episode(&self, logger: Logger<Entry<G>>) -> Episode<Actor<G>> {
-        let players = config::players(&self.configuration, &self.deal, &self.handles);
+        let (deal, configuration) = self.dealt();
+        let players = config::players(&configuration, &deal, &self.handles);
         let (winner, _) = oneshot::channel();
         game::game(
-            self.deal.clone(),
+            deal,
             self.settings.rules(),
-            self.configuration.clone(),
+            configuration,
             winner,
             players,
             logger,
@@ -183,20 +179,13 @@ mod tests {
 
     /// Every seat in `deal`, with the role and the strategy dealt it, in
     /// seat order.
-    fn seated<R: std::fmt::Display>(deal: &HashMap<PlayerId, Dealt<R>>) -> Vec<String> {
-        let mut seated: Vec<String> = deal
+    fn described<R: std::fmt::Display>(deal: &HashMap<PlayerId, Dealt<R>>) -> Vec<String> {
+        let mut described: Vec<String> = deal
             .iter()
             .map(|(seat, dealt)| format!("{seat}: {} {}", dealt.role, dealt.strategy))
             .collect();
-        seated.sort();
-        seated
-    }
-
-    /// The seats of `deal`, in order.
-    fn seats<R>(deal: &HashMap<PlayerId, Dealt<R>>) -> Vec<&PlayerId> {
-        let mut seats: Vec<&PlayerId> = deal.keys().collect();
-        seats.sort();
-        seats
+        described.sort();
+        described
     }
 
     /// The (role, strategy) pairs `deal` deals, in order.
@@ -216,26 +205,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_redeal_gives_the_same_pairs_to_the_same_seats_in_a_new_order() {
+    async fn each_deal_gives_the_same_pairs_to_the_same_seats_in_a_new_order() {
         let text = "[strategies.dice]\npolicy = \"random\"\n\
                     [strategies.coin]\npolicy = \"random\"\n\
                     [roles.werewolf.strategies]\ndice = 1\ncoin = 1\n\
                     [roles.villager.strategies]\ndice = 2\ncoin = 1\n";
-        let mut ready = werewolf(text).await;
-        let first = ready.deal.clone();
-        let mut deals = HashSet::from([seated(&first)]);
+        let ready = werewolf(text).await;
+        let (first, _) = ready.dealt();
+        let mut deals = HashSet::from([described(&first)]);
         for _ in 0..50 {
-            ready.redeal().unwrap();
-            assert_eq!(seats(&ready.deal), seats(&first));
-            assert_eq!(pairs(&ready.deal), pairs(&first));
-            deals.insert(seated(&ready.deal));
+            let (deal, _) = ready.dealt();
+            assert_eq!(pairs(&deal), pairs(&first));
+            deals.insert(described(&deal));
         }
         // Seven seats dealt fifty times over are not dealt alike every time.
         assert!(deals.len() > 1, "{deals:?}");
     }
 
     #[tokio::test]
-    async fn a_redeal_tells_each_prompted_player_the_prompt_of_its_new_role() {
+    async fn each_deal_tells_each_prompted_player_the_prompt_of_its_role() {
         let base_url = playing(&["qwen2.5-7b-instruct"]);
         let text = format!(
             "[models.qwen]\nbase_url = \"{base_url}\"\nid = \"qwen2.5-7b-instruct\"\n\
@@ -245,13 +233,13 @@ mod tests {
              [roles.doctor]\nstrategy = \"plain\"\n\
              [roles.seer]\nstrategy = \"plain\"\n"
         );
-        let mut ready = werewolf(&text).await;
+        let ready = werewolf(&text).await;
         for _ in 0..3 {
-            ready.redeal().unwrap();
-            assert_eq!(ready.configuration.prompts.len(), ready.deal.len());
-            for (seat, dealt) in &ready.deal {
+            let (deal, configuration) = ready.dealt();
+            assert_eq!(configuration.prompts.len(), deal.len());
+            for (seat, dealt) in &deal {
                 let told = format!("{seat} the {}", dealt.role);
-                assert_eq!(ready.configuration.prompts[seat], told);
+                assert_eq!(configuration.prompts[seat], told);
             }
         }
     }

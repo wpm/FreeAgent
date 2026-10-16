@@ -169,17 +169,15 @@ fn listing(models: &[(String, Option<Mark>)]) -> String {
 }
 
 /// Play `episodes` episodes of the game of `G` that is `ready`, one after
-/// another, logged when `logging` is on. Each episode after the first is
-/// dealt again, and its account is set off from the one before it by a
-/// blank line.
+/// another, each dealt afresh, logged when `logging` is on. Each episode's
+/// account is set off from the one before it by a blank line.
 async fn run<G: Game>(
-    mut ready: Ready<G>,
+    ready: Ready<G>,
     episodes: NonZeroUsize,
     logging: bool,
 ) -> anyhow::Result<()> {
     for episode in 0..episodes.get() {
         if episode > 0 {
-            ready.redeal()?;
             writeln!(io::stdout())?;
         }
         let mut narrator = G::Narrator::default();

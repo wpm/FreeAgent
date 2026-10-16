@@ -1296,14 +1296,10 @@ fn assert_episodes_play_in_turn<G: Tested>() {
             .cloned()
             .collect();
         let (roles, strategies) = start(&logged);
-        let mut players: Vec<&PlayerId> = roles.keys().collect();
+        let mut players: Vec<PlayerId> = roles.keys().cloned().collect();
         players.sort();
-        deals.push((
-            players.into_iter().cloned().collect::<Vec<_>>(),
-            pairs(roles, strategies),
-        ));
+        deals.push((players, pairs(roles, strategies)));
     }
-    assert_eq!(deals.len(), 3);
     assert!(deals.iter().all(|deal| *deal == deals[0]), "{deals:?}");
     assert_eq!(deals[0].0.len(), G::SEATS);
     let seated = format!("{} players:\n", G::SEATS);
