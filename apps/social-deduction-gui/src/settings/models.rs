@@ -1,7 +1,8 @@
-//! The Models tab: a card for each provider, holding its key, the models
-//! added from it, and the models it offers that play and are not added
-//! yet, most capable first. Models are checked in the background, and a
-//! line at the top says while any are.
+//! The Models page: a section for each provider, under a rule, holding
+//! its key, the models added from it, and the models it offers that play
+//! and are not added yet, most capable first, each a grouped list. Models
+//! are checked in the background, and a line at the top says while any
+//! are.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,10 +15,10 @@ use social_deduction_stage::settings::{
     Provider, Trouble, Unchecked, host, is_remote, provider_at,
 };
 
-use super::{Cross, Editor, PageHead, Tab, field_id, path};
+use super::{Cross, Editor, PageHead, Problem, Tab, field_id, path};
 use crate::tauri;
 
-/// What a provider is, which its card's name explains.
+/// What a provider is, which its name's help explains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// A hosted provider the app knows.
@@ -225,7 +226,7 @@ fn attempt(
     Ok(())
 }
 
-/// What the Models tab knows of the providers.
+/// What the Models page knows of the providers.
 #[derive(Clone, Copy)]
 struct Catalog {
     /// The providers found, known and local.
@@ -298,8 +299,8 @@ impl Catalog {
     }
 }
 
-/// The Models tab: the line saying what is being checked, a card for
-/// each provider, and **Add provider…**.
+/// The Models page: **Add provider…** by its title, the line saying what
+/// is being checked, and a section for each provider.
 #[component]
 pub(super) fn Models(editor: Editor) -> impl IntoView {
     let catalog = Catalog {
@@ -348,45 +349,52 @@ pub(super) fn Models(editor: Editor) -> impl IntoView {
         let line = catalog
             .progress
             .with(|progress| shown.with(|shown| checking_line(progress, shown)));
-        match line {
-            Some(line) => view! {
-                <div class="sd-status" data-tip="Checks run in the background and never block you. Local models are checked one at a time, and not while a game is playing.">
-                    <span class="sd-spinner"></span>
-                    <span>{line}</span>
-                </div>
-            }
-            .into_any(),
-            None => {
-                let checked = catalog
+        let checking = line.is_some();
+        let (line, tip) = match line {
+            Some(line) => (
+                line,
+                "Checks run in the background and never block you. Local models are checked one at a time, and not while a game is playing.",
+            ),
+            None => (
+                catalog
                     .progress
-                    .with(|progress| shown.with(|shown| checked_line(progress, shown)));
-                view! {
-                    <div class="sd-status sd-status-idle" data-tip="Models are checked on first launch and after each update, and again when a provider lists a new model, a key changes, or Settings opens with some not yet checked.">
-                        <span>{checked}</span>
-                    </div>
-                }
-                .into_any()
-            }
+                    .with(|progress| shown.with(|shown| checked_line(progress, shown)))
+                    .to_string(),
+                "Models are checked on first launch and after each update, and again when a provider lists a new model, a key changes, or Settings opens with some not yet checked.",
+            ),
+        };
+        view! {
+            <p class="sd-status" data-tip=tip>
+                {checking.then(|| view! { <span class="sd-spinner"></span> })}
+                {line}
+            </p>
         }
     };
+    let adding = RwSignal::new(false);
     view! {
-        <PageHead title="Models" tip=Tab::Models.tip() />
-        {status}
-        <For
-            each=move || shown.get()
-            key=|provider| (provider.name.clone(), provider.base_url.clone(), provider.api_key_env.clone())
-            let:provider
-        >
-            <ProviderCard editor=editor catalog=catalog provider=provider />
-        </For>
-        <AddProvider editor=editor />
+        <PageHead title="Models" tip=Tab::Models.tip()>
+            <button on:click=move |_| adding.set(true) disabled=move || adding.get() data-tip="Add another OpenAI-compatible provider by its address.">"Add provider…"</button>
+        </PageHead>
+        <Show when=move || adding.get()>
+            <AddProvider editor=editor opened=adding />
+        </Show>
+        <div class="sd-providers">
+            {status}
+            <For
+                each=move || shown.get()
+                key=|provider| (provider.name.clone(), provider.base_url.clone(), provider.api_key_env.clone())
+                let:provider
+            >
+                <ProviderSection editor=editor catalog=catalog provider=provider />
+            </For>
+        </div>
     }
 }
 
-/// A provider's card: its name and base URL, its key, the models added
+/// A provider's section: its name and base URL, its key, the models added
 /// from it, and those it offers that play and are not added.
 #[component]
-fn ProviderCard(editor: Editor, catalog: Catalog, provider: Provider) -> impl IntoView {
+fn ProviderSection(editor: Editor, catalog: Catalog, provider: Provider) -> impl IntoView {
     let kind = catalog
         .found
         .with_untracked(|found| Kind::of(&provider, found));
@@ -431,9 +439,9 @@ fn ProviderCard(editor: Editor, catalog: Catalog, provider: Provider) -> impl In
         })
     };
     view! {
-        <section class="sd-card sd-provider" aria-label=name.clone()>
-            <div class="sd-card-head">
-                <h4 data-tip=kind.tip()>{name.clone()}</h4>
+        <section class="sd-section sd-provider" aria-label=name.clone()>
+            <div class="sd-section-head">
+                <h2 data-tip=kind.tip()>{name.clone()}</h2>
                 <code class="sd-url" data-tip="The address this provider's models are reached at.">{base_url.clone()}</code>
                 {(kind == Kind::Added).then(|| view! {
                     <button class="sd-link" on:click=remove data-tip="Remove this provider and its models.">"Remove provider"</button>
@@ -441,11 +449,13 @@ fn ProviderCard(editor: Editor, catalog: Catalog, provider: Provider) -> impl In
             </div>
             {key}
             <Show when=move || names.with(|names| !names.is_empty())>
-                <h5 class="sd-label" data-tip="The models from this provider your strategies can use.">"Your models"</h5>
-                <div class="sd-models">
-                    <For each=move || names.get() key=Clone::clone let:name>
-                        <ModelRow editor=editor fetched=fetched name=name />
-                    </For>
+                <div class="sd-group">
+                    <h3 class="sd-label" data-tip="The models from this provider your strategies can use.">"Your models"</h3>
+                    <div class="sd-list">
+                        <For each=move || names.get() key=Clone::clone let:name>
+                            <ModelRow editor=editor fetched=fetched name=name />
+                        </For>
+                    </div>
                 </div>
             </Show>
             <Available editor=editor catalog=catalog provider=provider.clone() fetched=fetched names=names />
@@ -519,12 +529,12 @@ fn Available(
                 return Some(note("Listing its models…"));
             };
             if let Some(error) = &listing.error {
-                return Some(view! { <p class="sd-field-error">{error.clone()}</p> }.into_any());
+                return Some(view! { <p class="sd-warning">{error.clone()}</p> }.into_any());
             }
             if listing.models.iter().all(|model| model.hidden) {
                 return Some(if local {
                     view! {
-                        <p class="sd-note" data-tip="The server answered at this address but has no model loaded. Load one and it will appear here once it has been checked.">
+                        <p class="sd-warning" data-tip="The server answered at this address but has no model loaded. Load one and it will appear here once it has been checked.">
                             "The server is running, but no model is loaded."
                         </p>
                     }
@@ -560,7 +570,7 @@ fn Available(
         move || {
             let unchecked = trouble.get()?;
             Some(view! {
-                <p class="sd-field-error" data-tip=unchecked.said.clone()>
+                <p class="sd-warning" data-tip=unchecked.said.clone()>
                     {unchecked_line(&name, &unchecked)}
                 </p>
             })
@@ -571,11 +581,13 @@ fn Available(
         {troubled}
         {none}
         <Show when=move || rows.with(|rows| !rows.is_empty())>
-            <h5 class="sd-label" data-tip="Models from this provider that play both games and aren't added yet, most capable first.">"Available"</h5>
-            <div class="sd-models">
-                <For each=move || rows.get() key=|model| model.id.clone() let:model>
-                    <Offered editor=editor provider=provider.get_value() model=model adding=adding />
-                </For>
+            <div class="sd-group">
+                <h3 class="sd-label" data-tip="Models from this provider that play both games and aren't added yet, most capable first.">"Available"</h3>
+                <div class="sd-list">
+                    <For each=move || rows.get() key=|model| model.id.clone() let:model>
+                        <Offered editor=editor provider=provider.get_value() model=model adding=adding />
+                    </For>
+                </div>
             </div>
         </Show>
         {still}
@@ -638,14 +650,14 @@ fn Offered(
         <Show
             when=opened
             fallback=move || view! {
-                <div class="sd-model sd-offered">
+                <div class="sd-item sd-offered">
                     <code class="sd-id">{id.clone()}</code>
-                    <span class="sd-note" data-tip="The context window the provider reports.">{format!("{} tokens", grouped(context_window))}</span>
+                    <span class="sd-tokens" data-tip="The context window the provider reports.">{format!("{} tokens", grouped(context_window))}</span>
                     <button class="sd-small" on:click=open.clone() data-tip="Make this model available to strategies. You name it next.">"Add"</button>
                 </div>
             }
         >
-            <div class="sd-model sd-adding">
+            <div class="sd-item sd-adding">
                 <code class="sd-id">{shown_id.clone()}</code>
                 <input
                     type="text"
@@ -669,15 +681,15 @@ fn Offered(
                     move |_| confirm()
                 }>"Add"</button>
                 <button class="sd-small" on:click=move |_| adding.set(None)>"Cancel"</button>
+                <Problem error=problem.into() />
             </div>
-            {move || problem.get().map(|why| view! { <p class="sd-field-error">{why}</p> })}
         </Show>
     }
 }
 
 /// A model added: its name, which is edited in place, its id, its context
-/// window, **×**, and, when it no longer plays, a warning naming the
-/// strategies that ask it.
+/// window, **×**, and, when it no longer plays, a warning row under it
+/// naming the strategies that ask it.
 #[component]
 fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> impl IntoView {
     let model = {
@@ -764,7 +776,7 @@ fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> imp
         }
     };
     view! {
-        <div class="sd-model" class:sd-warned=move || listed.get().is_some_and(|(_, stopped)| stopped)>
+        <div class="sd-item">
             <input
                 type="text"
                 class="sd-name"
@@ -795,7 +807,7 @@ fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> imp
                     prop:value=move || model.with(|m| m.context_window.map(grouped).unwrap_or_default())
                     on:change=typed
                 />
-                <span class="sd-note">"tokens"</span>
+                <span>"tokens"</span>
                 <Show when=move || model.with(|m| m.context_window.is_some())>
                     <button class="sd-link" data-tip="Go back to the provider's figure." on:click={
                         let set_window = set_window.clone();
@@ -816,18 +828,20 @@ fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> imp
             >
                 <Cross />
             </button>
-            {move || listed.get().is_some_and(|(_, stopped)| stopped).then(|| {
-                let users = users.get();
-                let used = if users.is_empty() { String::new() } else { format!(" Used by {}.", users.join(", ")) };
-                view! {
-                    <p class="sd-warning" data-tip="It failed the check after the last app update, or the provider changed the model behind its id. Games using it will likely fail. Pick another model for its strategies, or remove it.">
-                        {format!("⚠ No longer plays.{used}")}
-                    </p>
-                }
-            })}
-            {move || problem.get().map(|why| view! { <p class="sd-field-error">{why}</p> })}
+            <Problem error=problem.into() />
             {move || errors.get().into_iter().map(|error| view! { <p class="sd-field-error">{error}</p> }).collect_view()}
         </div>
+        {move || listed.get().is_some_and(|(_, stopped)| stopped).then(|| {
+            let users = users.get();
+            let used = if users.is_empty() { String::new() } else { format!(" Used by {}.", users.join(", ")) };
+            view! {
+                <div class="sd-item">
+                    <p class="sd-warning" data-tip="It failed the check after the last app update, or the provider changed the model behind its id. Games using it will likely fail. Pick another model for its strategies, or remove it.">
+                        {format!("No longer plays.{used}")}
+                    </p>
+                </div>
+            }
+        })}
     }
 }
 
@@ -889,23 +903,20 @@ fn KeyField(catalog: Catalog, variable: String, changed: Callback<()>) -> impl I
         let variable = variable.clone();
         move || {
             let status = status.get()?;
-            let (tip, good) = match &status {
-                KeyStatus::InEnvironment => (
-                    "Read from the environment the app started in. A key stored in the keychain would take priority.",
-                    true,
-                ),
-                KeyStatus::InKeychain => (
-                    "Stored, encrypted, in your system keychain. It takes priority over the environment variable, and the app never shows or logs it.",
-                    true,
-                ),
-                KeyStatus::Missing => (
-                    "No key in the keychain or the environment, so this provider's models can't be listed or checked.",
-                    false,
-                ),
-                KeyStatus::Unavailable(_) => ("The system keychain couldn't be asked.", false),
+            let tip = match &status {
+                KeyStatus::InEnvironment => {
+                    "Read from the environment the app started in. A key stored in the keychain would take priority."
+                }
+                KeyStatus::InKeychain => {
+                    "Stored, encrypted, in your system keychain. It takes priority over the environment variable, and the app never shows or logs it."
+                }
+                KeyStatus::Missing => {
+                    "No key in the keychain or the environment, so this provider's models can't be listed or checked."
+                }
+                KeyStatus::Unavailable(_) => "The system keychain couldn't be asked.",
             };
             Some(view! {
-                <span class="sd-chip" class:sd-chip-good=good class:sd-chip-bad=!good data-tip=tip>
+                <span class="sd-chip" class:sd-chip-good=status == KeyStatus::InKeychain class:sd-chip-bad=!status.is_set() data-tip=tip>
                     <code>{variable.clone()}</code>
                     {format!(" {}", status.told())}
                 </span>
@@ -922,20 +933,22 @@ fn KeyField(catalog: Catalog, variable: String, changed: Callback<()>) -> impl I
             <Show when=move || status.get() == Some(KeyStatus::InEnvironment) && !opened.get()>
                 <button class="sd-link" on:click=move |_| opened.set(true) data-tip="Store a key in the system keychain instead. It takes priority over the environment variable.">"Store a key in the keychain…"</button>
             </Show>
-            <Show when=form_shown>
+        </div>
+        <Show when=form_shown>
+            <div class="sd-key-form">
                 <input type="password" node_ref=field autocomplete="off" placeholder="Paste an API key" aria-label="API key" data-tip="Saved to the system keychain, never to a file, and never shown again." />
                 <button class="sd-primary" on:click=save.clone() data-tip="Store this key in the keychain. The models are listed and checked again with it.">"Save to keychain"</button>
-            </Show>
-        </div>
+            </div>
+        </Show>
         {move || failure.get().map(|failure| view! { <p class="sd-field-error">{failure}</p> })}
     }
 }
 
-/// **Add provider…**, which opens fields for another OpenAI-compatible
-/// provider's name, base URL and key variable.
+/// What **Add provider…** opens: fields for another OpenAI-compatible
+/// provider's name, base URL and key variable, which close `opened` once
+/// it is added.
 #[component]
-fn AddProvider(editor: Editor) -> impl IntoView {
-    let opened = RwSignal::new(false);
+fn AddProvider(editor: Editor, opened: RwSignal<bool>) -> impl IntoView {
     let problem = RwSignal::new(None::<String>);
     let (name, base_url, variable) = (
         NodeRef::<html::Input>::new(),
@@ -956,45 +969,34 @@ fn AddProvider(editor: Editor) -> impl IntoView {
             api_key_env: (!variable.is_empty()).then_some(variable),
         };
         match attempt(editor, |s| s.add_provider(provider)) {
-            Ok(()) => {
-                problem.set(None);
-                opened.set(false);
-            }
+            Ok(()) => opened.set(false),
             Err(why) => problem.set(Some(why)),
         }
     };
+    let field = |label: &'static str,
+                 node: NodeRef<html::Input>,
+                 placeholder: &'static str,
+                 tip: &'static str| {
+        view! {
+            <label class="sd-item">
+                <span class="sd-item-name">{label}</span>
+                <input type="text" node_ref=node spellcheck="false" placeholder=placeholder data-tip=tip />
+            </label>
+        }
+    };
     view! {
-        <Show
-            when=move || opened.get()
-            fallback=move || view! {
-                <div class="sd-row">
-                    <button on:click=move |_| opened.set(true) data-tip="Add another OpenAI-compatible provider by its address.">"Add provider…"</button>
-                </div>
-            }
-        >
-            <div class="sd-card sd-add-provider">
-                <label class="sd-field">
-                    <span>"Name"</span>
-                    <input type="text" node_ref=name spellcheck="false" placeholder="Provider name" data-tip="What this provider is called in Settings." />
-                </label>
-                <label class="sd-field">
-                    <span>"Base URL"</span>
-                    <input type="text" node_ref=base_url spellcheck="false" placeholder="https://api.example.com/v1" data-tip="The root of an OpenAI-compatible API, ending in /v1." />
-                </label>
-                <label class="sd-field">
-                    <span>"Key variable"</span>
-                    <input type="text" node_ref=variable spellcheck="false" placeholder="EXAMPLE_API_KEY (optional)" data-tip="The environment variable the key is read from, and the name it is stored under in the keychain. Leave it empty if the server needs no key." />
-                </label>
-                <div class="sd-row">
-                    <button class="sd-primary" on:click=confirm>"Add provider"</button>
-                    <button on:click=move |_| {
-                        problem.set(None);
-                        opened.set(false);
-                    }>"Cancel"</button>
-                </div>
-                {move || problem.get().map(|why| view! { <p class="sd-field-error">{why}</p> })}
+        <div class="sd-add-provider">
+            <div class="sd-list">
+                {field("Name", name, "Provider name", "What this provider is called in Settings.")}
+                {field("Base URL", base_url, "https://api.example.com/v1", "The root of an OpenAI-compatible API, ending in /v1.")}
+                {field("Key variable", variable, "EXAMPLE_API_KEY (optional)", "The environment variable the key is read from, and the name it is stored under in the keychain. Leave it empty if the server needs no key.")}
             </div>
-        </Show>
+            <div class="sd-adder">
+                <button class="sd-primary" on:click=confirm data-tip="Add this provider. Its models are listed and checked next.">"Add provider"</button>
+                <button on:click=move |_| opened.set(false) data-tip="Close these fields without adding a provider.">"Cancel"</button>
+                <Problem error=problem.into() />
+            </div>
+        </div>
     }
 }
 

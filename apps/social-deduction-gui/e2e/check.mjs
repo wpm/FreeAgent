@@ -24,7 +24,7 @@
 // each role and phase does written under its name, help shows on hover and
 // on focus, and typing goes on in a field while each change is stored. Its Models tab
 // shows each provider by name with where its key comes from, why it lists
-// nothing, or the models that play; adding one asks for its name, and a
+// nothing as a marigold warning, or the models that play; adding one asks for its name, and a
 // name taken or empty is refused; a context window typed overrides the
 // provider's, and Reset puts it back; and everything on it has help. Its
 // controls are ink only, each with a focus ring: Play a large primary
@@ -716,7 +716,7 @@ async function ringed(page, count) {
 async function models(settings) {
   await settings.click('#tab-models');
   await settings.waitForSelector('.sd-offered');
-  const providers = await settings.$$eval('.sd-provider h4', (names) => names.map((name) => name.textContent.trim()));
+  const providers = await settings.$$eval('.sd-provider h2', (names) => names.map((name) => name.textContent.trim()));
   check(
     JSON.stringify(providers) === JSON.stringify(['OpenAI', 'Anthropic', 'Local (localhost:1234)', 'Local (localhost:11434)', 'Broke', 'Mute']),
     `desktop: each provider is shown by its name (${providers.join(', ')})`,
@@ -725,15 +725,15 @@ async function models(settings) {
   const text = (selector) => settings.$eval(selector, (element) => element.textContent.trim());
   const ids = (selector) => settings.$$eval(selector, (found) => found.map((id) => id.textContent.trim()));
   check(
-    (await text(`${card('Local (localhost:11434)')} .sd-note`)) === 'The server is running, but no model is loaded.',
+    (await text(`${card('Local (localhost:11434)')} .sd-warning`)) === 'The server is running, but no model is loaded.',
     'desktop: a local server with no model loaded says so',
   );
-  check((await text(`${card('OpenAI')} .sd-field-error`)).includes('401'), 'desktop: a provider that cannot list its models says why');
+  check((await text(`${card('OpenAI')} .sd-warning`)).includes('401'), 'desktop: a provider that cannot list its models says why');
   const tip = (selector) => settings.$eval(selector, (element) => element.dataset.tip);
   check(
-    (await text(`${card('Broke')} .sd-field-error`)) ===
+    (await text(`${card('Broke')} .sd-warning`)) ===
       "Broke's account has no credits left. Add credits at billing.broke.example, then reopen Settings." &&
-      (await tip(`${card('Broke')} .sd-field-error`)).startsWith('You have no credits remaining.') &&
+      (await tip(`${card('Broke')} .sd-warning`)).startsWith('You have no credits remaining.') &&
       (await settings.$$(`${card('Broke')} .sd-note`)).length === 0 &&
       (await text('.sd-status')) === "Some models couldn't be checked. Their providers say why.",
     "desktop: a provider whose models couldn't be checked says why, and the provider's words are its help",
@@ -772,7 +772,21 @@ async function models(settings) {
   check(add.height === 32 && add.radius === '8px', `desktop: a model's Add is a small secondary button (${JSON.stringify(add)})`);
   const sided = await sideColored(settings);
   check(sided.length === 0, `desktop: no control on the Models tab is red or blue (${sided.join(' ')})`);
-  await settings.screenshot({ path: join(shots, 'settings-models.png'), fullPage: true });
+  const flags = await settings.$$eval('.sd-provider .sd-warning', (warnings) =>
+    warnings.map((warning) => getComputedStyle(warning, '::before').backgroundColor),
+  );
+  check(
+    flags.length >= 3 && flags.every((flag) => flag === 'rgb(242, 179, 0)'),
+    `desktop: every problem on the Models tab is a marigold warning (${flags.join(', ')})`,
+  );
+  // The pictures are at the size of the design's.
+  await settings.setViewportSize({ width: 1040, height: 1100 });
+  await settings.keyboard.press('Escape');
+  await settings.screenshot({ path: join(shots, 'settings-models.png') });
+  await settings.emulateMedia({ colorScheme: 'dark' });
+  await settings.screenshot({ path: join(shots, 'settings-models-dark.png') });
+  await settings.emulateMedia({ colorScheme: 'light' });
+  await settings.setViewportSize({ width: 760, height: 560 });
   // Adding a model asks for its name, filled in with its id.
   await settings.click(`${card('Anthropic')} .sd-offered button`);
   const name = `${card('Anthropic')} .sd-adding input`;
