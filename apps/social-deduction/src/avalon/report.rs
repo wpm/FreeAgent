@@ -358,14 +358,18 @@ enum Kind {
 /// the phase before it came out as the next one begins, from what the new
 /// announcement shows: the team proposed, or that the leader proposed
 /// nobody in time; the tally of the vote; or how the quest came out. The
-/// player's own choices are told as it makes them, and all talk, its own
-/// and others', as it is said or heard. Told within a budget, it forgets
-/// talk, oldest first, until it fits.
+/// player's first choice for each phase, the one the environment counts, is
+/// told as it makes it, and all talk, its own and others', as it is said or
+/// heard. Told within a budget, it forgets talk, oldest first, until it
+/// fits.
 pub struct Story {
     /// Whose story this is.
     me: PlayerId,
     /// The latest phase the player was shown, once one has been.
     shown: Option<View>,
+    /// The phase of the latest choice told, by the sequence number of its
+    /// announcement, once one has been.
+    chosen: Option<u64>,
     /// The lines told so far, in order, each with what it is.
     account: Vec<(String, Kind)>,
 }
@@ -376,6 +380,7 @@ impl Story {
         Self {
             me,
             shown: None,
+            chosen: None,
             account: Vec::new(),
         }
     }
@@ -502,8 +507,9 @@ impl Story {
 
 impl Account<Avalon> for Story {
     /// Add what `event` adds to the account: an announcement begins a
-    /// phase, a choice the player made is told as made, and an utterance
-    /// it made or heard as said. Nothing else adds anything.
+    /// phase, the player's first choice for a phase is told as made, unless
+    /// a choice for a later phase was told first, and an utterance it made
+    /// or heard as said. Nothing else adds anything.
     fn recall(&mut self, event: &Event<Memory>) {
         let (lines, kind) = match &event.payload {
             Memory::Observed {
@@ -517,7 +523,15 @@ impl Account<Avalon> for Story {
             } => (vec![self.said(from, text)], Kind::Talk),
             Memory::Acted {
                 message: Message::Move(made),
-            } => (vec![self.chose(&made.choice().2)], Kind::Kept),
+            } => {
+                let (seq, _, choice) = made.choice();
+                if self.chosen.is_some_and(|chosen| chosen >= seq) {
+                    (vec![], Kind::Kept)
+                } else {
+                    self.chosen = Some(seq);
+                    (vec![self.chose(&choice)], Kind::Kept)
+                }
+            }
             Memory::Acted { .. } => (vec![], Kind::Kept),
             Memory::Observed { .. } => (vec![], Kind::Kept),
         };
@@ -1064,6 +1078,55 @@ mod tests {
                 "Quest 2, proposal 1 of 5. You lead and need a team of 3.",
                 "You propose Player 1, Player 3 and Player 4.",
                 "You say, \"Trust me.\"",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_player_s_story_tells_only_its_first_choice_in_a_phase_the_one_counted() {
+        // Player 2 votes twice on Player 1's team, the second time the other
+        // way, and once more as the quest begins, then supports the quest
+        // three times.
+        let me = id("Player 2");
+        let mut state = State::new(five());
+        state.phase = Phase::Vote;
+        state.team = Some(team(&["Player 1", "Player 2"]));
+        let vote = |ballot, n| sent(Choice::Ballot(ballot).message(1, me.clone(), n));
+        let mut memories = vec![
+            heard(announcement(1, state.view(&me))),
+            vote(Ballot::Reject, 1),
+            vote(Ballot::Approve, 2),
+        ];
+        let ballot = |player, ballot| (id(player), Choice::Ballot(ballot));
+        let ballots = [
+            ballot("Player 1", Ballot::Approve),
+            ballot("Player 2", Ballot::Reject),
+            ballot("Player 3", Ballot::Approve),
+            ballot("Player 4", Ballot::Approve),
+        ]
+        .into_iter()
+        .collect();
+        state.resolve(&ballots, 1);
+        state.next();
+        memories.push(heard(announcement(2, state.view(&me))));
+        memories.push(vote(Ballot::Approve, 3));
+        for n in 4..7 {
+            memories.push(sent(Choice::Deed(Deed::Support).message(2, me.clone(), n)));
+        }
+        assert_eq!(
+            told("Player 2", memories).lines(),
+            [
+                "You are Player 2, the Assassin, on the evil side. You see that Player 5 is evil.",
+                "",
+                "Everyone votes on the team of Player 1 and Player 2.",
+                "You reject the team.",
+                "Player 1, Player 3 and Player 4 approve.",
+                "Player 2 rejects.",
+                "Player 5 does not vote.",
+                "The team goes on the quest.",
+                "",
+                "Player 1 and Player 2 go on quest 1, which 1 sabotage fails.",
+                "You support the quest.",
             ]
         );
     }
