@@ -4,15 +4,16 @@
 // random Avalon and Werewolf games, and the recorded prompted ones. Every
 // game at rest has evil bubbles on the left, good on the right and the
 // narrator in the center, each bubble labeled `Player N · Role` and
-// unfilled, each board swatch in its seat's side color, and the winner in
-// the header. The random Avalon board
-// agrees with the narrated quests and has a mark or blank per seat in
-// every vote row, with no `data-theme`. The random Werewolf board's dead
-// are those the narration kills, and `data-theme` matches the last phase.
-// The prompted Werewolf game, played at ten times the pace, shows a
-// thinking player's dots until it speaks, turns dark by night and light by
-// day, and shows a day closing, with speech landing while it does, before
-// the night falls. The prompted Avalon board names the Assassin's target.
+// unfilled, every player the board names marked by a seat square numbered
+// from the seat in its side's color, and the winner in the header. The
+// random Avalon board's quest squares agree with the narrated quests, and
+// it has a mark or blank per seat in every vote row, with no `data-theme`.
+// The random Werewolf board's dead are those the narration kills, struck
+// through, and `data-theme` matches the last phase. The prompted Werewolf
+// game, played at ten times the pace, shows a thinking player's dots until
+// it speaks, turns dark by night and light by day, inverts a vote's row
+// and tags it New as it lands, and shows a day closing, with speech
+// landing while it does, before the night falls. The prompted Avalon board names the Assassin's target.
 // At 420 px wide the board stacks under the chat and nothing scrolls
 // sideways. The tab shows the mark. With a stand-in for the desktop app's backend,
 // the main window opens on its start state with the mark and Play, #settings opens the
@@ -135,7 +136,7 @@ async function atRest(page, game) {
     filled.length === 0,
     `${game}: every player's bubble is unfilled and outlined${filled.map((bubble) => `; ${bubble.name} is ${bubble.background} with ${bubble.border}`).join('')}`,
   );
-  const { sides, swatches } = await page.$$eval('.sd-players li', (rows) => {
+  const { sides, squares } = await page.$$eval('.sd-players li', (rows) => {
     // A side's color, resolved the way the browser resolves a background.
     const probe = document.createElement('div');
     document.body.append(probe);
@@ -147,19 +148,38 @@ async function atRest(page, game) {
     probe.remove();
     return {
       sides,
-      swatches: rows.map((row) => ({
-        role: row.querySelector('.sd-detail').textContent.split(',')[0],
-        background: getComputedStyle(row.querySelector('.sd-swatch')).backgroundColor,
-      })),
+      squares: rows.map((row) => {
+        const square = row.querySelector('.sd-seat');
+        const style = getComputedStyle(square);
+        return {
+          role: row.querySelector('.sd-detail').textContent.split(',')[0],
+          name: row.querySelector('.sd-name').textContent,
+          number: square.textContent,
+          background: style.backgroundColor,
+          size: `${style.width}×${style.height}`,
+          round: style.borderRadius,
+        };
+      }),
     };
   });
   const capitalized = (role) => role.charAt(0).toUpperCase() + role.slice(1);
-  const offside = swatches.filter(
-    (swatch) => swatch.background !== sides[evil.has(capitalized(swatch.role)) ? 'evil' : 'good'],
+  const offside = squares.filter(
+    (square) =>
+      square.background !== sides[evil.has(capitalized(square.role)) ? 'evil' : 'good'] ||
+      square.name !== `Player ${square.number}` ||
+      square.size !== '22px×22px' ||
+      square.round !== '0px',
   );
   check(
-    swatches.length > 0 && sides.good !== sides.evil && offside.length === 0,
-    `${game}: every seat's swatch is in its side's color${offside.map((swatch) => `; ${swatch.role} is ${swatch.background}`).join('')}`,
+    squares.length > 0 && sides.good !== sides.evil && offside.length === 0,
+    `${game}: every seat's square is numbered from its seat in its side's color${offside.map((square) => `; ${JSON.stringify(square)}`).join('')}`,
+  );
+  const unmarked = await page.$$eval('.sd-board .sd-name', (names) =>
+    names.filter((name) => !name.previousElementSibling?.matches('.sd-seat')).map((name) => name.textContent),
+  );
+  check(
+    unmarked.length === 0 && (await page.$$('.sd-swatch')).length === 0,
+    `${game}: every player the board names has a seat square, and no swatch remains${unmarked.map((name) => `; ${name}`).join('')}`,
   );
   const outcome = await page.$eval('.sd-outcome', (element) => ({
     text: element.textContent,
@@ -209,10 +229,10 @@ await section('avalon', async () => {
     const result = line.match(/^The quest (succeeds|fails)(?:, with (\d+) sabotages?)?/);
     if (result) quests.push(result[1] === 'succeeds' ? '✓' : result[2]);
   }
-  const tokens = await page.$$eval('.sd-quests .sd-token', (tokens) =>
-    tokens.map((token) =>
-      token.classList.contains('sd-succeeded') || token.classList.contains('sd-failed')
-        ? token.querySelector('span').textContent
+  const tokens = await page.$$eval('.sd-quests .sd-quest', (quests) =>
+    quests.map((quest) =>
+      quest.classList.contains('sd-succeeded') || quest.classList.contains('sd-failed')
+        ? quest.querySelector('.sd-token').textContent
         : null,
     ),
   );
@@ -220,7 +240,7 @@ await section('avalon', async () => {
   check(
     // Five rejected proposals can end the game before any quest.
     JSON.stringify(played) === JSON.stringify(quests) && tokens.slice(0, played.length).every((token) => token !== null),
-    `avalon: the quest tokens agree with the narrated quests (${quests.join(' ')})`,
+    `avalon: the quest squares agree with the narrated quests (${quests.join(' ')})`,
   );
   const rows = await page.$$eval('.sd-votes', ([table]) => {
     const seats = table.querySelectorAll('thead th').length - 2;
@@ -230,7 +250,7 @@ await section('avalon', async () => {
     });
   });
   check(
-    rows.length > 0 && rows.every((row) => row.marks.length === row.seats && row.marks.every((mark) => ['✓', '✗', ''].includes(mark))),
+    rows.length > 0 && rows.every((row) => row.marks.length === row.seats && row.marks.every((mark) => ['✓', '×', ''].includes(mark))),
     `avalon: every vote row has one mark or blank per seat (${rows.length} rows)`,
   );
   check(
@@ -245,10 +265,21 @@ await section('werewolf', async () => {
   await atRest(page, 'werewolf');
   const lines = await narrated(page);
   const killed = lines.flatMap((line) => line.match(/^(Player \d+) dies\.$/)?.slice(1) ?? []).sort();
-  const dead = (await page.$$eval('.sd-players li.sd-dead .sd-name', (names) => names.map((name) => name.textContent))).sort();
+  const dead = await page.$$eval('.sd-players li.sd-dead', (rows) =>
+    rows.map((row) => ({
+      name: row.querySelector('.sd-name').textContent,
+      struck: getComputedStyle(row.querySelector('.sd-name')).textDecorationLine,
+      faded: getComputedStyle(row.querySelector('.sd-seat.sd-out')).opacity,
+    })),
+  );
+  const names = dead.map((row) => row.name).sort();
   check(
-    killed.length > 0 && JSON.stringify(dead) === JSON.stringify(killed),
+    killed.length > 0 && JSON.stringify(names) === JSON.stringify(killed),
     `werewolf: the dead in the panel are those the narration kills (${killed.join(', ')})`,
+  );
+  check(
+    dead.every((row) => row.struck === 'line-through' && row.faded === '0.35'),
+    `werewolf: the dead are struck through and their squares faded (${JSON.stringify(dead)})`,
   );
   const phase = await page.$$eval('.sd-heading', (headings) => headings.at(-1).textContent);
   const theme = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
@@ -281,6 +312,11 @@ await section('werewolf-prompted', async () => {
   await open(page, 'werewolf-prompted-fast');
   await page.evaluate(() => {
     window.timeline = [];
+    // Ink and paper as they stand, which a landing row takes inverted.
+    const probe = document.createElement('div');
+    probe.style.cssText = 'color: var(--sd-paper); background: var(--sd-ink)';
+    document.body.append(probe);
+    const inverted = getComputedStyle(probe);
     const snapshot = () => {
       const phase = document.querySelector('.sd-phase');
       const clock = phase?.querySelector('.sd-clock')?.textContent ?? '';
@@ -292,6 +328,13 @@ await section('werewolf-prompted', async () => {
         phase: (phase?.textContent ?? '').replace(clock, '').replace(closing, '').trim(),
         closing,
         over: document.querySelector('.sd-outcome') !== null,
+        landed: [...document.querySelectorAll('.sd-vote.sd-landed')].map((row) => {
+          const style = getComputedStyle(row);
+          return {
+            inverted: style.backgroundColor === inverted.backgroundColor && style.color === inverted.color,
+            tag: getComputedStyle(row, '::after').content,
+          };
+        }),
         thinking: messages
           .filter((message) => message.dataset.messageId.startsWith('think-') && message.querySelector('.rc-thinking'))
           .map((message) => message.dataset.name),
@@ -338,12 +381,17 @@ await section('werewolf-prompted', async () => {
     spokeAfterDots.length > 0 && spokeAfterDots.every((spoke) => spoke.gone),
     `werewolf-prompted: thinking dots show for a player and are gone after it speaks (${spokeAfterDots.length} times)`,
   );
+  const landed = playing.flatMap((shot) => shot.landed);
+  check(
+    landed.length > 0 && landed.every((row) => row.inverted && row.tag === '"New"'),
+    `werewolf-prompted: a landed vote's row is inverted and tagged New while it flashes (${landed.length} seen)`,
+  );
   // The theme as each phase ends, before the next heading or the outcome.
   const ends = [];
   for (let i = 0; i < playing.length; i += 1) {
     const shot = playing[i];
     const next = playing[i + 1];
-    if (!shot.over && /^(Night|Day) \d+\.$/.test(shot.phase) && (!next || next.phase !== shot.phase || next.over)) {
+    if (!shot.over && /^(Night|Day) \d+$/.test(shot.phase) && (!next || next.phase !== shot.phase || next.over)) {
       ends.push(shot);
     }
   }
