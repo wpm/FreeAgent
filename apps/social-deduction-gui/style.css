@@ -241,7 +241,7 @@ body,
   animation: sd-pulse 1.6s ease-in-out infinite;
 }
 
-/* A countdown: a 3px bar, ink on the rule's grey. */
+/* A countdown: a 3px bar, ink on the rule's gray. */
 
 .sd-countdown {
   display: block;
