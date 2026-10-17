@@ -54,7 +54,7 @@ impl AppSettings {
     /// · gpt-4.1-mini`, with the ids of the models in play, if any.
     pub fn summary(&self, game: GameName) -> String {
         let settings = self.game(game);
-        let players = settings.players();
+        let players = settings.seats().len();
         let at_the_table = settings.at_the_table();
         let mut parts = vec![
             plural(players, "player", "players"),
@@ -383,23 +383,20 @@ impl Default for GameSettings {
 }
 
 impl GameSettings {
-    /// How many players sit at the table.
-    pub fn players(&self) -> usize {
-        self.roles.iter().map(|role| role.count).sum()
-    }
-
-    /// The side of each seat at the table, evil first.
+    /// The side of each seat at the table, evil first. Loading lists only a
+    /// game's own roles, so every key names a role.
     pub fn seats(&self) -> Vec<Side> {
-        let count = |side| {
-            self.roles
-                .iter()
-                .filter(|role| Role::from_key(&role.key).map(Role::side) == Some(side))
-                .map(|role| role.count)
-                .sum()
-        };
-        std::iter::repeat_n(Side::Evil, count(Side::Evil))
-            .chain(std::iter::repeat_n(Side::Good, count(Side::Good)))
-            .collect()
+        let mut seats: Vec<Side> = self
+            .roles
+            .iter()
+            .flat_map(|role| {
+                let known = Role::from_key(&role.key);
+                let side = known.unwrap_or_else(|| panic!("{} is not a role", role.key));
+                std::iter::repeat_n(side.side(), role.count)
+            })
+            .collect();
+        seats.sort_by_key(|side| *side != Side::Evil);
+        seats
     }
 
     /// The names of the strategies allotted a seat, as a game allots them:
@@ -858,6 +855,16 @@ mod tests {
             settings.seats(),
             [Side::Evil, Side::Good, Side::Good, Side::Good]
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "wizard is not a role")]
+    fn every_role_has_a_seat() {
+        let settings = GameSettings {
+            roles: vec![role("wizard", 1, None)],
+            ..GameSettings::default()
+        };
+        settings.seats();
     }
 
     #[test]

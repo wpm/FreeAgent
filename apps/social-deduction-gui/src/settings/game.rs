@@ -7,8 +7,8 @@ use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use social_deduction_stage::settings::{
-    GameSettings, Policy, RANDOM, RoleSettings, StrategySettings, game_key, game_title,
-    is_part_name, label, part_variable,
+    Policy, RANDOM, RoleSettings, StrategySettings, game_key, game_title, is_part_name, label,
+    part_variable,
 };
 use social_deduction_stage::{GameName, Role};
 
@@ -208,7 +208,7 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
             .collect::<Vec<_>>()
     });
     let strategy_names = editor.game(game, |s| s.strategies.keys().cloned().collect::<Vec<_>>());
-    let players = editor.game(game, GameSettings::players);
+    let players = editor.game(game, |s| s.seats().len());
     let table_error = editor.error(game_path(game, &["roles"]));
     let strategy_options = Memo::new(move |_| {
         let mut names: Vec<(String, String)> = strategy_names
