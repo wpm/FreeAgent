@@ -10,7 +10,10 @@ fn folded(name: &str) -> Vec<Cue> {
         env!("CARGO_MANIFEST_DIR")
     );
     let log = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
-    social_deduction::stage::cues(&log).unwrap()
+    let mut read = social_deduction::stage::recordings(&log).unwrap();
+    assert!(read.problems.is_empty(), "{:?}", read.problems);
+    assert_eq!(read.games.len(), 1);
+    read.games.remove(0).cues
 }
 
 /// Whether some cue's beat passes `test`.

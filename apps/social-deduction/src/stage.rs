@@ -10,15 +10,17 @@
 use crate::avalon::{self, Avalon};
 use crate::config::Name;
 use crate::game::{Entry, Game, Narrate};
-use crate::log::Header;
+use crate::log::{Ended, Header};
 use crate::report::{Line, in_order};
 use crate::seat::PlayerId;
 use crate::werewolf::{self, Werewolf};
 use anyhow::Context;
 use free_agent::Event;
+use serde::de::IgnoredAny;
 use social_deduction_stage::{Beat, Cue, GameName, Millis, Outcome, Panel, Role, Seat, Side};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 /// What a game supplies for its log to be folded into cues: its name, how
 /// its roles and sides are drawn, how it is won, and its board.
@@ -104,14 +106,28 @@ impl<G: Staged> Stage<G> {
         beats.into_iter().map(|beat| Cue { at, beat }).collect()
     }
 
-    /// The thoughts of every player still thinking, in seat order, stamped
-    /// `at`: what closes every call still out when a game stops or fails,
-    /// before its outcome.
-    pub fn close(&mut self, at: Millis) -> Vec<Cue> {
-        self.hushed()
-            .into_iter()
-            .map(|beat| Cue { at, beat })
-            .collect()
+    /// The last cues of a game that `ended` as it did at `at`, `won` being
+    /// the outcome [`Stage::fold`] gave if a side won: a thought for every
+    /// call still out, in seat order, then the outcome. A failure tells its
+    /// error first and is a failure even after a win. Otherwise a game won
+    /// is won, and one with no end is [`Outcome::Unfinished`].
+    pub fn end(&mut self, at: Millis, won: Option<Cue>, ended: Option<Ended>) -> Vec<Cue> {
+        let mut beats = self.hushed();
+        let over = |outcome| Cue {
+            at,
+            beat: Beat::Over { outcome },
+        };
+        let last = match ended {
+            Some(Ended::Failed(error)) => {
+                beats.push(Beat::Told(vec![error.clone()]));
+                over(Outcome::Failed(error))
+            }
+            Some(_) => won.unwrap_or_else(|| over(Outcome::Stopped)),
+            None => won.unwrap_or_else(|| over(Outcome::Unfinished)),
+        };
+        let mut cues: Vec<Cue> = beats.into_iter().map(|beat| Cue { at, beat }).collect();
+        cues.push(last);
+        cues
     }
 
     /// `player`'s thought, if their call is out.
@@ -131,48 +147,135 @@ impl<G: Staged> Stage<G> {
     }
 }
 
-/// The cues a game's log folds into, the log written as JSON Lines by a
-/// game of either kind, which its header names. A log with no header,
-/// written before logs had one, is of the game whose event its first line
-/// is. Calls still out at the end of the log are closed there.
+/// A log's episodes, each read as its own game.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Recordings {
+    /// Every episode that reads, in the order of each one's first line.
+    pub games: Vec<Recording>,
+    /// Why each episode left out was left out, naming the line.
+    pub problems: Vec<String>,
+}
+
+/// One episode of a log, folded into cues.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Recording {
+    /// The episode's ID, which every one of its lines carries.
+    pub episode: Uuid,
+    /// The game it plays.
+    pub game: GameName,
+    /// Its cues, the last of them its one [`Beat::Over`].
+    pub cues: Vec<Cue>,
+}
+
+/// The episodes of a log written as JSON Lines by games of either kind,
+/// each told apart by its ID, wherever its lines fall. Each episode is of
+/// the game its header names. An episode with no header, written before
+/// logs had one, is of the game whose event its first line is.
+///
+/// Each recording ends with one [`Beat::Over`], after a thought for every
+/// call still out: as its episode ended, with the error told first when it
+/// failed. An episode won and no more is won, and one cut off before that
+/// is [`Outcome::Unfinished`].
+///
+/// A line that is no event at all belongs to the episode of the line
+/// before it. An episode with a bad line is left out, and the problem
+/// names the line by its number.
 ///
 /// # Errors
 ///
-/// A log of a newer format than this version reads, a first line that is
-/// an event of neither game, or a later line that is no event of the
-/// log's game, named by its number.
-pub fn cues(log: &str) -> anyhow::Result<Vec<Cue>> {
-    let Some(first) = log.lines().find(|line| !line.trim().is_empty()) else {
-        return Ok(Vec::new());
-    };
-    match Header::read(first)?.map(|header| header.game) {
-        Some(Name::Avalon) => read::<Avalon>(log),
-        Some(Name::Werewolf) => read::<Werewolf>(log),
-        // A log of format 0 has no header, so its game is the one whose
-        // event its first line is.
-        None if serde_json::from_str::<Event<Entry<Avalon>>>(first).is_ok() => read::<Avalon>(log),
-        None if serde_json::from_str::<Event<Entry<Werewolf>>>(first).is_ok() => {
-            read::<Werewolf>(log)
-        }
-        None => anyhow::bail!("the log is of neither Avalon nor Werewolf"),
-    }
-}
-
-/// The cues the log of a game of `G` folds into.
-fn read<G: Staged>(log: &str) -> anyhow::Result<Vec<Cue>> {
-    let mut stage = Stage::<G>::default();
-    let mut cues = Vec::new();
+/// Every problem, when no episode reads.
+pub fn recordings(log: &str) -> anyhow::Result<Recordings> {
+    let mut episodes: Vec<(Uuid, Vec<(usize, &str)>)> = Vec::new();
+    let mut found = HashMap::new();
+    let mut problems = Vec::new();
+    let mut current = None;
     for (index, line) in log.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        let event: Event<Entry<G>> = serde_json::from_str(line)
-            .with_context(|| format!("the {} log is bad at line {}", G::NAME, index + 1))?;
-        cues.extend(stage.fold(&event));
+        let number = index + 1;
+        let episode = match (serde_json::from_str::<Event<IgnoredAny>>(line), current) {
+            (Ok(event), _) => event.episode,
+            (Err(_), Some(episode)) => episode,
+            (Err(error), None) => {
+                problems.push(format!("the log is bad at line {number}: {error}"));
+                continue;
+            }
+        };
+        current = Some(episode);
+        let at = *found.entry(episode).or_insert_with(|| {
+            episodes.push((episode, Vec::new()));
+            episodes.len() - 1
+        });
+        episodes[at].1.push((number, line));
     }
-    let at = cues.last().map_or(0, |cue| cue.at);
-    cues.extend(stage.close(at));
-    Ok(cues)
+    let mut games = Vec::new();
+    for (episode, lines) in episodes {
+        match recording(episode, &lines) {
+            Ok(recording) => games.push(recording),
+            Err(error) => problems.push(format!("{error:#}")),
+        }
+    }
+    anyhow::ensure!(
+        !games.is_empty() || problems.is_empty(),
+        "{}",
+        problems.join("\n")
+    );
+    Ok(Recordings { games, problems })
+}
+
+/// The episode `episode`, its `lines` numbered, read as the game its
+/// first line names or is an event of.
+fn recording(episode: Uuid, lines: &[(usize, &str)]) -> anyhow::Result<Recording> {
+    let (number, first) = lines[0];
+    let header = Header::read(first)
+        .with_context(|| format!("episode {episode} is bad at line {number}"))?;
+    match header.map(|header| header.game) {
+        Some(Name::Avalon) => record::<Avalon>(episode, lines),
+        Some(Name::Werewolf) => record::<Werewolf>(episode, lines),
+        // An episode of format 0 has no header, so its game is the one
+        // whose event its first line is.
+        None if serde_json::from_str::<Event<Entry<Avalon>>>(first).is_ok() => {
+            record::<Avalon>(episode, lines)
+        }
+        None if serde_json::from_str::<Event<Entry<Werewolf>>>(first).is_ok() => {
+            record::<Werewolf>(episode, lines)
+        }
+        None => {
+            anyhow::bail!("episode {episode} is of neither Avalon nor Werewolf at line {number}")
+        }
+    }
+}
+
+/// The episode `episode` of a game of `G`, its `lines` numbered, folded
+/// into cues and ended as [`recordings`] ends it.
+fn record<G: Staged>(episode: Uuid, lines: &[(usize, &str)]) -> anyhow::Result<Recording> {
+    let mut stage = Stage::<G>::default();
+    let mut cues = Vec::new();
+    let mut won = None;
+    let mut ended = None;
+    let mut at = 0;
+    for &(number, line) in lines {
+        let event: Event<Entry<G>> = serde_json::from_str(line).with_context(|| {
+            format!("the {} episode {episode} is bad at line {number}", G::NAME)
+        })?;
+        at = millis(event.time);
+        if let Entry::Ended(how) = &event.payload {
+            ended = Some(how.clone());
+        }
+        for cue in stage.fold(&event) {
+            match cue.beat {
+                Beat::Over { .. } => won = Some(cue),
+                _ => cues.push(cue),
+            }
+        }
+    }
+    cues.extend(stage.end(at, won, ended));
+    Ok(Recording {
+        episode,
+        game: G::GAME,
+        cues,
+    })
 }
 
 /// Set `player`'s entry in `entries` to `value`.
@@ -337,10 +440,9 @@ mod tests {
     use super::*;
     use crate::game::Message;
     use crate::game::tests::{Fixture, drained, episode, logged, seated};
-    use crate::log::{Ended, Writer};
+    use crate::log::Writer;
     use crate::strategy::RANDOM;
     use social_deduction_stage::{AvalonPanel, WerewolfPanel};
-    use uuid::Uuid;
 
     /// The log of a game of `roles` under `rules`, every player random.
     async fn random_game<G: Fixture>(
@@ -350,6 +452,30 @@ mod tests {
         let (episode, _, log) = episode(roles, rules, HashMap::new());
         episode.run(Duration::from_secs(60 * 60)).await.unwrap();
         drained(log).await
+    }
+
+    /// The log of a random game of Avalon for five.
+    async fn random_avalon() -> Vec<Event<Entry<Avalon>>> {
+        random_game(avalon::tests::five(), avalon::Rules::default()).await
+    }
+
+    /// The log of a random game of Werewolf, one wolf against two.
+    async fn random_werewolf() -> Vec<Event<Entry<Werewolf>>> {
+        let roles = werewolf::tests::one_wolf_against(&["Player 1", "Player 2", "Player 3"]);
+        random_game(roles, werewolf::Rules::default()).await
+    }
+
+    /// A log of random games of Avalon as `episodes`, each won, and the
+    /// cues each folds into.
+    async fn avalon_log(episodes: impl IntoIterator<Item = u128>) -> (String, Vec<Vec<Cue>>) {
+        let mut log = String::new();
+        let mut each = Vec::new();
+        for episode in episodes {
+            let events = random_avalon().await;
+            log += &recorded_as(episode, &events, Ended::Won);
+            each.push(folded(&events));
+        }
+        (log, each)
     }
 
     #[test]
@@ -612,42 +738,255 @@ mod tests {
         String::from_utf8(written).unwrap()
     }
 
+    /// The cues of the one episode `log` holds.
+    fn only(log: &str) -> Vec<Cue> {
+        let Recordings {
+            mut games,
+            problems,
+        } = recordings(log).unwrap();
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(games.len(), 1);
+        games.remove(0).cues
+    }
+
     #[tokio::test]
     async fn a_game_folded_live_and_one_read_back_from_its_log_agree() {
-        let events = random_game::<Avalon>(avalon::tests::five(), avalon::Rules::default()).await;
-        assert_eq!(cues(&written(&events)).unwrap(), folded(&events));
-        let roles = werewolf::tests::one_wolf_against(&["Player 1", "Player 2", "Player 3"]);
-        let events = random_game::<Werewolf>(roles, werewolf::Rules::default()).await;
+        let events = random_avalon().await;
+        assert_eq!(only(&written(&events)), folded(&events));
+        let events = random_werewolf().await;
         let log = format!("{}\n", written(&events));
-        assert_eq!(cues(&log).unwrap(), folded(&events));
+        assert_eq!(only(&log), folded(&events));
+    }
+
+    /// `events` of `G` written as the log's writer writes them, as the
+    /// episode `episode`, between its header and how it `ended`.
+    fn recorded_as<G: Game>(episode: u128, events: &[Event<Entry<G>>], ended: Ended) -> String {
+        let episode = Uuid::from_u128(episode);
+        let mut writer = Writer::<G, _>::start(Vec::new(), episode).unwrap();
+        for event in events {
+            writer
+                .write(&Event {
+                    episode,
+                    ..event.clone()
+                })
+                .unwrap();
+        }
+        String::from_utf8(writer.end(ended).unwrap()).unwrap()
     }
 
     /// `events` of `G` written as the log's writer writes them, between
-    /// the episode's header and its end.
+    /// the episode's header and its win.
     fn recorded<G: Game>(events: &[Event<Entry<G>>]) -> String {
-        let mut writer = Writer::<G, _>::start(Vec::new(), Uuid::default()).unwrap();
-        for event in events {
-            writer.write(event).unwrap();
-        }
-        String::from_utf8(writer.end(Ended::Won).unwrap()).unwrap()
+        recorded_as(0, events, Ended::Won)
     }
 
     #[tokio::test]
     async fn a_log_with_a_header_is_read_as_the_game_it_names() {
-        let events = random_game::<Avalon>(avalon::tests::five(), avalon::Rules::default()).await;
-        assert_eq!(cues(&recorded(&events)).unwrap(), folded(&events));
-        let roles = werewolf::tests::one_wolf_against(&["Player 1", "Player 2", "Player 3"]);
-        let events = random_game::<Werewolf>(roles, werewolf::Rules::default()).await;
-        assert_eq!(cues(&recorded(&events)).unwrap(), folded(&events));
+        let events = random_avalon().await;
+        let read = recordings(&recorded(&events)).unwrap();
+        assert_eq!(read.games[0].game, GameName::Avalon);
+        assert_eq!(read.games[0].cues, folded(&events));
+        let events = random_werewolf().await;
+        let read = recordings(&recorded(&events)).unwrap();
+        assert_eq!(read.games[0].game, GameName::Werewolf);
+        assert_eq!(read.games[0].cues, folded(&events));
+    }
+
+    /// The episodes `read` holds, in order.
+    fn episodes(read: &Recordings) -> Vec<u128> {
+        read.games
+            .iter()
+            .map(|game| game.episode.as_u128())
+            .collect()
+    }
+
+    /// Check that `cues` start with the cast and end with their one
+    /// outcome, `outcome`.
+    fn check_whole(cues: &[Cue], outcome: impl Fn(&Outcome) -> bool) {
+        assert!(matches!(cues[0].beat, Beat::Cast { .. }), "{:?}", cues[0]);
+        let overs: Vec<&Outcome> = cues
+            .iter()
+            .filter_map(|cue| match &cue.beat {
+                Beat::Over { outcome } => Some(outcome),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(overs.len(), 1);
+        assert!(matches!(cues.last().unwrap().beat, Beat::Over { .. }));
+        assert!(outcome(overs[0]), "{:?}", overs[0]);
+    }
+
+    /// Whether `outcome` is a win.
+    fn won(outcome: &Outcome) -> bool {
+        matches!(outcome, Outcome::Won { .. })
+    }
+
+    #[tokio::test]
+    async fn a_log_of_three_episodes_of_one_game_is_three_recordings_in_order() {
+        let mut log = String::new();
+        let mut each = Vec::new();
+        for episode in [3, 1, 2] {
+            let events = random_avalon().await;
+            log += &recorded_as(episode, &events, Ended::Won);
+            each.push(folded(&events));
+        }
+        let read = recordings(&log).unwrap();
+        assert_eq!(episodes(&read), [3, 1, 2]);
+        assert!(read.problems.is_empty());
+        for (game, cues) in read.games.iter().zip(each) {
+            check_whole(&game.cues, won);
+            assert_eq!(game.cues, cues);
+        }
+    }
+
+    /// A random game of Avalon and one of Werewolf, as episodes 1 and 2.
+    async fn one_of_each() -> (String, String) {
+        let avalon = random_avalon().await;
+        let werewolf = random_werewolf().await;
+        (
+            recorded_as(1, &avalon, Ended::Won),
+            recorded_as(2, &werewolf, Ended::Won),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_log_of_an_episode_of_each_game_reads_both() {
+        let (avalon, werewolf) = one_of_each().await;
+        let read = recordings(&(avalon + &werewolf)).unwrap();
+        let games: Vec<GameName> = read.games.iter().map(|game| game.game).collect();
+        assert_eq!(games, [GameName::Avalon, GameName::Werewolf]);
+        for game in &read.games {
+            check_whole(&game.cues, won);
+        }
+    }
+
+    #[tokio::test]
+    async fn episodes_whose_lines_are_interleaved_read_as_they_do_one_after_the_other() {
+        let (avalon, werewolf) = one_of_each().await;
+        let mut first = avalon.lines();
+        let mut second = werewolf.lines();
+        let mut interleaved = String::new();
+        loop {
+            let (one, other) = (first.next(), second.next());
+            if one.is_none() && other.is_none() {
+                break;
+            }
+            for line in one.into_iter().chain(other) {
+                interleaved += line;
+                interleaved += "\n";
+            }
+        }
+        let read = recordings(&interleaved).unwrap();
+        assert_eq!(episodes(&read), [1, 2]);
+        assert_eq!(read, recordings(&(avalon + &werewolf)).unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_episode_cut_off_ends_unfinished_with_its_calls_closed() {
+        let (avalon, werewolf) = one_of_each().await;
+        let thinking = logged(Entry::<Werewolf>::Thinking {
+            player: "Player 2".to_string(),
+            seq: 1,
+        });
+        let cut: String = written(&[Event {
+            episode: Uuid::from_u128(2),
+            ..thinking
+        }]);
+        let half = werewolf.lines().count() / 2;
+        let cut = werewolf
+            .lines()
+            .take(half)
+            .map(|line| format!("{line}\n"))
+            .collect::<String>()
+            + &cut;
+        let read = recordings(&(avalon + &cut)).unwrap();
+        assert_eq!(episodes(&read), [1, 2]);
+        check_whole(&read.games[0].cues, won);
+        let cues = &read.games[1].cues;
+        check_whole(cues, |outcome| *outcome == Outcome::Unfinished);
+        let thought = Beat::Thought {
+            who: "Player 2".to_string(),
+        };
+        assert_eq!(cues[cues.len() - 2].beat, thought);
+    }
+
+    /// The beats of the one episode `log` holds.
+    fn beats_of(log: &str) -> Vec<Beat> {
+        only(log).into_iter().map(|cue| cue.beat).collect()
+    }
+
+    #[test]
+    fn an_episode_stopped_ends_stopped_and_one_failed_tells_its_error_and_ends_failed() {
+        let thinking = logged(Entry::<Avalon>::Thinking {
+            player: "Player 2".to_string(),
+            seq: 1,
+        });
+        let who = "Player 2".to_string();
+        let calls = vec![Beat::Thinking { who: who.clone() }, Beat::Thought { who }];
+        let stopped = recorded_as(1, std::slice::from_ref(&thinking), Ended::Stopped);
+        let over = |outcome| Beat::Over { outcome };
+        assert_eq!(
+            beats_of(&stopped),
+            [calls.clone(), vec![over(Outcome::Stopped)]].concat()
+        );
+        let error = "actor Player 1 failed: no model".to_string();
+        let failed = recorded_as(1, &[thinking], Ended::Failed(error.clone()));
+        assert_eq!(
+            beats_of(&failed),
+            [
+                calls,
+                vec![
+                    Beat::Told(vec![error.clone()]),
+                    over(Outcome::Failed(error))
+                ]
+            ]
+            .concat()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_episode_that_fails_after_a_win_ends_failed() {
+        let events = random_avalon().await;
+        let failed = recorded_as(1, &events, Ended::Failed("no model".to_string()));
+        check_whole(&only(&failed), |outcome| {
+            *outcome == Outcome::Failed("no model".to_string())
+        });
+    }
+
+    #[tokio::test]
+    async fn a_bad_line_leaves_out_its_episode_and_names_the_line() {
+        let (log, _) = avalon_log(1..=3).await;
+        let mut lines: Vec<&str> = log.lines().collect();
+        let second = Uuid::from_u128(2).to_string();
+        // The third line of the second episode, cut short.
+        let bad = lines
+            .iter()
+            .position(|line| line.contains(&second))
+            .unwrap()
+            + 2;
+        lines[bad] = &lines[bad][..20];
+        let read = recordings(&lines.join("\n")).unwrap();
+        assert_eq!(episodes(&read), [1, 3]);
+        assert_eq!(read.problems.len(), 1);
+        let number = bad + 1;
+        let expected = format!("the Avalon episode {second} is bad at line {number}: ");
+        assert!(
+            read.problems[0].starts_with(&expected),
+            "{:?}",
+            read.problems
+        );
     }
 
     #[test]
     fn a_log_whose_header_names_one_game_is_not_read_as_the_other() {
         let merlin = serde_json::json!({"Start": {"roles": {"Player 1": "Merlin"}}});
         let log = recorded::<Werewolf>(&[]) + &written(&[logged(merlin)]);
-        let error = format!("{:#}", cues(&log).unwrap_err());
+        let error = format!("{:#}", recordings(&log).unwrap_err());
+        let episode = Uuid::default();
         assert!(
-            error.starts_with("the Werewolf log is bad at line 3: "),
+            error.starts_with(&format!(
+                "the Werewolf episode {episode} is bad at line 3: "
+            )),
             "{error}"
         );
     }
@@ -656,47 +995,74 @@ mod tests {
     fn a_log_of_a_newer_format_is_refused() {
         let header =
             serde_json::json!({"Header": {"format": 2, "version": "0.3.0", "game": "avalon"}});
-        let error = cues(&written(&[logged(header)])).unwrap_err();
+        let error = recordings(&written(&[logged(header)])).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "This log was written by social-deduction 0.3.0 in log format 2. \
-             This version reads log formats up to 1."
+            format!(
+                "episode {} is bad at line 1: \
+                 This log was written by social-deduction 0.3.0 in log format 2. \
+                 This version reads log formats up to 1.",
+                Uuid::default()
+            )
         );
     }
 
     #[test]
     fn a_log_of_neither_game_is_an_error() {
-        let error = cues("{}").unwrap_err();
+        let error = recordings(&written(&[logged(serde_json::json!({}))])).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "the log is of neither Avalon nor Werewolf"
+            format!(
+                "episode {} is of neither Avalon nor Werewolf at line 1",
+                Uuid::default()
+            )
         );
     }
 
     #[test]
-    fn an_empty_log_folds_into_no_cues() {
-        assert_eq!(cues("\n").unwrap(), []);
+    fn a_log_that_is_no_events_at_all_is_an_error_naming_each_line() {
+        let error = recordings("{}\n\n[]").unwrap_err().to_string();
+        let lines: Vec<&str> = error.lines().collect();
+        assert_eq!(lines.len(), 2, "{error}");
+        assert!(
+            lines[0].starts_with("the log is bad at line 1: "),
+            "{error}"
+        );
+        assert!(
+            lines[1].starts_with("the log is bad at line 3: "),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_empty_log_holds_no_recordings() {
+        assert_eq!(recordings("\n").unwrap(), Recordings::default());
     }
 
     #[tokio::test]
     async fn a_bad_line_in_a_log_is_an_error_of_its_game_naming_the_line() {
-        let events = random_game::<Avalon>(avalon::tests::five(), avalon::Rules::default()).await;
+        let events = random_avalon().await;
         let log = written(&events);
         let lines = log.lines().count();
         let truncated = &log[..log.len() - 10];
-        let error = format!("{:#}", cues(truncated).unwrap_err());
+        let error = format!("{:#}", recordings(truncated).unwrap_err());
+        let episode = events[0].episode;
         assert!(
-            error.starts_with(&format!("the Avalon log is bad at line {lines}: ")),
+            error.starts_with(&format!(
+                "the Avalon episode {episode} is bad at line {lines}: "
+            )),
             "{error}"
         );
-        let roles = werewolf::tests::one_wolf_against(&["Player 1", "Player 2", "Player 3"]);
-        let events = random_game::<Werewolf>(roles, werewolf::Rules::default()).await;
+        let events = random_werewolf().await;
         let log = format!("{}\n{{}}\n", written(&events));
-        let error = format!("{:#}", cues(&log).unwrap_err());
+        let error = format!("{:#}", recordings(&log).unwrap_err());
+        let episode = events[0].episode;
         // The blank line counts as a line.
         let bad = events.len() + 2;
         assert!(
-            error.starts_with(&format!("the Werewolf log is bad at line {bad}: ")),
+            error.starts_with(&format!(
+                "the Werewolf episode {episode} is bad at line {bad}: "
+            )),
             "{error}"
         );
     }
@@ -857,11 +1223,7 @@ mod tests {
             })
         };
         let log = written(&[thinking("Player 10"), thinking("Player 2")]);
-        let beats: Vec<Beat> = cues(&log)
-            .unwrap()
-            .into_iter()
-            .map(|cue| cue.beat)
-            .collect();
+        let beats = beats_of(&log);
         let who = |name: &str| name.to_string();
         assert_eq!(
             beats,
@@ -878,10 +1240,22 @@ mod tests {
                 Beat::Thought {
                     who: who("Player 10")
                 },
+                Beat::Over {
+                    outcome: Outcome::Unfinished
+                },
             ]
         );
         let mut stage = Stage::<Avalon>::default();
-        assert!(stage.close(5).is_empty());
+        let unfinished = Beat::Over {
+            outcome: Outcome::Unfinished,
+        };
+        assert_eq!(
+            stage.end(5, None, None),
+            [Cue {
+                at: 5,
+                beat: unfinished
+            }]
+        );
     }
 
     #[test]

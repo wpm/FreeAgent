@@ -4,11 +4,12 @@
 //! game at a time, from preparing it to its end.
 
 use crate::game::{Actor, Entry};
+use crate::log::Ended;
 use crate::run::{Prepared, Ready};
 use crate::stage::{Stage, Staged, millis};
 use anyhow::anyhow;
 use free_agent::{Event, Stopper};
-use social_deduction_stage::{Beat, Cue, Outcome};
+use social_deduction_stage::{Beat, Cue};
 use std::future::Future;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
@@ -29,7 +30,8 @@ pub struct Playing {
 }
 
 impl Playing {
-    /// Stop the game. It ends with [`Outcome::Stopped`] unless it has
+    /// Stop the game. It ends with
+    /// [`Outcome::Stopped`](social_deduction_stage::Outcome::Stopped) unless it has
     /// already ended.
     pub fn stop(&self) {
         self.stopper.stop();
@@ -143,8 +145,10 @@ impl Session {
 /// game stops.
 ///
 /// The last cue is [`Beat::Over`], after a thought for every call still
-/// out: the side that won, [`Outcome::Stopped`] after a stop, or
-/// [`Outcome::Failed`] when the episode fails, after one [`Beat::Told`]
+/// out: the side that won,
+/// [`Outcome::Stopped`](social_deduction_stage::Outcome::Stopped) after a
+/// stop, or [`Outcome::Failed`](social_deduction_stage::Outcome::Failed)
+/// when the episode fails, after one [`Beat::Told`]
 /// line with the error.
 pub fn play(
     prepared: Prepared,
@@ -199,32 +203,15 @@ where
         while let Some(event) = events.recv().await {
             for cue in stage.fold(&event) {
                 match cue.beat {
-                    Beat::Over { outcome } => won = Some(outcome),
+                    Beat::Over { .. } => won = Some(cue),
                     _ => self.show(cue),
                 }
             }
         }
-        let ended = run.await;
-        let at = millis(SystemTime::now());
-        // No player is left thinking once the game is over.
-        for cue in stage.close(at) {
+        let ended = Ended::of(&run.await, false);
+        for cue in stage.end(millis(SystemTime::now()), won, Some(ended)) {
             self.show(cue);
         }
-        let outcome = match ended {
-            Err(error) => {
-                let error = format!("{error:#}");
-                self.show(Cue {
-                    at,
-                    beat: Beat::Told(vec![error.clone()]),
-                });
-                Outcome::Failed(error)
-            }
-            Ok(()) => won.unwrap_or(Outcome::Stopped),
-        };
-        self.show(Cue {
-            at,
-            beat: Beat::Over { outcome },
-        });
     }
 
     /// Show `cue`, or stop the game when it cannot be shown.
@@ -242,8 +229,9 @@ mod tests {
     use crate::game::tests::logged;
     use crate::model::spec::Environment;
     use crate::run::prepare;
-    use crate::stage::cues;
+    use crate::stage::recordings;
     use free_agent::Episode;
+    use social_deduction_stage::Outcome;
     use std::collections::HashMap;
     use std::path::Path;
     use tokio::sync::mpsc::UnboundedSender;
@@ -311,7 +299,7 @@ mod tests {
                 Prepared::Werewolf(ready) => teed(*ready).await,
                 Prepared::Avalon(ready) => teed(*ready).await,
             };
-            let expected = cues(&written).unwrap();
+            let expected = recordings(&written).unwrap().games.remove(0).cues;
             let beats =
                 |cues: &[Cue]| -> Vec<Beat> { cues.iter().map(|c| c.beat.clone()).collect() };
             assert_eq!(beats(&live), beats(&expected), "{name}");

@@ -428,6 +428,10 @@ fn outcome(outcome: Outcome) -> impl IntoView {
         Outcome::Won { side, how } => (format!("sd-outcome sd-{}", side_key(side)), how),
         Outcome::Stopped => ("sd-outcome".to_string(), "Stopped.".to_string()),
         Outcome::Failed(error) => ("sd-outcome".to_string(), format!("Failed: {error}")),
+        Outcome::Unfinished => (
+            "sd-outcome".to_string(),
+            "The log ends before the game does.".to_string(),
+        ),
     };
     view! { <p class=class>{text}</p> }
 }
