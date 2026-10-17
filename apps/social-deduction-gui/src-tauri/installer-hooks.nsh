@@ -3,9 +3,12 @@
 ; social-deduction.exe, on the user's Path, and uninstalling takes it off.
 ; user-path.ps1 edits the Path, and each terminal opened afterward sees it.
 
+; Here rather than in the macro, where __FILEDIR__ is installer.nsi's.
+!define USER_PATH_SCRIPT "${__FILEDIR__}\user-path.ps1"
+
 !macro USER_PATH ACTION
   InitPluginsDir
-  File "/oname=$PLUGINSDIR\user-path.ps1" "${__FILEDIR__}\user-path.ps1"
+  File "/oname=$PLUGINSDIR\user-path.ps1" "${USER_PATH_SCRIPT}"
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\user-path.ps1" -${ACTION} "$INSTDIR"'
   Pop $0
   DetailPrint "user-path.ps1 -${ACTION}: $0"
