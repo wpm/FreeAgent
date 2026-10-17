@@ -108,13 +108,20 @@ and what probing found in `probes.json` in its data directory: on macOS,
 both in `~/Library/Application Support/io.github.wpm.social-deduction/`.
 
 It is a [Tauri](https://tauri.app) shell, in `src-tauri`, around the same
-page. To run it in development, with Trunk and the Tauri CLI
-(`cargo install tauri-cli --locked`) installed:
+page. Its bundle carries the `social-deduction` command line as a sidecar,
+which `.github/scripts/sidecar.sh` builds into `src-tauri/binaries/`. To
+run it in development, with Trunk and the Tauri CLI
+(`cargo install tauri-cli --locked`) installed, from the root of a
+checkout:
 
 ```sh
+.github/scripts/sidecar.sh
 cd apps/social-deduction-gui/src-tauri
 cargo tauri dev
 ```
+
+Every build of `src-tauri`, `cargo test` and rust-analyzer among them,
+uses the sidecar, and running `sidecar.sh` again brings it up to date.
 
 On Linux, Tauri needs the WebKitGTK development packages:
 `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev`.

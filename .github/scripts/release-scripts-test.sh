@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for release-body.sh and stable-names.sh, run by ci.yml.
+# Tests for the release scripts, run by ci.yml.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -8,7 +8,8 @@ check() { # <description> <condition>...
   local what=$1; shift
   if "$@"; then echo "ok: $what"; else echo "FAIL: $what" >&2; failures=$((failures + 1)); fi
 }
-fails() { ! "$@" 2> /dev/null; }
+fails() { ! "$@" > /dev/null 2>&1; }
+quiet() { "$@" > /dev/null; }
 
 generated=$'## Install social-deduction 1.2.3\n\nThe notes from CHANGELOG.md.'
 notes=$(./release-notes.sh 1.2.3)
@@ -71,5 +72,108 @@ check "a carriage return is ignored" test -f "$scratch/crlf/Social-Deduction.msi
 
 # No installer at all is a failed build.
 check "no installer fails" fails ./stable-names.sh "$scratch/none" <<< "[\"$scratch/built/Social Deduction.app\"]"
+
+# sidecar.sh, with stand-ins for the tools it runs: cargo writes what it
+# was asked to build, lipo joins its inputs, and gh hands over archives
+# shaped like dist's.
+tools="$scratch/tools"
+mkdir -p "$tools" "$scratch/releases"
+cat > "$tools/rustc" <<'TOOL'
+#!/usr/bin/env bash
+printf 'rustc 1.0.0\nhost: x86_64-unknown-linux-gnu\r\n'
+TOOL
+cat > "$tools/cargo" <<'TOOL'
+#!/usr/bin/env bash
+target=; profile=debug
+while [ $# -gt 0 ]; do case $1 in --target) target=$2; shift 2 ;; --release) profile=release; shift ;; *) shift ;; esac; done
+exe=; case $target in *windows*) exe=.exe ;; esac
+dir=$CARGO_TARGET_DIR/${target:+$target/}$profile
+mkdir -p "$dir"
+echo "$profile build for ${target:-the host}" > "$dir/social-deduction$exe"
+TOOL
+cat > "$tools/lipo" <<'TOOL'
+#!/usr/bin/env bash
+inputs=(); while [ $# -gt 0 ]; do case $1 in -create) shift ;; -output) out=$2; shift 2 ;; *) inputs+=("$1"); shift ;; esac; done
+cat "${inputs[@]}" > "$out"
+TOOL
+cat > "$tools/gh" <<'TOOL'
+#!/usr/bin/env bash
+# gh release download <tag> -p <pattern>... -D <directory>
+tag=$3; shift 3; patterns=()
+while [ $# -gt 0 ]; do case $1 in -p) patterns+=("$2"); shift 2 ;; -D) dir=$2; shift 2 ;; *) shift ;; esac; done
+for pattern in "${patterns[@]}"; do cp "$RELEASES/$tag/"$pattern "$dir/"; done
+TOOL
+chmod +x "$tools"/*
+for triple in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
+  mkdir -p "$scratch/archive/social-deduction-$triple" "$scratch/releases/v1.2.3"
+  echo "dist's $triple" > "$scratch/archive/social-deduction-$triple/social-deduction"
+  tar -cJf "$scratch/releases/v1.2.3/social-deduction-$triple.tar.xz" -C "$scratch/archive" "social-deduction-$triple"
+done
+mkdir -p "$scratch/archive/windows"
+echo "dist's windows" > "$scratch/archive/windows/social-deduction.exe"
+(cd "$scratch/archive/windows" && zip -q "$scratch/releases/v1.2.3/social-deduction-x86_64-pc-windows-msvc.zip" social-deduction.exe)
+
+sidecar() { # <directory> <argument>...
+  local out=$1; shift
+  PATH="$tools:$PATH" CARGO_TARGET_DIR="$scratch/target" RELEASES="$scratch/releases" \
+    SIDECAR_DIR="$out" ./sidecar.sh "$@" > /dev/null
+}
+files() { find "$1" -type f -exec basename {} \; | LC_ALL=C sort | tr '\n' ' '; }
+
+# Built here, for the host by default, under Tauri's name for the target.
+sidecar "$scratch/host"
+check "the host's sidecar is named for the host" test "$(files "$scratch/host")" = "social-deduction-x86_64-unknown-linux-gnu "
+check "the host's sidecar is the one cargo built" test "$(cat "$scratch/host/social-deduction-x86_64-unknown-linux-gnu")" = "release build for the host"
+sidecar "$scratch/debug" --debug
+check "a debug sidecar is cargo's debug build" test "$(cat "$scratch/debug/social-deduction-x86_64-unknown-linux-gnu")" = "debug build for the host"
+sidecar "$scratch/windows" --target x86_64-pc-windows-msvc
+check "a Windows sidecar ends in .exe" test "$(files "$scratch/windows")" = "social-deduction-x86_64-pc-windows-msvc.exe "
+
+# A universal app needs a sidecar for each chip, which cargo builds the
+# app for, and one for the bundle that joins them.
+sidecar "$scratch/universal" --target universal-apple-darwin
+check "a universal sidecar comes with one for each chip" test "$(files "$scratch/universal")" = \
+  "social-deduction-aarch64-apple-darwin social-deduction-universal-apple-darwin social-deduction-x86_64-apple-darwin "
+check "a universal sidecar joins the two" test "$(cat "$scratch/universal/social-deduction-universal-apple-darwin")" = \
+  $'release build for aarch64-apple-darwin\nrelease build for x86_64-apple-darwin'
+
+# On a release, the sidecar is the binary dist built, from its archive.
+sidecar "$scratch/released-linux" --target x86_64-unknown-linux-gnu --release v1.2.3
+check "a released sidecar is dist's binary" test "$(cat "$scratch/released-linux/social-deduction-x86_64-unknown-linux-gnu")" = "dist's x86_64-unknown-linux-gnu"
+sidecar "$scratch/released-windows" --target x86_64-pc-windows-msvc --release v1.2.3
+check "a released Windows sidecar comes out of dist's zip" test "$(cat "$scratch/released-windows/social-deduction-x86_64-pc-windows-msvc.exe")" = "dist's windows"
+sidecar "$scratch/released-universal" --target universal-apple-darwin --release v1.2.3
+check "a released universal sidecar joins dist's two" test "$(cat "$scratch/released-universal/social-deduction-universal-apple-darwin")" = \
+  $'dist\'s aarch64-apple-darwin\ndist\'s x86_64-apple-darwin'
+check "a release without the target's archive fails" fails sidecar "$scratch/missing" --target aarch64-unknown-linux-gnu --release v1.2.3
+
+# bundled-cli.sh finds social-deduction in each bundle and asks its version.
+mkdir -p "$scratch/bundles/Social Deduction.app/Contents/MacOS" "$scratch/bundles/Empty.app/Contents/MacOS"
+printf '#!/bin/sh\necho "social-deduction 1.2.3"\n' > "$scratch/bundles/Social Deduction.app/Contents/MacOS/social-deduction"
+chmod +x "$scratch/bundles/Social Deduction.app/Contents/MacOS/social-deduction"
+app=$(jq -n --arg path "$scratch/bundles/Social Deduction.app" '[$path, $path + ".tar.gz"]')
+check "a bundle with the release's CLI passes" quiet ./bundled-cli.sh 1.2.3 <<< "$app"
+check "a bundle with another version fails" fails ./bundled-cli.sh 1.2.4 <<< "$app"
+check "a bundle without the CLI fails" fails ./bundled-cli.sh 1.2.3 <<< "[\"$scratch/bundles/Empty.app\"]"
+check "no bundle at all fails" fails ./bundled-cli.sh 1.2.3 <<< "[\"$scratch/bundles/Social Deduction.app.tar.gz\"]"
+# Given the sidecar, each bundle's CLI must be that very file.
+cp "$scratch/bundles/Social Deduction.app/Contents/MacOS/social-deduction" "$scratch/same"
+echo different > "$scratch/different"
+check "a bundle's CLI that is the sidecar passes" quiet ./bundled-cli.sh 1.2.3 "$scratch/same" <<< "$app"
+check "a bundle's CLI that is not the sidecar fails" fails ./bundled-cli.sh 1.2.3 "$scratch/different" <<< "$app"
+# linuxdeploy rewrites the binaries it puts in an AppImage, so only its
+# version counts.
+cat > "$scratch/bundles/Social Deduction.AppImage" <<'TOOL'
+#!/usr/bin/env bash
+mkdir -p squashfs-root/usr/bin
+printf '#!/bin/sh\necho "social-deduction 1.2.3"\n' > squashfs-root/usr/bin/social-deduction
+chmod +x squashfs-root/usr/bin/social-deduction
+TOOL
+check "an AppImage's CLI need only say the version" quiet ./bundled-cli.sh 1.2.3 "$scratch/different" \
+  <<< "[\"$scratch/bundles/Social Deduction.AppImage\"]"
+# A bundle that doesn't open is a failure, not a bundle to skip.
+echo "not an rpm" > "$scratch/bundles/broken.rpm"
+check "a bundle that doesn't open fails" fails ./bundled-cli.sh 1.2.3 \
+  <<< "[\"$scratch/bundles/Social Deduction.app\", \"$scratch/bundles/broken.rpm\"]"
 
 [ "$failures" -eq 0 ]
