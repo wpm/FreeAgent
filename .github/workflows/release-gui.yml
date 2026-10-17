@@ -99,6 +99,13 @@ jobs:
   build:
     name: Build for ${{ matrix.name }}
     needs: check
+    # The same guard as check's, so that only a tag push's code is checked
+    # out here with the release's token and the Apple secrets.
+    if: >-
+      github.event_name != 'workflow_run' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'v'))
     strategy:
       fail-fast: false
       matrix:
