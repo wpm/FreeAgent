@@ -3,9 +3,9 @@ name: Release the desktop app
 # Puts the desktop app's installers on the GitHub release that the Release
 # workflow (dist) made for a version tag: a .dmg for macOS (one build for
 # Apple silicon and Intel), a setup .exe and an .msi for Windows, and a
-# .deb, an .rpm and an .AppImage for Linux. Each is uploaded twice, under
-# tauri-action's versioned name and under a stable one, which the website
-# links to through releases/latest/download/. The install table and the
+# .deb, an .rpm and an .AppImage for Linux on x86_64 and on arm64. Each is
+# uploaded twice, under tauri-action's versioned name and under a stable
+# one, which the website links to through releases/latest/download/. The install table and the
 # signing status go on top of the release's notes.
 #
 # It runs when the Release workflow succeeds on a v<version> tag, where
@@ -132,11 +132,17 @@ jobs:
             sidecar: universal-apple-darwin
           # The oldest Ubuntu GitHub still runs: the .deb, .rpm and AppImage
           # link against its glibc and webkit, and run on anything newer.
-          - name: Linux
+          - name: Linux x86_64
             os: ubuntu-22.04
             targets: wasm32-unknown-unknown
             args: ""
             sidecar: x86_64-unknown-linux-gnu
+          # The same Ubuntu on arm64, for the same reason.
+          - name: Linux arm64
+            os: ubuntu-22.04-arm
+            targets: wasm32-unknown-unknown
+            args: ""
+            sidecar: aarch64-unknown-linux-gnu
           - name: Windows
             os: windows-latest
             targets: wasm32-unknown-unknown
@@ -217,6 +223,22 @@ jobs:
           VERSION: ${{ needs.check.outputs.version }}
           SIDECAR: ${{ runner.os != 'macOS' && steps.sidecar.outputs.path || '' }}
         run: .github/scripts/bundled-cli.sh "$VERSION" ${SIDECAR:+"$SIDECAR"} <<< "$ARTIFACTS"
+      # The .deb and the .rpm put the command line on the PATH, as the
+      # release's version, on Ubuntu and on Fedora.
+      - name: The installed command line
+        if: runner.os == 'Linux'
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          deb=$(jq -r '.[] | select(endswith(".deb"))' <<< "$ARTIFACTS")
+          rpm=$(jq -r '.[] | select(endswith(".rpm"))' <<< "$ARTIFACTS")
+          sudo apt-get install -y "$deb"
+          dpkg -L "$(dpkg-deb -f "$deb" Package)" | grep -x /usr/bin/social-deduction
+          test "$(/usr/bin/social-deduction --version)" = "social-deduction $VERSION"
+          docker run --rm -v "$(dirname "$rpm"):/packages:ro" -e VERSION -e RPM="/packages/$(basename "$rpm")" fedora:latest \
+            sh -c 'dnf install -y -q "$RPM" && rpm -ql "$(rpm -qp --qf "%{NAME}" "$RPM")" | grep -x /usr/bin/social-deduction &&
+              test "$(/usr/bin/social-deduction --version)" = "social-deduction $VERSION"'
       - name: The macOS signature
         if: steps.apple.outputs.signed == 'true'
         env:
