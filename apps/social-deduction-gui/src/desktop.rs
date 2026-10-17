@@ -1,7 +1,9 @@
 //! The desktop app's main window: a start state listing the games, each
 //! with its own **Play**, and **Stop** while the game is prepared; then
 //! the game as it plays, with **Stop**, and once it is over, **New game**.
-//! **File ▸ New Game** comes back to the start state from anywhere.
+//! **File ▸ Open Game Log…** reviews a log, from anywhere but a game being
+//! prepared or playing, and the **Go** menu moves through it. **File ▸
+//! New Game** comes back to the start state from anywhere.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -10,10 +12,11 @@ use serde::de::IgnoredAny;
 use social_deduction_stage::settings::{Snapshot, game_title};
 use social_deduction_stage::{GameName, Side};
 
+use crate::review::{Go, Review};
 use crate::screen::side_key;
 use crate::tauri::{self, Cues};
 use crate::tip::Tips;
-use crate::view::{Live, Viewer};
+use crate::view::{Live, Reviewer, Reviewing, Viewer};
 
 /// The app's mark: its two balloons, without the tile.
 const LOGO: &str = include_str!("../src-tauri/mark.svg");
@@ -48,6 +51,8 @@ pub fn Desktop() -> impl IntoView {
     let live = Live::default();
     let screen = live.screen;
     let watching = RwSignal::new(false);
+    let reviewing = Reviewing::new(live);
+    let reviewed = Memo::new(move |_| reviewing.review.with(Option::is_some));
     // The channel of the game playing, kept for as long as it plays.
     let cues = StoredValue::new_local(None::<Cues>);
 
@@ -66,7 +71,7 @@ pub fn Desktop() -> impl IntoView {
         })
     });
     Effect::new(move |_| {
-        if !watching.get() {
+        if !watching.get() && !reviewed.get() {
             set_theme(appearance.get());
         }
     });
@@ -91,6 +96,10 @@ pub fn Desktop() -> impl IntoView {
 
     let over = move || screen.with(|screen| screen.outcome.is_some());
     let new_game = move || {
+        if reviewed.get() {
+            reviewing.close();
+            return;
+        }
         if !over() {
             tauri::stop();
         }
@@ -98,16 +107,42 @@ pub fn Desktop() -> impl IntoView {
         live.reset();
     };
     tauri::listen("new-game", move |_: IgnoredAny| new_game());
+    tauri::listen("review", move |opened| match Review::new(opened) {
+        Ok(review) => {
+            watching.set(false);
+            reviewing.open(review);
+        }
+        Err(failure) => error.set(Some(failure)),
+    });
+    tauri::listen("go", move |go: Go| reviewing.go(go));
+    let playing = move || pending.with(Option::is_some) || (watching.get() && !over());
+    // A memo, so that moving the cursor leaves the menus be.
+    let menus = Memo::new(move |_| {
+        let games = reviewing
+            .review
+            .with(|review| review.as_ref().map_or(0, Review::games));
+        (!playing(), games)
+    });
+    Effect::new(move |_| {
+        let (open, games) = menus.get();
+        tauri::menus(open, games);
+    });
 
     // A link opens in the system browser, since the window must not
     // navigate away from the game.
     let on_link = Callback::new(tauri::open_url);
 
+    let close = Callback::new(move |()| reviewing.close());
+    let start = move || view! { <Start snapshot=snapshot pending=pending error=error failed=failed run=run /> };
     view! {
         <Tips />
         <Show
+            when=move || !reviewed.get()
+            fallback=move || view! { <Reviewer reviewing=reviewing on_close=close on_link=on_link appearance=appearance /> }
+        >
+        <Show
             when=move || watching.get()
-            fallback=move || view! { <Start snapshot=snapshot pending=pending error=error failed=failed run=run /> }
+            fallback=start
         >
             <Viewer live=live on_link=on_link appearance=appearance>
                 <Show
@@ -117,6 +152,7 @@ pub fn Desktop() -> impl IntoView {
                     <button class="sd-primary" on:click=move |_| new_game()>"New game"</button>
                 </Show>
             </Viewer>
+        </Show>
         </Show>
     }
 }

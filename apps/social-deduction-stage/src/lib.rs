@@ -3,9 +3,10 @@
 //! The viewer shows one Werewolf or Avalon game in God mode, as a group chat
 //! beside a live board. Library code folds the game's log into a stream of
 //! [`Cue`]s, and the frontend draws each one as it arrives. These types are
-//! everything that crosses between the two, and they depend on serde alone,
-//! so the frontend builds them for `wasm32-unknown-unknown`. The desktop
-//! app's [`settings`] cross the same way.
+//! everything that crosses between the two, and they build for
+//! `wasm32-unknown-unknown`, so the frontend shares them. A log's games
+//! cross as [`Recordings`], and the desktop app's [`settings`] cross the
+//! same way.
 
 #![warn(missing_docs)]
 
@@ -14,6 +15,7 @@ pub mod settings;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// A player's name, `Player 3`, which keys a seat everywhere on screen.
 pub type PlayerId = String;
@@ -30,6 +32,35 @@ pub struct Cue {
     pub at: Millis,
     /// What happened.
     pub beat: Beat,
+}
+
+/// A log's episodes, each read as its own game.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Recordings {
+    /// Every episode that reads, in the order of each one's first line.
+    pub games: Vec<Recording>,
+    /// Why each episode left out was left out, naming the line.
+    pub problems: Vec<String>,
+}
+
+/// One episode of a log, folded into cues.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Recording {
+    /// The episode's ID, which every one of its lines carries.
+    pub episode: Uuid,
+    /// The game it plays.
+    pub game: GameName,
+    /// Its cues, the last of them its one [`Beat::Over`].
+    pub cues: Vec<Cue>,
+}
+
+/// A game log opened for review: the file's name and its games.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Opened {
+    /// The file's name, as the header shows it.
+    pub name: String,
+    /// The log's games.
+    pub recordings: Recordings,
 }
 
 /// What a cue shows.

@@ -186,7 +186,7 @@ fn encoded(text: &str) -> String {
 const FILTER: (&str, &[&str]) = ("Configuration", &["toml"]);
 
 /// Tell the user `message`, titled `title`, as an error.
-fn error(app: &AppHandle, title: &str, message: String) {
+pub(crate) fn error(app: &AppHandle, title: &str, message: String) {
     app.dialog()
         .message(message)
         .title(title)

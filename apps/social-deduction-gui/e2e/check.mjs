@@ -40,7 +40,12 @@
 // controls are ink only, each with a focus ring: Play a large primary
 // button, the others secondary, quiet or icon buttons, a segmented control
 // raised out of a sunken track, a joined stepper, fields and selects sunk
-// into the page, and chips in gray. The console stays clean throughout.
+// into the page, and chips in gray. A log opened in review starts on its
+// first bubble with every later one dimmed; the arrow keys, Home and End,
+// ⌘↑ and ⌘↓, ⌥↓ and a click move the cursor, and the board, the outcome
+// and the position follow it; ⌘] and the list of games open another game
+// on its first bubble, and Close goes back to the start state. The
+// console stays clean throughout.
 // Screenshots land in ./screenshots for a human to look at.
 //
 //   npm test                 # against ../dist, from this directory
@@ -794,7 +799,37 @@ function backend(snapshot) {
       return listings[baseUrl] ?? { models: [], error: null, checks: {} };
     },
     key_status: ({ variable }) => (variable === 'OPENAI_API_KEY' ? 'InEnvironment' : 'InKeychain'),
+    menus: (enabled) => {
+      standIn.menus = enabled;
+      return null;
+    },
   };
+  // The menus as the main window last enabled them, and the native
+  // menu's Go shortcuts, which take their keys before the page sees them.
+  const standIn = { emit, menus: null };
+  window.standIn = standIn;
+  const shortcuts = {
+    'Meta+ArrowUp': 'first',
+    'Meta+ArrowDown': 'last',
+    'Alt+ArrowUp': 'previous_chapter',
+    'Alt+ArrowDown': 'next_chapter',
+    'Meta+[': 'previous_game',
+    'Meta+]': 'next_game',
+  };
+  window.addEventListener(
+    'keydown',
+    (event) => {
+      const pressed = `${event.metaKey ? 'Meta+' : ''}${event.altKey ? 'Alt+' : ''}${event.key}`;
+      const go = shortcuts[pressed];
+      const games = standIn.menus?.games ?? 0;
+      if (go && games > (go.endsWith('_game') ? 1 : 0)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        emit('go', go, 'main');
+      }
+    },
+    true,
+  );
   window.__TAURI__ = {
     core: {
       invoke: async (command, args) => {
@@ -1294,6 +1329,128 @@ await section('desktop', async () => {
   await settings.keyboard.type('45s', { delay: 30 });
   const limited = await settings.$eval(limit, (input) => ({ value: input.value, focused: document.activeElement === input }));
   check(limited.value === '45s' && limited.focused, `desktop: typing goes on in a phase limit (${JSON.stringify(limited)})`);
+  await app.close();
+});
+
+// A log opened in review: the backend sends the recorded prompted games,
+// Werewolf then Avalon, as Open Game Log… would.
+await section('desktop review', async () => {
+  const app = await browser.newContext({ colorScheme: 'light', viewport: { width: 1100, height: 760 } });
+  await app.addInitScript(backend, desktop);
+  const main = watch(await app.newPage());
+  await main.goto(origin);
+  await main.waitForSelector('.sd-start .sd-game-summary:not(:empty)');
+  check(
+    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true }),
+    'desktop review: Open Game Log… is enabled on the start screen, and Go is not',
+  );
+  await main.evaluate(async () => {
+    const cues = async (name) => (await fetch(`game/${name}.json`)).json();
+    const games = [
+      { episode: '00000000-0000-0000-0000-000000000001', game: 'Werewolf', cues: await cues('werewolf-prompted') },
+      { episode: '00000000-0000-0000-0000-000000000002', game: 'Avalon', cues: await cues('avalon-prompted') },
+    ];
+    window.standIn.emit('review', { name: 'two.jsonl', recordings: { games, problems: [] } }, 'main');
+  });
+  await main.waitForSelector('.sd-review-position');
+  await main.waitForTimeout(SETTLE);
+  /** Where the cursor is: the position shown, the selected bubble, the
+   * dimmed ones, the game, and the board and outcome shown. */
+  const where = () =>
+    main.evaluate(() => {
+      const messages = [...document.querySelectorAll('.rc-message')];
+      const later = messages.filter((message) => message.classList.contains('rc-later'));
+      return {
+        position: document.querySelector('.sd-review-position').textContent,
+        selected: messages.findIndex((message) => message.classList.contains('rc-selected')),
+        current: messages.filter((message) => message.getAttribute('aria-current') === 'true').length,
+        count: messages.length,
+        later: later.length,
+        laterFirst: messages.indexOf(later[0]),
+        dimmed: later.length > 0 && Number(getComputedStyle(later[0]).opacity) < 1,
+        game: document.querySelector('.sd-header h1').textContent,
+        name: document.querySelector('.sd-review-name').textContent,
+        of: document.querySelector('.sd-review-game')?.textContent ?? null,
+        outcome: document.querySelector('.sd-outcome')?.textContent ?? null,
+        board: document.querySelector('.sd-board').innerText,
+        theme: document.documentElement.dataset.theme ?? null,
+        inView: (() => {
+          const selected = document.querySelector('.rc-message.rc-selected');
+          const pane = document.querySelector('.rc-messages').getBoundingClientRect();
+          const box = selected?.getBoundingClientRect();
+          return box !== undefined && box.top >= pane.top - 1 && box.bottom <= pane.bottom + 1;
+        })(),
+      };
+    });
+  const first = await where();
+  check(
+    first.name === 'two.jsonl' && first.game === 'Werewolf' && first.of === 'Game 1 of 2' && first.position === `1 / ${first.count}`,
+    `desktop review: a log opens on the first bubble of its first game (${JSON.stringify({ ...first, board: undefined })})`,
+  );
+  check(
+    first.selected === 0 && first.current === 1 && first.later === first.count - 1 && first.laterFirst === 1 && first.dimmed,
+    `desktop review: the first bubble is selected and every later one is dimmed (${JSON.stringify({ ...first, board: undefined })})`,
+  );
+  check(first.outcome === null, `desktop review: the first bubble shows no outcome (${first.outcome})`);
+  const arrows = await main.$$eval('.sd-review-games button', (buttons) => buttons.map((button) => [button.textContent, button.disabled]));
+  check(
+    JSON.stringify(arrows) === JSON.stringify([['‹', true], ['›', false]]),
+    `desktop review: ‹ and › step between games, ‹ off on the first (${JSON.stringify(arrows)})`,
+  );
+  check(
+    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 2, open: true }),
+    'desktop review: Open Game Log… and Go are enabled in review, Previous and Next Game with them',
+  );
+  await main.screenshot({ path: join(shots, 'desktop-review-first.png') });
+  await main.keyboard.press('ArrowDown');
+  await main.keyboard.press('ArrowRight');
+  const stepped = await where();
+  check(
+    stepped.selected === 2 && stepped.position === `3 / ${first.count}` && stepped.later === first.count - 3,
+    `desktop review: the arrow keys step forward (${JSON.stringify({ ...stepped, board: undefined })})`,
+  );
+  await main.keyboard.press('ArrowUp');
+  check((await where()).selected === 1, 'desktop review: the arrow keys step back');
+  await main.keyboard.press('Meta+ArrowDown');
+  await main.waitForTimeout(SETTLE);
+  const last = await where();
+  check(
+    last.selected === first.count - 1 && last.later === 0 && last.position === `${first.count} / ${first.count}` && last.inView,
+    `desktop review: ⌘↓ jumps to the last bubble, in view, with nothing dimmed (${JSON.stringify({ ...last, board: undefined })})`,
+  );
+  check(last.outcome !== null && last.board !== first.board, `desktop review: the board and outcome follow the cursor (${last.outcome})`);
+  await main.screenshot({ path: join(shots, 'desktop-review-last.png') });
+  await main.keyboard.press('ArrowDown');
+  check((await where()).selected === first.count - 1, 'desktop review: the cursor stops at the last bubble');
+  await main.keyboard.press('Home');
+  check((await where()).selected === 0, 'desktop review: Home goes to the first bubble');
+  await main.keyboard.press('End');
+  await main.keyboard.press('Meta+ArrowUp');
+  await main.waitForTimeout(SETTLE);
+  const top = await where();
+  check(top.selected === 0 && top.board === first.board && top.inView, 'desktop review: ⌘↑ goes back to the first bubble and its board');
+  await main.keyboard.press('Alt+ArrowDown');
+  const chapter = await where();
+  const heading = await main.$eval('.rc-message.rc-selected', (message) => message.querySelector('.sd-heading')?.textContent ?? null);
+  check(chapter.selected > 0 && heading !== null, `desktop review: ⌥↓ goes to the next chapter heading (${heading})`);
+  await (await main.$$('.rc-message'))[4].click();
+  check((await where()).selected === 4, 'desktop review: a click on a bubble puts the cursor there');
+  await main.keyboard.press('Meta+]');
+  await main.waitForTimeout(SETTLE);
+  const second = await where();
+  check(
+    second.game === 'Avalon' && second.of === 'Game 2 of 2' && second.selected === 0 && second.position === `1 / ${second.count}`,
+    `desktop review: ⌘] opens the next game on its first bubble (${JSON.stringify({ ...second, board: undefined })})`,
+  );
+  await main.selectOption('.sd-review-games select', '0');
+  await main.waitForTimeout(100);
+  check((await where()).game === 'Werewolf', 'desktop review: the list of games opens the one chosen');
+  await main.click('.sd-header button:text("Close")');
+  await main.waitForSelector('.sd-start');
+  check(
+    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true }),
+    'desktop review: Close goes back to the start screen, and Go is disabled again',
+  );
   await app.close();
 });
 

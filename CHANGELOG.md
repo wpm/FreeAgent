@@ -9,6 +9,12 @@ workflow takes a version's notes from here.
 
 ### Added
 
+- The desktop app reviews a game log: **File ▸ Open Game Log…** (⌘O)
+  opens a log from the command line or the app, games and all, on its
+  first bubble. The arrow keys, Home and End, a click and the new **Go**
+  menu move from bubble to bubble, chapter to chapter and game to game,
+  and the board, phase and clock follow the selected bubble while the
+  bubbles after it are dimmed.
 - Every episode of a game's log opens with a `Header` line naming the log
   format, the version of `social-deduction` that wrote it and the game, and
   closes with an `Ended` line: `won`, `stopped`, or `failed` with the
