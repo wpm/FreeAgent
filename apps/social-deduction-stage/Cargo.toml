@@ -12,11 +12,12 @@ publish = false
 [package.metadata.dist]
 dist = false
 
-# Serde, and minijinja to read templates, so the crate builds for
-# wasm32-unknown-unknown.
+# Serde, minijinja to read templates, and the episode IDs a log's games
+# are told apart by, so the crate builds for wasm32-unknown-unknown.
 [dependencies]
 minijinja.workspace = true
 serde.workspace = true
+uuid = { version = "1.27.0", features = ["serde"] }
 
 [dev-dependencies]
 serde_json.workspace = true

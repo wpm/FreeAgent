@@ -103,6 +103,26 @@ strategies that ask it to match. **File ▸ Export Configuration…** writes a
 game's configuration file, with its models, and `social-deduction play`
 plays it as **Play** does.
 
+### Review
+
+**File ▸ Open Game Log…** (⌘O, Ctrl+O elsewhere) opens a `.jsonl` game
+log, from the command line or the app, with as many games as it holds.
+It opens on the first bubble of the first game, with the whole game in
+the chat and every bubble after the selected one dimmed. The board, the
+phase and the clock show the game as it stood at the selected bubble. The
+header names the file, the game, with ‹ › and a list of the log's games
+when it holds several, and the position, `1 / 212`; **Close** returns to
+the start state. A log is opened anywhere but while a game is being
+prepared or played.
+
+| Action | Keys |
+|---|---|
+| Previous / next bubble | ↑ / ↓, and ← / → |
+| First / last bubble | **Go ▸ First Bubble** ⌘↑ / **Last Bubble** ⌘↓ (Ctrl+Home / Ctrl+End elsewhere), and Home / End |
+| Jump to a bubble | click it |
+| Previous / next chapter | **Go ▸ Previous Chapter** ⌥↑ / **Next Chapter** ⌥↓ |
+| Previous / next game | **Go ▸ Previous Game** ⌘[ / **Next Game** ⌘] (Ctrl+[ / Ctrl+] elsewhere) |
+
 The settings are kept in `settings.toml` in the app's config directory,
 and what probing found in `probes.json` in its data directory: on macOS,
 both in `~/Library/Application Support/io.github.wpm.social-deduction/`.
@@ -134,8 +154,9 @@ model, with talk, thinking and Werewolf phases closing while players
 finish speaking, which random players never produce. `#avalon-prompted`
 and `#werewolf-prompted` open them. CI's Viewer job builds the page with
 `build-page.sh` and drives it in headless Chromium with `e2e/check.mjs`,
-which checks what each game shows, opens the desktop app's start state and
-Settings window against a stand-in backend, and saves screenshots. To run it locally, from the root of a checkout:
+which checks what each game shows, opens the desktop app's start state,
+review and Settings window against a stand-in backend, and saves
+screenshots. To run it locally, from the root of a checkout:
 
 ```sh
 apps/social-deduction-gui/build-page.sh

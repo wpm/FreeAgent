@@ -18,7 +18,9 @@ use anyhow::Context;
 use free_agent::Event;
 use serde::de::IgnoredAny;
 use social_deduction_stage::{Beat, Cue, GameName, Millis, Outcome, Panel, Role, Seat, Side};
+pub use social_deduction_stage::{Opened, Recording, Recordings};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -147,26 +149,6 @@ impl<G: Staged> Stage<G> {
     }
 }
 
-/// A log's episodes, each read as its own game.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Recordings {
-    /// Every episode that reads, in the order of each one's first line.
-    pub games: Vec<Recording>,
-    /// Why each episode left out was left out, naming the line.
-    pub problems: Vec<String>,
-}
-
-/// One episode of a log, folded into cues.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Recording {
-    /// The episode's ID, which every one of its lines carries.
-    pub episode: Uuid,
-    /// The game it plays.
-    pub game: GameName,
-    /// Its cues, the last of them its one [`Beat::Over`].
-    pub cues: Vec<Cue>,
-}
-
 /// The episodes of a log written as JSON Lines by games of either kind,
 /// each told apart by its ID, wherever its lines fall. Each episode is of
 /// the game its header names. An episode with no header, written before
@@ -222,6 +204,22 @@ pub fn recordings(log: &str) -> anyhow::Result<Recordings> {
         problems.join("\n")
     );
     Ok(Recordings { games, problems })
+}
+
+/// The log at `path`, opened for review under its file's name, as
+/// [`recordings`] reads it.
+///
+/// # Errors
+///
+/// When the file cannot be read, when no episode in it reads, or when it
+/// holds none.
+pub fn opened(path: &Path) -> anyhow::Result<Opened> {
+    let log = std::fs::read_to_string(path).with_context(|| path.display().to_string())?;
+    let name = path.file_name().unwrap_or(path.as_os_str());
+    let name = name.to_string_lossy().into_owned();
+    let recordings = recordings(&log)?;
+    anyhow::ensure!(!recordings.games.is_empty(), "{name} holds no games.");
+    Ok(Opened { name, recordings })
 }
 
 /// The episode `episode`, its `lines` numbered, read as the game its
@@ -1037,6 +1035,45 @@ mod tests {
     #[test]
     fn an_empty_log_holds_no_recordings() {
         assert_eq!(recordings("\n").unwrap(), Recordings::default());
+    }
+
+    /// A log holding `text`, written for the test `test` at a path of its
+    /// own so the tests do not collide.
+    fn logged_at(test: &str, text: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "social-deduction-{}-{test}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn a_log_opens_under_its_file_s_name_with_every_game_and_reaches_the_viewer_as_json() {
+        let first = recorded_as(1, &random_avalon().await, Ended::Won);
+        let second = recorded_as(2, &random_werewolf().await, Ended::Stopped);
+        let path = logged_at("opens", &format!("{first}{second}"));
+        let opened = opened(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert_eq!(opened.name, name);
+        assert_eq!(episodes(&opened.recordings), [1, 2]);
+        let json = serde_json::to_string(&opened).unwrap();
+        assert_eq!(serde_json::from_str::<Opened>(&json).unwrap(), opened);
+    }
+
+    #[test]
+    fn a_log_with_no_games_or_no_file_does_not_open() {
+        let path = logged_at("empty", "\n");
+        let error = opened(&path).unwrap_err().to_string();
+        std::fs::remove_file(&path).unwrap();
+        assert!(error.ends_with("holds no games."), "{error}");
+        let error = opened(&path).unwrap_err().to_string();
+        assert!(error.starts_with(&path.display().to_string()), "{error}");
+        let path = logged_at("bad", "not a log\n");
+        let error = format!("{:#}", opened(&path).unwrap_err());
+        std::fs::remove_file(&path).unwrap();
+        assert!(error.contains("line 1"), "{error}");
     }
 
     #[tokio::test]

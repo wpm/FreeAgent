@@ -305,6 +305,20 @@ impl Screen {
         }
     }
 
+    /// Show `shown`, a screen under review, in place of this one and in its
+    /// era, with `landed` flashing. As with [`Screen::apply`], the number
+    /// that ends the flash comes back when something lands.
+    pub fn review(&mut self, shown: Screen, landed: Vec<Landed>) -> Option<usize> {
+        let number = self.applied + 1;
+        *self = Screen {
+            landed: landed.into_iter().map(|landed| (number, landed)).collect(),
+            applied: number,
+            era: self.era,
+            ..shown
+        };
+        (!self.landed.is_empty()).then_some(number)
+    }
+
     /// End the flash of what the cue numbered `number` landed.
     pub fn expire(&mut self, number: usize) {
         self.landed.retain(|(landed_by, _)| *landed_by != number);
@@ -406,6 +420,11 @@ impl Screen {
     }
 }
 
+/// The bubble whose message ID is `id`: bubble `k` is posted as `m{k+1}`.
+pub fn bubble(id: &str) -> Option<usize> {
+    id.strip_prefix('m')?.parse::<usize>().ok()?.checked_sub(1)
+}
+
 /// The screen at every bubble of a game: the game's last screen, and one
 /// [`Moment`] per post. Headings are posts, so they are stops too.
 #[derive(Debug, Clone, PartialEq)]
@@ -478,6 +497,20 @@ impl Timeline {
     /// Each bubble's moment, in post order.
     pub fn moments(&self) -> &[Moment] {
         &self.moments
+    }
+
+    /// The bubbles that are chapter headings, in order.
+    pub fn chapters(&self) -> Vec<usize> {
+        let posts = self.last.posts.iter().enumerate();
+        posts
+            .filter(|(_, post)| matches!(post.body, Body::Heading(_)))
+            .map(|(k, _)| k)
+            .collect()
+    }
+
+    /// How the game ended, once it has.
+    pub fn outcome(&self) -> Option<&Outcome> {
+        self.last.outcome.as_ref()
     }
 
     /// The screen with the cursor on bubble `k`: every post, and the
@@ -2003,6 +2036,56 @@ mod tests {
         assert!(timeline.landed(1).is_empty());
         assert_eq!(timeline.landed(2), [Landed::Vote("Player 1".to_string())]);
         assert!(Timeline::new(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_screen_under_review_shows_in_the_era_it_replaces_with_what_lands_flashing() {
+        let cues = recorded("werewolf-prompted");
+        let timeline = Timeline::new(&cues);
+        let mut screen = Screen::default();
+        screen.reset();
+        let k = (1..timeline.len())
+            .find(|&k| !timeline.landed(k).is_empty())
+            .unwrap();
+        let number = screen.review(timeline.screen(k), timeline.landed(k));
+        assert_eq!(screen.era(), 1);
+        assert_eq!(screen.cursor, Some(k));
+        let landed: Vec<Landed> = screen
+            .landed
+            .iter()
+            .map(|(_, landed)| landed.clone())
+            .collect();
+        assert_eq!(landed, timeline.landed(k));
+        screen.expire(number.unwrap());
+        assert!(screen.landed.is_empty());
+        let later = screen.review(timeline.screen(k), timeline.landed(k));
+        assert_ne!(later, number);
+        assert_eq!(screen.review(timeline.screen(0), Vec::new()), None);
+        assert!(screen.landed.is_empty());
+    }
+
+    #[test]
+    fn a_bubble_is_found_by_its_message_id() {
+        let screen = shown(&game());
+        for (k, post) in screen.posts.iter().enumerate() {
+            assert_eq!(bubble(&post.id), Some(k));
+        }
+        assert_eq!(bubble("m0"), None);
+        assert_eq!(bubble("think-Player 3"), None);
+    }
+
+    #[test]
+    fn a_timeline_knows_its_chapters_and_how_the_game_ended() {
+        let cues = recorded("werewolf-prompted");
+        let timeline = Timeline::new(&cues);
+        let last = timeline.screen(timeline.len() - 1);
+        let headings: Vec<usize> = (0..last.posts.len())
+            .filter(|&k| matches!(last.posts[k].body, Body::Heading(_)))
+            .collect();
+        assert!(!headings.is_empty());
+        assert_eq!(timeline.chapters(), headings);
+        assert_eq!(timeline.outcome(), last.outcome.as_ref());
+        assert_eq!(Timeline::new(&[]).outcome(), None);
     }
 
     #[test]

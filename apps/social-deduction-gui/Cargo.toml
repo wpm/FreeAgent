@@ -14,8 +14,9 @@ dist = false
 
 [dependencies]
 leptos = { version = "0.8", features = ["csr"] }
-# Game talk needs no code highlighting or math fonts.
-leptos-rich-chat = { version = "0.2.1", default-features = false }
+# Game talk needs no code highlighting or math fonts. Review selects a
+# message, from wpm/Rich-Chat#101 until it is released as 0.2.2.
+leptos-rich-chat = { git = "https://github.com/wpm/Rich-Chat", rev = "140806d0c409f31fef78462de9e596737d631c92", default-features = false }
 social-deduction-stage = { path = "../social-deduction-stage" }
 console_error_panic_hook = "0.1"
 serde.workspace = true
@@ -31,3 +32,4 @@ web-sys = { version = "0.3", features = ["console", "CssStyleDeclaration", "Docu
 # paused clock.
 social-deduction = { path = "../social-deduction" }
 tokio = { workspace = true, features = ["test-util"] }
+uuid.workspace = true
