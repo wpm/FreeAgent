@@ -7,8 +7,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_rich_chat::RichChatStyle;
 use serde::de::IgnoredAny;
-use social_deduction_stage::GameName;
 use social_deduction_stage::settings::{Snapshot, game_title};
+use social_deduction_stage::{GameName, Side};
 
 use crate::screen::side_key;
 use crate::tauri::{self, Cues};
@@ -44,6 +44,7 @@ pub fn Desktop() -> impl IntoView {
     let snapshot = RwSignal::new(None::<Snapshot>);
     let pending = RwSignal::new(None::<GameName>);
     let error = RwSignal::new(None::<String>);
+    let failed = RwSignal::new(None::<(GameName, String)>);
     let live = Live::default();
     let screen = live.screen;
     let watching = RwSignal::new(false);
@@ -71,7 +72,7 @@ pub fn Desktop() -> impl IntoView {
     });
 
     let run = Callback::new(move |game: GameName| {
-        error.set(None);
+        failed.set(None);
         pending.set(Some(game));
         live.reset();
         let channel = Cues::new(move |cue| {
@@ -83,7 +84,7 @@ pub fn Desktop() -> impl IntoView {
             cues.set_value(Some(channel));
             pending.set(None);
             if let Err(failure) = started {
-                error.set(Some(failure));
+                failed.set(Some((game, failure)));
             }
         });
     });
@@ -106,7 +107,7 @@ pub fn Desktop() -> impl IntoView {
         <Tips />
         <Show
             when=move || watching.get()
-            fallback=move || view! { <Start snapshot=snapshot pending=pending error=error run=run /> }
+            fallback=move || view! { <Start snapshot=snapshot pending=pending error=error failed=failed run=run /> }
         >
             <Viewer live=live on_link=on_link appearance=appearance>
                 <Show
@@ -121,13 +122,14 @@ pub fn Desktop() -> impl IntoView {
 }
 
 /// The start state: the mark and the app's name, with a link to Settings,
-/// over the list of games, each with its own **Play**. Why a game could
-/// not start shows over the list.
+/// over the list of games, each with its own **Play**. Why the settings
+/// could not load shows over the list.
 #[component]
 fn Start(
     snapshot: RwSignal<Option<Snapshot>>,
     pending: RwSignal<Option<GameName>>,
     error: RwSignal<Option<String>>,
+    failed: RwSignal<Option<(GameName, String)>>,
     run: Callback<GameName>,
 ) -> impl IntoView {
     let platform = window().navigator().platform().unwrap_or_default();
@@ -147,7 +149,7 @@ fn Start(
                 <ul class="sd-game-list">
                     {GameName::ALL
                         .into_iter()
-                        .map(|game| view! { <Game game=game snapshot=snapshot pending=pending run=run /> })
+                        .map(|game| view! { <Game game=game snapshot=snapshot pending=pending failed=failed run=run /> })
                         .collect_view()}
                 </ul>
             </div>
@@ -158,12 +160,14 @@ fn Start(
 /// One game in the list: its name, what it is, its seats and a line
 /// summing up its settings, with its **Play**, which the game's first
 /// error, under the row, disables. The error links to its field in
-/// Settings. While the game is starting, **Stop** stops it.
+/// Settings. While the game is starting, **Stop** stops it, and why it
+/// could not start shows under the row.
 #[component]
 fn Game(
     game: GameName,
     snapshot: RwSignal<Option<Snapshot>>,
     pending: RwSignal<Option<GameName>>,
+    failed: RwSignal<Option<(GameName, String)>>,
     run: Callback<GameName>,
 ) -> impl IntoView {
     let title = game_title(game);
@@ -194,7 +198,7 @@ fn Game(
                 <h2>{title}</h2>
                 <p class="sd-description">{game.description()}</p>
                 <div class="sd-game-table" data-tip="The players, strategies and models of the next game. Change them in Settings.">
-                    <span class="sd-game-seats">
+                    <span class="sd-game-seats" role="img" aria-label=move || seats.with(|seats| said(seats))>
                         {move || {
                             seats
                                 .get()
@@ -227,13 +231,31 @@ fn Game(
                     }
                 })
             }}
+            {move || {
+                failed.get().and_then(|(failed, why)| (failed == game).then(|| view! { <p class="sd-warning sd-game-error sd-game-failed"><span>{why}</span></p> }))
+            }}
         </li>
     }
+}
+
+/// What `seats` holds, as a screen reader says it: `2 evil, 5 good`.
+fn said(seats: &[Side]) -> String {
+    let evil = seats.iter().filter(|side| **side == Side::Evil).count();
+    format!("{evil} evil, {} good", seats.len() - evil)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seats_are_said_as_how_many_of_each_side() {
+        assert_eq!(
+            said(&[Side::Evil, Side::Good, Side::Good]),
+            "1 evil, 2 good"
+        );
+        assert_eq!(said(&[]), "0 evil, 0 good");
+    }
 
     #[test]
     fn settings_opens_with_command_comma_on_a_mac_and_control_comma_elsewhere() {

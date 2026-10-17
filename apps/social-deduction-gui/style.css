@@ -937,6 +937,11 @@ body,
   font: 17px/1.4 var(--sd-serif);
 }
 
+/* Why a game failed to start can run to several lines. */
+.sd-game-failed {
+  white-space: pre-wrap;
+}
+
 .sd-game-error .sd-link {
   font: inherit;
 }

@@ -404,7 +404,7 @@ fn Segments<T: Copy + PartialEq + Send + Sync + 'static>(
     #[prop(optional, into)] id: Option<String>,
 ) -> impl IntoView {
     view! {
-        <div class="sd-segments" role="group" aria-label=label id=id>
+        <div class="sd-segments" role="group" aria-label=label tabindex=id.as_ref().map(|_| "-1") id=id>
             {options
                 .into_iter()
                 .map(|(choice, title, tip)| {

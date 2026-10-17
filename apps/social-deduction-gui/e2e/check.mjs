@@ -857,6 +857,7 @@ await section('desktop', async () => {
       name: row.querySelector('h2').textContent,
       described: row.querySelector('.sd-description').textContent.length > 0,
       seats: [...row.querySelectorAll('.sd-game-seats > span')].map((seat) => seat.className).join(' '),
+      said: [row.querySelector('.sd-game-seats').getAttribute('role'), row.querySelector('.sd-game-seats').getAttribute('aria-label')],
       summary: row.querySelector('.sd-game-summary').textContent,
       play: row.querySelector('.sd-play').textContent.trim(),
       enabled: !row.querySelector('.sd-play').disabled,
@@ -870,12 +871,13 @@ await section('desktop', async () => {
           name: 'Werewolf',
           described: true,
           seats: 'sd-evil sd-evil sd-good sd-good sd-good sd-good sd-good',
+          said: ['img', '2 evil, 5 good'],
           summary: '7 players · 1 strategy · qwen2.5-7b-instruct-1m',
           play: 'Play Werewolf',
           enabled: true,
           warned: false,
         },
-        { name: 'Avalon', described: true, seats: 'sd-evil sd-evil sd-good sd-good sd-good', summary: '5 players · 1 strategy', play: 'Play Avalon', enabled: true, warned: false },
+        { name: 'Avalon', described: true, seats: 'sd-evil sd-evil sd-good sd-good sd-good', said: ['img', '2 evil, 3 good'], summary: '5 players · 1 strategy', play: 'Play Avalon', enabled: true, warned: false },
       ]),
     `desktop: the start state lists each game with what it is, its seats, its summary and its own Play (${JSON.stringify(games)})`,
   );
@@ -972,6 +974,21 @@ await section('desktop', async () => {
   await settings.click('#tab-werewolf');
   await settings.waitForSelector('.sd-page-head h1');
   await settings.screenshot({ path: join(shots, 'settings-werewolf.png'), fullPage: true });
+  const sideSaid = await settings.$$eval('.sd-square', (squares) =>
+    squares.map((square) => [square.getAttribute('role'), square.getAttribute('aria-label'), getComputedStyle(square).backgroundColor]),
+  );
+  const sideOf = { 'rgb(210, 0, 31)': 'Evil', 'rgb(36, 56, 232)': 'Good' };
+  check(
+    sideSaid.length > 0 && sideSaid.every(([role, label, color]) => role === 'img' && label === sideOf[color]),
+    `desktop: each role's square says its side (${JSON.stringify(sideSaid)})`,
+  );
+  const policy = watch(await app.newPage());
+  await policy.goto(`${origin}#settings=werewolf/strategies/everyone/policy`);
+  await policy.waitForSelector('.sd-segments');
+  await policy.waitForFunction(() => document.activeElement !== document.body);
+  const policyFocus = await policy.evaluate(() => document.activeElement.closest('.sd-segments')?.getAttribute('aria-label') ?? document.activeElement.outerHTML.slice(0, 60));
+  check(policyFocus === 'Policy', `desktop: Settings opened at a policy error focuses the policy (${policyFocus})`);
+  await policy.close();
   await models(settings);
   const players = await settings.$$eval('.sd-stepper input', (inputs) => inputs.map((input) => input.value));
   check(JSON.stringify(players) === JSON.stringify(['2', '3', '1', '1']), `desktop: the Werewolf tab shows each role's count (${players.join(', ')})`);
@@ -1132,6 +1149,20 @@ await section('desktop with an error', async () => {
   check(
     JSON.stringify(opened) === JSON.stringify([['settings_open', { path: ['avalon', 'phases', 'vote_limit'] }]]),
     `desktop: the error links to its field in Settings (${JSON.stringify(opened)})`,
+  );
+  await main.evaluate(() => {
+    const invoke = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = async (command, args) => {
+      if (command === 'play') throw 'qwen did not answer';
+      return invoke(command, args);
+    };
+  });
+  await main.click('.sd-game:first-child .sd-play');
+  await main.waitForSelector('.sd-game-failed');
+  const failed = await main.$$eval('.sd-game-list > .sd-game', (games) => games.map((game) => game.querySelector('.sd-game-failed')?.textContent.trim() ?? null));
+  check(
+    JSON.stringify(failed) === JSON.stringify(['qwen did not answer', null]) && (await main.$$('.sd-start-body > .sd-error')).length === 0,
+    `desktop: why a game failed to start shows in its own row (${JSON.stringify(failed)})`,
   );
   await main.screenshot({ path: join(shots, 'desktop-start-error.png'), fullPage: true });
   await app.close();

@@ -10,7 +10,7 @@ use social_deduction_stage::settings::{
     Policy, RANDOM, RoleSettings, StrategySettings, game_key, game_title, is_part_name, label,
     part_variable,
 };
-use social_deduction_stage::{GameName, Role};
+use social_deduction_stage::{GameName, Role, Side};
 
 use super::{
     Choice, Cross, Editor, Named, PageHead, Problem, Section, Segments, Tab, field_id, path,
@@ -335,13 +335,18 @@ fn role_memo<T: Clone + PartialEq + Send + Sync + 'static>(
     })
 }
 
-/// The square of a role, in its side's color.
+/// The square of a role, in its side's color, named for its side.
 #[component]
 fn Square(role: String) -> impl IntoView {
-    let style = Role::from_key(&role)
-        .map(|role| format!("background: var(--sd-{})", side_key(role.side())))
+    let side = Role::from_key(&role).map(Role::side);
+    let style = side
+        .map(|side| format!("background: var(--sd-{})", side_key(side)))
         .unwrap_or_default();
-    view! { <span class="sd-square" style=style></span> }
+    let said = side.map(|side| match side {
+        Side::Good => "Good",
+        Side::Evil => "Evil",
+    });
+    view! { <span class="sd-square" role="img" aria-label=said style=style></span> }
 }
 
 /// A role's row: its square, its name and what it does, and its count as
