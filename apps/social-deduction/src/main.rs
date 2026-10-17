@@ -570,14 +570,10 @@ mod tests {
     #[tokio::test]
     async fn an_episode_that_fails_is_logged_as_failed_with_its_error() {
         let mut written = Vec::new();
-        let error = super::play(
-            Some(&mut written),
-            &Secrets::default(),
-            |_| vec![],
-            failing(false),
-        )
-        .await
-        .unwrap_err();
+        let none = Secrets::default();
+        let error = super::play(Some(&mut written), &none, |_| vec![], failing(false))
+            .await
+            .unwrap_err();
         let shown = format!("{error:#}");
         assert_eq!(shown, "actor ann failed: no model");
         let entries = entries(&written);
@@ -593,14 +589,10 @@ mod tests {
     #[tokio::test]
     async fn an_episode_that_is_stopped_is_logged_as_stopped() {
         let mut written = Vec::new();
-        super::play(
-            Some(&mut written),
-            &Secrets::default(),
-            |_| vec![],
-            failing(true),
-        )
-        .await
-        .unwrap();
+        let none = Secrets::default();
+        super::play(Some(&mut written), &none, |_| vec![], failing(true))
+            .await
+            .unwrap();
         assert_eq!(
             entries(&written).last(),
             Some(&Entry::Ended(Ended::Stopped))
@@ -641,14 +633,10 @@ mod tests {
 
     #[tokio::test]
     async fn an_episode_with_no_log_is_written_nowhere() {
-        let error = super::play::<Werewolf, _, Vec<u8>>(
-            None,
-            &Secrets::default(),
-            |_| vec![],
-            failing(false),
-        )
-        .await
-        .unwrap_err();
+        let none = Secrets::default();
+        let error = super::play::<Werewolf, _, Vec<u8>>(None, &none, |_| vec![], failing(false))
+            .await
+            .unwrap_err();
         assert_eq!(format!("{error:#}"), "actor ann failed: no model");
     }
 
