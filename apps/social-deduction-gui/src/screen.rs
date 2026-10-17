@@ -163,6 +163,8 @@ pub struct Screen {
     pub names: Names,
     /// How the game ended, once it has.
     pub outcome: Option<Outcome>,
+    /// When the game ended, in log time, once it has.
+    ended: Option<Millis>,
     /// The board as it stands.
     pub panel: Option<Panel>,
     /// The choices flashing now, each with the cue that landed it.
@@ -189,6 +191,7 @@ impl Default for Screen {
             seats: Vec::new(),
             names: Names::none(),
             outcome: None,
+            ended: None,
             panel: None,
             landed: Vec::new(),
             thinkers: Vec::new(),
@@ -262,6 +265,7 @@ impl Screen {
             }
             Beat::Over { outcome } => {
                 self.outcome = Some(outcome.clone());
+                self.ended = Some(cue.at);
                 self.thinking.clear();
                 self.thinkers.clear();
             }
@@ -338,6 +342,7 @@ impl Screen {
     fn drawn<P>(&self, panel: P) -> Board<P> {
         Board {
             panel,
+            ended: self.ended,
             seats: self.seats.clone(),
             landed: self
                 .landed
@@ -348,8 +353,11 @@ impl Screen {
     }
 
     /// The phase's countdown, from the latest board of either game, while
-    /// the phase is not closing.
+    /// the game goes on and the phase is not closing.
     pub fn phase_timer(&self) -> Option<Timer> {
+        if self.outcome.is_some() {
+            return None;
+        }
         let (began, limit_ms) = match self.panel.as_ref()? {
             Panel::Avalon(panel) => (panel.began, panel.limit_ms),
             Panel::Werewolf(panel) if panel.closing.is_none() => (panel.began, panel.limit_ms),
@@ -365,7 +373,8 @@ impl Screen {
     /// Whether the Werewolf phase underway is closing, when the header
     /// shows [`CLOSING`] in place of its clock.
     pub fn closing(&self) -> bool {
-        matches!(&self.panel, Some(Panel::Werewolf(panel)) if panel.closing.is_some())
+        self.outcome.is_none()
+            && matches!(&self.panel, Some(Panel::Werewolf(panel)) if panel.closing.is_some())
     }
 
     /// The root element's `data-theme`: `dark` by night and `light` by day
@@ -409,6 +418,8 @@ impl Screen {
 pub struct Board<P = AvalonPanel> {
     /// The board as it stands.
     pub panel: P,
+    /// When the game ended, in log time, once it has.
+    pub ended: Option<Millis>,
     /// Every seat, in seat order.
     pub seats: Vec<Seat>,
     /// The choices flashing now.
@@ -465,7 +476,7 @@ pub fn dots_due(cue: &Cue) -> Option<Millis> {
 
 impl Board<WerewolfPanel> {
     /// The day's tentative decision, its countdown stopped once the day
-    /// begins closing.
+    /// begins closing or the game ends.
     pub fn decision(&self) -> Option<Decision> {
         let ratify = self.panel.ratify.as_ref();
         let ratify = ratify.filter(|_| self.panel.phase == WerewolfPhase::Day)?;
@@ -474,7 +485,7 @@ impl Board<WerewolfPanel> {
             timer: Timer {
                 began: ratify.since,
                 limit_ms: ratify.limit_ms,
-                stopped: self.panel.closing,
+                stopped: self.panel.closing.or(self.ended),
             },
         })
     }
@@ -1279,6 +1290,19 @@ mod tests {
     }
 
     #[test]
+    fn a_game_over_shows_neither_clock_nor_closing() {
+        let over = cue(Beat::Over {
+            outcome: Outcome::Stopped,
+        });
+        let avalon = shown(&[cast(), panel(&board()), over.clone()]);
+        assert_eq!(avalon.phase_timer(), None);
+        let night = shown(&[werewolf_cast(), tonight(), over.clone()]);
+        assert_eq!(night.phase_timer(), None);
+        let closed = shown(&[werewolf_cast(), werewolf(&closing(&deciding())), over]);
+        assert!(!closed.closing());
+    }
+
+    #[test]
     fn a_closing_day_freezes_its_decision_where_it_stood_when_it_began_closing() {
         let mut later = closing(&deciding());
         later.votes[0].1 = Some("Player 4".to_string());
@@ -1301,6 +1325,29 @@ mod tests {
         };
         let screen = shown(&[werewolf_cast(), werewolf(&night)]);
         assert_eq!(screen.werewolf().unwrap().decision(), None);
+    }
+
+    #[test]
+    fn a_game_over_stops_the_decision_where_it_stood_when_the_game_ended() {
+        let over = Cue {
+            at: 12_000,
+            beat: Beat::Over {
+                outcome: Outcome::Stopped,
+            },
+        };
+        let screen = shown(&[werewolf_cast(), werewolf(&deciding()), over]);
+        let decision = screen.werewolf().unwrap().decision().unwrap();
+        assert_eq!(decision.timer.stopped, Some(12_000));
+        assert_eq!(decision.label(40_000.0), "Player 4 out");
+        let closed = shown(&[
+            werewolf_cast(),
+            werewolf(&closing(&deciding())),
+            cue(Beat::Over {
+                outcome: Outcome::Stopped,
+            }),
+        ]);
+        let decision = closed.werewolf().unwrap().decision().unwrap();
+        assert_eq!(decision.timer.stopped, Some(10_000));
     }
 
     /// The cast of a Werewolf game of four: a werewolf, a doctor, a seer

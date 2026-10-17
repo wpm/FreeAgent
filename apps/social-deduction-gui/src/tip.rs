@@ -1,6 +1,8 @@
 //! Hover and focus help: an element's `data-tip` attribute says what it
 //! is and what changing it does, and [`Tips`] shows it beside the element
-//! while the pointer is over it or it has the keyboard's focus.
+//! while the pointer is over it or it has the keyboard's focus, and not
+//! while it is pressed. An element's `data-tip-at` names a part of it
+//! that the tip shows beside instead.
 
 use leptos::ev;
 use leptos::html;
@@ -58,6 +60,8 @@ pub fn Tips() -> impl IntoView {
     let shown = NodeRef::<html::Div>::new();
     // The element whose tip shows, if one does.
     let current = StoredValue::new_local(None::<web_sys::Element>);
+    // Pressing hides the tip until the press ends, as when dragging.
+    let pressed = StoredValue::new(false);
     let hide = move || {
         if current.get_value().is_some()
             && let Some(tip) = shown.get_untracked()
@@ -67,7 +71,7 @@ pub fn Tips() -> impl IntoView {
         }
     };
     let show = move |target: Option<web_sys::EventTarget>| {
-        let Some(tip) = shown.get_untracked() else {
+        let Some(tip) = shown.get_untracked().filter(|_| !pressed.get_value()) else {
             return;
         };
         let Some((element, text)) = tipped(target) else {
@@ -81,7 +85,12 @@ pub fn Tips() -> impl IntoView {
         current.set_value(Some(element.clone()));
         tip.set_text_content(Some(&text));
         tip.set_hidden(false);
-        let rect = element.get_bounding_client_rect();
+        // The part `data-tip-at` names, if any, places the tip.
+        let at = element.get_attribute("data-tip-at");
+        let placer = at
+            .and_then(|at| element.query_selector(&at).ok().flatten())
+            .unwrap_or_else(|| element.clone());
+        let rect = placer.get_bounding_client_rect();
         let window = window();
         let size = |length: Result<JsValue, JsValue>| {
             length.ok().and_then(|l| l.as_f64()).unwrap_or_default()
@@ -106,6 +115,13 @@ pub fn Tips() -> impl IntoView {
     let _ = window_event_listener(ev::mouseover, move |event| show(event.target()));
     let _ = window_event_listener(ev::focusin, move |event| show(event.target()));
     let _ = window_event_listener(ev::focusout, move |_| hide());
+    let _ = window_event_listener(ev::pointerdown, move |_| {
+        pressed.set_value(true);
+        hide();
+    });
+    let released = move |_| pressed.set_value(false);
+    let _ = window_event_listener(ev::pointerup, released);
+    let _ = window_event_listener(ev::pointercancel, released);
     let _ = window_event_listener(ev::keydown, move |event| {
         if event.key() == "Escape" {
             hide();

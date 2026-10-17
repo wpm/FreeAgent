@@ -1,7 +1,7 @@
-//! The page: a header, the chat beside the board, and a footer naming the
-//! commit the page was built from. Every part draws the [`Screen`]. In
-//! the browser the cues come from files; in the desktop app, from a game
-//! playing live.
+//! The page: a header, the chat beside the board, with a handle on the
+//! line between them, and a footer naming the commit the page was built
+//! from. Every part draws the [`Screen`]. In the browser the cues come
+//! from files; in the desktop app, from a game playing live.
 
 use std::time::Duration;
 
@@ -23,6 +23,7 @@ use crate::screen::{
     dots_due, entry, side_key,
 };
 use crate::settings::SettingsWindow;
+use crate::splitter::{Split, Splitter};
 use crate::tauri;
 
 /// How often a replay shows the next cue.
@@ -269,6 +270,7 @@ pub(crate) fn Viewer(
             None => name.into_any(),
         }
     });
+    let split = Split::default();
     let messages = Signal::derive(move || {
         let mut messages = posts.with(|posts| messages(posts));
         thinkers.with(|thinkers| {
@@ -302,7 +304,10 @@ pub(crate) fn Viewer(
                 {move || screen.with(|screen| screen.outcome.clone()).map(outcome)}
                 {children()}
             </header>
-            <main class="sd-main">
+            <main
+                class="sd-main"
+                style=move || format!("--sd-board-width: {}px", split.width())
+            >
                 <div class="sd-chat">
                     {move || failure.get().map(|error| view! { <p class="sd-error">{error}</p> })}
                     <Transcript
@@ -313,6 +318,7 @@ pub(crate) fn Viewer(
                         on_link=on_link
                     />
                 </div>
+                <Splitter split=split />
                 <aside class="sd-board">
                     {move || board.get().map(|board| view! { <AvalonBoard board=board /> })}
                     {move || {

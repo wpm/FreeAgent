@@ -3,10 +3,14 @@
 The viewer shows one Werewolf or Avalon game in God mode: a group chat
 beside a live board, with evil players speaking from the left, good players
 from the right, and the narrator in the center. Votes and selections flash
-onto the board as they land. It is a [Leptos](https://leptos.dev) page built
-on [Rich-Chat](https://github.com/wpm/Rich-Chat), drawn from the cues a
-game's log folds into. Werewolf's window is dark by night and light by day.
-Every push to `main` deploys a freshly played random game of each,
+onto the board as they land. Dragging the handle on the line between the
+chat and the board makes the board wider or narrower, as do the arrow keys
+once it has focus, Home takes it to its narrowest and End to its widest,
+and a double click puts it back. It is a
+[Leptos](https://leptos.dev) page built on
+[Rich-Chat](https://github.com/wpm/Rich-Chat), drawn from the cues a game's
+log folds into. Werewolf's window is dark by night and light by day. Every
+push to `main` deploys a freshly played random game of each,
 [Avalon](https://wpm.github.io/FreeAgent/viewer/#avalon) and
 [Werewolf](https://wpm.github.io/FreeAgent/viewer/#werewolf).
 

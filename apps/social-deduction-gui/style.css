@@ -110,12 +110,13 @@
   --sd-well: #1c1c1c;
 }
 
-/* The page */
+/* The page, which stays put when a scroll runs past its ends */
 
 html,
 body {
   margin: 0;
   height: 100%;
+  overscroll-behavior: none;
 }
 
 body {
@@ -272,10 +273,59 @@ body,
   text-decoration: none;
 }
 
+/* The board is as wide as its handle sets it. */
+
 .sd-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 22.5rem;
+  grid-template-columns: minmax(0, 1fr) 0 var(--sd-board-width);
   min-height: 0;
+}
+
+/* The handle is a 10px strip along the board's left line, on the board's
+   side, clear of the chat's scrollbar. Its grip sits on the line, an
+   outlined bar that fills with ink under the pointer. */
+
+.sd-splitter {
+  position: relative;
+  z-index: 1;
+  width: 10px;
+  margin-right: -10px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.sd-grip {
+  position: absolute;
+  top: 50%;
+  left: -3px;
+  width: 4px;
+  height: 2.5rem;
+  border: 1px solid var(--sd-ink);
+  border-radius: 3px;
+  background: var(--sd-paper);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.sd-splitter:hover .sd-grip,
+.sd-splitter:active .sd-grip {
+  background: var(--sd-ink);
+}
+
+.sd-splitter:focus-visible {
+  outline: none;
+}
+
+.sd-splitter:focus-visible .sd-grip {
+  outline: 2px solid var(--sd-ink);
+  outline-offset: 3px;
+}
+
+/* While the handle is dragged, the pointer selects no text. */
+
+.sd-dragging {
+  user-select: none;
 }
 
 .sd-chat {
@@ -415,6 +465,7 @@ body,
 
 .sd-board {
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 1.75rem;
   border-left: 1px solid var(--sd-ink);
   font-size: 15px;
@@ -781,6 +832,10 @@ body,
 
   .sd-main {
     grid-template-columns: 1fr;
+  }
+
+  .sd-splitter {
+    display: none;
   }
 
   .sd-chat {
@@ -1530,13 +1585,10 @@ body,
   display: none;
 }
 
-span[data-tip],
-div[data-tip],
-p[data-tip],
-h2[data-tip],
-h3[data-tip],
-h4[data-tip],
-label[data-tip] {
+/* Help takes the help cursor, and an element's own cursor, such as a
+   handle's, wins over it. */
+
+:where(span, div, p, h2, h3, h4, label):where([data-tip]) {
   cursor: help;
 }
 
