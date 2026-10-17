@@ -583,7 +583,7 @@ fn AvalonBoard(board: Board) -> impl IntoView {
                 .collect_view();
             view! {
                 <tr>
-                    <th>{format!("{}.{}", row.quest, row.proposal)}</th>
+                    <th>{format!("{}.{} ", row.quest, row.proposal)}{square(&board, &row.leader)}</th>
                     {ballots}
                     <td class="sd-verdict">{screen::verdict(row)}</td>
                 </tr>

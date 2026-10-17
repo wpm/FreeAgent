@@ -323,6 +323,17 @@ await section('avalon', async () => {
     rows.length > 0 && rows.every((row) => row.marks.length === row.seats && row.marks.every((mark) => ['✓', '×', ''].includes(mark))),
     `avalon: every vote row has one mark or blank per seat (${rows.length} rows)`,
   );
+  const leaders = await page.$$eval('.sd-votes', ([table]) => {
+    const seats = [...table.querySelectorAll('thead .sd-seat')].map((square) => square.textContent);
+    return [...table.querySelectorAll('tbody th')].map((header) => {
+      const squares = [...header.querySelectorAll('.sd-seat')].map((square) => square.textContent);
+      return { squares, seated: squares.every((number) => seats.includes(number)) };
+    });
+  });
+  check(
+    leaders.length > 0 && leaders.every((row) => row.squares.length === 1 && row.seated),
+    `avalon: every vote row names its leader by seat square (${JSON.stringify(leaders.map((row) => row.squares))})`,
+  );
   check(
     !(await page.evaluate(() => document.documentElement.hasAttribute('data-theme'))),
     'avalon: data-theme is unset',
