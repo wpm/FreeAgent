@@ -20,18 +20,21 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/wpm/FreeAgent/rele
 With a Rust toolchain, `cargo install --git https://github.com/wpm/FreeAgent social-deduction`
 builds it from source.
 
-A game is played from a configuration file. Each release archive holds a
-`configs/` directory beside the binary, with a table of random players and
-a table of prompted players for each game. The shell and PowerShell
-installers install the binary alone; take the configurations from the
-archive on the [release](https://github.com/wpm/FreeAgent/releases) or from
-[`apps/social-deduction/configs/`](configs) in the repository. From the
-root of an unpacked archive, or from `apps/social-deduction/` in a
-checkout:
+A game is played from a configuration file. The binary carries the example
+configurations, a table of random players and a table of prompted players
+for each game. `social-deduction configs` lists them, and
+`social-deduction configs --write .` writes them into the current
+directory, in a folder for each game, overwriting a file already there
+only when given `--force`:
 
 ```sh
-social-deduction play configs/werewolf/random.toml
+social-deduction configs --write .
+social-deduction play werewolf/random.toml
 ```
+
+The same files are in `configs/` in each release archive and in
+[`apps/social-deduction/configs/`](configs) in the repository; the
+commands below play them from there.
 
 The file's `game` key names the game it describes, `"werewolf"` or
 `"avalon"`, and `play` plays that game:

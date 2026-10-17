@@ -46,6 +46,9 @@ workflow takes a version's notes from here.
   cues, and the `stage` example, which folds a log file.
 - The release archives hold the example configurations in `configs/`,
   beside the binary.
+- `social-deduction configs` lists the example configurations the binary
+  carries, and `social-deduction configs --write .` writes them out to
+  play, so a binary installed alone has a game to play.
 - The `free-agent` library: episodes of actors that talk to each other by
   sending messages on the Tokio runtime.
 - `Episode::stopper`, a `Stopper` that ends a running episode from outside
