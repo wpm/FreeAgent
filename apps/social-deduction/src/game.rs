@@ -15,7 +15,8 @@
 //! observation of each receiver, which the receiver logs as a receipt
 //! naming the message by its sender and number.
 
-use crate::config::Configuration;
+use crate::config::{Configuration, Name};
+use crate::log::{Ended, Header};
 use crate::model::spec::Probed;
 use crate::model::{Model, ToolChoice};
 use crate::prompted::{self, Account};
@@ -50,6 +51,9 @@ impl<T: Clone + Debug + PartialEq + Serialize + DeserializeOwned + Send + Sync +
 pub trait Game: Debug + Clone + PartialEq + Send + Sync + 'static {
     /// The game's name, as a player is told it.
     const NAME: &'static str;
+    /// The game, as a configuration file's `game` key and a log's header
+    /// name it.
+    const KEY: Name;
     /// What a player is. The roles are ordered as they are dealt.
     type Role: Copy + Eq + Ord + Hash + Display + Carried;
     /// The sides, one of which wins.
@@ -289,12 +293,14 @@ impl<G: Game> Message<G> {
     }
 }
 
-/// What the log holds: the deal, the configuration, every message sent as
+/// What the log holds: each episode's header, the deal, the configuration,
+/// every message sent as
 /// the action of its sender and the observation of its receiver, each model
 /// call going out and coming back, the usage the provider reported for each
 /// model call, each choice a model player withheld because its phase had
 /// ended or was closing, each failure of a model player to act, and the
-/// game's own events, such as how each phase came out and the result.
+/// game's own events, such as how each phase came out and the result, and
+/// how the episode ended. The log's writer writes the header and the end.
 /// Every actor logs its own actions and observations: the environment logs
 /// the deal, the configuration and the game's events besides, and a player
 /// its calls, usages, what it withholds and its failures.
@@ -304,6 +310,9 @@ impl<G: Game> Message<G> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub enum Entry<G: Game> {
+    /// The first line of every episode, written by the log's
+    /// [`Writer`](crate::log::Writer) before the deal.
+    Header(Header),
     /// The game begins: who plays what, with which strategy, and how long
     /// each phase waits for the players. The limits are written as
     /// `humantime` writes them, such as `"60s"`.
@@ -417,6 +426,9 @@ pub enum Entry<G: Game> {
         /// What the provider reported, as sent.
         usage: serde_json::Value,
     },
+    /// How the episode's run came back, the last line of every episode,
+    /// written by the log's [`Writer`](crate::log::Writer).
+    Ended(Ended),
     /// An entry only this game has, written as the game writes it.
     #[serde(untagged)]
     Event(G::Event),

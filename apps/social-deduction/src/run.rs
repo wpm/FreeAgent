@@ -92,21 +92,26 @@ impl<G: Game> Ready<G> {
         (deal, configuration)
     }
 
-    /// An episode of this game, dealt afresh, logging to `logger`. Every
-    /// episode has the same seats and the same (role, strategy) pairs, and
-    /// asks the models as they were set up.
-    pub fn episode(&self, logger: Logger<Entry<G>>) -> Episode<Actor<G>> {
+    /// An episode of this game, dealt afresh, logging to `logger`, with
+    /// where the winning team comes once a side wins. Every episode has
+    /// the same seats and the same (role, strategy) pairs, and asks the
+    /// models as they were set up.
+    pub fn episode(
+        &self,
+        logger: Logger<Entry<G>>,
+    ) -> (Episode<Actor<G>>, oneshot::Receiver<G::Team>) {
         let (deal, configuration) = self.dealt();
         let players = config::players(&configuration, &deal, &self.handles);
-        let (winner, _) = oneshot::channel();
-        game::game(
+        let (winner, won) = oneshot::channel();
+        let episode = game::game(
             deal,
             self.settings.rules(),
             configuration,
             winner,
             players,
             logger,
-        )
+        );
+        (episode, won)
     }
 }
 
@@ -131,14 +136,13 @@ mod tests {
         std::fs::read_to_string(path).unwrap()
     }
 
-    /// Every entry `ready`'s episode logs as it plays to the end.
+    /// Every entry `ready`'s episode logs as it plays to the end, which a
+    /// side wins.
     async fn played<G: Game>(ready: Ready<G>) -> Vec<Entry<G>> {
         let (logger, mut log) = unbounded_channel();
-        ready
-            .episode(logger)
-            .run(Duration::from_secs(60 * 60))
-            .await
-            .unwrap();
+        let (episode, won) = ready.episode(logger);
+        episode.run(Duration::from_secs(60 * 60)).await.unwrap();
+        won.await.unwrap();
         let mut entries = Vec::new();
         while let Some(Event { payload, .. }) = log.recv().await {
             entries.push(payload);

@@ -1,5 +1,5 @@
 //! The viewer's recorded prompted games fold into the cues its screen
-//! check looks for.
+//! check looks for, and a log from before logs had a header still reads.
 
 use social_deduction_stage::{Beat, Cue, Outcome, Panel, WerewolfPhase};
 
@@ -78,6 +78,11 @@ fn the_prompted_werewolf_game_has_everything_the_screen_check_plays() {
         Beat::Panel(Panel::Werewolf(panel)) if !panel.nights.is_empty()
     )));
     assert!(won(&cues));
+}
+
+#[test]
+fn a_log_written_before_logs_had_a_header_reads_as_it_does_with_one() {
+    assert_eq!(folded("avalon-format-0"), folded("avalon-prompted"));
 }
 
 #[test]

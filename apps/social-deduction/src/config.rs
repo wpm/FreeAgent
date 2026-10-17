@@ -48,7 +48,7 @@ pub enum Settled {
 }
 
 /// A game, as a configuration file's `game` key names it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Name {
     /// `"werewolf"`.
@@ -73,6 +73,16 @@ impl Name {
             Name::Werewolf => Werewolf::check_plays(model, model_id, from).await,
             Name::Avalon => Avalon::check_plays(model, model_id, from).await,
         }
+    }
+}
+
+impl fmt::Display for Name {
+    /// The game as its `game` key names it.
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            Name::Werewolf => "werewolf",
+            Name::Avalon => "avalon",
+        })
     }
 }
 
@@ -750,6 +760,16 @@ mod tests {
             Name::Avalon => 1,
         };
         assert_eq!(Name::ALL.map(place), [0, 1]);
+    }
+
+    #[test]
+    fn a_game_is_shown_as_its_key_names_it() {
+        for name in Name::ALL {
+            let key = format!("\"{name}\"");
+            assert_eq!(serde_json::to_string(&name).unwrap(), key);
+            let read: Name = serde_json::from_str(&key).unwrap();
+            assert_eq!(read, name);
+        }
     }
 
     #[test]

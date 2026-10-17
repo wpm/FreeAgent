@@ -165,7 +165,7 @@ where
     Actor<G>: 'static,
 {
     let (logger, events) = unbounded_channel();
-    let episode = ready.episode(logger);
+    let (episode, _) = ready.episode(logger);
     let stopper = episode.stopper();
     let run = tokio::spawn(episode.run(PATIENCE));
     let reader = Reader {
@@ -282,7 +282,7 @@ mod tests {
         Actor<G>: 'static,
     {
         let (logger, mut log) = unbounded_channel();
-        let episode = ready.episode(logger);
+        let (episode, _) = ready.episode(logger);
         let stopper = episode.stopper();
         let run = tokio::spawn(episode.run(PATIENCE));
         let (forward, events) = unbounded_channel();

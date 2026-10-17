@@ -47,7 +47,16 @@ for training data. The models are set up once, and every episode deals the
 same roles and strategies to the same players in a new random order, a role
 and its strategy together, so a player's name and seat say nothing about
 their role. Each episode logs under an episode ID of its own, in one JSON
-Lines stream, and its account follows the one before it after a blank line. A file is checked whole before the game begins: a
+Lines stream, and its account follows the one before it after a blank line.
+
+Each episode's log opens with a `Header`, naming the log's `format`, the
+`version` of `social-deduction` that wrote it and the `game`, and closes
+with `Ended`: `"won"`, `"stopped"`, or `{"failed": error}` with the error
+and its causes. An episode with no `Ended` line was cut off. The format
+number goes up whenever the log's shape changes. A log with no header was
+written before logs had one, and reads as format 0.
+
+A file is checked whole before the game begins: a
 missing or unknown `game`, a setting of the other game's or any other key
 the game does not know, a TOML syntax error, or settings that do not fit
 together stop the program with `invalid configuration file` and the cause,
@@ -97,7 +106,7 @@ social-deduction play configs/werewolf/prompted.toml
 ```
 
 A setting comes from the file if it is given there, otherwise from a
-default in the code. The log's second entry is
+default in the code. The log's entry after the deal is
 the configuration as it took effect: the version of `social-deduction`
 that played the game, the role counts and limits, every
 strategy as written, the allotments, each model in play with what was
@@ -447,7 +456,7 @@ file, otherwise the code. The roles' tables are
 `[roles.oberon]` and `[roles.minion]`. `[phases]` takes `propose_limit`,
 `vote_limit`, `quest_limit` and `assassinate_limit`, a minute each unless
 they say. Once the counts settle, the table is checked as above. The log's
-second entry is the configuration as it took effect, as in Werewolf.
+entry after the deal is the configuration as it took effect, as in Werewolf.
 [`configs/avalon/random.toml`](configs/avalon/random.toml) allots every
 role to `random`, with no models:
 
