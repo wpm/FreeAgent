@@ -14,10 +14,8 @@ dist = false
 
 [dependencies]
 leptos = { version = "0.8", features = ["csr"] }
-# Temporarily pinned to Rich Chat main, ahead of its next release, for the
-# name over a bubble and a Look's custom properties (#369). Game talk needs
-# no code highlighting or math fonts.
-leptos-rich-chat = { git = "https://github.com/wpm/Rich-Chat", rev = "36833620c71db59a5269c7aef804c7672b5d2e5c", default-features = false }
+# Game talk needs no code highlighting or math fonts.
+leptos-rich-chat = { version = "0.2.0", default-features = false }
 social-deduction-stage = { path = "../social-deduction-stage" }
 console_error_panic_hook = "0.1"
 serde.workspace = true
