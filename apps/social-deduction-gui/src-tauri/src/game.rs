@@ -13,7 +13,7 @@ use tauri::{State, async_runtime};
 /// Play a game of `game` under the settings, its cues sent down `cues`,
 /// as [`Session::play`] does, from the configuration the settings make,
 /// as `social-deduction play` would play it, with its keys from the
-/// keychain. The game is chosen to play next time. Settings with an error are not played.
+/// keychain. Settings with an error are not played.
 #[tauri::command]
 pub async fn play(
     session: State<'_, Session>,
@@ -21,7 +21,7 @@ pub async fn play(
     game: GameName,
     cues: Channel<Cue>,
 ) -> Result<(), String> {
-    let snapshot = store.change(|held| held.general.game = game);
+    let snapshot = store.snapshot();
     if let Some(error) = snapshot.settings.first_error(game, &snapshot.errors) {
         return Err(error.message);
     }

@@ -9,8 +9,9 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_rich_chat::{Message, RenderOptions, RichChatStyle, Transcript};
+use social_deduction_stage::settings::label;
 use social_deduction_stage::{
-    Cue, Deed, GameName, NightDeed, Outcome, Side, WerewolfPanel, WerewolfPhase,
+    Cue, Deed, GameName, NightDeed, Outcome, Seat, Side, WerewolfPanel, WerewolfPhase,
 };
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -18,8 +19,8 @@ use wasm_bindgen_futures::JsFuture;
 use crate::address::{Address, GAMES};
 use crate::desktop::{Desktop, set_theme};
 use crate::screen::{
-    self, Board, Body, Landed, NARRATOR, Post, Screen, THINKING_DELAY, Thinker, Timer, dots_due,
-    entry, role_key,
+    self, Board, Body, Landed, NARRATOR, Post, Screen, SeatMark, THINKING_DELAY, Thinker, Timer,
+    dots_due, entry, side_key,
 };
 use crate::settings::SettingsWindow;
 use crate::tauri;
@@ -135,7 +136,7 @@ fn Web() -> impl IntoView {
                     })
                     .collect_view()}
             </nav>
-            <button on:click=play>
+            <button class="sd-primary" on:click=play>
                 {move || if replayed.get() { "Replay" } else { "Play" }}
             </button>
         </Viewer>
@@ -261,6 +262,13 @@ pub(crate) fn Viewer(
     let running = Memo::new(move |_| screen.with(|screen| screen.clock.running));
     // Every thinker's dots share one text, which stays empty.
     let silence = RwSignal::new(String::new());
+    // The line over a player's bubbles; the narrator's is the name, hidden.
+    let sender = Callback::new(move |name: String| {
+        match screen.with_untracked(|screen| screen.seat(&name)) {
+            Some(seat) => view! { <SenderLine seat=seat /> }.into_any(),
+            None => name.into_any(),
+        }
+    });
     let messages = Signal::derive(move || {
         let mut messages = posts.with(|posts| messages(posts));
         thinkers.with(|thinkers| {
@@ -275,7 +283,9 @@ pub(crate) fn Viewer(
             <header class="sd-header">
                 <h1>{move || screen.with(|screen| game_name(screen.game))}</h1>
                 <p class="sd-phase">
-                    {move || screen.with(|screen| screen.heading.clone())}
+                    <span class="sd-phase-name">
+                        {move || screen.with(|screen| screen.heading.clone())}
+                    </span>
                     {move || timer.get().map(|timer| view! { <PhaseClock timer=timer now=now /> })}
                     {move || {
                         closing
@@ -295,7 +305,13 @@ pub(crate) fn Viewer(
             <main class="sd-main">
                 <div class="sd-chat">
                     {move || failure.get().map(|error| view! { <p class="sd-error">{error}</p> })}
-                    <Transcript messages=messages show_names=true options=options on_link=on_link />
+                    <Transcript
+                        messages=messages
+                        show_names=true
+                        sender=sender
+                        options=options
+                        on_link=on_link
+                    />
                 </div>
                 <aside class="sd-board">
                     {move || board.get().map(|board| view! { <AvalonBoard board=board /> })}
@@ -363,7 +379,7 @@ fn PhaseClock(timer: Timer, now: Signal<f64>) -> impl IntoView {
     view! {
         <span class="sd-clock">
             <Countdown timer=timer now=now />
-            <span>{move || format!("{}s", seconds(timer, now).get())}</span>
+            <span>{move || screen::clock(seconds(timer, now).get())}</span>
         </span>
     }
 }
@@ -403,16 +419,9 @@ fn game_name(game: Option<GameName>) -> &'static str {
 /// How the game ended, in the winning side's color.
 fn outcome(outcome: Outcome) -> impl IntoView {
     let (class, text) = match outcome {
-        Outcome::Won {
-            side: Side::Good,
-            how,
-        } => ("sd-outcome sd-good", how),
-        Outcome::Won {
-            side: Side::Evil,
-            how,
-        } => ("sd-outcome sd-evil", how),
-        Outcome::Stopped => ("sd-outcome", "Stopped.".to_string()),
-        Outcome::Failed(error) => ("sd-outcome", format!("Failed: {error}")),
+        Outcome::Won { side, how } => (format!("sd-outcome sd-{}", side_key(side)), how),
+        Outcome::Stopped => ("sd-outcome".to_string(), "Stopped.".to_string()),
+        Outcome::Failed(error) => ("sd-outcome".to_string(), format!("Failed: {error}")),
     };
     view! { <p class=class>{text}</p> }
 }
@@ -430,45 +439,47 @@ fn footer() -> impl IntoView {
     }
 }
 
-/// `player` as the board writes it: `Player 3` is `P3`.
-fn short(player: &str) -> String {
-    player.replace("Player ", "P")
+/// A seat square: the seat number on its side's color, faded and struck
+/// through once the player is `out`.
+#[component]
+pub(crate) fn SeatSquare(mark: SeatMark, #[prop(optional)] out: bool) -> impl IntoView {
+    let class = mark.class(out);
+    view! { <span class=class>{mark.number}</span> }
 }
 
-/// The custom properties that give `player`'s role colors to a flash.
-fn chooser<P>(board: &Board<P>, player: &str) -> String {
-    board
-        .seat(player)
-        .map(|seat| {
-            let role = role_key(seat.role);
-            format!(
-                "--sd-chooser-bg: var(--role-{role}-bg); --sd-chooser-fg: var(--role-{role}-fg);"
-            )
-        })
-        .unwrap_or_default()
-}
-
-/// The style of a swatch in `player`'s role colors.
-fn swatch<P>(board: &Board<P>, player: &str) -> String {
-    board
-        .seat(player)
-        .map(|seat| {
-            let role = role_key(seat.role);
-            format!("background: var(--role-{role}-bg); border-color: var(--role-{role}-fg);")
-        })
-        .unwrap_or_default()
-}
-
-/// Whether `choice`, which `player` made, is landing, and the style that
-/// flashes it in `player`'s colors when it is.
-fn flash<P>(board: &Board<P>, choice: &Landed, player: &str) -> (bool, String) {
-    let landing = board.is_landed(choice);
-    let style = if landing {
-        chooser(board, player)
-    } else {
-        String::new()
+/// The line over a player's bubbles: their name and role, with their seat
+/// square on the speaker's edge. The square is in `--side-fill` and only
+/// decorates, since the name holds the number; a screen reader reads
+/// "Player 6, Seer".
+#[component]
+fn SenderLine(seat: Seat) -> impl IntoView {
+    let number = screen::seat_number(&seat.name).to_string();
+    let square = |number: String| {
+        view! { <span class="sd-seat" aria-hidden="true">{number}</span> }
     };
-    (landing, style)
+    let evil = seat.role.side() == Side::Evil;
+    view! {
+        {evil.then(|| square(number.clone()))}
+        <span class="sd-sender-player">{seat.name}</span>
+        <span class="sd-unseen">", "</span>
+        <span class="sd-sender-role">{label(&seat.role.to_string())}</span>
+        {(!evil).then(|| square(number))}
+    }
+}
+
+/// `player`'s seat square on `board`.
+fn square<P>(board: &Board<P>, player: &str) -> Option<impl IntoView + use<P>> {
+    board
+        .mark(player)
+        .map(|mark| view! { <SeatSquare mark=mark /> })
+}
+
+/// `player`'s seat square and name on `board`, the player `out` or not.
+fn named<P>(board: &Board<P>, player: &str, out: bool) -> impl IntoView + use<P> {
+    view! {
+        {board.mark(player).map(|mark| view! { <SeatSquare mark=mark out=out /> })}
+        <span class="sd-name">{player.to_string()}</span>
+    }
 }
 
 /// The Avalon board: the quests, the rejected proposals, the team on the
@@ -489,16 +500,19 @@ fn AvalonBoard(board: Board) -> impl IntoView {
         .map(|(index, token)| {
             let current = usize::from(panel.quest) == index + 1 && token.result.is_none();
             let (state, mark) = match &token.result {
-                Some(result) if result.succeeded => (" sd-succeeded", "✓".to_string()),
-                Some(result) => (" sd-failed", result.sabotages.to_string()),
-                None => ("", token.size.to_string()),
+                Some(result) if result.succeeded => ("sd-succeeded", "✓".to_string()),
+                Some(result) => ("sd-failed", result.sabotages.to_string()),
+                None => (
+                    if current { "sd-current" } else { "sd-later" },
+                    token.size.to_string(),
+                ),
             };
-            let class = format!(
-                "sd-token{state}{}",
-                if current { " sd-current" } else { "" }
-            );
-            let fails = (token.sabotages_needed == 2).then(|| view! { <small>"2 fail"</small> });
-            view! { <div class=class><span>{mark}</span>{fails}</div> }
+            view! {
+                <div class=format!("sd-quest {state}")>
+                    <span class="sd-token">{mark}</span>
+                    <span class="sd-caption">{screen::quest_caption(token, current)}</span>
+                </div>
+            }
         })
         .collect_view();
 
@@ -515,36 +529,34 @@ fn AvalonBoard(board: Board) -> impl IntoView {
         })
         .collect_view();
 
-    let team = panel.team.clone().unwrap_or_default();
-    let (by_team, team_style) = flash(&board, &Landed::Team, &panel.leader);
-    let chips = team
-        .iter()
-        .map(|member| {
-            let deed = entry(&panel.deeds, member).map(|deed| match deed {
-                Deed::Support => " ✓",
-                Deed::Sabotage => " ✗",
-            });
-            let (by_deed, deed_style) = flash(&board, &Landed::Deed(member.clone()), member);
-            let class = landed_class("sd-chip", by_deed || by_team);
-            let style = if by_deed {
-                deed_style
-            } else {
-                team_style.clone()
-            };
-            view! {
-                <span class=class style=style>
-                    <span class="sd-swatch" style=swatch(&board, member)></span>
-                    {member.clone()}
-                    {deed}
-                </span>
-            }
-        })
-        .collect_view();
+    let by_team = board.is_landed(&Landed::Team);
+    let team = panel.team.as_ref().map(|team| {
+        let members = team
+            .iter()
+            .map(|member| {
+                let deed = entry(&panel.deeds, member).map(|deed| match deed {
+                    Deed::Support => " ✓",
+                    Deed::Sabotage => " ×",
+                });
+                let by_deed = board.is_landed(&Landed::Deed(member.clone()));
+                view! {
+                    <span class=landed_class("sd-member", by_deed || by_team)>
+                        {named(&board, member, false)}
+                        {deed}
+                    </span>
+                }
+            })
+            .collect_view();
+        view! {
+            <dt>"team"</dt>
+            <dd>{members}</dd>
+        }
+    });
 
     let header = panel
         .seats
         .iter()
-        .map(|seat| view! { <th>{short(&seat.name)}</th> })
+        .map(|seat| view! { <th>{square(&board, &seat.name)}</th> })
         .collect_view();
     let rows = panel
         .proposals
@@ -557,7 +569,7 @@ fn AvalonBoard(board: Board) -> impl IntoView {
                     let seat = &seat.name;
                     let mark = match entry(&row.ballots, seat) {
                         Some(true) => "✓",
-                        Some(false) => "✗",
+                        Some(false) => "×",
                         None => "",
                     };
                     let landed = Landed::Ballot {
@@ -565,19 +577,17 @@ fn AvalonBoard(board: Board) -> impl IntoView {
                         proposal: row.proposal,
                         player: seat.clone(),
                     };
-                    let (landing, style) = flash(&board, &landed, seat);
-                    let class = landed_class("", landing);
-                    view! { <td class=class style=style>{mark}</td> }
+                    let class = landed_class("sd-ballot", board.is_landed(&landed));
+                    view! { <td class=class>{mark}</td> }
                 })
                 .collect_view();
-            let result = match (row.approved, &row.result) {
-                (Some(false), _) => "no",
-                (Some(true), Some(result)) if result.succeeded => "passed",
-                (Some(true), Some(_)) => "failed",
-                _ => "…",
-            };
-            let name = format!("{}.{} · {}", row.quest, row.proposal, short(&row.leader));
-            view! { <tr><th>{name}</th>{ballots}<td>{result}</td></tr> }
+            view! {
+                <tr>
+                    <th>{format!("{}.{} ", row.quest, row.proposal)}{square(&board, &row.leader)}</th>
+                    {ballots}
+                    <td class="sd-verdict">{screen::verdict(row)}</td>
+                </tr>
+            }
         })
         .collect_view();
 
@@ -591,17 +601,16 @@ fn AvalonBoard(board: Board) -> impl IntoView {
                 .find(|board| board.name == seat.name)
                 .filter(|board| !board.sees.is_empty())
                 .map(|board| {
-                    let seen: Vec<String> = board
+                    let seen: Vec<&str> = board
                         .sees
                         .iter()
-                        .map(|player| player.replace("Player ", ""))
+                        .map(|player| screen::seat_number(player))
                         .collect();
                     format!(", sees {}", seen.join(", "))
                 });
             view! {
                 <li>
-                    <span class="sd-swatch" style=swatch(&board, &seat.name)></span>
-                    <span>{seat.name.clone()}</span>
+                    {named(&board, &seat.name, false)}
                     <span class="sd-detail">
                         {format!("{}, {}", seat.role, seat.strategy)}
                         {sees}
@@ -612,14 +621,13 @@ fn AvalonBoard(board: Board) -> impl IntoView {
         .collect_view();
 
     let assassination = panel.assassination.clone().map(|shot| {
-        let (landing, style) = flash(&board, &Landed::Target, &shot.assassin);
+        let landing = board.is_landed(&Landed::Target);
         let target = shot.target.clone().unwrap_or_else(|| "…".to_string());
         let verdict = shot
             .merlin
             .map(|merlin| if merlin { ": Merlin" } else { ": not Merlin" });
-        let class = landed_class("sd-assassination", landing);
         view! {
-            <div class=class style=style>
+            <div class=landed_class("sd-assassination", landing)>
                 {format!("{} names {target}", shot.assassin)}
                 {verdict}
             </div>
@@ -630,10 +638,15 @@ fn AvalonBoard(board: Board) -> impl IntoView {
         <h2>"Quests"</h2>
         <div class="sd-quests">{quests}</div>
         <h2>"Rejected proposals"</h2>
-        <div class="sd-pips">{pips}</div>
+        <div class="sd-pips">{pips}<span class="sd-aside">"the fifth hands evil the game"</span></div>
         <h2>"On the table"</h2>
-        <p class="sd-leader">{format!("♛ {} leads", panel.leader)}</p>
-        <div class="sd-chips">{chips}</div>
+        <dl class="sd-table">
+            <dt>"leader"</dt>
+            <dd>
+                <span class="sd-member">{named(&board, &panel.leader, false)}</span>
+            </dd>
+            {team}
+        </dl>
         <h2>"Votes so far"</h2>
         <div class="sd-votes-scroll">
             <table class="sd-votes">
@@ -666,8 +679,11 @@ fn WerewolfBoard(board: Board<WerewolfPanel>, now: Signal<f64>) -> impl IntoView
 
     let decision = board.decision().map(|decision| {
         let timer = decision.timer;
-        let chosen = decision.target.clone().unwrap_or_default();
-        let (landing, style) = flash(&board, &Landed::Ratify, &chosen);
+        let landing = board.is_landed(&Landed::Ratify);
+        let target = decision
+            .target
+            .as_deref()
+            .and_then(|target| square(&board, target));
         // A stopped decision's label never changes, so it needs no clock.
         let text = match timer.stopped {
             Some(_) => Signal::stored(decision.label(0.0)),
@@ -675,8 +691,8 @@ fn WerewolfBoard(board: Board<WerewolfPanel>, now: Signal<f64>) -> impl IntoView
         };
         view! {
             <h2>"Tentative decision"</h2>
-            <div class=landed_class("sd-decision", landing) style=style>
-                <span>{text}</span>
+            <div class=landed_class("sd-decision", landing)>
+                <p>{target}<span>{text}</span></p>
                 <Countdown timer=timer now=now />
             </div>
         }
@@ -687,31 +703,38 @@ fn WerewolfBoard(board: Board<WerewolfPanel>, now: Signal<f64>) -> impl IntoView
             .votes
             .iter()
             .map(|(player, target)| {
-                let (landing, style) = flash(&board, &Landed::Vote(player.clone()), player);
+                let landing = board.is_landed(&Landed::Vote(player.clone()));
+                let target = match target {
+                    Some(target) => view! { "→" {square(&board, target)} }.into_any(),
+                    None => view! { "—" }.into_any(),
+                };
                 view! {
-                    <li class=landed_class("sd-row", landing) style=style>
-                        <span class="sd-swatch" style=swatch(&board, player)></span>
-                        {screen::vote(player, target.as_deref())}
+                    <li class=landed_class("sd-vote", landing)>
+                        {square(&board, player)}
+                        {target}
                     </li>
                 }
             })
             .collect_view();
-        let chips = board
+        let voters = panel.votes.len().max(1) as f64;
+        let tally = board
             .tally()
             .into_iter()
             .map(|(target, count)| {
+                let width = format!("width: calc((100% - 4rem) * {:.3})", count as f64 / voters);
                 view! {
-                    <span class="sd-chip">
-                        <span class="sd-swatch" style=swatch(&board, &target)></span>
-                        {format!("{target} · {count}")}
-                    </span>
+                    <div class="sd-count">
+                        {square(&board, &target)}
+                        <span class="sd-bar" style=width></span>
+                        <span>{count}</span>
+                    </div>
                 }
             })
             .collect_view();
         view! {
             <h2>"The vote"</h2>
-            <ul class="sd-rows">{rows}</ul>
-            <div class="sd-chips">{chips}</div>
+            <ul class="sd-vote-grid">{rows}</ul>
+            <div class="sd-tally">{tally}</div>
         }
     });
 
@@ -730,10 +753,10 @@ fn WerewolfBoard(board: Board<WerewolfPanel>, now: Signal<f64>) -> impl IntoView
                         .map(|learned| format!("· {}", learned.role)),
                     _ => None,
                 };
-                let (landing, style) = flash(&board, &Landed::Night(player.clone()), player);
+                let landing = board.is_landed(&Landed::Night(player.clone()));
                 view! {
-                    <li class=landed_class("sd-row", landing) style=style>
-                        <span class="sd-swatch" style=swatch(&board, player)></span>
+                    <li class=landed_class("sd-row", landing)>
+                        {square(&board, player)}
                         {screen::deed(player, deed)}
                         <span class="sd-detail">{learned}</span>
                     </li>
@@ -755,13 +778,13 @@ fn WerewolfBoard(board: Board<WerewolfPanel>, now: Signal<f64>) -> impl IntoView
                 .iter()
                 .find(|state| state.name == seat.name)
                 .and_then(|state| state.died);
-            let (landing, style) = flash(&board, &Landed::Death(seat.name.clone()), &seat.name);
+            let landing = board.is_landed(&Landed::Death(seat.name.clone()));
             let class = landed_class(if died.is_some() { "sd-dead" } else { "" }, landing);
+            let out = died.is_some();
             let died = died.map(|died| format!(", {}", screen::death(&died)));
             view! {
-                <li class=class style=style>
-                    <span class="sd-swatch" style=swatch(&board, &seat.name)></span>
-                    <span class="sd-name">{seat.name.clone()}</span>
+                <li class=class>
+                    {named(&board, &seat.name, out)}
                     <span class="sd-detail">
                         {format!("{}, {}", seat.role, seat.strategy)}
                         {died}
@@ -778,13 +801,17 @@ fn WerewolfBoard(board: Board<WerewolfPanel>, now: Signal<f64>) -> impl IntoView
         .map(|(seer, learned)| {
             let lines = learned
                 .iter()
-                .map(|learned| view! { <li>{screen::learned(learned)}</li> })
+                .map(|learned| {
+                    view! {
+                        <li>
+                            {screen::learned(learned)}
+                            <span class="sd-when">{format!(" · night {}", learned.night)}</span>
+                        </li>
+                    }
+                })
                 .collect_view();
             view! {
-                <p class="sd-seer">
-                    <span class="sd-swatch" style=swatch(&board, seer)></span>
-                    {seer.clone()}
-                </p>
+                <p class="sd-seer">{named(&board, seer, false)}</p>
                 <ul class="sd-rows">{lines}</ul>
             }
         })
@@ -799,7 +826,15 @@ fn WerewolfBoard(board: Board<WerewolfPanel>, now: Signal<f64>) -> impl IntoView
         let lines = panel
             .nights
             .iter()
-            .map(|night| view! { <li>{screen::night(night)}</li> })
+            .map(|night| {
+                view! {
+                    <li>
+                        <b class="sd-number">{night.night}</b>
+                        " "
+                        {screen::night(night)}
+                    </li>
+                }
+            })
             .collect_view();
         view! {
             <h2>"Nights"</h2>

@@ -8,7 +8,7 @@
 use leptos_rich_chat::{Look, Names, Position};
 use social_deduction_stage::{
     AvalonPanel, Beat, Cue, Death, GameName, Learned, Millis, NightDeed, NightOutcome, Outcome,
-    Panel, PlayerId, Role, Seat, Side, WerewolfPanel, WerewolfPhase,
+    Panel, PlayerId, ProposalRow, QuestToken, Seat, Side, WerewolfPanel, WerewolfPhase,
 };
 
 /// The name narration is posted under, centered between the sides.
@@ -220,8 +220,12 @@ impl Screen {
                 self.names = names(seats);
             }
             Beat::Heading(text) => {
-                self.heading = Some(text.clone());
-                self.post(NARRATOR.to_string(), Body::Heading(text.clone()));
+                let (title, rest) = chapter(text);
+                self.heading = Some(title.clone());
+                self.post(NARRATOR.to_string(), Body::Heading(title));
+                if let Some(rest) = rest {
+                    self.post(NARRATOR.to_string(), Body::Text(rest));
+                }
             }
             Beat::Told(lines) => self.post(NARRATOR.to_string(), Body::Text(lines.join("  \n"))),
             Beat::Said { who, text } => self.post(self.label(who), Body::Text(text.clone())),
@@ -378,6 +382,12 @@ impl Screen {
         }
     }
 
+    /// The seat of the player whose label is `label`, or `None` for a
+    /// name that is not a player's.
+    pub fn seat(&self, label: &str) -> Option<Seat> {
+        self.seats.iter().find(|seat| seat.label == label).cloned()
+    }
+
     /// `player`'s label, or the name alone before the cast.
     fn label(&self, player: &str) -> String {
         self.seats
@@ -411,9 +421,39 @@ impl<P> Board<P> {
         self.landed.contains(choice)
     }
 
-    /// The seat of `player`.
-    pub fn seat(&self, player: &str) -> Option<&Seat> {
-        self.seats.iter().find(|seat| seat.name == player)
+    /// The seat square of `player`.
+    pub fn mark(&self, player: &str) -> Option<SeatMark> {
+        self.seats
+            .iter()
+            .find(|seat| seat.name == player)
+            .map(SeatMark::of)
+    }
+}
+
+/// A seat square: a small square in its side's color holding the seat
+/// number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatMark {
+    /// The seat number: `3` for `Player 3`.
+    pub number: String,
+    /// The side whose color fills it.
+    pub side: Side,
+}
+
+impl SeatMark {
+    /// The square of `seat`.
+    pub fn of(seat: &Seat) -> Self {
+        Self {
+            number: seat_number(&seat.name).to_string(),
+            side: seat.role.side(),
+        }
+    }
+
+    /// Its classes: `sd-seat sd-evil`, and `sd-out` for a player who is
+    /// out.
+    pub fn class(&self, out: bool) -> String {
+        let class = format!("sd-seat sd-{}", side_key(self.side));
+        if out { class + " sd-out" } else { class }
     }
 }
 
@@ -481,14 +521,6 @@ impl Decision {
     }
 }
 
-/// A day's vote row: `Player 1 → Player 6`, or `Player 1 · undecided`.
-pub fn vote(player: &str, target: Option<&str>) -> String {
-    match target {
-        Some(target) => format!("{player} → {target}"),
-        None => format!("{player} · undecided"),
-    }
-}
-
 /// A night role's row: `Player 4 · kill → Player 3`, or
 /// `Player 4 · choosing…` while it chooses.
 pub fn deed(player: &str, deed: &NightDeed) -> String {
@@ -518,26 +550,69 @@ pub fn death(death: &Death) -> String {
     }
 }
 
-/// What a seer learned: `Player 6 is a werewolf · night 1`.
+/// What a seer learned: `Player 6 is a werewolf`.
 pub fn learned(learned: &Learned) -> String {
-    format!(
-        "{} is a {} · night {}",
-        learned.player, learned.role, learned.night
-    )
+    format!("{} is a {}", learned.player, learned.role)
 }
 
-/// How a night turned out: `2 · wolves chose Player 2, who died`, or
-/// `1 · wolves chose Player 3, protected by Player 1`.
+/// How a night turned out: `Wolves chose Player 2, who died`, or
+/// `Wolves chose Player 3, protected by Player 1`.
 pub fn night(night: &NightOutcome) -> String {
-    let what = match (&night.victim, &night.died) {
-        (None, _) => "wolves chose nobody".to_string(),
-        (Some(victim), Some(_)) => format!("wolves chose {victim}, who died"),
+    match (&night.victim, &night.died) {
+        (None, _) => "Wolves chose nobody".to_string(),
+        (Some(victim), Some(_)) => format!("Wolves chose {victim}, who died"),
         (Some(victim), None) => format!(
-            "wolves chose {victim}, protected by {}",
+            "Wolves chose {victim}, protected by {}",
             night.protected_by.join(" and ")
         ),
+    }
+}
+
+/// `player`'s seat number: `3` for `Player 3`.
+pub fn seat_number(player: &str) -> &str {
+    player.trim_start_matches("Player ")
+}
+
+/// Seconds as a clock shows them: `0:53`.
+pub fn clock(seconds: u64) -> String {
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+/// A heading's title, its first sentence, and the rest of it, told under
+/// it: `Quest 3, proposal 2 of 5. Player 4 leads.` is `Quest 3 · proposal
+/// 2 of 5` over `Player 4 leads.`
+pub fn chapter(heading: &str) -> (String, Option<String>) {
+    let (title, rest) = heading.split_once(". ").unwrap_or((heading, ""));
+    let title = title.trim_end_matches('.').replace(", ", " · ");
+    let rest = rest.trim();
+    (title, (!rest.is_empty()).then(|| rest.to_string()))
+}
+
+/// What a quest's square says under it: `3 seats`, `now` for the quest
+/// underway, and on a line of its own, how many sabotages fail a quest
+/// that needs more than one.
+pub fn quest_caption(token: &QuestToken, current: bool) -> String {
+    let caption = if current {
+        "now".to_string()
+    } else {
+        format!("{} seats", token.size)
     };
-    format!("{} · {what}", night.night)
+    match token.sabotages_needed {
+        1 => caption,
+        needed => format!("{caption}\n{needed} fails"),
+    }
+}
+
+/// How a proposal went: `voting`, `rejected`, `approved`, `quest failed`
+/// or `quest succeeded`.
+pub fn verdict(row: &ProposalRow) -> &'static str {
+    match (row.approved, &row.result) {
+        (None, _) => "voting",
+        (Some(false), _) => "rejected",
+        (Some(true), None) => "approved",
+        (Some(true), Some(result)) if result.succeeded => "quest succeeded",
+        (Some(true), Some(_)) => "quest failed",
+    }
 }
 
 /// `player`'s choice in `entries`, if made.
@@ -549,7 +624,9 @@ pub fn entry<T: Copy>(entries: &[(PlayerId, Option<T>)], player: &str) -> Option
 }
 
 /// The names table for `seats`: evil on the left and good on the right,
-/// each in its role's colors, and the narrator centered and muted.
+/// every bubble unfilled in ink, and the narrator centered and muted.
+/// Each player's messages carry their side's colors, `--side` for text
+/// and `--side-fill` for a square, for the stylesheet to read.
 fn names(seats: &[Seat]) -> Names {
     let narrator = Look::at(Position::Center)
         .background("transparent")
@@ -557,33 +634,25 @@ fn names(seats: &[Seat]) -> Names {
     seats
         .iter()
         .fold(Names::none().name(NARRATOR, narrator), |names, seat| {
-            let position = match seat.side {
+            let position = match seat.role.side() {
                 Side::Evil => Position::Left,
                 Side::Good => Position::Right,
             };
-            let role = role_key(seat.role);
+            let side = side_key(seat.role.side());
             let look = Look::at(position)
-                .background(format!("var(--role-{role}-bg)"))
-                .foreground(format!("var(--role-{role}-fg)"));
+                .background("transparent")
+                .foreground("var(--rc-fg)")
+                .property("--side", format!("var(--sd-{side}-text)"))
+                .property("--side-fill", format!("var(--sd-{side})"));
             names.name(seat.label.clone(), look)
         })
 }
 
-/// `role` as the stylesheet's custom properties name it: `--role-seer-bg`.
-pub fn role_key(role: Role) -> &'static str {
-    match role {
-        Role::Villager => "villager",
-        Role::Seer => "seer",
-        Role::Doctor => "doctor",
-        Role::Werewolf => "werewolf",
-        Role::Merlin => "merlin",
-        Role::Percival => "percival",
-        Role::Servant => "servant",
-        Role::Assassin => "assassin",
-        Role::Morgana => "morgana",
-        Role::Mordred => "mordred",
-        Role::Oberon => "oberon",
-        Role::Minion => "minion",
+/// `side` as the stylesheet's custom properties name it: `--sd-evil`.
+pub fn side_key(side: Side) -> &'static str {
+    match side {
+        Side::Good => "good",
+        Side::Evil => "evil",
     }
 }
 
@@ -671,7 +740,8 @@ pub fn werewolf_landings(before: Option<&WerewolfPanel>, after: &WerewolfPanel) 
 mod tests {
     use super::*;
     use social_deduction_stage::{
-        Assassination, AvalonPhase, AvalonSeat, Deed, ProposalRow, QuestToken, Ratify, SeatState,
+        Assassination, AvalonPhase, AvalonSeat, Deed, ProposalRow, QuestResult, QuestToken, Ratify,
+        Role, SeatState,
     };
 
     /// `beat` at time 0.
@@ -679,13 +749,12 @@ mod tests {
         Cue { at: 0, beat }
     }
 
-    /// A seat of `role` on `side`.
-    fn seat(name: &str, role: Role, side: Side) -> Seat {
+    /// A seat of `role`.
+    fn seat(name: &str, role: Role) -> Seat {
         Seat {
             name: name.to_string(),
             label: format!("{name} · {role}"),
             role,
-            side,
             strategy: "random".to_string(),
         }
     }
@@ -695,9 +764,9 @@ mod tests {
         cue(Beat::Cast {
             game: GameName::Avalon,
             seats: vec![
-                seat("Player 1", Role::Merlin, Side::Good),
-                seat("Player 2", Role::Assassin, Side::Evil),
-                seat("Player 3", Role::Servant, Side::Good),
+                seat("Player 1", Role::Merlin),
+                seat("Player 2", Role::Assassin),
+                seat("Player 3", Role::Servant),
             ],
         })
     }
@@ -781,17 +850,26 @@ mod tests {
     }
 
     #[test]
-    fn the_cast_sets_the_names_table_with_evil_left_and_good_right() {
+    fn the_cast_sets_the_names_table_with_evil_left_and_good_right_all_unfilled() {
         let screen = shown(&[cast()]);
         assert_eq!(screen.game, Some(GameName::Avalon));
         let look = |name: &str| screen.names.get(name).cloned().unwrap();
         assert_eq!(
             look("Player 1 · Merlin"),
             Look::at(Position::Right)
-                .background("var(--role-merlin-bg)")
-                .foreground("var(--role-merlin-fg)")
+                .background("transparent")
+                .foreground("var(--rc-fg)")
+                .property("--side", "var(--sd-good-text)")
+                .property("--side-fill", "var(--sd-good)")
         );
-        assert_eq!(look("Player 2 · Assassin").position, Position::Left);
+        assert_eq!(
+            look("Player 2 · Assassin"),
+            Look::at(Position::Left)
+                .background("transparent")
+                .foreground("var(--rc-fg)")
+                .property("--side", "var(--sd-evil-text)")
+                .property("--side-fill", "var(--sd-evil)")
+        );
         assert_eq!(look("Player 3 · Servant").position, Position::Right);
         assert_eq!(
             look(NARRATOR),
@@ -827,7 +905,7 @@ mod tests {
         assert_eq!(
             posted,
             [
-                ("m1", NARRATOR, &Body::Heading("Quest 1.".to_string())),
+                ("m1", NARRATOR, &Body::Heading("Quest 1".to_string())),
                 (
                     "m2",
                     "Player 2 · Assassin",
@@ -840,7 +918,24 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(screen.heading.as_deref(), Some("Quest 1."));
+        assert_eq!(screen.heading.as_deref(), Some("Quest 1"));
+    }
+
+    #[test]
+    fn a_heading_is_its_first_sentence_and_the_rest_is_told_under_it() {
+        let heading = "Quest 3, proposal 2 of 5. Player 4 leads and needs a team of 2.";
+        let screen = shown(&[cast(), cue(Beat::Heading(heading.to_string()))]);
+        let bodies: Vec<&Body> = screen.posts.iter().map(|post| &post.body).collect();
+        assert_eq!(
+            bodies,
+            [
+                &Body::Heading("Quest 3 · proposal 2 of 5".to_string()),
+                &Body::Text("Player 4 leads and needs a team of 2.".to_string()),
+            ]
+        );
+        assert_eq!(screen.heading.as_deref(), Some("Quest 3 · proposal 2 of 5"));
+        assert_eq!(chapter("Night 2."), ("Night 2".to_string(), None));
+        assert_eq!(chapter("Day 1"), ("Day 1".to_string(), None));
     }
 
     #[test]
@@ -1214,10 +1309,10 @@ mod tests {
         cue(Beat::Cast {
             game: GameName::Werewolf,
             seats: vec![
-                seat("Player 1", Role::Werewolf, Side::Evil),
-                seat("Player 2", Role::Doctor, Side::Good),
-                seat("Player 3", Role::Seer, Side::Good),
-                seat("Player 4", Role::Villager, Side::Good),
+                seat("Player 1", Role::Werewolf),
+                seat("Player 2", Role::Doctor),
+                seat("Player 3", Role::Seer),
+                seat("Player 4", Role::Villager),
             ],
         })
     }
@@ -1426,8 +1521,6 @@ mod tests {
 
     #[test]
     fn the_board_writes_its_rows_as_the_console_would_say_them() {
-        assert_eq!(vote("Player 1", Some("Player 6")), "Player 1 → Player 6");
-        assert_eq!(vote("Player 1", None), "Player 1 · undecided");
         let target = || "Player 3".to_string();
         assert_eq!(
             deed("Player 4", &NightDeed::Pending),
@@ -1462,43 +1555,98 @@ mod tests {
         };
         assert_eq!(
             outcome(Some("Player 2"), &[], Some("Player 2")),
-            "2 · wolves chose Player 2, who died"
+            "Wolves chose Player 2, who died"
         );
         assert_eq!(
             outcome(Some("Player 3"), &["Player 1", "Player 5"], None),
-            "2 · wolves chose Player 3, protected by Player 1 and Player 5"
+            "Wolves chose Player 3, protected by Player 1 and Player 5"
         );
-        assert_eq!(outcome(None, &[], None), "2 · wolves chose nobody");
+        assert_eq!(outcome(None, &[], None), "Wolves chose nobody");
         let learned = Learned {
             player: "Player 6".to_string(),
             role: Role::Werewolf,
             night: 1,
         };
-        assert_eq!(super::learned(&learned), "Player 6 is a werewolf · night 1");
+        assert_eq!(super::learned(&learned), "Player 6 is a werewolf");
+        assert_eq!(clock(53), "0:53");
+        assert_eq!(clock(72), "1:12");
+        assert_eq!(clock(600), "10:00");
     }
 
     #[test]
-    fn every_role_has_its_own_colors() {
-        let roles = [
-            Role::Villager,
-            Role::Seer,
-            Role::Doctor,
-            Role::Werewolf,
-            Role::Merlin,
-            Role::Percival,
-            Role::Servant,
-            Role::Assassin,
-            Role::Morgana,
-            Role::Mordred,
-            Role::Oberon,
-            Role::Minion,
-        ];
-        let keys: std::collections::HashSet<&str> = roles.map(role_key).into();
-        assert_eq!(keys.len(), roles.len());
+    fn the_boards_player_marks_are_side_colored_squares_numbered_from_the_seat() {
+        let screen = shown(&[cast(), panel(&board())]);
+        let board = screen.board().unwrap();
+        let mark = board.mark("Player 2").unwrap();
+        assert_eq!(
+            mark,
+            SeatMark {
+                number: "2".to_string(),
+                side: Side::Evil
+            }
+        );
+        assert_eq!(mark.class(false), "sd-seat sd-evil");
+        assert_eq!(
+            board.mark("Player 3").unwrap().class(true),
+            "sd-seat sd-good sd-out"
+        );
+        assert_eq!(SeatMark::of(&screen.seats[0]).number, "1");
+        assert_eq!(board.mark("Player 9"), None);
+        assert_eq!(seat_number("Player 10"), "10");
+    }
+
+    #[test]
+    fn a_players_label_finds_their_seat() {
+        let screen = shown(&[cast()]);
+        assert_eq!(
+            screen.seat("Player 2 · Assassin"),
+            Some(screen.seats[1].clone())
+        );
+        assert_eq!(screen.seat(NARRATOR), None);
+    }
+
+    #[test]
+    fn each_quest_is_captioned_with_its_seats_or_now() {
+        let token = |sabotages_needed| QuestToken {
+            size: 3,
+            sabotages_needed,
+            result: None,
+        };
+        assert_eq!(quest_caption(&token(1), false), "3 seats");
+        assert_eq!(quest_caption(&token(1), true), "now");
+        assert_eq!(quest_caption(&token(2), false), "3 seats\n2 fails");
+    }
+
+    #[test]
+    fn each_proposal_row_says_how_it_went() {
+        let mut row = board().proposals[0].clone();
+        assert_eq!(verdict(&row), "voting");
+        row.approved = Some(false);
+        assert_eq!(verdict(&row), "rejected");
+        row.approved = Some(true);
+        assert_eq!(verdict(&row), "approved");
+        let result = |succeeded| {
+            Some(QuestResult {
+                team: vec![],
+                sabotages: 0,
+                succeeded,
+            })
+        };
+        row.result = result(true);
+        assert_eq!(verdict(&row), "quest succeeded");
+        row.result = result(false);
+        assert_eq!(verdict(&row), "quest failed");
+    }
+
+    #[test]
+    fn each_side_has_its_colors_and_no_role_has_any() {
+        assert_eq!(side_key(Side::Good), "good");
+        assert_eq!(side_key(Side::Evil), "evil");
         let css = include_str!("../style.css");
-        for key in keys {
-            assert!(css.contains(&format!("--role-{key}-bg:")), "{key}");
-            assert!(css.contains(&format!("--role-{key}-fg:")), "{key}");
+        for key in ["good", "evil"] {
+            assert!(css.contains(&format!("--sd-{key}:")), "{key}");
+            assert!(css.contains(&format!("--sd-{key}-text:")), "{key}");
         }
+        assert!(!css.contains("--role-"));
     }
 }

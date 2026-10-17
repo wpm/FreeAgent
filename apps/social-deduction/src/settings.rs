@@ -343,7 +343,6 @@ pub fn import(app: &mut AppSettings, imported: Imported) {
         app.models.insert(taken, model);
     }
     *app.game_mut(game) = settings;
-    app.general.game = game;
 }
 
 /// The settings of the example configuration of `game`, which **Restore
@@ -362,13 +361,12 @@ pub fn game_defaults(game: GameName) -> GameSettings {
 }
 
 /// The settings the app starts from: each game's example, with their
-/// models, and Werewolf chosen to play.
+/// models.
 pub fn defaults() -> AppSettings {
     let mut app = AppSettings::default();
     for (game, _) in EXAMPLES {
         import(&mut app, example(game));
     }
-    app.general.game = GameName::Werewolf;
     app
 }
 
@@ -676,7 +674,6 @@ mod tests {
     #[test]
     fn the_defaults_are_each_game_s_prompted_example_and_have_no_error() {
         let app = defaults();
-        assert_eq!(app.general.game, GameName::Werewolf);
         assert_eq!(app.models.keys().collect::<Vec<_>>(), ["qwen"]);
         assert_eq!(app.werewolf, game_defaults(GameName::Werewolf));
         assert_eq!(app.avalon, game_defaults(GameName::Avalon));
@@ -784,7 +781,7 @@ mod tests {
     #[tokio::test]
     async fn each_game_s_defaults_make_a_configuration_that_parses_and_prepares() {
         let app = served(defaults());
-        for game in [GameName::Werewolf, GameName::Avalon] {
+        for game in GameName::ALL {
             let text = text(&app, game);
             config::parse(&text).unwrap_or_else(|e| panic!("{e:#}\n{text}"));
             let prepared = prepare(&text, &Environment).await.unwrap();
@@ -812,7 +809,7 @@ mod tests {
         );
         app.avalon.roles[2].strategy = Some("dice".to_string());
         app.models.get_mut("qwen").unwrap().request_timeout = Some("2m".to_string());
-        for game in [GameName::Werewolf, GameName::Avalon] {
+        for game in GameName::ALL {
             let structured = format!("{:?}", settle(&app, game).unwrap());
             let parsed = format!("{:?}", config::parse(&text(&app, game)).unwrap());
             assert_eq!(structured, parsed);
@@ -827,10 +824,9 @@ mod tests {
             .strategies
             .insert(RANDOM.to_string(), 1);
         app.werewolf.roles[0].strategy = Some("everyone".to_string());
-        for game in [GameName::Werewolf, GameName::Avalon] {
+        for game in GameName::ALL {
             let mut back = app.clone();
             import(&mut back, Imported::parse(&text(&app, game)).unwrap());
-            back.general.game = app.general.game;
             assert_eq!(back, app, "{game:?}");
         }
     }

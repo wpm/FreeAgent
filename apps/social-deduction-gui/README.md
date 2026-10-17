@@ -36,22 +36,23 @@ as fast.
 ## The desktop app
 
 The desktop app plays a game live. Its main window opens on a start
-state: choose **Werewolf** or **Avalon**, read the line that sums up its
-settings, and press **Play**. A game whose settings have an error names
-the first one under **Play**, linked to its field in Settings. The game
-plays live in the window, with **Stop**, and once it is over, **New
+state that lists the games, each with what it is, a square per seat in
+its side's color, a line summing up its settings, and its own **Play**. A
+game whose settings have an error names the first one under its row,
+linked to its field in Settings, and the other games stay playable. The
+game plays live in the window, with **Stop**, and once it is over, **New
 game** appears. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
-start state. The game last played is chosen at launch.
+start state.
 
 **Settings…** (⌘, on macOS, **Edit ▸ Preferences…** and Ctrl+, elsewhere)
 opens the Settings window. Every change is stored as it is made and
-applies to the next game. Each field's error shows in red beneath it, and
+applies to the next game. Each field's error shows in marigold beneath it, and
 hovering over anything, or focusing it, shows what it is and what changing
 it does.
 
 - **General**: the appearance, System, Light or Dark. System keeps
   Werewolf dark by night and light by day.
-- **Models**: a card for each provider, holding its base URL and key,
+- **Models**: a section for each provider, holding its base URL and key,
   **Your models** from it, and **Available**: its models that play and
   aren't added yet, most capable first, each with its context window and
   **Add**. Adding one asks for its name, filled in with the model id. A
@@ -61,7 +62,7 @@ it does.
   stays under **Your models** with "No longer plays" and the strategies
   that use it. The key line names the variable and where its key comes
   from, the environment or the keychain, which takes priority, and stores
-  or removes it there. **Add provider…** adds any other OpenAI-compatible
+  or removes it there. **Add provider…**, by the page's title, adds any other OpenAI-compatible
   service by name, base URL and key variable. Hovering over or focusing
   anything shows what it does.
 - **Werewolf** and **Avalon**: the role counts beside the phase limits
@@ -69,7 +70,7 @@ it does.
   seats…** to share a role among strategies, and the prompt parts: named
   pieces of text a system prompt pulls in with `{{ name }}`, each listed
   with how many strategies use it. On a narrow window it is one column.
-  **Restore Defaults…** brings back the game's example `prompted`
+  **Restore defaults…** brings back the game's example `prompted`
   configuration, leaving the models as they are.
 
 The app looks for a local server at `http://localhost:<port>/v1` on ports
@@ -81,9 +82,9 @@ and after each update, a model a provider lists for the first time, and a
 provider's models again when its key changes. A remote provider's are
 checked four at a time; a local server's one at a time, since it loads
 each model it is asked about, and never while a game plays. A line at the
-top of the Models tab says what is being checked. A model that can't be
+top of the Models page says what is being checked. A model that can't be
 asked, as when the provider doesn't accept the key, is asked again when
-Settings next opens, and its provider's card says why in red, the
+Settings next opens, and its provider says why in a marigold warning, the
 provider's own words in its help. When the account is the reason, such as
 no credits left, the provider's other models wait for the next try too. A
 provider none of whose models play says why most of them didn't, and its

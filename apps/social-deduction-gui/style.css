@@ -1,107 +1,113 @@
-/* The viewer's own look. Rich-Chat's stylesheets are in cascade layers,
-   so these unlayered rules win over them. */
+/* The viewer's own look: black ink on white paper, in the Free Agent
+   site's type. Red means evil and ultramarine means good, marigold flags
+   a problem, and nothing else has a color. Rich-Chat's stylesheets are in
+   cascade layers, so these unlayered rules win over them. */
 
 :root {
-  --sd-good: #1d4ed8;
-  --sd-good-fg: #ffffff;
-  --sd-evil: #b91c1c;
-  --sd-evil-fg: #ffffff;
-  --tip-bg: #1d2230;
-  --tip-ink: #f3f5f9;
+  --sd-ink: #0a0a0a;
+  --sd-paper: #ffffff;
+  --sd-muted: #5c5c5c;
+  --sd-rule: #e2e2e2;
+  --sd-line: #cfcfcf;
+  --sd-good: #2438e8;
+  --sd-good-text: #2438e8;
+  --sd-evil: #d2001f;
+  --sd-evil-text: #d2001f;
+  --sd-warn: #f2b300;
 
-  --role-villager-bg: #dde6f2;
-  --role-villager-fg: #1e3a5f;
-  --role-seer-bg: #e6e0fb;
-  --role-seer-fg: #3b2a86;
-  --role-doctor-bg: #d3f1ec;
-  --role-doctor-fg: #134e4a;
-  --role-werewolf-bg: #fbdcdc;
-  --role-werewolf-fg: #7f1d1d;
-  --role-merlin-bg: #dbe7fe;
-  --role-merlin-fg: #1e3a8a;
-  --role-percival-bg: #d0f4fb;
-  --role-percival-fg: #155e75;
-  --role-servant-bg: #e2e8f0;
-  --role-servant-fg: #334155;
-  --role-assassin-bg: #fbdcdc;
-  --role-assassin-fg: #7f1d1d;
-  --role-morgana-bg: #fbe0f0;
-  --role-morgana-fg: #831843;
-  --role-mordred-bg: #6b1320;
-  --role-mordred-fg: #ffe4e6;
-  --role-mordred-outline: none;
-  --role-oberon-bg: #fde3d3;
-  --role-oberon-fg: #7c2d12;
-  --role-minion-bg: #fde4df;
-  --role-minion-fg: #8a3b2e;
+  /* Controls: a white face on a hairline, sunk into a gray track, or
+     filled with ink. */
+  --sd-control: #ffffff;
+  --sd-control-line: #c4c4c4;
+  --sd-raised: #ffffff;
+  --sd-sunken: #ececec;
+  --sd-tint: #f0f0f0;
+  --sd-off: #7a7a7a;
+  --sd-primary: #111111;
+  --sd-on-primary: #ffffff;
+
+  /* Settings: a gray sidebar, and grouped lists on hairlines. */
+  --sd-sidebar: #f6f6f6;
+  --sd-sidebar-on: #e6e6e6;
+  --sd-list-line: #dedede;
+  --sd-list-rule: #ececec;
+  --sd-well: #f5f5f5;
+
+  --sd-serif: Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  --sd-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --sd-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --tip-bg: var(--sd-ink);
+  --tip-ink: var(--sd-paper);
+
+  --rc-bg: var(--sd-paper);
+  --rc-chat-bg: var(--sd-paper);
+  --rc-fg: var(--sd-ink);
+  --rc-muted: var(--sd-muted);
+  --rc-border: var(--sd-line);
+  --rc-accent: var(--sd-ink);
+  --rc-accent-fg: var(--sd-paper);
+  --rc-surface: var(--sd-paper);
+  --rc-error: var(--sd-ink);
+  --rc-selection: color-mix(in srgb, var(--sd-ink) 18%, transparent);
+  --rc-font: var(--sd-serif);
+  --rc-font-size: 17px;
+  --rc-line-height: 1.5;
+  --rc-radius: 16px;
+  --rc-tail: 3px;
+  --rc-bubble-max-width: 64%;
+
+  accent-color: var(--sd-ink);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --sd-good: #3b82f6;
-    --sd-evil: #dc2626;
-    --tip-bg: #eef0f4;
-    --tip-ink: #1a1d24;
-
-    --role-villager-bg: #22344c;
-    --role-villager-fg: #d7e3f3;
-    --role-seer-bg: #342a6b;
-    --role-seer-fg: #ddd6fe;
-    --role-doctor-bg: #164a46;
-    --role-doctor-fg: #c9f7ee;
-    --role-werewolf-bg: #5a1b1b;
-    --role-werewolf-fg: #fecaca;
-    --role-merlin-bg: #1f3270;
-    --role-merlin-fg: #dbe7fe;
-    --role-percival-bg: #14485a;
-    --role-percival-fg: #cff6fd;
-    --role-servant-bg: #2b3647;
-    --role-servant-fg: #e2e8f0;
-    --role-assassin-bg: #5a1b1b;
-    --role-assassin-fg: #fecaca;
-    --role-morgana-bg: #5c1838;
-    --role-morgana-fg: #fbcfe8;
-    --role-mordred-bg: #7a1a28;
-    --role-mordred-fg: #ffe4e6;
-    --role-mordred-outline: inset 0 0 0 2px #ffe4e6;
-    --role-oberon-bg: #5a2510;
-    --role-oberon-fg: #fed7c3;
-    --role-minion-bg: #4d2620;
-    --role-minion-fg: #fcd5cc;
+    --sd-ink: #f2f2f2;
+    --sd-paper: #0a0a0a;
+    --sd-muted: #a3a3a3;
+    --sd-rule: #333333;
+    --sd-line: #3d3d3d;
+    --sd-good: #4a5cff;
+    --sd-good-text: #8c9bff;
+    --sd-evil-text: #ff4d5e;
+    --sd-control: #1c1c1c;
+    --sd-control-line: #4a4a4a;
+    --sd-raised: #3a3a3a;
+    --sd-sunken: #262626;
+    --sd-tint: #262626;
+    --sd-off: #8a8a8a;
+    --sd-primary: #f2f2f2;
+    --sd-on-primary: #0a0a0a;
+    --sd-sidebar: #141414;
+    --sd-sidebar-on: #262626;
+    --sd-list-line: #333333;
+    --sd-list-rule: #262626;
+    --sd-well: #1c1c1c;
   }
 }
 
 :root[data-theme="dark"] {
-  --sd-good: #3b82f6;
-  --sd-evil: #dc2626;
-  --tip-bg: #eef0f4;
-  --tip-ink: #1a1d24;
-
-  --role-villager-bg: #22344c;
-  --role-villager-fg: #d7e3f3;
-  --role-seer-bg: #342a6b;
-  --role-seer-fg: #ddd6fe;
-  --role-doctor-bg: #164a46;
-  --role-doctor-fg: #c9f7ee;
-  --role-werewolf-bg: #5a1b1b;
-  --role-werewolf-fg: #fecaca;
-  --role-merlin-bg: #1f3270;
-  --role-merlin-fg: #dbe7fe;
-  --role-percival-bg: #14485a;
-  --role-percival-fg: #cff6fd;
-  --role-servant-bg: #2b3647;
-  --role-servant-fg: #e2e8f0;
-  --role-assassin-bg: #5a1b1b;
-  --role-assassin-fg: #fecaca;
-  --role-morgana-bg: #5c1838;
-  --role-morgana-fg: #fbcfe8;
-  --role-mordred-bg: #7a1a28;
-  --role-mordred-fg: #ffe4e6;
-  --role-mordred-outline: inset 0 0 0 2px #ffe4e6;
-  --role-oberon-bg: #5a2510;
-  --role-oberon-fg: #fed7c3;
-  --role-minion-bg: #4d2620;
-  --role-minion-fg: #fcd5cc;
+  --sd-ink: #f2f2f2;
+  --sd-paper: #0a0a0a;
+  --sd-muted: #a3a3a3;
+  --sd-rule: #333333;
+  --sd-line: #3d3d3d;
+  --sd-good: #4a5cff;
+  --sd-good-text: #8c9bff;
+  --sd-evil-text: #ff4d5e;
+  --sd-control: #1c1c1c;
+  --sd-control-line: #4a4a4a;
+  --sd-raised: #3a3a3a;
+  --sd-sunken: #262626;
+  --sd-tint: #262626;
+  --sd-off: #8a8a8a;
+  --sd-primary: #f2f2f2;
+  --sd-on-primary: #0a0a0a;
+  --sd-sidebar: #141414;
+  --sd-sidebar-on: #262626;
+  --sd-list-line: #333333;
+  --sd-list-rule: #262626;
+  --sd-well: #1c1c1c;
 }
 
 /* The page */
@@ -115,7 +121,12 @@ body {
 body {
   background: var(--rc-bg);
   color: var(--rc-fg);
-  font-family: var(--rc-font);
+  font-family: var(--sd-sans);
+}
+
+:focus-visible {
+  outline: 2px solid var(--sd-ink);
+  outline-offset: 3px;
 }
 
 /* Night falls and day breaks over 600 ms. */
@@ -123,8 +134,8 @@ body {
 body,
 .rc-chat,
 .rc-bubble,
-.sd-chip,
-.sd-swatch {
+.sd-seat,
+.sd-square {
   transition:
     background-color 600ms ease,
     color 600ms ease,
@@ -140,49 +151,83 @@ body,
 .sd-header {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.25rem 1rem;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--rc-border);
+  align-items: center;
+  gap: 0.5rem 1.5rem;
+  padding: 1rem 2rem;
+  border-bottom: 3px solid var(--sd-ink);
+}
+
+/* Titles are the serif, bold and set tight. */
+
+.sd-header h1,
+.sd-page-head h1 {
+  margin: 0;
+  font-family: var(--sd-serif);
+  font-weight: 700;
+  letter-spacing: -0.03em;
 }
 
 .sd-header h1 {
-  margin: 0;
-  font-size: 1.25rem;
+  font-size: 32px;
+  line-height: 1.1;
 }
 
+/* Section labels and phase names are small bold capitals. */
+
+.sd-heading,
+.sd-phase-name,
+.sd-board h2 {
+  font-family: var(--sd-sans);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* The phase, then a divider, then its clock or Closing…. */
+
 .sd-phase {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
   margin: 0;
   flex: 1;
-  color: var(--rc-muted);
+  font-size: 15px;
+}
+
+.sd-clock,
+.sd-closing {
+  display: inline-flex;
+  align-items: center;
+  gap: 1rem;
+  padding-left: 1rem;
+  border-left: 1px solid var(--sd-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-clock .sd-countdown {
+  width: 160px;
 }
 
 .sd-outcome {
   margin: 0;
-  font-weight: 600;
+  font-family: var(--sd-serif);
+  font-weight: 700;
 }
 
 .sd-outcome.sd-good {
-  color: var(--sd-good);
+  color: var(--sd-good-text);
 }
 
 .sd-outcome.sd-evil {
-  color: var(--sd-evil);
-}
-
-.sd-clock {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  margin-left: 0.75rem;
-  font-variant-numeric: tabular-nums;
+  color: var(--sd-evil-text);
 }
 
 /* A Werewolf phase closing, in place of its clock: it pulses gently
    while the cues arrive. */
 
 .sd-closing {
-  margin-left: 0.75rem;
   color: var(--rc-muted);
 }
 
@@ -196,19 +241,19 @@ body,
   animation: sd-pulse 1.6s ease-in-out infinite;
 }
 
+/* A countdown: a 3px bar, ink on the rule's gray. */
+
 .sd-countdown {
-  display: inline-block;
-  width: 6rem;
-  height: 0.35rem;
-  border-radius: 999px;
-  background: var(--rc-border);
+  display: block;
+  height: 3px;
+  background: var(--sd-rule);
   overflow: hidden;
 }
 
 .sd-countdown-left {
   display: block;
   height: 100%;
-  background: var(--rc-accent);
+  background: var(--sd-ink);
   transition: width 100ms linear;
 }
 
@@ -227,19 +272,9 @@ body,
   text-decoration: none;
 }
 
-.sd-header button {
-  font: inherit;
-  padding: 0.25rem 1rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-  background: var(--rc-accent);
-  color: var(--rc-accent-fg);
-  cursor: pointer;
-}
-
 .sd-main {
   display: grid;
-  grid-template-columns: 2fr 1fr;
+  grid-template-columns: minmax(0, 1fr) 22.5rem;
   min-height: 0;
 }
 
@@ -262,9 +297,41 @@ body,
   color: inherit;
 }
 
+/* A problem: ink beside a marigold square holding a black "!". A bad
+   API key isn't evil, so it is never red. */
+
+.sd-error,
+.sd-field-error,
+.sd-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  color: var(--sd-ink);
+}
+
+.sd-error::before,
+.sd-field-error::before,
+.sd-warning::before,
+.sd-chip-bad::before {
+  content: "!";
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--sd-warn);
+  color: #000000;
+  font: 700 12px/1 var(--sd-sans);
+}
+
 .sd-error {
   padding: 1rem;
-  color: var(--rc-error);
+}
+
+.sd-warning {
+  margin: 0;
+  font-size: 15px;
 }
 
 /* The chat */
@@ -273,24 +340,67 @@ body,
   display: none;
 }
 
+/* The line over a player's bubble: their seat square on the side away
+   from their edge, then the player in their side's text color and the
+   role in a muted italic serif. Each player's messages carry --side and
+   --side-fill. */
+
+.rc-sender {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: var(--side, var(--sd-muted));
+  font: 700 13px/1 var(--sd-sans);
+}
+
+.rc-sender .sd-seat {
+  background-color: var(--side-fill);
+}
+
+.sd-sender-role {
+  color: var(--sd-muted);
+  font: italic 400 15px/1 var(--sd-serif);
+}
+
+/* Read aloud, never drawn. */
+
+.sd-unseen {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Every player's bubble is unfilled, drawn by its outline; the side is
+   told by where it sits. */
+
+.rc-bubble {
+  border: 1px solid var(--sd-line);
+}
+
 .rc-message[data-name="Narrator"] > .rc-bubble {
-  font-size: 0.85em;
+  border: none;
+  font-size: 16px;
+  font-style: italic;
+  text-align: center;
   padding-block: 0.1em;
 }
 
-.rc-message[data-name$="· Mordred"] > .rc-bubble {
-  box-shadow: var(--role-mordred-outline);
+.rc-thinking {
+  color: var(--sd-muted);
 }
 
 .sd-heading {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 1rem;
   width: 100%;
   margin: 0.75rem 0 0.25rem;
-  color: var(--rc-muted);
-  font-size: 0.85em;
-  font-weight: 600;
+  color: var(--sd-ink);
+  font-style: normal;
   text-align: center;
 }
 
@@ -298,77 +408,152 @@ body,
 .sd-heading::after {
   content: "";
   flex: 1;
-  border-top: 1px solid var(--rc-border);
+  border-top: 1px solid var(--sd-ink);
 }
 
 /* The board */
 
 .sd-board {
   overflow-y: auto;
-  padding: 0.75rem 1rem;
-  border-left: 1px solid var(--rc-border);
+  padding: 1.75rem;
+  border-left: 1px solid var(--sd-ink);
+  font-size: 15px;
 }
 
+/* A section label follows an 8px ink square, the site's h2 bullet. */
+
 .sd-board h2 {
-  margin: 1rem 0 0.5rem;
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--rc-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 2rem 0 0.9rem;
+  color: var(--sd-ink);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+}
+
+.sd-board h2::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  background: var(--sd-ink);
 }
 
 .sd-board h2:first-child {
   margin-top: 0;
 }
 
+/* A seat square: the seat number in white on its side's color. A player
+   who is out is faded and struck through. */
+
+.sd-seat {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  color: #ffffff;
+  font: 700 12px/1 var(--sd-sans);
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-seat.sd-good {
+  background-color: var(--sd-good);
+}
+
+.sd-seat.sd-evil {
+  background-color: var(--sd-evil);
+}
+
+.sd-seat.sd-out {
+  opacity: 0.35;
+  background-image: linear-gradient(
+    to top right,
+    transparent calc(50% - 1px),
+    #ffffff calc(50% - 1px) calc(50% + 1px),
+    transparent calc(50% + 1px)
+  );
+}
+
+.sd-board .sd-detail,
+.sd-aside,
+.sd-table dt,
+.sd-verdict {
+  color: var(--sd-muted);
+  font-family: var(--sd-serif);
+  font-style: italic;
+}
+
+/* Avalon's quests: a square each, captioned under it. */
+
 .sd-quests {
   display: flex;
   gap: 0.5rem;
 }
 
-.sd-token {
+.sd-quest {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  width: 3rem;
-  height: 3rem;
-  border: 2px solid var(--rc-border);
-  border-radius: 50%;
-  line-height: 1.1;
-}
-
-.sd-token small {
-  font-size: 0.65rem;
-}
-
-.sd-token.sd-current {
-  border-style: dashed;
-  border-color: var(--rc-fg);
-}
-
-.sd-token.sd-succeeded {
-  background: var(--sd-good);
-  border-color: var(--sd-good);
-  color: var(--sd-good-fg);
-}
-
-.sd-token.sd-failed {
-  background: var(--sd-evil);
-  border-color: var(--sd-evil);
-  color: var(--sd-evil-fg);
-}
-
-.sd-pips {
-  display: flex;
   gap: 0.4rem;
 }
 
+.sd-token {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 52px;
+  height: 52px;
+  font: 700 26px/1 var(--sd-serif);
+}
+
+.sd-caption {
+  color: var(--sd-muted);
+  font: 700 10px/1.3 var(--sd-sans);
+  letter-spacing: 0.1em;
+  text-align: center;
+  text-transform: uppercase;
+  white-space: pre-line;
+}
+
+.sd-succeeded .sd-token {
+  background: var(--sd-good);
+  color: #ffffff;
+}
+
+.sd-failed .sd-token {
+  background: var(--sd-evil);
+  color: #ffffff;
+}
+
+.sd-current .sd-token {
+  border: 2px dashed var(--sd-ink);
+}
+
+.sd-current .sd-caption {
+  color: var(--sd-ink);
+}
+
+.sd-later .sd-token {
+  border: 1px solid var(--sd-line);
+  color: var(--sd-muted);
+}
+
+/* Rejected proposals: an ink square for each so far, and the fifth,
+   which hands evil the game, outlined in red. */
+
+.sd-pips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .sd-pip {
-  width: 0.9rem;
-  height: 0.9rem;
-  border: 2px solid var(--rc-border);
-  border-radius: 50%;
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--sd-line);
 }
 
 .sd-pip.sd-last {
@@ -376,8 +561,8 @@ body,
 }
 
 .sd-pip.sd-filled {
-  background: var(--rc-fg);
-  border-color: var(--rc-fg);
+  background: var(--sd-ink);
+  border-color: var(--sd-ink);
 }
 
 .sd-pip.sd-last.sd-filled {
@@ -385,32 +570,35 @@ body,
   border-color: var(--sd-evil);
 }
 
-.sd-leader {
-  margin: 0 0 0.5rem;
+.sd-aside {
+  margin-left: 0.5rem;
 }
 
-.sd-chips {
+/* On the table: the leader and the team. */
+
+.sd-table {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0.6rem 1.5rem;
+  margin: 0;
+}
+
+.sd-table dd {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: 0.5rem 1.25rem;
+  margin: 0;
 }
 
-.sd-chip {
+.sd-member {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  padding: 0.15rem 0.6rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
+  gap: 0.6rem;
+  padding-right: 0.4rem;
 }
 
-.sd-swatch {
-  display: inline-block;
-  width: 0.8rem;
-  height: 0.8rem;
-  border-radius: 50%;
-  border: 2px solid;
-}
+/* Votes so far: a column per seat, headed by its square. */
 
 .sd-votes-scroll {
   overflow-x: auto;
@@ -418,26 +606,35 @@ body,
 
 .sd-votes {
   border-collapse: collapse;
-  font-size: 0.85rem;
   white-space: nowrap;
 }
 
 .sd-votes th,
 .sd-votes td {
-  padding: 0.15rem 0.4rem;
+  padding: 0.35rem 0.2rem;
   text-align: center;
 }
 
-.sd-votes th:first-child,
-.sd-votes td:first-child,
-.sd-votes td:last-child {
+.sd-votes tbody tr {
+  border-top: 1px solid var(--sd-rule);
+}
+
+.sd-votes tbody th {
+  font-weight: 700;
   text-align: left;
 }
 
-.sd-votes thead th {
-  color: var(--rc-muted);
-  font-weight: 500;
+.sd-votes .sd-verdict {
+  padding-left: 0.5rem;
+  text-align: left;
 }
+
+.sd-ballot:empty::after {
+  content: "·";
+  color: var(--sd-line);
+}
+
+/* The players, and what the board says of them. */
 
 .sd-players {
   margin: 0;
@@ -446,91 +643,126 @@ body,
 }
 
 .sd-players li {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.15rem 0;
+  gap: 0.75rem;
+  padding: 0.3rem 0;
 }
 
-.sd-players .sd-detail {
-  color: var(--rc-muted);
-  font-size: 0.85rem;
+.sd-players li.sd-dead .sd-name {
+  color: var(--sd-muted);
+  text-decoration: line-through;
 }
 
-.sd-rows {
-  margin: 0 0 0.5rem;
+/* Werewolf's vote: two columns of rows in seat order, then the tally. */
+
+.sd-vote-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem 1rem;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.sd-row {
+.sd-vote {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.1rem 0.25rem;
-  border-radius: var(--rc-radius);
-}
-
-.sd-decision {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
+  gap: 0.6rem;
   padding: 0.25rem;
-  border-radius: var(--rc-radius);
-  font-weight: 600;
+  margin-left: -0.25rem;
 }
 
-.sd-players li.sd-dead .sd-name {
-  text-decoration: line-through;
+.sd-tally {
+  margin-top: 1rem;
 }
 
-.sd-players li.sd-dead {
-  opacity: 0.55;
+.sd-count {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  font-weight: 700;
+}
+
+.sd-bar {
+  height: 10px;
+  background: var(--sd-ink);
+}
+
+/* The tentative decision: the target's square and when it is out, over
+   its countdown. */
+
+.sd-decision p {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 0.75rem;
+  font: 700 22px/1.2 var(--sd-serif);
+}
+
+.sd-board .sd-rows {
+  margin: 0 0 0.5rem;
+  padding: 0;
+  font-family: var(--sd-serif);
+  font-size: 16px;
+  list-style: none;
+}
+
+.sd-board .sd-rows li {
+  padding: 0.2rem 0;
+}
+
+.sd-board .sd-row,
+.sd-seer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
 }
 
 .sd-seer {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
   margin: 0.25rem 0;
-  font-weight: 600;
+}
+
+.sd-when {
+  color: var(--sd-muted);
+}
+
+.sd-number {
+  font-family: var(--sd-sans);
 }
 
 .sd-assassination {
-  margin-top: 1rem;
+  margin-top: 1.5rem;
   padding: 0.5rem 0.75rem;
-  border-radius: var(--rc-radius);
-  background: var(--sd-evil);
-  color: var(--sd-evil-fg);
+  border: 1px solid var(--sd-line);
+  color: var(--sd-evil-text);
+  font-family: var(--sd-serif);
+  font-weight: 700;
 }
 
-/* A choice landing: a flash of the chooser's role color, fading out. */
-
-@keyframes sd-land {
-  from {
-    background-color: var(--sd-chooser-bg, var(--rc-border));
-  }
-  to {
-    background-color: transparent;
-  }
-}
+/* A choice landing: its row inverted, ink behind paper, and a vote's
+   tagged New. */
 
 .sd-landed {
-  animation: sd-land 900ms ease-out;
+  background: var(--sd-ink);
+  color: var(--sd-paper);
+}
+
+.sd-vote.sd-landed::after,
+.sd-row.sd-landed::after {
+  content: "New";
+  margin-left: 0.4rem;
+  font: 700 10px/1 var(--sd-sans);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .sd-pulse {
     animation: none;
-  }
-
-  .sd-landed {
-    animation: none;
-    outline: 2px solid var(--sd-chooser-fg, var(--rc-fg));
-    outline-offset: -2px;
   }
 }
 
@@ -557,59 +789,141 @@ body,
 
   .sd-board {
     border-left: none;
-    border-top: 1px solid var(--rc-border);
+    border-top: 1px solid var(--sd-ink);
   }
 }
 
-/* The desktop app's start state */
+/* The desktop app's start state: the header stays put and the list of
+   games scrolls under it. */
 
 .sd-start {
-  min-height: 100vh;
+  height: 100vh;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  padding: 2rem 1rem;
   background: var(--rc-bg);
   color: var(--rc-fg);
-  text-align: center;
+}
+
+.sd-start-head,
+.sd-start-body {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: calc(920px + 4rem);
+  margin: 0 auto;
+  padding: 0 2rem;
+}
+
+.sd-start-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 36px;
+  padding-bottom: 24px;
+}
+
+.sd-logo {
+  display: flex;
 }
 
 .sd-logo svg {
-  width: 7rem;
-  height: 7rem;
+  width: 44px;
+  height: 32px;
 }
 
-.sd-summary {
+.sd-start-head h1 {
   margin: 0;
-  color: var(--rc-muted);
+  font: 700 22px/1.2 var(--sd-serif);
 }
 
-.sd-segments {
-  display: inline-flex;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-  overflow: hidden;
+.sd-start .sd-open-settings {
+  margin-left: auto;
+  font: 500 13px/1 var(--sd-sans);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-underline-offset: 3px;
 }
 
-.sd-segments button {
-  font: inherit;
-  padding: 0.3rem 1.1rem;
-  border: none;
-  background: var(--rc-bg);
-  color: var(--rc-fg);
-  cursor: pointer;
+.sd-start-body {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 3rem;
 }
 
-.sd-segments button + button {
-  border-left: 1px solid var(--rc-border);
+.sd-tagline {
+  margin: 0 0 28px;
+  color: var(--sd-muted);
+  font: italic 20px/1.4 var(--sd-serif);
 }
 
-.sd-segments .sd-segment-on {
-  background: var(--rc-accent);
-  color: var(--rc-accent-fg);
+.sd-start .sd-error {
+  margin: 0 0 1.5rem;
+  white-space: pre-wrap;
+}
+
+.sd-game-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-bottom: 1px solid var(--sd-ink);
+}
+
+.sd-game {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 1rem 2rem;
+  padding: 28px 0;
+  border-top: 1px solid var(--sd-ink);
+}
+
+.sd-game h2 {
+  margin: 0 0 12px;
+  font: 700 44px/1.1 var(--sd-serif);
+  letter-spacing: -0.01em;
+}
+
+.sd-game-list:has(> :nth-child(3)) h2 {
+  font-size: 32px;
+}
+
+.sd-description {
+  max-width: 600px;
+  margin: 0 0 14px;
+  font: 18px/1.5 var(--sd-serif);
+}
+
+.sd-game-table {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.sd-game-seats {
+  display: flex;
+  gap: 4px;
+}
+
+.sd-game-seats > span {
+  width: 14px;
+  height: 14px;
+}
+
+.sd-game-seats > .sd-good {
+  background: var(--sd-good);
+}
+
+.sd-game-seats > .sd-evil {
+  background: var(--sd-evil);
+}
+
+.sd-game-summary {
+  color: var(--sd-muted);
+  font: 700 11px/1 var(--sd-sans);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 .sd-run {
@@ -617,45 +931,261 @@ body,
   gap: 0.5rem;
 }
 
-.sd-run button {
+.sd-start .sd-game-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  font: 17px/1.4 var(--sd-serif);
+}
+
+/* Why a game failed to start can run to several lines. */
+.sd-game-failed {
+  white-space: pre-wrap;
+}
+
+.sd-game-error .sd-link {
+  font: inherit;
+}
+
+@media (max-width: 600px) {
+  .sd-start-head,
+  .sd-start-body {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .sd-start-head {
+    padding-top: 20px;
+  }
+
+  .sd-game {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Controls, all ink. Every button is a secondary one, white on a
+   hairline, unless it is primary, quiet, an icon, or part of a segmented
+   control or a stepper. The chat's own buttons are Rich Chat's. */
+
+:where(.sd-header, .sd-start, .sd-settings) button {
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.5rem;
-  font: inherit;
-  padding: 0.375rem 1.5rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-  background: var(--rc-bg);
-  color: var(--rc-fg);
-  cursor: pointer;
-}
-
-.sd-run .sd-play {
-  background: var(--rc-accent);
-  color: var(--rc-accent-fg);
-  font-weight: 600;
-}
-
-.sd-run button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.sd-link {
-  font: inherit;
   padding: 0;
   border: none;
   background: none;
-  color: var(--rc-error);
-  text-align: inherit;
-  text-decoration: underline;
+  color: var(--sd-ink);
+  font: 500 15px/1 var(--sd-sans);
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.sd-start .sd-error {
-  max-width: 40rem;
-  white-space: pre-wrap;
-  text-align: left;
+:where(.sd-header, .sd-start, .sd-settings) button:where(:not(.sd-link, .sd-remove, .sd-segments *, .sd-stepper *)) {
+  height: 40px;
+  padding: 0 18px;
+  border: 1px solid var(--sd-control-line);
+  border-radius: 10px;
+  background: var(--sd-control);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.sd-primary {
+  border-color: var(--sd-primary);
+  background: var(--sd-primary);
+  color: var(--sd-on-primary);
+  font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.sd-large {
+  height: 48px;
+  padding: 0 24px;
+  border-radius: 12px;
+  font-size: 16px;
+}
+
+.sd-small {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+:where(.sd-header, .sd-start, .sd-settings) button:disabled {
+  color: var(--sd-off);
+  cursor: default;
+}
+
+:where(.sd-header, .sd-start, .sd-settings) button:disabled:where(:not(.sd-link, .sd-remove, .sd-segments *, .sd-stepper *)) {
+  border-color: var(--sd-sunken);
+  background: var(--sd-sunken);
+  box-shadow: none;
+}
+
+/* Quiet: underlined ink, with no box. */
+
+.sd-link {
+  font: 14px/1.3 var(--sd-sans);
+  text-align: inherit;
+  text-decoration: underline;
+  white-space: normal;
+}
+
+/* An icon button: a muted × in a square that shows on hover. */
+
+.sd-remove {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--sd-muted);
+}
+
+.sd-remove:hover {
+  background: var(--sd-sunken);
+  color: var(--sd-ink);
+}
+
+/* Segmented: the choice is raised out of a sunken track. */
+
+.sd-segments {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--sd-sunken);
+}
+
+.sd-segments button {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 8px;
+  color: var(--sd-muted);
+}
+
+.sd-segments .sd-segment-on {
+  background: var(--sd-raised);
+  color: var(--sd-ink);
+  font-weight: 600;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.15),
+    0 1px 6px rgba(0, 0, 0, 0.06);
+}
+
+/* Stepper: − and + either side of the number, joined in one piece. */
+
+.sd-stepper {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: none;
+  height: 36px;
+  border: 1px solid var(--sd-control-line);
+  border-radius: 10px;
+  background: var(--sd-control);
+}
+
+.sd-stepper button {
+  width: 36px;
+  height: 100%;
+  font-size: 16px;
+}
+
+.sd-stepper button:first-child {
+  border-radius: 9px 0 0 9px;
+}
+
+.sd-stepper button:last-child {
+  border-radius: 0 9px 9px 0;
+}
+
+.sd-stepper input {
+  box-sizing: border-box;
+  width: 40px;
+  height: 100%;
+  padding: 0;
+  border: none;
+  border-inline: 1px solid var(--sd-control-line);
+  background: transparent;
+  color: var(--sd-ink);
+  font: 14px var(--sd-sans);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.sd-stepper input::-webkit-inner-spin-button,
+.sd-stepper input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Fields and selects are sunk slightly into the page. */
+
+:where(.sd-settings) :is(input, select, textarea):where(:not(.sd-stepper input)) {
+  box-sizing: border-box;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--sd-control-line);
+  border-radius: 8px;
+  background: var(--sd-control);
+  color: var(--sd-ink);
+  font: 14px var(--sd-sans);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+:where(.sd-settings) textarea {
+  height: auto;
+  padding: 8px 10px;
+  line-height: 1.5;
+}
+
+.sd-select-box {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.sd-select {
+  width: 100%;
+  padding-right: 30px;
+  appearance: none;
+  cursor: pointer;
+}
+
+.sd-chevron {
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  translate: 0 -50%;
+  color: var(--sd-ink);
+  pointer-events: none;
+}
+
+/* Chip: a status, in a gray lozenge. */
+
+.sd-chip {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 13px;
+  background: var(--sd-tint);
+  color: var(--sd-ink);
+  font: 600 12px/1 var(--sd-sans);
+  white-space: nowrap;
+}
+
+.sd-chip code {
+  font-family: var(--sd-mono);
 }
 
 .sd-spinner {
@@ -673,194 +1203,196 @@ body,
   }
 }
 
-/* The desktop app's Settings window */
+/* The desktop app's Settings window: a sidebar of pages beside the page
+   shown, stacked above it on a narrow window. */
 
 .sd-settings-window {
   height: 100vh;
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-columns: 220px minmax(0, 1fr);
   background: var(--rc-bg);
   color: var(--rc-fg);
 }
 
-.sd-tabs {
+.sd-sidebar {
   display: flex;
-  justify-content: center;
-  gap: 0.25rem;
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--rc-border);
+  flex-direction: column;
+  gap: 2px;
+  padding: 24px 14px;
+  border-right: 1px solid var(--sd-rule);
+  background: var(--sd-sidebar);
+  overflow: auto;
 }
 
-.sd-tabs button {
-  font: inherit;
-  padding: 0.3rem 1rem;
+.sd-sidebar button {
+  box-sizing: border-box;
+  height: 34px;
+  padding: 0 14px;
   border: none;
-  border-radius: 0.375rem;
+  border-radius: 8px;
   background: none;
-  color: var(--rc-fg);
+  color: var(--sd-ink);
+  font: 15px/1 var(--sd-sans);
+  text-align: left;
   cursor: pointer;
 }
 
-.sd-tabs .sd-tab-on {
-  background: var(--rc-accent);
-  color: var(--rc-accent-fg);
+.sd-sidebar [aria-selected="true"] {
+  background: var(--sd-sidebar-on);
+  font-weight: 700;
+}
+
+.sd-sidebar-label {
+  margin: 18px 14px 6px;
+}
+
+.sd-sidebar-label,
+.sd-label {
+  color: var(--sd-muted);
+  font: 700 10px/1 var(--sd-sans);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .sd-settings {
   min-height: 0;
   overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  padding: 1rem 1.25rem 2rem;
 }
 
-.sd-tab-head {
+.sd-page {
+  box-sizing: border-box;
+  max-width: calc(820px + 80px);
+  display: flex;
+  flex-direction: column;
+  gap: 36px;
+  padding: 32px 40px 48px;
+}
+
+.sd-page-head {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.75rem;
+  gap: 12px;
 }
 
-.sd-tab-head h2 {
-  margin: 0;
+.sd-page-head h1 {
   flex: 1;
-  font-size: 1.1rem;
+  font-size: 34px;
+  line-height: 1.1;
 }
+
+/* A section: a serif title, a note beside it, and a grouped list or
+   two. */
 
 .sd-section {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 12px;
 }
 
-.sd-section h2,
-.sd-section h3 {
+.sd-section-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.sd-section-head h2 {
   margin: 0;
-  font-size: 0.95rem;
+  font: 700 22px/1.2 var(--sd-serif);
+  letter-spacing: -0.02em;
 }
 
-.sd-settings button {
-  display: inline-flex;
+.sd-section-head .sd-note {
+  font-size: 15px;
+}
+
+/* A grouped list: one rounded box, its rows divided by hairlines. */
+
+.sd-list {
+  border: 1px solid var(--sd-list-line);
+  border-radius: 12px;
+}
+
+.sd-item {
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem;
-  font: inherit;
-  padding: 0.2rem 0.9rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-  background: var(--rc-bg);
-  color: var(--rc-fg);
-  cursor: pointer;
+  gap: 8px 14px;
+  min-height: 44px;
+  padding: 12px 16px;
 }
 
-.sd-settings button:disabled {
-  opacity: 0.5;
-  cursor: default;
+.sd-item + .sd-item {
+  border-top: 1px solid var(--sd-list-rule);
 }
 
-.sd-settings input,
-.sd-settings select,
-.sd-settings textarea {
-  font: inherit;
-  padding: 0.25rem 0.5rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.375rem;
-  background: var(--rc-bg);
-  color: var(--rc-fg);
+/* What is under a row's controls takes the row's whole width: a prompt,
+   seats split, or what is wrong. */
+
+.sd-item > :is(textarea, .sd-split, .sd-field-error, p) {
+  flex: 1 0 100%;
+  margin: 0;
+}
+
+.sd-item-text {
+  flex: 1 1 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   min-width: 0;
 }
 
+.sd-item-name {
+  margin: 0;
+  font: 600 15px/1.3 var(--sd-sans);
+  letter-spacing: 0;
+}
+
+.sd-item .sd-note {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.sd-item .sd-select-box {
+  width: 14rem;
+}
+
+.sd-square {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
 .sd-settings .sd-invalid {
-  border-color: var(--rc-error);
-}
-
-.sd-field {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.sd-field > span {
-  flex: 0 0 9rem;
-}
-
-.sd-field > input,
-.sd-field > select {
-  flex: 1;
-}
-
-.sd-field > input[type="number"] {
-  flex: 0 0 7rem;
+  border-color: var(--sd-warn);
+  box-shadow: 0 0 0 1px var(--sd-warn);
 }
 
 .sd-field-error {
-  margin: 0 0 0 9.5rem;
-  color: var(--rc-error);
+  margin: 0;
   font-size: 0.85rem;
   white-space: pre-wrap;
-}
-
-.sd-card .sd-field-error,
-.sd-section > .sd-field-error {
-  margin-left: 0;
-}
-
-.sd-field + .sd-field-error {
-  margin-left: 9.5rem;
-}
-
-.sd-stepper {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.sd-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  padding: 0.75rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.5rem;
-}
-
-.sd-card-head {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.sd-card-head h4 {
-  margin: 0;
-  flex: 1;
-  font-size: 0.95rem;
 }
 
 .sd-mono {
   min-height: 8rem;
   resize: vertical;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85rem;
+  font: 13px/1.5 var(--sd-mono);
 }
 
-.sd-row,
-.sd-key {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.sd-row input[type="text"],
-.sd-row input[type="password"] {
-  flex: 1;
-}
-
-.sd-note,
-.sd-url {
+.sd-note {
   margin: 0;
-  color: var(--rc-muted);
+  color: var(--sd-muted);
   font-size: 0.85rem;
+}
+
+/* Descriptions are the serif, in italic. */
+
+.sd-note {
+  font-family: var(--sd-serif);
+  font-style: italic;
 }
 
 .sd-confirm {
@@ -869,281 +1401,38 @@ body,
   flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--rc-error);
+  border: 1px solid var(--sd-warn);
   border-radius: 0.5rem;
 }
 
-.sd-settings .sd-danger {
-  border-color: var(--rc-error);
-  color: var(--rc-error);
-}
-
-/* A game's tab */
-
-.sd-settings .sd-segments {
-  align-self: flex-start;
-}
-
-.sd-settings .sd-segments button {
-  border: none;
-  border-radius: 0;
-}
-
-.sd-settings .sd-segments button + button {
-  border-left: 1px solid var(--rc-border);
-}
-
-.sd-top {
-  display: grid;
-  grid-template-columns: 1.4fr 1fr;
-  gap: 1rem;
-  align-items: start;
-}
-
-.sd-box {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  min-width: 0;
-  padding: 0.75rem 0.9rem 0.9rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.6rem;
-}
-
-.sd-box > h3 {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  margin: 0;
-  font-size: 0.9rem;
-}
-
-.sd-box > h3 .sd-note {
-  font-weight: 400;
-}
-
-.sd-box select,
-.sd-box input,
-.sd-box textarea {
-  font-size: 0.85rem;
-}
-
-.sd-roles {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(11.5rem, 1fr));
-  gap: 0.5rem;
-}
-
-.sd-roles > .sd-field-error {
-  grid-column: 1 / -1;
-  margin: 0;
-}
-
-.sd-role {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.4rem;
-  padding: 0.25rem 0.3rem 0.25rem 0.6rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.5rem;
-}
-
-.sd-role-name {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.85rem;
-  white-space: nowrap;
-}
-
-.sd-dot {
-  flex: none;
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-}
-
-.sd-stepper input {
-  box-sizing: border-box;
-  width: 2.2rem;
-  text-align: center;
-  padding: 0.15rem 0.1rem;
-  -moz-appearance: textfield;
-  appearance: textfield;
-}
-
-.sd-stepper input::-webkit-inner-spin-button,
-.sd-stepper input::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-.sd-settings .sd-stepper button {
-  width: 1.6rem;
-  height: 1.6rem;
-  justify-content: center;
-  padding: 0;
-  border-radius: 0.35rem;
-}
-
-.sd-limits {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem 1rem;
-}
-
-.sd-limit {
-  display: grid;
-  gap: 0.2rem;
-  align-content: start;
-}
-
-.sd-limit label {
-  color: var(--rc-muted);
-  font-size: 0.8rem;
-}
+/* A game's page */
 
 .sd-limit input {
-  box-sizing: border-box;
-  width: 4.75rem;
+  flex: none;
+  width: 80px;
+  text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
-.sd-limit .sd-field-error {
-  margin: 0;
-  max-width: 12rem;
-}
-
-.sd-strategies {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
-  gap: 0.75rem;
-}
-
-.sd-strategy {
-  align-content: start;
-}
-
-.sd-strategy .sd-card-head h4 {
-  flex: 1 1 5rem;
+.sd-strategy .sd-item-name {
+  flex: 1 1 6rem;
+  font-size: 16px;
   overflow-wrap: anywhere;
 }
 
-.sd-strategy .sd-card-head .sd-field {
-  flex: 0 1 auto;
-  min-width: 0;
-}
-
-.sd-strategy .sd-card-head select {
-  max-width: 9rem;
-}
-
-.sd-strategy .sd-card-head .sd-field-error {
-  flex-basis: 100%;
-  margin: 0;
-}
-
 .sd-strategy textarea {
-  min-height: 9rem;
+  min-height: 7.5rem;
 }
 
-.sd-settings .sd-remove {
-  justify-content: center;
-  width: 1.7rem;
-  height: 1.7rem;
-  padding: 0;
-  border-color: transparent;
-  border-radius: 0.35rem;
-  color: var(--rc-muted);
-  font-size: 1.1rem;
-}
-
-.sd-settings .sd-remove:hover {
-  border-color: var(--rc-border);
-  color: var(--rc-error);
-}
-
-.sd-adder {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.sd-adder input {
-  flex: 0 1 12rem;
-}
-
-.sd-adder .sd-field-error {
-  flex-basis: 100%;
-  margin: 0;
-}
-
-.sd-assign {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
-  gap: 0.5rem 1rem;
-}
-
-.sd-everyone {
-  grid-column: 1 / -1;
-}
-
-.sd-everyone .sd-field > span {
-  flex: 0 0 6.5rem;
-  font-weight: 600;
-}
-
-.sd-everyone .sd-field > select {
-  flex: 0 1 16rem;
-}
-
-.sd-everyone .sd-field + .sd-field-error {
-  margin-left: 7rem;
-}
-
-.sd-assigned {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  min-width: 0;
-}
-
-.sd-assigned-row {
-  display: grid;
-  grid-template-columns: 6.5rem minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.sd-assigned-row .sd-field {
-  min-width: 0;
-}
-
-.sd-assigned-row .sd-field > select {
-  width: 100%;
-}
-
-.sd-assigned-row .sd-field-error {
-  grid-column: 1 / -1;
-  margin: 0;
-}
-
-.sd-settings .sd-link {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--rc-accent);
-  font-size: 0.8rem;
-  white-space: nowrap;
+.sd-assigned .sd-item-name {
+  flex: 1 1 5rem;
 }
 
 .sd-split {
   display: flex;
   flex-wrap: wrap;
   gap: 0.3rem 0.8rem;
-  padding-left: 7rem;
+  padding-left: 26px;
 }
 
 .sd-seats {
@@ -1157,90 +1446,61 @@ body,
   width: 3.2rem;
 }
 
-.sd-parts {
-  display: grid;
-  grid-template-columns: 13rem minmax(0, 1fr);
-  min-height: 16rem;
-  margin: 0 -0.9rem -0.9rem;
-  border-top: 1px solid var(--rc-border);
+.sd-part .sd-item-name {
+  flex: 1 1 auto;
+  font: 700 15px/1.3 var(--sd-mono);
 }
 
-.sd-part-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  padding: 0.5rem;
-  border-right: 1px solid var(--rc-border);
+.sd-part textarea {
+  min-height: 5rem;
 }
 
-.sd-settings .sd-part {
-  justify-content: space-between;
-  padding: 0.3rem 0.5rem;
-  border: none;
-  border-radius: 0.35rem;
-  background: none;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85rem;
-  text-align: left;
-}
-
-.sd-settings .sd-part[aria-current="true"] {
-  background: var(--rc-accent);
-  color: var(--rc-accent-fg);
-}
-
-.sd-uses {
-  font-family: var(--rc-font);
-  font-size: 0.75rem;
-  opacity: 0.75;
-}
-
-.sd-part-list .sd-adder {
-  margin-top: 0.5rem;
-}
-
-.sd-part-list .sd-adder input {
-  flex: 1 1 100%;
-}
-
-.sd-part-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  min-width: 0;
-  padding: 0.6rem 0.9rem 0.9rem;
-}
-
-.sd-part-head {
+.sd-adder {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.6rem;
+  gap: 12px;
 }
 
-.sd-part-head code {
-  font-weight: 600;
+.sd-adder input {
+  flex: 0 1 21.5rem;
 }
 
-.sd-part-head .sd-note {
-  flex: 1;
-}
-
-.sd-part-editor textarea {
-  flex: 1;
-  min-height: 12rem;
+.sd-adder .sd-field-error {
+  flex-basis: 100%;
 }
 
 @media (max-width: 680px) {
-  .sd-top,
-  .sd-parts,
-  .sd-strategies {
-    grid-template-columns: 1fr;
+  .sd-settings-window {
+    height: auto;
+    min-height: 100vh;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
   }
 
-  .sd-part-list {
+  .sd-sidebar {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 10px 16px;
     border-right: none;
-    border-bottom: 1px solid var(--rc-border);
+    border-bottom: 1px solid var(--sd-rule);
+  }
+
+  .sd-sidebar-label {
+    margin: 0 4px 0 10px;
+  }
+
+  .sd-settings {
+    overflow: visible;
+  }
+
+  .sd-page {
+    padding: 24px 16px 40px;
+  }
+
+  .sd-item .sd-select-box {
+    width: auto;
   }
 
   .sd-split {
@@ -1255,7 +1515,7 @@ body,
   z-index: 10;
   max-width: 300px;
   padding: 7px 10px;
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--tip-bg);
   color: var(--tip-ink);
   font-size: 12.5px;
@@ -1280,171 +1540,131 @@ label[data-tip] {
   cursor: help;
 }
 
-/* The Models tab */
+/* The Models page: the checking line in a gray well, then a section
+   per provider under a rule. */
 
 .sd-status {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.5rem;
-  background: color-mix(in srgb, var(--rc-accent) 12%, transparent);
-  font-size: 0.85rem;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: var(--sd-well);
+  font: 15px/1.4 var(--sd-serif);
 }
 
 .sd-status .sd-spinner {
   flex: none;
-  color: var(--rc-accent);
 }
 
-.sd-provider h4 {
-  flex: 0 1 auto;
+.sd-provider {
+  gap: 16px;
+  padding: 24px 0;
+  border-top: 1px solid var(--sd-rule);
 }
 
-.sd-provider .sd-url {
-  flex: 1;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  overflow-wrap: anywhere;
+/* A label over its grouped list. */
+
+.sd-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.sd-key {
-  flex-wrap: wrap;
-  font-size: 0.85rem;
-}
-
-.sd-key input[type="password"] {
-  flex: 1 1 14rem;
-  max-width: 22rem;
-}
-
-.sd-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.1rem 0.6rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 999px;
-  color: var(--rc-muted);
-  font-size: 0.8rem;
-  white-space: nowrap;
-}
-
-.sd-chip-good {
-  border-color: transparent;
-  background: color-mix(in srgb, #16a34a 15%, transparent);
-  color: color-mix(in srgb, #16a34a 75%, var(--rc-fg));
-}
-
-.sd-chip-bad {
-  border-color: transparent;
-  background: color-mix(in srgb, var(--rc-error) 15%, transparent);
-  color: var(--rc-error);
-}
-
-.sd-settings button.sd-link {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--rc-accent);
-  font-size: 0.85rem;
-}
-
-.sd-settings button.sd-link:hover {
-  text-decoration: underline;
-}
-
-.sd-settings button.sd-primary {
-  border-color: var(--rc-accent);
-  background: var(--rc-accent);
-  color: var(--rc-accent-fg);
-}
-
-.sd-label {
-  margin: 0.4rem 0 0;
-  color: var(--rc-muted);
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.sd-models {
-  display: grid;
-  gap: 0.25rem;
-}
-
-.sd-model {
-  display: grid;
-  grid-template-columns: minmax(7rem, 1fr) minmax(9rem, 1.3fr) auto auto;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.3rem 0.5rem;
-  border: 1px solid var(--rc-border);
-  border-radius: 0.4rem;
-}
-
-.sd-model > p {
-  grid-column: 1 / -1;
+.sd-group .sd-label {
   margin: 0;
 }
 
-.sd-offered {
-  grid-template-columns: minmax(9rem, 1fr) auto auto;
-  border-style: dashed;
+.sd-url {
+  flex: 1;
+  color: var(--sd-muted);
+  font: 13px var(--sd-mono);
+  overflow-wrap: anywhere;
 }
 
-.sd-adding {
-  grid-template-columns: minmax(9rem, 1fr) minmax(8rem, 1fr) auto auto;
+/* The key: a gray chip saying where it is, then its quiet action, and
+   the keychain's field below. */
+
+.sd-key,
+.sd-key-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
 }
 
-.sd-warned {
-  border-color: #d97706;
+.sd-key-form input,
+.sd-add-provider input {
+  flex: 1 1 14rem;
 }
 
-.sd-warning {
-  color: #b45309;
-  font-size: 0.85rem;
+.sd-key-form input {
+  max-width: 22rem;
 }
+
+/* A key that is in place: the chip, with a small check. */
+
+.sd-chip-good::before {
+  content: "✓";
+  font-weight: 700;
+}
+
+.sd-chip-bad {
+  padding-left: 0;
+  background: none;
+}
+
+/* A model's row: its name, its id, its context window and what resets or
+   removes it. A model offered has its id, its window and Add. */
 
 .sd-id {
+  flex: 1 1 10rem;
   min-width: 0;
-  color: var(--rc-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.8rem;
+  color: var(--sd-muted);
+  font: 13px/1.4 var(--sd-mono);
   overflow-wrap: anywhere;
 }
 
 .sd-settings input.sd-name {
+  flex: none;
+  width: 140px;
+  font-size: 15px;
   font-weight: 600;
-  border-color: transparent;
-  background: transparent;
-}
-
-.sd-settings input.sd-name:hover,
-.sd-settings input.sd-name:focus {
-  border-color: var(--rc-border);
 }
 
 .sd-window {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 12px;
 }
 
 .sd-window input {
-  width: 7.5rem;
+  width: 120px;
   text-align: right;
 }
 
-.sd-settings button.sd-remove {
-  padding: 0 0.5rem;
-  border-color: transparent;
+.sd-window input {
+  font-variant-numeric: tabular-nums;
 }
 
-@media (max-width: 600px) {
-  .sd-model,
-  .sd-offered,
-  .sd-adding {
-    grid-template-columns: 1fr auto;
-  }
+.sd-window > span,
+.sd-tokens {
+  color: var(--sd-muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-adding input {
+  flex: 1 1 10rem;
+}
+
+.sd-add-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sd-add-provider .sd-item-name {
+  flex: 0 0 8rem;
 }

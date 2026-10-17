@@ -1,6 +1,6 @@
-//! The desktop app's Settings window: General, Models, Werewolf and
-//! Avalon tabs, with every change stored the moment it is made and each
-//! field's error in red beneath it.
+//! The desktop app's Settings window: a sidebar of pages, General, Models
+//! and one per game, each page a few grouped lists, with every change
+//! stored the moment it is made and each field's error beneath it.
 //!
 //! The window holds a copy of the [`AppSettings`]. Each change is made to
 //! it and sent to the backend whole, which stores it and answers with what
@@ -28,15 +28,15 @@ mod models;
 use game::GameTab;
 use models::Models;
 
-/// The tabs, in order.
-const TABS: [Tab; 4] = [
-    Tab::General,
-    Tab::Models,
-    Tab::Game(GameName::Werewolf),
-    Tab::Game(GameName::Avalon),
-];
+/// The pages, in order: General, Models, then one per game.
+fn tabs() -> Vec<Tab> {
+    [Tab::General, Tab::Models]
+        .into_iter()
+        .chain(GameName::ALL.map(Tab::Game))
+        .collect()
+}
 
-/// A tab of the window.
+/// A page of the window, a tab of its sidebar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     /// The look.
@@ -58,16 +58,25 @@ impl Tab {
     }
 
     /// What the tab holds, as its help says.
-    pub fn tip(self) -> &'static str {
+    pub fn tip(self) -> String {
         match self {
-            Tab::General => "The app's appearance.",
-            Tab::Models => "Model providers, their keys, and the models strategies can use.",
-            Tab::Game(GameName::Werewolf) => {
-                "Werewolf's players, phase limits, strategies and prompt parts."
+            Tab::General => "The app's appearance.".to_string(),
+            Tab::Models => {
+                "Model providers, their keys, and the models strategies can use.".to_string()
             }
-            Tab::Game(GameName::Avalon) => {
-                "Avalon's players, phase limits, strategies and prompt parts."
-            }
+            Tab::Game(game) => format!(
+                "{}'s players, phase limits, strategies and prompt parts.",
+                game_title(game)
+            ),
+        }
+    }
+
+    /// The id of the tab's button in the sidebar.
+    fn id(self) -> String {
+        match self {
+            Tab::General => "tab-general".to_string(),
+            Tab::Models => "tab-models".to_string(),
+            Tab::Game(game) => format!("tab-{}", game_key(game)),
         }
     }
 
@@ -75,10 +84,28 @@ impl Tab {
     pub fn of(path: &[String]) -> Tab {
         match path.first().map(String::as_str) {
             Some("models") => Tab::Models,
-            Some(key) if key == game_key(GameName::Werewolf) => Tab::Game(GameName::Werewolf),
-            Some(key) if key == game_key(GameName::Avalon) => Tab::Game(GameName::Avalon),
-            _ => Tab::General,
+            Some(key) => GameName::ALL
+                .into_iter()
+                .find(|&game| game_key(game) == key)
+                .map_or(Tab::General, Tab::Game),
+            None => Tab::General,
         }
+    }
+
+    /// The tab the key `key` moves to from this one, if it moves any: an
+    /// arrow to the next or the previous, round the ends, and Home and End
+    /// to the first and the last.
+    pub fn moved(self, key: &str) -> Option<Tab> {
+        let tabs = tabs();
+        let at = tabs.iter().position(|&tab| tab == self)?;
+        let to = match key {
+            "ArrowDown" | "ArrowRight" => (at + 1) % tabs.len(),
+            "ArrowUp" | "ArrowLeft" => (at + tabs.len() - 1) % tabs.len(),
+            "Home" => 0,
+            "End" => tabs.len() - 1,
+            _ => return None,
+        };
+        Some(tabs[to])
     }
 }
 
@@ -246,43 +273,65 @@ pub fn SettingsWindow() -> impl IntoView {
         );
     });
 
+    // The arrows, Home and End move between the pages, and the focus
+    // goes with them.
+    let step = move |event: web_sys::KeyboardEvent| {
+        let Some(to) = tab.get_untracked().moved(&event.key()) else {
+            return;
+        };
+        event.prevent_default();
+        tab.set(to);
+        if let Some(button) = document()
+            .get_element_by_id(&to.id())
+            .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+        {
+            let _ = button.focus();
+        }
+    };
+
+    let button = move |each: Tab| {
+        let on = move || tab.get() == each;
+        view! {
+            <button
+                role="tab"
+                id=each.id()
+                data-tip=each.tip()
+                aria-selected=move || on().to_string()
+                tabindex=move || if on() { "0" } else { "-1" }
+                on:click=move |_| tab.set(each)
+            >
+                {each.title()}
+            </button>
+        }
+    };
+
     view! {
         <RichChatStyle highlight=false fonts=false />
         <Tips />
         <div class="sd-settings-window">
-            <nav class="sd-tabs" role="tablist">
-                {TABS
-                    .into_iter()
-                    .map(|each| {
-                        view! {
-                            <button
-                                role="tab"
-                                data-tip=each.tip()
-                                class:sd-tab-on=move || tab.get() == each
-                                aria-selected=move || (tab.get() == each).to_string()
-                                on:click=move |_| tab.set(each)
-                            >
-                                {each.title()}
-                            </button>
-                        }
-                    })
-                    .collect_view()}
+            <nav class="sd-sidebar" role="tablist" aria-orientation="vertical" aria-label="Settings" on:keydown=step>
+                {button(Tab::General)}
+                {button(Tab::Models)}
+                <div class="sd-sidebar-label" role="presentation">"Games"</div>
+                {GameName::ALL.into_iter().map(|game| button(Tab::Game(game))).collect_view()}
             </nav>
             <main class="sd-settings">
-                // Nothing is changed before the settings have come, so
-                // that no change overwrites them.
-                {move || match (loaded.get(), tab.get()) {
-                    (false, _) => ().into_any(),
-                    (true, Tab::General) => view! { <General editor=editor /> }.into_any(),
-                    (true, Tab::Models) => view! { <Models editor=editor /> }.into_any(),
-                    (true, Tab::Game(game)) => view! { <GameTab editor=editor game=game /> }.into_any(),
-                }}
+                <div class="sd-page">
+                    // Nothing is changed before the settings have come, so
+                    // that no change overwrites them.
+                    {move || match (loaded.get(), tab.get()) {
+                        (false, _) => ().into_any(),
+                        (true, Tab::General) => view! { <General editor=editor /> }.into_any(),
+                        (true, Tab::Models) => view! { <Models editor=editor /> }.into_any(),
+                        (true, Tab::Game(game)) => view! { <GameTab editor=editor game=game /> }.into_any(),
+                    }}
+                </div>
             </main>
         </div>
     }
 }
 
-/// An error beneath a field, in red.
+/// An error beneath a field, flagged in marigold.
 #[component]
 fn Problem(error: Signal<Option<String>>) -> impl IntoView {
     move || {
@@ -292,48 +341,139 @@ fn Problem(error: Signal<Option<String>>) -> impl IntoView {
     }
 }
 
-/// The General tab: the look.
+/// A page's title, with its action, if it has one, on the right.
 #[component]
-fn General(editor: Editor) -> impl IntoView {
-    let appearance = move |choice: Appearance, title: &'static str, tip: &'static str| {
-        let chosen = move || editor.settings.with(|s| s.general.appearance == choice);
-        view! {
-            <button
-                data-tip=tip
-                class:sd-segment-on=chosen
-                aria-pressed=move || chosen().to_string()
-                on:click=move |_| editor.edit(|s| s.general.appearance = choice)
-            >
-                {title}
-            </button>
-        }
-    };
+fn PageHead(
+    title: &'static str,
+    #[prop(into)] tip: String,
+    #[prop(optional)] children: Option<Children>,
+) -> impl IntoView {
+    view! {
+        <header class="sd-page-head">
+            <h1 data-tip=tip>{title}</h1>
+            {children.map(|children| children())}
+        </header>
+    }
+}
+
+/// A section of a page: its title, a note beside it, and what it holds,
+/// most often a grouped list.
+#[component]
+fn Section(
+    title: &'static str,
+    #[prop(into)] tip: String,
+    #[prop(optional)] note: Option<AnyView>,
+    children: Children,
+) -> impl IntoView {
     view! {
         <section class="sd-section">
-            <h2 data-tip="How the app looks.">"Appearance"</h2>
-            <div class="sd-segments" role="group" aria-label="Appearance">
-                {appearance(Appearance::System, "System", "Follow the system's look. Werewolf turns dark by night and light by day.")}
-                {appearance(Appearance::Light, "Light", "Always light, whatever the system or the game shows.")}
-                {appearance(Appearance::Dark, "Dark", "Always dark, whatever the system or the game shows.")}
+            <div class="sd-section-head">
+                <h2 data-tip=tip>{title}</h2>
+                {note}
             </div>
-            <p class="sd-note">"System follows the system's look, and keeps Werewolf dark by night and light by day."</p>
+            {children()}
         </section>
     }
 }
 
+/// A row's name, with what it does written under it, naming the field
+/// `field` when it has one.
+#[component]
+fn Named(
+    #[prop(into)] name: String,
+    #[prop(into)] note: String,
+    #[prop(optional, into)] field: Option<String>,
+) -> impl IntoView {
+    view! {
+        <div class="sd-item-text">
+            <label class="sd-item-name" for=field>{name}</label>
+            <span class="sd-note">{note}</span>
+        </div>
+    }
+}
+
+/// A segmented control named `label`: a button for each of `options`, a
+/// value with its title and help, the one `value` holds raised, and `set`
+/// called with the one pressed.
+#[component]
+fn Segments<T: Copy + PartialEq + Send + Sync + 'static>(
+    label: &'static str,
+    options: Vec<(T, &'static str, &'static str)>,
+    value: Signal<T>,
+    set: Callback<T>,
+    #[prop(optional, into)] id: Option<String>,
+) -> impl IntoView {
+    view! {
+        <div class="sd-segments" role="group" aria-label=label tabindex=id.as_ref().map(|_| "-1") id=id>
+            {options
+                .into_iter()
+                .map(|(choice, title, tip)| {
+                    let chosen = move || value.get() == choice;
+                    view! {
+                        <button
+                            data-tip=tip
+                            class:sd-segment-on=chosen
+                            aria-pressed=move || chosen().to_string()
+                            on:click=move |_| set.run(choice)
+                        >
+                            {title}
+                        </button>
+                    }
+                })
+                .collect_view()}
+        </div>
+    }
+}
+
+/// The General page: the look.
+#[component]
+fn General(editor: Editor) -> impl IntoView {
+    let appearance = Memo::new(move |_| editor.settings.with(|s| s.general.appearance));
+    let set = Callback::new(move |choice| editor.edit(|s| s.general.appearance = choice));
+    view! {
+        <PageHead title="General" tip=Tab::General.tip() />
+        <Section title="Appearance" tip="How the app looks.">
+            <div class="sd-list">
+                <div class="sd-item">
+                    <Named name="Appearance" note="System follows the system's look, and keeps Werewolf dark by night and light by day." />
+                    <Segments
+                        label="Appearance"
+                        options=vec![
+                            (Appearance::System, "System", "Follow the system's look. Werewolf turns dark by night and light by day."),
+                            (Appearance::Light, "Light", "Always light, whatever the system or the game shows."),
+                            (Appearance::Dark, "Dark", "Always dark, whatever the system or the game shows."),
+                        ]
+                        value=appearance.into()
+                        set=set
+                    />
+                </div>
+            </div>
+        </Section>
+    }
+}
+
+/// The × of a remove button, a muted stroke the button's `aria-label`
+/// names.
+#[component]
+fn Cross() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
+            <path d="M3 3l8 8M11 3l-8 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
+    }
+}
+
 /// A select among `options`, each a value and its label, over `value`,
-/// which `set` changes, with the error at `at` beneath it. Without a
-/// `label`, the select is named by its `tip`.
+/// which `set` changes, with the error at `at` beneath it. The select is
+/// named by its `tip`.
 #[component]
 fn Choice(
-    #[prop(optional, into)] label: Option<String>,
     value: Signal<String>,
     options: Signal<Vec<(String, String)>>,
     set: Callback<String>,
     editor: Editor,
     at: Vec<String>,
-    #[prop(optional, into)] tip: Option<String>,
-    #[prop(optional, into)] label_tip: Option<String>,
+    #[prop(into)] tip: String,
 ) -> impl IntoView {
     let error = editor.error(at.clone());
     let choices = move || {
@@ -351,15 +491,12 @@ fn Choice(
             })
             .collect_view()
     };
-    let named = label.is_none().then(|| tip.clone()).flatten();
-    let shown = label.map(|label| view! { <span data-tip=label_tip>{label}</span> });
     view! {
-        <label class="sd-field">
-            {shown}
+        <span class="sd-select-box">
             <select
                 class="sd-select"
                 id=field_id(&at)
-                aria-label=named
+                aria-label=tip.clone()
                 data-tip=tip
                 class:sd-invalid=move || error.with(Option::is_some)
                 prop:value=move || value.get()
@@ -367,7 +504,10 @@ fn Choice(
             >
                 {choices}
             </select>
-        </label>
+            <svg class="sd-chevron" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+                <path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+        </span>
         <Problem error=error />
     }
 }
@@ -386,8 +526,29 @@ mod tests {
         assert_eq!(Tab::of(&path(&["avalon"])), Tab::Game(GameName::Avalon));
         assert_eq!(Tab::of(&path(&["general", "appearance"])), Tab::General);
         assert_eq!(Tab::of(&[]), Tab::General);
-        let titles: Vec<&str> = TABS.iter().map(|tab| tab.title()).collect();
+        let titles: Vec<&str> = tabs().iter().map(|tab| tab.title()).collect();
         assert_eq!(titles, ["General", "Models", "Werewolf", "Avalon"]);
+        let ids: Vec<String> = tabs().iter().map(|tab| tab.id()).collect();
+        assert_eq!(
+            ids,
+            ["tab-general", "tab-models", "tab-werewolf", "tab-avalon"]
+        );
+        assert_eq!(
+            Tab::Game(GameName::Avalon).tip(),
+            "Avalon's players, phase limits, strategies and prompt parts."
+        );
+    }
+
+    #[test]
+    fn the_arrows_home_and_end_move_between_the_pages() {
+        let avalon = Tab::Game(GameName::Avalon);
+        assert_eq!(Tab::General.moved("ArrowDown"), Some(Tab::Models));
+        assert_eq!(Tab::Models.moved("ArrowUp"), Some(Tab::General));
+        assert_eq!(Tab::General.moved("ArrowLeft"), Some(avalon));
+        assert_eq!(avalon.moved("ArrowRight"), Some(Tab::General));
+        assert_eq!(Tab::Models.moved("Home"), Some(Tab::General));
+        assert_eq!(Tab::Models.moved("End"), Some(avalon));
+        assert_eq!(Tab::Models.moved("a"), None);
     }
 
     #[test]

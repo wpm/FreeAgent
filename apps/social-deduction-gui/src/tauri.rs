@@ -130,11 +130,6 @@ pub fn settings_open(path: Option<Vec<String>>) {
     background("settings_open", json!({ "path": path }));
 }
 
-/// Choose `game` to play.
-pub fn game_choose(game: GameName) {
-    background("game_choose", json!({ "game": game }));
-}
-
 /// The settings `game` starts from.
 ///
 /// # Errors

@@ -134,7 +134,6 @@ fn every_beat_round_trips() {
                 name: player(3),
                 label: "Player 3 · seer".into(),
                 role: Role::Seer,
-                side: Side::Good,
                 strategy: "Trust no one.".into(),
             }],
         },
@@ -206,4 +205,29 @@ fn roles_display_as_the_console_names_them() {
         assert_eq!(role.to_string(), name);
         round_trips(role);
     }
+}
+
+#[test]
+fn every_role_is_on_its_side_and_found_by_its_key() {
+    for role in Role::ALL {
+        let key = role.to_string().to_lowercase();
+        assert_eq!(Role::from_key(&key), Some(role), "{key}");
+    }
+    let evil = [
+        Role::Werewolf,
+        Role::Assassin,
+        Role::Morgana,
+        Role::Mordred,
+        Role::Oberon,
+        Role::Minion,
+    ];
+    for role in Role::ALL {
+        let side = if evil.contains(&role) {
+            Side::Evil
+        } else {
+            Side::Good
+        };
+        assert_eq!(role.side(), side, "{role}");
+    }
+    assert_eq!(Role::from_key("jester"), None);
 }

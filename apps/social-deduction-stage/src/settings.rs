@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::GameName;
+use crate::{GameName, Role, Side};
 
 /// The strategy that is always defined, with the random policy.
 pub const RANDOM: &str = "random";
@@ -54,7 +54,7 @@ impl AppSettings {
     /// · gpt-4.1-mini`, with the ids of the models in play, if any.
     pub fn summary(&self, game: GameName) -> String {
         let settings = self.game(game);
-        let players = settings.players();
+        let players = settings.seats().len();
         let at_the_table = settings.at_the_table();
         let mut parts = vec![
             plural(players, "player", "players"),
@@ -142,7 +142,7 @@ impl AppSettings {
     /// The prompted strategies that ask the model `name`, each as its game
     /// and its name: `Werewolf “everyone”`.
     pub fn users_of_model(&self, name: &str) -> Vec<String> {
-        [GameName::Werewolf, GameName::Avalon]
+        GameName::ALL
             .into_iter()
             .flat_map(|game| {
                 let settings = self.game(game);
@@ -284,23 +284,11 @@ pub fn game_title(game: GameName) -> &'static str {
 }
 
 /// What belongs to neither game.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct General {
     /// How the app looks.
     pub appearance: Appearance,
-    /// The game chosen to play.
-    pub game: GameName,
-}
-
-impl Default for General {
-    /// The system's look, and Werewolf.
-    fn default() -> Self {
-        Self {
-            appearance: Appearance::System,
-            game: GameName::Werewolf,
-        }
-    }
 }
 
 /// How the app looks.
@@ -383,9 +371,20 @@ impl Default for GameSettings {
 }
 
 impl GameSettings {
-    /// How many players sit at the table.
-    pub fn players(&self) -> usize {
-        self.roles.iter().map(|role| role.count).sum()
+    /// The side of each seat at the table, evil first. Loading lists only a
+    /// game's own roles, so every key names a role.
+    pub fn seats(&self) -> Vec<Side> {
+        let mut seats: Vec<Side> = self
+            .roles
+            .iter()
+            .flat_map(|role| {
+                let known = Role::from_key(&role.key);
+                let side = known.unwrap_or_else(|| panic!("{} is not a role", role.key));
+                std::iter::repeat_n(side.side(), role.count)
+            })
+            .collect();
+        seats.sort_by_key(|side| *side != Side::Evil);
+        seats
     }
 
     /// The names of the strategies allotted a seat, as a game allots them:
@@ -830,6 +829,33 @@ mod tests {
     }
 
     #[test]
+    fn a_game_s_seats_are_its_roles_sides_evil_first() {
+        let settings = GameSettings {
+            roles: vec![
+                role("villager", 2, None),
+                role("werewolf", 1, None),
+                role("seer", 1, None),
+                role("doctor", 0, None),
+            ],
+            ..GameSettings::default()
+        };
+        assert_eq!(
+            settings.seats(),
+            [Side::Evil, Side::Good, Side::Good, Side::Good]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "wizard is not a role")]
+    fn every_role_has_a_seat() {
+        let settings = GameSettings {
+            roles: vec![role("wizard", 1, None)],
+            ..GameSettings::default()
+        };
+        settings.seats();
+    }
+
+    #[test]
     fn a_role_s_strategies_come_first_and_its_own_strategy_fills_the_rest() {
         let mut settings = GameSettings::default();
         let mut servant = role("servant", 3, Some("filler"));
@@ -906,7 +932,6 @@ mod tests {
         let settings: AppSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(settings, AppSettings::default());
         assert_eq!(settings.werewolf.strategy, RANDOM);
-        assert_eq!(settings.general.game, GameName::Werewolf);
     }
 
     #[test]

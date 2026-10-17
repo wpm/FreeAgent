@@ -29,9 +29,6 @@ pub trait Staged: Game {
     /// `role` as the viewer colors it.
     fn role(role: Self::Role) -> Role;
 
-    /// The side `role` wins with.
-    fn side(role: Self::Role) -> Side;
-
     /// The side that won and how, as the narrator tells it, if `event`
     /// ends the game.
     fn winner(event: &Self::Event) -> Option<(Side, String)>;
@@ -201,7 +198,6 @@ fn cast<G: Staged>(
                 name: name.clone(),
                 label: format!("{name} · {}", capitalized(&role.to_string())),
                 role: G::role(role),
-                side: G::side(role),
                 strategy: strategies[name].clone(),
             }
         })
@@ -266,10 +262,6 @@ impl Staged for Avalon {
         }
     }
 
-    fn side(role: avalon::Role) -> Side {
-        side(role.team())
-    }
-
     fn winner(event: &avalon::Outcome) -> Option<(Side, String)> {
         match event {
             avalon::Outcome::End { winner, by, .. } => {
@@ -304,10 +296,6 @@ impl Staged for Werewolf {
             werewolf::Role::Doctor => Role::Doctor,
             werewolf::Role::Seer => Role::Seer,
         }
-    }
-
-    fn side(role: werewolf::Role) -> Side {
-        team(role.team())
     }
 
     fn winner(event: &werewolf::Outcome) -> Option<(Side, String)> {
@@ -352,6 +340,30 @@ mod tests {
         let (episode, _, log) = episode(roles, rules, HashMap::new());
         episode.run(Duration::from_secs(60 * 60)).await.unwrap();
         drained(log).await
+    }
+
+    #[test]
+    fn the_viewer_puts_every_role_on_the_side_it_wins_with() {
+        for role in [
+            avalon::Role::Merlin,
+            avalon::Role::Percival,
+            avalon::Role::Servant,
+            avalon::Role::Assassin,
+            avalon::Role::Morgana,
+            avalon::Role::Mordred,
+            avalon::Role::Oberon,
+            avalon::Role::Minion,
+        ] {
+            assert_eq!(Avalon::role(role).side(), side(role.team()), "{role:?}");
+        }
+        for role in [
+            werewolf::Role::Werewolf,
+            werewolf::Role::Villager,
+            werewolf::Role::Doctor,
+            werewolf::Role::Seer,
+        ] {
+            assert_eq!(Werewolf::role(role).side(), team(role.team()), "{role:?}");
+        }
     }
 
     /// The cues a fresh stage folds `events` into.
@@ -422,7 +434,6 @@ mod tests {
                     name: name.clone(),
                     label: format!("{name} · {}", capitalized(&role.to_string())),
                     role: G::role(role),
-                    side: G::side(role),
                     strategy: RANDOM.to_string(),
                 }
             })

@@ -1,13 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#3b2a63"/>
-      <stop offset="1" stop-color="#141026"/>
-    </linearGradient>
-  </defs>
-  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#bg)"/>
-  <circle cx="712" cy="290" r="110" fill="#f4e9c8"/>
-  <circle cx="760" cy="252" r="96" fill="#2c2050"/>
-  <path d="M210 420h300a60 60 0 0 1 60 60v150a60 60 0 0 1-60 60H330l-90 70 18-70h-48a60 60 0 0 1-60-60V480a60 60 0 0 1 60-60z" fill="#c8524a"/>
-  <path d="M814 560H574a60 60 0 0 0-60 60v120a60 60 0 0 0 60 60h150l84 62-14-62h20a60 60 0 0 0 60-60V620a60 60 0 0 0-60-60z" fill="#5a8fd8"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 88 88">
+  <rect x="0.5" y="0.5" width="87" height="87" rx="19.5" fill="#fff" stroke="#d6d6d6"/>
+  <path d="M14 26h32a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4H26l-9 8 2-8h-5a4 4 0 0 1-4-4V30a4 4 0 0 1 4-4z" fill="#d2001f"/>
+  <path d="M74 40H44a4 4 0 0 0-4 4v16a4 4 0 0 0 4 4h18l9 8-2-8h5a4 4 0 0 0 4-4V44a4 4 0 0 0-4-4z" fill="#2438e8" stroke="#fff" stroke-width="3"/>
 </svg>

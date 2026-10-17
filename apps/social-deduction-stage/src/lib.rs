@@ -89,6 +89,26 @@ pub enum GameName {
     Avalon,
 }
 
+impl GameName {
+    /// Every game, in the order the app lists them.
+    pub const ALL: [GameName; 2] = [GameName::Werewolf, GameName::Avalon];
+
+    /// What the game is, in a sentence or two.
+    pub fn description(self) -> &'static str {
+        match self {
+            GameName::Werewolf => {
+                "A village hides its werewolves. Each night the wolves kill, the seer learns one \
+                 player’s nature and the doctor saves one life. Each day the village argues and \
+                 votes someone out."
+            }
+            GameName::Avalon => {
+                "Arthur’s servants send teams on quests; Mordred’s minions slip onto them and \
+                 sabotage. Three good quests win it, unless the Assassin can name Merlin."
+            }
+        }
+    }
+}
+
 /// A side of the game: good players speak from the right, evil from the
 /// left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,15 +143,14 @@ pub struct Seat {
     /// The name with its role, `Player 3 · Seer`: the bubble's name and its
     /// key in the list of names.
     pub label: String,
-    /// The player's role, which colors their bubbles.
+    /// The player's role, which the board names, and whose side seats
+    /// them left or right and colors their marks.
     pub role: Role,
-    /// The player's side, which seats them left or right.
-    pub side: Side,
     /// The strategy the player was dealt.
     pub strategy: String,
 }
 
-/// Every role of every game, so colors can be keyed by role.
+/// Every role of every game.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
     /// Werewolf's villager.
@@ -158,6 +177,49 @@ pub enum Role {
     Oberon,
     /// Avalon's minion of Mordred.
     Minion,
+}
+
+impl Role {
+    /// Every role, Werewolf's then Avalon's.
+    pub const ALL: [Role; 12] = [
+        Role::Villager,
+        Role::Seer,
+        Role::Doctor,
+        Role::Werewolf,
+        Role::Merlin,
+        Role::Percival,
+        Role::Servant,
+        Role::Assassin,
+        Role::Morgana,
+        Role::Mordred,
+        Role::Oberon,
+        Role::Minion,
+    ];
+
+    /// The side the role plays on.
+    pub fn side(self) -> Side {
+        match self {
+            Role::Villager
+            | Role::Seer
+            | Role::Doctor
+            | Role::Merlin
+            | Role::Percival
+            | Role::Servant => Side::Good,
+            Role::Werewolf
+            | Role::Assassin
+            | Role::Morgana
+            | Role::Mordred
+            | Role::Oberon
+            | Role::Minion => Side::Evil,
+        }
+    }
+
+    /// The role whose settings key is `key`: `seer`, `merlin`.
+    pub fn from_key(key: &str) -> Option<Role> {
+        Role::ALL
+            .into_iter()
+            .find(|role| role.to_string().eq_ignore_ascii_case(key))
+    }
 }
 
 /// A role displays as the console names it: `seer`, `werewolf`, `Merlin`,
@@ -407,4 +469,16 @@ pub struct Assassination {
     pub target: Option<PlayerId>,
     /// Whether the target was Merlin, `None` until resolved.
     pub merlin: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_game_says_what_it_is() {
+        for game in GameName::ALL {
+            assert!(!game.description().is_empty());
+        }
+    }
 }
