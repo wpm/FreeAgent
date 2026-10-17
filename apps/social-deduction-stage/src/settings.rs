@@ -284,23 +284,11 @@ pub fn game_title(game: GameName) -> &'static str {
 }
 
 /// What belongs to neither game.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct General {
     /// How the app looks.
     pub appearance: Appearance,
-    /// The game chosen to play.
-    pub game: GameName,
-}
-
-impl Default for General {
-    /// The system's look, and Werewolf.
-    fn default() -> Self {
-        Self {
-            appearance: Appearance::System,
-            game: GameName::Werewolf,
-        }
-    }
 }
 
 /// How the app looks.
@@ -944,7 +932,6 @@ mod tests {
         let settings: AppSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(settings, AppSettings::default());
         assert_eq!(settings.werewolf.strategy, RANDOM);
-        assert_eq!(settings.general.game, GameName::Werewolf);
     }
 
     #[test]

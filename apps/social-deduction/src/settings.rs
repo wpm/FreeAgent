@@ -343,7 +343,6 @@ pub fn import(app: &mut AppSettings, imported: Imported) {
         app.models.insert(taken, model);
     }
     *app.game_mut(game) = settings;
-    app.general.game = game;
 }
 
 /// The settings of the example configuration of `game`, which **Restore
@@ -362,13 +361,12 @@ pub fn game_defaults(game: GameName) -> GameSettings {
 }
 
 /// The settings the app starts from: each game's example, with their
-/// models, and Werewolf chosen to play.
+/// models.
 pub fn defaults() -> AppSettings {
     let mut app = AppSettings::default();
     for (game, _) in EXAMPLES {
         import(&mut app, example(game));
     }
-    app.general.game = GameName::Werewolf;
     app
 }
 
@@ -676,7 +674,6 @@ mod tests {
     #[test]
     fn the_defaults_are_each_game_s_prompted_example_and_have_no_error() {
         let app = defaults();
-        assert_eq!(app.general.game, GameName::Werewolf);
         assert_eq!(app.models.keys().collect::<Vec<_>>(), ["qwen"]);
         assert_eq!(app.werewolf, game_defaults(GameName::Werewolf));
         assert_eq!(app.avalon, game_defaults(GameName::Avalon));
@@ -830,7 +827,6 @@ mod tests {
         for game in GameName::ALL {
             let mut back = app.clone();
             import(&mut back, Imported::parse(&text(&app, game)).unwrap());
-            back.general.game = app.general.game;
             assert_eq!(back, app, "{game:?}");
         }
     }

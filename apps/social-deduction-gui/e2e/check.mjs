@@ -540,7 +540,7 @@ await section('favicon', async () => {
 // answers each command with what the app would start with.
 const desktop = {
   settings: {
-    general: { appearance: 'system', game: 'Werewolf' },
+    general: { appearance: 'system' },
     providers: [
       { name: 'Broke', base_url: 'https://api.broke.example/v1', api_key_env: 'BROKE_API_KEY' },
       { name: 'Mute', base_url: 'https://api.mute.example/v1', api_key_env: 'MUTE_API_KEY' },
