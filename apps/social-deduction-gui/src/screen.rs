@@ -348,8 +348,11 @@ impl Screen {
     }
 
     /// The phase's countdown, from the latest board of either game, while
-    /// the phase is not closing.
+    /// the game goes on and the phase is not closing.
     pub fn phase_timer(&self) -> Option<Timer> {
+        if self.outcome.is_some() {
+            return None;
+        }
         let (began, limit_ms) = match self.panel.as_ref()? {
             Panel::Avalon(panel) => (panel.began, panel.limit_ms),
             Panel::Werewolf(panel) if panel.closing.is_none() => (panel.began, panel.limit_ms),
@@ -365,7 +368,8 @@ impl Screen {
     /// Whether the Werewolf phase underway is closing, when the header
     /// shows [`CLOSING`] in place of its clock.
     pub fn closing(&self) -> bool {
-        matches!(&self.panel, Some(Panel::Werewolf(panel)) if panel.closing.is_some())
+        self.outcome.is_none()
+            && matches!(&self.panel, Some(Panel::Werewolf(panel)) if panel.closing.is_some())
     }
 
     /// The root element's `data-theme`: `dark` by night and `light` by day
@@ -1276,6 +1280,19 @@ mod tests {
         assert!(!night.closing());
         assert!(night.phase_timer().is_some());
         assert!(!shown(&[cast(), panel(&board())]).closing());
+    }
+
+    #[test]
+    fn a_game_over_shows_neither_clock_nor_closing() {
+        let over = cue(Beat::Over {
+            outcome: Outcome::Stopped,
+        });
+        let avalon = shown(&[cast(), panel(&board()), over.clone()]);
+        assert_eq!(avalon.phase_timer(), None);
+        let night = shown(&[werewolf_cast(), tonight(), over.clone()]);
+        assert_eq!(night.phase_timer(), None);
+        let closed = shown(&[werewolf_cast(), werewolf(&closing(&deciding())), over]);
+        assert!(!closed.closing());
     }
 
     #[test]
