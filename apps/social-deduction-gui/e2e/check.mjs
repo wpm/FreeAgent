@@ -16,8 +16,11 @@
 // it speaks, turns dark by night and light by day, inverts a vote's row
 // and tags it New as it lands, and shows a day closing, with speech
 // landing while it does, before the night falls. The prompted Avalon board names the Assassin's target.
-// At 420 px wide the board stacks under the chat and nothing scrolls
-// sideways. The tab shows the mark. With a stand-in for the desktop app's backend,
+// In each game, dragging the handle on the line between the chat and the
+// board resizes them, the board to no less than 240 px and the chat to no
+// less than 320 px, the arrow keys step it 16 px, and a double click puts
+// it back. At 420 px wide the board stacks under the chat, the handle is
+// hidden, and nothing scrolls sideways. The tab shows the mark. With a stand-in for the desktop app's backend,
 // the main window opens on its start state: the mark, then one row per game
 // with what it is, its seats, its summary and its own Play, which a
 // settings error disables, linked to its field. #settings opens the
@@ -502,6 +505,67 @@ await section('werewolf-prompted', async () => {
   );
 });
 
+// The handle on the line between the chat and the board drags the board
+// wider or narrower, within limits, and the arrow keys step it.
+await section('splitter', async () => {
+  const widths = () =>
+    page.evaluate(() => ({
+      chat: document.querySelector('.sd-chat').getBoundingClientRect().width,
+      board: document.querySelector('.sd-board').getBoundingClientRect().width,
+    }));
+  /** Drags the handle `by` pixels sideways. */
+  const drag = async (by) => {
+    const handle = await page.$eval('.sd-splitter', (element) => {
+      const box = element.getBoundingClientRect();
+      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    });
+    await page.mouse.move(handle.x, handle.y);
+    await page.mouse.down();
+    await page.mouse.move(handle.x + by / 2, handle.y);
+    await page.mouse.move(handle.x + by, handle.y);
+    await page.mouse.up();
+  };
+  for (const game of ['avalon', 'werewolf']) {
+    await open(page, game);
+    const separator = await page.$eval('.sd-splitter', (element) => {
+      const board = document.querySelector('.sd-board').getBoundingClientRect();
+      const box = element.getBoundingClientRect();
+      return {
+        role: element.getAttribute('role'),
+        orientation: element.getAttribute('aria-orientation'),
+        cursor: getComputedStyle(element).cursor,
+        onLine: Math.abs(box.left + box.width / 2 - board.left) <= 1,
+      };
+    });
+    check(
+      separator.role === 'separator' && separator.orientation === 'vertical' && separator.cursor === 'col-resize' && separator.onLine,
+      `${game}: a handle sits on the line between the chat and the board (${JSON.stringify(separator)})`,
+    );
+    const before = await widths();
+    await drag(-100);
+    const wider = await widths();
+    check(
+      Math.abs(wider.board - before.board - 100) <= 1 && Math.abs(before.chat - wider.chat - 100) <= 1,
+      `${game}: dragging the handle left widens the board (${before.board} to ${wider.board})`,
+    );
+    await drag(1000);
+    check((await widths()).board === 240, `${game}: the board narrows no further than 240 px`);
+    await drag(-2000);
+    check((await widths()).chat === 320, `${game}: the chat narrows no further than 320 px`);
+    await page.dblclick('.sd-splitter');
+    check((await widths()).board === before.board, `${game}: a double click puts the board back`);
+    await page.focus('.sd-splitter');
+    await page.keyboard.press('ArrowLeft');
+    const stepped = (await widths()).board;
+    await page.keyboard.press('ArrowRight');
+    check(
+      stepped === before.board + 16 && (await widths()).board === before.board,
+      `${game}: the arrow keys step the board 16 px (${stepped})`,
+    );
+  }
+  await page.screenshot({ path: join(shots, 'werewolf-splitter.png'), fullPage: true });
+});
+
 // A wide window sets the board beside the chat, and a narrow one stacks
 // it under.
 await section('narrow', async () => {
@@ -522,6 +586,7 @@ await section('narrow', async () => {
   await page.waitForTimeout(SETTLE);
   const narrow = await layout();
   check(narrow.under, 'narrow: the board stacks under the chat');
+  check(!(await page.isVisible('.sd-splitter')), 'narrow: the handle is hidden');
   check(narrow.wide <= narrow.window, `narrow: nothing scrolls sideways (${narrow.wide} in ${narrow.window})`);
   await page.screenshot({ path: join(shots, 'avalon-narrow.png'), fullPage: true });
 });

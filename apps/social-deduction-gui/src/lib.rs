@@ -12,6 +12,7 @@ pub mod address;
 mod desktop;
 pub mod screen;
 pub mod settings;
+pub mod splitter;
 pub mod tauri;
 pub mod tip;
 pub mod view;
