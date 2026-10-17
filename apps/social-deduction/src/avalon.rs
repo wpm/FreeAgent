@@ -66,6 +66,7 @@ pub type Dealt = crate::seat::Dealt<Role>;
 
 impl Game for Avalon {
     const NAME: &'static str = "Avalon";
+    const KEY: crate::config::Name = crate::config::Name::Avalon;
     type Role = Role;
     type Team = Team;
     type Rules = Rules;

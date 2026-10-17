@@ -6,10 +6,10 @@
 
 use clap::{Args, Parser};
 use free_agent::{Behavior, Episode, Event, Logger};
-use serde::Serialize;
 use social_deduction::config;
-use social_deduction::game::{Game, Narrate};
+use social_deduction::game::{Entry, Game, Narrate};
 use social_deduction::live::PATIENCE;
+use social_deduction::log::{Ended, Writer};
 use social_deduction::model::check::{Mark, checked};
 use social_deduction::model::spec::{Environment, required};
 use social_deduction::model::{
@@ -22,6 +22,7 @@ use std::io::{self, Write};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::oneshot;
 
 /// The command line: a game to play, or a command that belongs to no game.
 #[derive(Parser, Debug, PartialEq)]
@@ -169,8 +170,9 @@ fn listing(models: &[(String, Option<Mark>)]) -> String {
 }
 
 /// Play `episodes` episodes of the game of `G` that is `ready`, one after
-/// another, each dealt afresh, logged when `logging` is on. Each episode's
-/// account is set off from the one before it by a blank line.
+/// another, each dealt afresh, logged to standard error when `logging` is
+/// on. Each episode's account is set off from the one before it by a
+/// blank line.
 async fn run<G: Game>(
     ready: Ready<G>,
     episodes: NonZeroUsize,
@@ -181,8 +183,8 @@ async fn run<G: Game>(
             writeln!(io::stdout())?;
         }
         let mut narrator = G::Narrator::default();
-        play(
-            logging,
+        play::<G, _, _>(
+            logging.then(io::stderr),
             move |event| narrator.narrate(event),
             |logger| ready.episode(logger),
         )
@@ -191,45 +193,59 @@ async fn run<G: Game>(
     Ok(())
 }
 
-/// Play one game, the episode `game` builds once given the logger the
-/// environment holds. The narration `narrate` makes of each event goes to
-/// standard output as the game happens, and so does the log to standard
-/// error as JSON lines when `logging` is on.
-async fn play<A, L>(
-    logging: bool,
-    mut narrate: impl FnMut(&Event<L>) -> Vec<Line> + Send + 'static,
-    game: impl FnOnce(Logger<L>) -> Episode<A>,
+/// Play one game of `G`, the episode `game` builds once given the logger
+/// the environment holds, with where its winning team comes. The narration
+/// `narrate` makes of each event goes to standard output as the game
+/// happens, and when there is a `log`, the episode is written to it as
+/// [`Writer`] writes it, ending with how its run came back.
+async fn play<G, A, W>(
+    log: Option<W>,
+    mut narrate: impl FnMut(&Event<Entry<G>>) -> Vec<Line>,
+    game: impl FnOnce(Logger<Entry<G>>) -> (Episode<A>, oneshot::Receiver<G::Team>),
 ) -> anyhow::Result<()>
 where
-    A: Behavior<Log = L> + 'static,
-    L: Serialize + Send + 'static,
+    G: Game,
+    A: Behavior<Log = Entry<G>> + 'static,
+    W: Write,
 {
-    let (logger, mut log) = unbounded_channel();
-    let episode = game(logger);
-    let telling = tokio::spawn(async move {
+    let (logger, mut events) = unbounded_channel();
+    let (episode, mut won) = game(logger);
+    let mut writer = log
+        .map(|sink| Writer::<G, W>::start(sink, episode.id()))
+        .transpose()?;
+    let telling = async {
         let mut stdout = io::stdout();
-        while let Some(event) = log.recv().await {
-            if logging {
-                event.write(io::stderr())?;
+        while let Some(event) = events.recv().await {
+            if let Some(writer) = &mut writer {
+                writer.write(&event)?;
             }
             for line in narrate(&event) {
                 writeln!(stdout, "{line}")?;
             }
         }
         stdout.flush()
-    });
-    episode.run(PATIENCE).await?;
+    };
     // Everything is told once the last actor has let go of its logger.
-    telling.await??;
-    Ok(())
+    let (ran, told) = tokio::join!(episode.run(PATIENCE), telling);
+    told?;
+    if let Some(writer) = writer {
+        writer.end(Ended::of(&ran, won.try_recv().is_ok()))?;
+    }
+    ran
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use clap::CommandFactory;
     use clap::error::ErrorKind;
-    use std::collections::HashSet;
+    use free_agent::{ActorInit, Context};
+    use social_deduction::game::Message;
+    use social_deduction::log::Header;
+    use social_deduction::run;
+    use social_deduction::werewolf::{self, Werewolf};
+    use std::collections::{HashMap, HashSet};
 
     /// The command line `args` parse to, after the binary's name.
     fn parsed(args: &[&str]) -> CommandLine {
@@ -498,6 +514,125 @@ mod tests {
         // The variables line up, whatever the roots' lengths.
         let columns: HashSet<Option<usize>> = rows.iter().map(|row| row.rfind("  ")).collect();
         assert_eq!(columns.len(), 1, "{table}");
+    }
+
+    /// A player who fails as it starts.
+    struct Failing(Context<Message<Werewolf>, Entry<Werewolf>>);
+
+    #[async_trait]
+    impl Behavior for Failing {
+        type Message = Message<Werewolf>;
+        type Log = Entry<Werewolf>;
+
+        fn context(&self) -> &Context<Message<Werewolf>, Entry<Werewolf>> {
+            &self.0
+        }
+
+        async fn start(&mut self) -> anyhow::Result<()> {
+            anyhow::bail!("no model")
+        }
+    }
+
+    /// An episode of one player who fails as it starts, stopped before it
+    /// runs when `stopped`, and which nobody wins.
+    fn failing(
+        stopped: bool,
+    ) -> impl FnOnce(Logger<Entry<Werewolf>>) -> (Episode<Failing>, oneshot::Receiver<werewolf::Team>)
+    {
+        move |logger| {
+            let init = ActorInit {
+                behavior: Box::new(Failing),
+                think: None,
+                can_send_to: HashSet::new(),
+                can_shut_down: HashSet::new(),
+                has_logger: true,
+            };
+            let episode = Episode::new(HashMap::from([("ann".to_string(), init)]), logger);
+            if stopped {
+                episode.stopper().stop();
+            }
+            (episode, oneshot::channel().1)
+        }
+    }
+
+    /// Every entry `written` holds, in order.
+    fn entries(written: &[u8]) -> Vec<Entry<Werewolf>> {
+        std::str::from_utf8(written)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Event<Entry<Werewolf>>>(line).unwrap())
+            .map(|event| event.payload)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_episode_that_fails_is_logged_as_failed_with_its_error() {
+        let mut written = Vec::new();
+        let error = super::play(Some(&mut written), |_| vec![], failing(false))
+            .await
+            .unwrap_err();
+        let shown = format!("{error:#}");
+        assert_eq!(shown, "actor ann failed: no model");
+        let entries = entries(&written);
+        assert_eq!(
+            entries,
+            [
+                Entry::Header(Header::of::<Werewolf>()),
+                Entry::Ended(Ended::Failed(shown))
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_episode_that_is_stopped_is_logged_as_stopped() {
+        let mut written = Vec::new();
+        super::play(Some(&mut written), |_| vec![], failing(true))
+            .await
+            .unwrap();
+        assert_eq!(
+            entries(&written).last(),
+            Some(&Entry::Ended(Ended::Stopped))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_episode_that_is_won_is_logged_as_won_and_told_as_it_happens() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/configs/werewolf/random.toml"
+        ))
+        .unwrap();
+        let Prepared::Werewolf(ready) = run::prepare(&text, &Environment).await.unwrap() else {
+            panic!("the file names Werewolf");
+        };
+        let mut written = Vec::new();
+        let mut told = 0;
+        super::play(
+            Some(&mut written),
+            |_| {
+                told += 1;
+                vec![]
+            },
+            |logger| ready.episode(logger),
+        )
+        .await
+        .unwrap();
+        let entries = entries(&written);
+        assert_eq!(
+            entries.first(),
+            Some(&Entry::Header(Header::of::<Werewolf>()))
+        );
+        assert_eq!(entries.last(), Some(&Entry::Ended(Ended::Won)));
+        // Every event between the two was told.
+        assert_eq!(told, entries.len() - 2);
+    }
+
+    #[tokio::test]
+    async fn an_episode_with_no_log_is_written_nowhere() {
+        let error = super::play::<Werewolf, _, Vec<u8>>(None, |_| vec![], failing(false))
+            .await
+            .unwrap_err();
+        assert_eq!(format!("{error:#}"), "actor ann failed: no model");
     }
 
     #[test]

@@ -8,7 +8,9 @@
 //! game's [`Board`] shows them, whole, after every event that moves it.
 
 use crate::avalon::{self, Avalon};
+use crate::config::Name;
 use crate::game::{Entry, Game, Narrate};
+use crate::log::Header;
 use crate::report::{Line, in_order};
 use crate::seat::PlayerId;
 use crate::werewolf::{self, Werewolf};
@@ -130,28 +132,34 @@ impl<G: Staged> Stage<G> {
 }
 
 /// The cues a game's log folds into, the log written as JSON Lines by a
-/// game of either kind, which its first line says. Calls still out at the
-/// end of the log are closed there.
+/// game of either kind, which its header names. A log with no header,
+/// written before logs had one, is of the game whose event its first line
+/// is. Calls still out at the end of the log are closed there.
 ///
 /// # Errors
 ///
-/// A first line that is an event of neither game, or a later line that
-/// is no event of the first line's game, named by its number.
+/// A log of a newer format than this version reads, a first line that is
+/// an event of neither game, or a later line that is no event of the
+/// log's game, named by its number.
 pub fn cues(log: &str) -> anyhow::Result<Vec<Cue>> {
     let Some(first) = log.lines().find(|line| !line.trim().is_empty()) else {
         return Ok(Vec::new());
     };
-    if serde_json::from_str::<Event<Entry<Avalon>>>(first).is_ok() {
-        read::<Avalon>(log, "Avalon")
-    } else if serde_json::from_str::<Event<Entry<Werewolf>>>(first).is_ok() {
-        read::<Werewolf>(log, "Werewolf")
-    } else {
-        anyhow::bail!("the log is of neither Avalon nor Werewolf")
+    match Header::read(first)?.map(|header| header.game) {
+        Some(Name::Avalon) => read::<Avalon>(log),
+        Some(Name::Werewolf) => read::<Werewolf>(log),
+        // A log of format 0 has no header, so its game is the one whose
+        // event its first line is.
+        None if serde_json::from_str::<Event<Entry<Avalon>>>(first).is_ok() => read::<Avalon>(log),
+        None if serde_json::from_str::<Event<Entry<Werewolf>>>(first).is_ok() => {
+            read::<Werewolf>(log)
+        }
+        None => anyhow::bail!("the log is of neither Avalon nor Werewolf"),
     }
 }
 
-/// The cues the log of a game of `G`, named `game`, folds into.
-fn read<G: Staged>(log: &str, game: &str) -> anyhow::Result<Vec<Cue>> {
+/// The cues the log of a game of `G` folds into.
+fn read<G: Staged>(log: &str) -> anyhow::Result<Vec<Cue>> {
     let mut stage = Stage::<G>::default();
     let mut cues = Vec::new();
     for (index, line) in log.lines().enumerate() {
@@ -159,7 +167,7 @@ fn read<G: Staged>(log: &str, game: &str) -> anyhow::Result<Vec<Cue>> {
             continue;
         }
         let event: Event<Entry<G>> = serde_json::from_str(line)
-            .with_context(|| format!("the {game} log is bad at line {}", index + 1))?;
+            .with_context(|| format!("the {} log is bad at line {}", G::NAME, index + 1))?;
         cues.extend(stage.fold(&event));
     }
     let at = cues.last().map_or(0, |cue| cue.at);
@@ -329,8 +337,10 @@ mod tests {
     use super::*;
     use crate::game::Message;
     use crate::game::tests::{Fixture, drained, episode, logged, seated};
+    use crate::log::{Ended, Writer};
     use crate::strategy::RANDOM;
     use social_deduction_stage::{AvalonPanel, WerewolfPanel};
+    use uuid::Uuid;
 
     /// The log of a game of `roles` under `rules`, every player random.
     async fn random_game<G: Fixture>(
@@ -610,6 +620,48 @@ mod tests {
         let events = random_game::<Werewolf>(roles, werewolf::Rules::default()).await;
         let log = format!("{}\n", written(&events));
         assert_eq!(cues(&log).unwrap(), folded(&events));
+    }
+
+    /// `events` of `G` written as the log's writer writes them, between
+    /// the episode's header and its end.
+    fn recorded<G: Game>(events: &[Event<Entry<G>>]) -> String {
+        let mut writer = Writer::<G, _>::start(Vec::new(), Uuid::default()).unwrap();
+        for event in events {
+            writer.write(event).unwrap();
+        }
+        String::from_utf8(writer.end(Ended::Won).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_log_with_a_header_is_read_as_the_game_it_names() {
+        let events = random_game::<Avalon>(avalon::tests::five(), avalon::Rules::default()).await;
+        assert_eq!(cues(&recorded(&events)).unwrap(), folded(&events));
+        let roles = werewolf::tests::one_wolf_against(&["Player 1", "Player 2", "Player 3"]);
+        let events = random_game::<Werewolf>(roles, werewolf::Rules::default()).await;
+        assert_eq!(cues(&recorded(&events)).unwrap(), folded(&events));
+    }
+
+    #[test]
+    fn a_log_whose_header_names_one_game_is_not_read_as_the_other() {
+        let merlin = serde_json::json!({"Start": {"roles": {"Player 1": "Merlin"}}});
+        let log = recorded::<Werewolf>(&[]) + &written(&[logged(merlin)]);
+        let error = format!("{:#}", cues(&log).unwrap_err());
+        assert!(
+            error.starts_with("the Werewolf log is bad at line 3: "),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_log_of_a_newer_format_is_refused() {
+        let header =
+            serde_json::json!({"Header": {"format": 2, "version": "0.3.0", "game": "avalon"}});
+        let error = cues(&written(&[logged(header)])).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "This log was written by social-deduction 0.3.0 in log format 2. \
+             This version reads log formats up to 1."
+        );
     }
 
     #[test]

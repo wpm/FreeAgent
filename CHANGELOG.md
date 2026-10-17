@@ -9,6 +9,13 @@ workflow takes a version's notes from here.
 
 ### Added
 
+- Every episode of a game's log opens with a `Header` line naming the log
+  format, the version of `social-deduction` that wrote it and the game, and
+  closes with an `Ended` line: `won`, `stopped`, or `failed` with the
+  error. One `log::Writer` writes them for the command line and the
+  desktop app alike. Logs written before keep reading as format 0, and a
+  log of a newer format is refused with both versions named.
+- `Episode::id` gives the ID every event logged in the episode carries.
 - `social-deduction play --episodes N` plays N games in one run, one after
   another, for training data. Models are set up once, and every episode
   deals the same roles and strategies to the same players in a new random
