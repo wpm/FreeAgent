@@ -44,6 +44,10 @@ check "a signed build says it is not notarized" grep -q "signed but not notarize
 notarized=$(MACOS_SIGNED=true MACOS_NOTARIZED=true ./release-notes.sh 1.2.3)
 check "a notarized build needs no word" fails grep -q "macOS app is" <<< "$notarized"
 
+# The setup.exe puts the command line on the PATH; the .msi does not.
+check "the setup.exe gives terminals the command line" grep -q "Social-Deduction-setup.exe\` | Run it, and terminals opened afterward have \`social-deduction\` on the PATH" <<< "$notes"
+check "the .msi installs the app alone" grep -q "Social-Deduction.msi\` installs the app alone" <<< "$notes"
+
 # Each installer is copied under its stable name, and nothing else is.
 # The Linux packages' names say their architecture, in each format's own
 # spelling.

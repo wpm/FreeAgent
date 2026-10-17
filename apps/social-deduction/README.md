@@ -20,6 +20,9 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/wpm/FreeAgent/releases/
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-installer.ps1 | iex"
 ```
 
+The desktop app's Windows installer, `Social-Deduction-setup.exe`, puts
+`social-deduction` on your PATH, in terminals opened after installing.
+
 With a Rust toolchain, `cargo install --git https://github.com/wpm/FreeAgent social-deduction`
 builds it from source.
 
