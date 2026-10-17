@@ -20,7 +20,7 @@ Social Deduction $version for the desktop plays one game of Werewolf or Avalon a
 | Platform | Download | Then |
 | --- | --- | --- |
 | macOS (Apple silicon and Intel) | \`Social-Deduction.dmg\` | Open it and drag Social Deduction to Applications. |
-| Windows | \`Social-Deduction-setup.exe\` (or \`Social-Deduction.msi\`) | Run it. |
+| Windows | \`Social-Deduction-setup.exe\` | Run it, and terminals opened afterward have \`social-deduction\` on the PATH. \`Social-Deduction.msi\` installs the app alone. |
 | Linux x86_64 | \`social-deduction-amd64.deb\` or \`social-deduction-x86_64.rpm\` | Install the package. |
 | Linux arm64 | \`social-deduction-arm64.deb\` or \`social-deduction-aarch64.rpm\` | Install the package. |
 NOTES

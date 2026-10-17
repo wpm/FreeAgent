@@ -239,6 +239,17 @@ jobs:
           docker run --rm -v "$(dirname "$rpm"):/packages:ro" -e VERSION -e RPM="/packages/$(basename "$rpm")" fedora:latest \
             sh -c 'dnf install -y -q "$RPM" && rpm -ql "$(rpm -qp --qf "%{NAME}" "$RPM")" | grep -x /usr/bin/social-deduction &&
               test "$(/usr/bin/social-deduction --version)" = "social-deduction $VERSION"'
+      # setup.exe puts social-deduction on the user's Path, once however
+      # often it is installed, and uninstalling takes exactly that off.
+      - name: The Windows Path
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          $setup = $env:ARTIFACTS | ConvertFrom-Json | Where-Object { $_ -like '*-setup.exe' }
+          .github/scripts/installer-path.ps1 $setup $env:VERSION
       - name: The macOS signature
         if: steps.apple.outputs.signed == 'true'
         env:

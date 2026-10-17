@@ -54,6 +54,12 @@ signed with the app. Each build job checks that its bundles' copy prints
 the release's version. A trial run builds the command line itself, or,
 given a tag in **sidecar-from**, takes it from that release.
 
+On Windows, the setup.exe adds its folder to the user's PATH and its
+uninstaller takes it off, through the hooks in
+`src-tauri/installer-hooks.nsh`. The Windows job installs it, runs
+`social-deduction --version` in a new shell, and uninstalls it, checking
+the PATH each time. The .msi installs the app alone.
+
 The macOS app is signed and notarized when the repository has the Apple
 secrets that `.github/scripts/apple-credentials.sh` names, and is unsigned
 otherwise. The release notes say which, and how to open an unsigned app.
