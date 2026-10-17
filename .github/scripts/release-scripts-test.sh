@@ -161,5 +161,19 @@ cp "$scratch/bundles/Social Deduction.app/Contents/MacOS/social-deduction" "$scr
 echo different > "$scratch/different"
 check "a bundle's CLI that is the sidecar passes" quiet ./bundled-cli.sh 1.2.3 "$scratch/same" <<< "$app"
 check "a bundle's CLI that is not the sidecar fails" fails ./bundled-cli.sh 1.2.3 "$scratch/different" <<< "$app"
+# linuxdeploy rewrites the binaries it puts in an AppImage, so only its
+# version counts.
+cat > "$scratch/bundles/Social Deduction.AppImage" <<'TOOL'
+#!/usr/bin/env bash
+mkdir -p squashfs-root/usr/bin
+printf '#!/bin/sh\necho "social-deduction 1.2.3"\n' > squashfs-root/usr/bin/social-deduction
+chmod +x squashfs-root/usr/bin/social-deduction
+TOOL
+check "an AppImage's CLI need only say the version" quiet ./bundled-cli.sh 1.2.3 "$scratch/different" \
+  <<< "[\"$scratch/bundles/Social Deduction.AppImage\"]"
+# A bundle that doesn't open is a failure, not a bundle to skip.
+echo "not an rpm" > "$scratch/bundles/broken.rpm"
+check "a bundle that doesn't open fails" fails ./bundled-cli.sh 1.2.3 \
+  <<< "[\"$scratch/bundles/Social Deduction.app\", \"$scratch/bundles/broken.rpm\"]"
 
 [ "$failures" -eq 0 ]
