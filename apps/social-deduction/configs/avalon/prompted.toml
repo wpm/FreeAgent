@@ -5,6 +5,7 @@
 #
 #     social-deduction play configs/avalon/prompted.toml
 
+format = 1
 game = "avalon"
 
 # Every role not allotted otherwise plays this strategy.

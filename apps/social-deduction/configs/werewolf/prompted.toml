@@ -6,6 +6,7 @@
 #
 #     social-deduction play configs/werewolf/prompted.toml
 
+format = 1
 game = "werewolf"
 
 # Every role not allotted otherwise plays this strategy.

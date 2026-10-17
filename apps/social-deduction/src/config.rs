@@ -1,6 +1,7 @@
-//! A configuration file, of any game: its `game` key names the game, and
-//! the rest of it is that game's configuration. [`load`] is the one place
-//! a configuration file is read.
+//! A configuration file, of any game: its `game` key names the game, its
+//! `format` key the [`Format`] it is written in, and the rest of it is that
+//! game's configuration. [`load`] is the one place a configuration file is
+//! read.
 //!
 //! The file's text is parsed twice: once for its `game` alone, and then
 //! straight into that game's [`Config`], so that `toml` places every error
@@ -86,20 +87,58 @@ impl fmt::Display for Name {
     }
 }
 
-/// The one key [`load`] reads first, every other key ignored.
+/// The newest configuration format, which every configuration file the
+/// project writes is written in.
+pub const CONFIG_FORMAT: u32 = 1;
+
+/// A configuration file's `format` key: the format it is written in. A
+/// file without one is format 1. A format newer than [`CONFIG_FORMAT`]
+/// is refused as it is read, so that `toml` places the error at the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Format(u32);
+
+impl Format {
+    /// [`CONFIG_FORMAT`], the format the project writes.
+    pub const NEWEST: Format = Format(CONFIG_FORMAT);
+}
+
+impl Default for Format {
+    fn default() -> Self {
+        Format(1)
+    }
+}
+
+impl<'de> Deserialize<'de> for Format {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        match u32::deserialize(deserializer)? {
+            0 => Err(D::Error::custom("configuration formats begin at 1")),
+            format if format > CONFIG_FORMAT => Err(D::Error::custom(format!(
+                "This file is configuration format {format}. \
+                 This version of social-deduction reads formats up to {CONFIG_FORMAT}."
+            ))),
+            format => Ok(Format(format)),
+        }
+    }
+}
+
+/// The keys [`load`] reads first, every other key ignored.
 #[derive(Deserialize)]
 struct Which {
+    #[serde(default)]
+    #[expect(dead_code, reason = "a format is checked as it is read")]
+    format: Format,
     game: Name,
 }
 
 /// Parse `text`, a configuration file's, as the game its `game` key
-/// names, and settle it. A document that has no `game` or names no game
-/// by it, that holds a setting the game it names does not have, or that
+/// names, and settle it. A document of a newer [`Format`], one that has no
+/// `game` or names no game by it, that holds a setting the game it names does not have, or that
 /// does not parse or settle for any other reason, is an error, which
 /// `toml` places at its line and column. Parsing it says nothing about
 /// the API keys, so a document can be checked without them.
 pub fn parse(text: &str) -> anyhow::Result<Settled> {
-    let Which { game } = toml::from_str(text)?;
+    let Which { game, .. } = toml::from_str(text)?;
     Ok(match game {
         Name::Werewolf => Settled::Werewolf(Box::new(werewolf::config::parse(text)?.settle()?)),
         Name::Avalon => Settled::Avalon(Box::new(avalon::config::parse(text)?.settle()?)),
@@ -123,6 +162,10 @@ pub fn load(path: &Path) -> anyhow::Result<Settled> {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config<Phases, Roles> {
+    /// The `format` key, checked as it is read.
+    #[serde(default)]
+    #[expect(dead_code, reason = "a format is checked as it is read")]
+    format: Format,
     /// The `game` key, which [`load`] reads first and checks. A file
     /// parsed here may leave it out.
     #[serde(default)]
@@ -786,6 +829,74 @@ mod tests {
             let (shown, path) = refused(test, text);
             assert_invalid(&shown, &path, said);
             assert_placed(&shown);
+        }
+    }
+
+    #[test]
+    fn a_file_without_a_format_is_format_1() {
+        let random = include_str!("../configs/werewolf/random.toml");
+        let without = random.replace(&format!("format = {CONFIG_FORMAT}\n"), "");
+        assert_ne!(without, random);
+        assert_eq!(
+            format!("{:?}", parse(&without).unwrap()),
+            format!("{:?}", parse(random).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_file_of_a_newer_format_is_refused_at_the_key_s_line_and_column() {
+        let (shown, path) = refused("format-2", "game = \"werewolf\"\nformat = 2\n");
+        assert_invalid(
+            &shown,
+            &path,
+            "This file is configuration format 2. \
+             This version of social-deduction reads formats up to 1.",
+        );
+        assert!(shown.contains("line 2, column 10"), "{shown}");
+        // Read straight into a game's configuration, as the app's settings
+        // make it, the format is checked too.
+        let table: toml::Table = toml::from_str("format = 2\n").unwrap();
+        assert!(werewolf::config::from_table(table).is_err());
+    }
+
+    #[test]
+    fn a_format_that_is_not_a_format_or_is_out_of_place_is_invalid_and_placed() {
+        for (test, text, said) in [
+            (
+                "format-0",
+                "game = \"werewolf\"\nformat = 0\n",
+                "formats begin at 1",
+            ),
+            (
+                "format-string",
+                "game = \"avalon\"\nformat = \"1\"\n",
+                "invalid type: string \"1\", expected u32",
+            ),
+            (
+                "format-in-a-role",
+                "game = \"werewolf\"\n[roles.werewolf]\nformat = 1\n",
+                "unknown field `format`",
+            ),
+        ] {
+            let (shown, path) = refused(test, text);
+            assert_invalid(&shown, &path, said);
+            assert_placed(&shown);
+        }
+    }
+
+    #[test]
+    fn every_example_names_its_format() {
+        for entry in std::fs::read_dir(example("")).unwrap() {
+            for file in std::fs::read_dir(entry.unwrap().path()).unwrap() {
+                let path = file.unwrap().path();
+                let text = std::fs::read_to_string(&path).unwrap();
+                let table: toml::Table = toml::from_str(&text).unwrap();
+                assert_eq!(
+                    table.get("format"),
+                    Some(&toml::Value::Integer(CONFIG_FORMAT.into())),
+                    "{path:?}"
+                );
+            }
         }
     }
 

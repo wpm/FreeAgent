@@ -29,14 +29,28 @@ pub struct Store {
 impl Store {
     /// The settings stored for `app`, as [`settings::load`] reads them,
     /// stored at once the first time, so that the first launch's are kept.
+    /// Settings that cannot be read are the defaults, and a dialog says
+    /// why.
     ///
     /// # Errors
     ///
     /// When the app has no config directory.
     pub fn open(app: &AppHandle) -> tauri::Result<Self> {
         let dir = app.path().app_config_dir()?;
-        let first = !dir.join(settings::FILE).exists();
-        let loaded = settings::load(&dir);
+        let file = dir.join(settings::FILE);
+        let first = !file.exists();
+        let loaded = settings::load(&dir).unwrap_or_else(|failure| {
+            tracing::warn!("{} could not be read: {failure:#}", file.display());
+            app.dialog()
+                .message(format!(
+                    "{} couldn't be read, so the settings are the defaults:\n\n{failure:#}",
+                    file.display()
+                ))
+                .title("Settings")
+                .kind(MessageDialogKind::Error)
+                .show(|_| {});
+            settings::defaults()
+        });
         if first && let Err(error) = settings::save(&loaded, &dir) {
             tracing::warn!("the settings could not be saved: {error}");
         }
