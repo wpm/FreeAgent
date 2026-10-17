@@ -5,7 +5,8 @@
 //! stored through [`secret`]; and [`play`](game::play) runs the
 //! chosen game as `social-deduction play` runs it, its log folded into
 //! cues sent to the main window. The [`menu`] opens Settings,
-//! starts a new game, and imports and exports configuration files.
+//! starts a new game, imports and exports configuration files, and on
+//! macOS puts the command line on the PATH.
 //! Closing the main window stops the game, whether it is being prepared or
 //! playing, and closes Settings. The opener plugin hands links to the
 //! system browser, and the dialog plugin picks files and asks before an
@@ -14,6 +15,8 @@
 #![warn(missing_docs)]
 
 pub mod catalog;
+#[cfg(target_os = "macos")]
+pub mod command_line;
 #[cfg(all(target_os = "macos", debug_assertions))]
 mod dev_bundle;
 pub mod game;

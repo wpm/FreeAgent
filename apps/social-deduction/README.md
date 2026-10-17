@@ -5,6 +5,9 @@ random or by a language model: Werewolf and Avalon.
 
 ## Installing
 
+On a Mac, the desktop app carries the command line: install the app,
+then choose **Social Deduction ▸ Install Command-Line Tool…**.
+
 Each [release](https://github.com/wpm/FreeAgent/releases) carries a built
 `social-deduction` binary for macOS, Linux, and Windows, and an installer
 that picks the right one:
