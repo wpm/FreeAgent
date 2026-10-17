@@ -48,6 +48,14 @@ game plays live in the window, with **Stop**, and once it is over, **New
 game** appears. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
 start state.
 
+On a Mac, drag the app from its disk image to Applications, then choose
+**Social Deduction ▸ Install Command-Line Tool…** to put
+`social-deduction` on the PATH. It links `/usr/local/bin/social-deduction`
+to the command line inside the app, so updating the app updates it too,
+and asks once for an administrator password. If another
+`social-deduction` comes first on your PATH, the app names it. Once
+installed, the item reads **Uninstall Command-Line Tool…**.
+
 **Settings…** (⌘, on macOS, **Edit ▸ Preferences…** and Ctrl+, elsewhere)
 opens the Settings window. Every change is stored as it is made and
 applies to the next game. Each field's error shows in marigold beneath it, and
