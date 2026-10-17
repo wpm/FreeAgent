@@ -42,21 +42,20 @@ copied=0
 while IFS= read -r path; do
   # jq on Windows ends its lines with a carriage return.
   path=${path%$'\r'}
-  old=
+  a=
   case $path in
     *.dmg) name=Social-Deduction.dmg ;;
     *-setup.exe) name=Social-Deduction-setup.exe ;;
     *.msi) name=Social-Deduction.msi ;;
-    *.AppImage | *.deb | *.rpm)
+    *.AppImage) a=$(arch "$path"); name=Social-Deduction-$a.AppImage ;;
+    *.deb)
       a=$(arch "$path")
-      case $path in
-        *.AppImage) name=Social-Deduction-$a.AppImage old=Social-Deduction.AppImage ;;
-        *.deb) d=${a/x86_64/amd64}; name=social-deduction-${d/aarch64/arm64}.deb old=social-deduction.deb ;;
-        *.rpm) name=social-deduction-$a.rpm old=social-deduction.rpm ;;
-      esac
-      [ "$a" = x86_64 ] || old= ;;
+      case $a in x86_64) name=social-deduction-amd64.deb ;; aarch64) name=social-deduction-arm64.deb ;; esac ;;
+    *.rpm) a=$(arch "$path"); name=social-deduction-$a.rpm ;;
     *) continue ;;
   esac
+  # The x86_64 name without its architecture is the one before arm64.
+  if [ "$a" = x86_64 ]; then old=${name/-amd64/}; old=${old/-x86_64/}; else old=; fi
   # Windows runners hand over Windows paths, which Git Bash wants as Unix ones.
   if command -v cygpath > /dev/null; then path=$(cygpath -u "$path"); fi
   for copy in "$name" ${old:+"$old"}; do

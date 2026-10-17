@@ -50,15 +50,15 @@ check "a notarized build needs no word" fails grep -q "macOS app is" <<< "$notar
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/built/Social Deduction.app"
-built=("Social Deduction.app" "Social Deduction.app.tar.gz" \
+built=("Social Deduction.app.tar.gz" \
   "Social Deduction_1.2.3_universal.dmg" "Social Deduction_1.2.3_x64-setup.exe" \
   "Social Deduction_1.2.3_x64_en-US.msi" \
   "Social Deduction_1.2.3_amd64.AppImage" "Social Deduction_1.2.3_amd64.deb" "Social Deduction-1.2.3-1.x86_64.rpm" \
   "Social Deduction_1.2.3_aarch64.AppImage" "Social Deduction_1.2.3_arm64.deb" "Social Deduction-1.2.3-1.aarch64.rpm")
-for file in "${built[@]:1}"; do
+for file in "${built[@]}"; do
   echo "$file" > "$scratch/built/$file"
 done
-jq -n --arg dir "$scratch/built" '[$dir + "/" + ($ARGS.positional[])]' --args "${built[@]}" > "$scratch/paths.json"
+jq -n --arg dir "$scratch/built" '[$dir + "/" + ($ARGS.positional[])]' --args "Social Deduction.app" "${built[@]}" > "$scratch/paths.json"
 ./stable-names.sh "$scratch/stable" < "$scratch/paths.json" > /dev/null
 listing=$(find "$scratch/stable" -type f -exec basename {} \; | LC_ALL=C sort | tr '\n' ' ')
 check "installers get their stable names" test "$listing" = \
