@@ -134,7 +134,6 @@ fn every_beat_round_trips() {
                 name: player(3),
                 label: "Player 3 · seer".into(),
                 role: Role::Seer,
-                side: Side::Good,
                 strategy: "Trust no one.".into(),
             }],
         },

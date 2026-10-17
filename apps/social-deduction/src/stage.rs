@@ -29,9 +29,6 @@ pub trait Staged: Game {
     /// `role` as the viewer colors it.
     fn role(role: Self::Role) -> Role;
 
-    /// The side `role` wins with.
-    fn side(role: Self::Role) -> Side;
-
     /// The side that won and how, as the narrator tells it, if `event`
     /// ends the game.
     fn winner(event: &Self::Event) -> Option<(Side, String)>;
@@ -201,7 +198,6 @@ fn cast<G: Staged>(
                 name: name.clone(),
                 label: format!("{name} · {}", capitalized(&role.to_string())),
                 role: G::role(role),
-                side: G::side(role),
                 strategy: strategies[name].clone(),
             }
         })
@@ -266,10 +262,6 @@ impl Staged for Avalon {
         }
     }
 
-    fn side(role: avalon::Role) -> Side {
-        side(role.team())
-    }
-
     fn winner(event: &avalon::Outcome) -> Option<(Side, String)> {
         match event {
             avalon::Outcome::End { winner, by, .. } => {
@@ -304,10 +296,6 @@ impl Staged for Werewolf {
             werewolf::Role::Doctor => Role::Doctor,
             werewolf::Role::Seer => Role::Seer,
         }
-    }
-
-    fn side(role: werewolf::Role) -> Side {
-        team(role.team())
     }
 
     fn winner(event: &werewolf::Outcome) -> Option<(Side, String)> {
@@ -366,7 +354,7 @@ mod tests {
             avalon::Role::Oberon,
             avalon::Role::Minion,
         ] {
-            assert_eq!(Avalon::role(role).side(), Avalon::side(role), "{role:?}");
+            assert_eq!(Avalon::role(role).side(), side(role.team()), "{role:?}");
         }
         for role in [
             werewolf::Role::Werewolf,
@@ -374,11 +362,7 @@ mod tests {
             werewolf::Role::Doctor,
             werewolf::Role::Seer,
         ] {
-            assert_eq!(
-                Werewolf::role(role).side(),
-                Werewolf::side(role),
-                "{role:?}"
-            );
+            assert_eq!(Werewolf::role(role).side(), team(role.team()), "{role:?}");
         }
     }
 
@@ -450,7 +434,6 @@ mod tests {
                     name: name.clone(),
                     label: format!("{name} · {}", capitalized(&role.to_string())),
                     role: G::role(role),
-                    side: G::side(role),
                     strategy: RANDOM.to_string(),
                 }
             })

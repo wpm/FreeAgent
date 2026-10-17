@@ -143,11 +143,9 @@ pub struct Seat {
     /// The name with its role, `Player 3 · Seer`: the bubble's name and its
     /// key in the list of names.
     pub label: String,
-    /// The player's role, which the board names.
+    /// The player's role, which the board names, and whose side seats
+    /// them left or right and colors their marks.
     pub role: Role,
-    /// The player's side, which seats them left or right and colors their
-    /// marks.
-    pub side: Side,
     /// The strategy the player was dealt.
     pub strategy: String,
 }

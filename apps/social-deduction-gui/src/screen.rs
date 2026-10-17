@@ -445,7 +445,7 @@ impl SeatMark {
     pub fn of(seat: &Seat) -> Self {
         Self {
             number: seat_number(&seat.name).to_string(),
-            side: seat.side,
+            side: seat.role.side(),
         }
     }
 
@@ -634,11 +634,11 @@ fn names(seats: &[Seat]) -> Names {
     seats
         .iter()
         .fold(Names::none().name(NARRATOR, narrator), |names, seat| {
-            let position = match seat.side {
+            let position = match seat.role.side() {
                 Side::Evil => Position::Left,
                 Side::Good => Position::Right,
             };
-            let side = side_key(seat.side);
+            let side = side_key(seat.role.side());
             let look = Look::at(position)
                 .background("transparent")
                 .foreground("var(--rc-fg)")
@@ -749,13 +749,12 @@ mod tests {
         Cue { at: 0, beat }
     }
 
-    /// A seat of `role` on `side`.
-    fn seat(name: &str, role: Role, side: Side) -> Seat {
+    /// A seat of `role`.
+    fn seat(name: &str, role: Role) -> Seat {
         Seat {
             name: name.to_string(),
             label: format!("{name} · {role}"),
             role,
-            side,
             strategy: "random".to_string(),
         }
     }
@@ -765,9 +764,9 @@ mod tests {
         cue(Beat::Cast {
             game: GameName::Avalon,
             seats: vec![
-                seat("Player 1", Role::Merlin, Side::Good),
-                seat("Player 2", Role::Assassin, Side::Evil),
-                seat("Player 3", Role::Servant, Side::Good),
+                seat("Player 1", Role::Merlin),
+                seat("Player 2", Role::Assassin),
+                seat("Player 3", Role::Servant),
             ],
         })
     }
@@ -1310,10 +1309,10 @@ mod tests {
         cue(Beat::Cast {
             game: GameName::Werewolf,
             seats: vec![
-                seat("Player 1", Role::Werewolf, Side::Evil),
-                seat("Player 2", Role::Doctor, Side::Good),
-                seat("Player 3", Role::Seer, Side::Good),
-                seat("Player 4", Role::Villager, Side::Good),
+                seat("Player 1", Role::Werewolf),
+                seat("Player 2", Role::Doctor),
+                seat("Player 3", Role::Seer),
+                seat("Player 4", Role::Villager),
             ],
         })
     }

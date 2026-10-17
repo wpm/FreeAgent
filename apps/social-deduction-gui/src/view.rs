@@ -457,7 +457,7 @@ fn SenderLine(seat: Seat) -> impl IntoView {
     let square = |number: String| {
         view! { <span class="sd-seat" aria-hidden="true">{number}</span> }
     };
-    let evil = seat.side == Side::Evil;
+    let evil = seat.role.side() == Side::Evil;
     view! {
         {evil.then(|| square(number.clone()))}
         <span class="sd-sender-player">{seat.name}</span>
