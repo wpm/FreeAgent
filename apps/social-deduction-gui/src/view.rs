@@ -18,6 +18,7 @@ use wasm_bindgen_futures::JsFuture;
 
 use crate::address::{Address, GAMES};
 use crate::desktop::{Desktop, set_theme};
+use crate::review::{self, Go, Review};
 use crate::screen::{
     self, Board, Body, Landed, NARRATOR, Post, Screen, SeatMark, THINKING_DELAY, Thinker, Timer,
     dots_due, entry, side_key,
@@ -204,8 +205,7 @@ impl Live {
         });
         let era = screen.try_with_untracked(Screen::era).unwrap_or_default();
         if let Some(Some(number)) = applied {
-            let expire = move || screen.update(|screen| screen.within(era, |s| s.expire(number)));
-            set_timeout(expire, self.paced(FLASH));
+            self.expire(era, number);
         }
         if let Some(due) = dots_due(cue) {
             let rate = screen.with_untracked(|screen| screen.clock.rate);
@@ -214,18 +214,188 @@ impl Live {
             set_timeout(reveal, delay);
         }
     }
+
+    /// End the flash of what the cue numbered `number` landed in `era`,
+    /// once it has flashed a while.
+    fn expire(self, era: u64, number: usize) {
+        let screen = self.screen;
+        let expire = move || screen.update(|screen| screen.within(era, |s| s.expire(number)));
+        set_timeout(expire, self.paced(FLASH));
+    }
+}
+
+/// A game log under review on `live`'s screen, or none: what the main
+/// window's keys, the **Go** menu and a click on a bubble move.
+#[derive(Clone, Copy)]
+pub struct Reviewing {
+    /// The log, while one is under review.
+    pub review: RwSignal<Option<Review>>,
+    /// The screen it shows on.
+    live: Live,
+}
+
+impl Reviewing {
+    /// No log under review, to show on `live`'s screen.
+    pub fn new(live: Live) -> Self {
+        Self {
+            review: RwSignal::new(None),
+            live,
+        }
+    }
+
+    /// Review `review`, on the bubble its cursor is on. What the screen
+    /// showed before, it leaves undone.
+    pub fn open(self, review: Review) {
+        self.live.reset();
+        self.review.set(Some(review));
+        self.shown(Vec::new());
+    }
+
+    /// Stop reviewing, and clear the screen.
+    pub fn close(self) {
+        self.review.set(None);
+        self.live.reset();
+    }
+
+    /// Move the cursor as `go` says.
+    pub fn go(self, go: Go) {
+        self.moved(|review| review.go(go));
+    }
+
+    /// Put the cursor on the bubble whose message ID is `id`.
+    pub fn select(self, id: &str) {
+        if let Some(k) = screen::bubble(id) {
+            self.moved(|review| review.select(k));
+        }
+    }
+
+    /// Show game `game` on its first bubble.
+    pub fn choose(self, game: usize) {
+        self.moved(|review| review.choose(game));
+    }
+
+    /// Move the cursor by `act`, and show what it lands.
+    fn moved(self, act: impl FnOnce(&mut Review) -> Vec<Landed>) {
+        let landed = self.review.try_update(|review| review.as_mut().map(act));
+        if let Some(Some(landed)) = landed {
+            self.shown(landed);
+        }
+    }
+
+    /// Show the bubble under the cursor, with `landed` flashing.
+    fn shown(self, landed: Vec<Landed>) {
+        let Some(shown) = self
+            .review
+            .with_untracked(|review| review.as_ref().map(Review::screen))
+        else {
+            return;
+        };
+        let screen = self.live.screen;
+        let flashed = screen.try_update(|screen| screen.review(shown, landed));
+        if let Some(Some(number)) = flashed {
+            self.live.expire(screen.with_untracked(Screen::era), number);
+        }
+    }
+}
+
+/// The log under review on `reviewing`'s screen: the viewer, its header
+/// naming the file, the game with ‹ › and a list of the log's games when
+/// it holds more than one, where the cursor is, and **Close**, which goes
+/// to `on_close`. Unmodified arrows and Home and End move the cursor, and
+/// a click on a bubble puts it there.
+#[component]
+pub(crate) fn Reviewer(
+    reviewing: Reviewing,
+    on_close: Callback<()>,
+    #[prop(into, optional_no_strip)] on_link: Option<Callback<String>>,
+    #[prop(optional, into)] appearance: Signal<Option<&'static str>>,
+) -> impl IntoView {
+    let review = reviewing.review;
+    let keys = window_event_listener(ev::keydown, move |event| {
+        let modified = event.alt_key() || event.ctrl_key() || event.meta_key() || event.shift_key();
+        let typing = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            .is_some_and(|element| {
+                matches!(element.tag_name().as_str(), "INPUT" | "SELECT" | "TEXTAREA")
+            });
+        if event.default_prevented() || typing {
+            return;
+        }
+        if let Some(go) = review::keyed(&event.key(), modified) {
+            event.prevent_default();
+            reviewing.go(go);
+        }
+    });
+    on_cleanup(move || keys.remove());
+    // Memos, so that moving the cursor redraws none of what names the log.
+    let warning = Memo::new(move |_| {
+        review.with(|review| {
+            let problems = review.as_ref()?.problems();
+            (!problems.is_empty())
+                .then(|| format!("Some of this log couldn't be read: {}", problems.join(" ")))
+        })
+    });
+    let name = Memo::new(move |_| {
+        review.with(|review| review.as_ref().map(|review| review.name().to_string()))
+    });
+    let games = Memo::new(move |_| review.with(|review| review.as_ref().map_or(0, Review::games)));
+    let game = Memo::new(move |_| review.with(|review| review.as_ref().map_or(0, Review::game)));
+    let position = move || review.with(|review| review.as_ref().map(Review::position));
+    let on_select = Callback::new(move |id: String| reviewing.select(&id));
+    let chosen = move |event: ev::Event| {
+        if let Ok(game) = event_target_value(&event).parse() {
+            reviewing.choose(game);
+        }
+    };
+    let games_shown = move || {
+        (games.get() > 1).then(|| {
+            let titles = review.with(|review| review.as_ref().map(Review::titles).unwrap_or_default());
+            view! {
+                <span class="sd-review-games">
+                    <button class="sd-small" on:click=move |_| reviewing.go(Go::PreviousGame) disabled=move || game.get() == 0 aria-label="Previous game" data-tip="The game before, from its first bubble.">"‹"</button>
+                    <span class="sd-review-game">{move || format!("Game {} of {}", game.get() + 1, games.get())}</span>
+                    <button class="sd-small" on:click=move |_| reviewing.go(Go::NextGame) disabled=move || { game.get() + 1 >= games.get() } aria-label="Next game" data-tip="The game after, from its first bubble.">"›"</button>
+                    <span class="sd-select-box">
+                        <select class="sd-select" on:change=chosen prop:value=move || game.get().to_string() aria-label="Game" data-tip="Each game in the log, by its name and how it ended.">
+                            {titles
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, title)| view! { <option value=index.to_string()>{title}</option> })
+                                .collect_view()}
+                        </select>
+                        <svg class="sd-chevron" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+                            <path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                    </span>
+                </span>
+            }
+        })
+    };
+    view! {
+        <Viewer live=reviewing.live warning=warning on_link=on_link on_select=on_select appearance=appearance>
+            <span class="sd-review-name">{move || name.get()}</span>
+            {games_shown}
+            <span class="sd-review-position" data-tip="The bubble you're on. Step with the arrow keys, jump to either end with Home and End, or click a bubble. The Go menu moves by chapter and by game too.">{position}</span>
+            <button on:click=move |_| on_close.run(()) data-tip="Close the log and go back to the games.">"Close"</button>
+        </Viewer>
+    }
 }
 
 /// The game on `live`'s screen: a header with the game, its phase and
 /// clock, its outcome and the `children`, which control it, then the chat
-/// beside the board, and the footer. A `failure` shows above the chat,
-/// and a link goes to `on_link` when there is one. The page takes the
-/// game's theme, unless the `appearance` holds it to one.
+/// beside the board, and the footer. A `failure` or a `warning` shows
+/// above the chat, and a link goes to `on_link` when there is one. The
+/// bubble under the screen's cursor is selected, and a bubble clicked
+/// goes to `on_select`. The page takes the game's theme, unless the
+/// `appearance` holds it to one.
 #[component]
 pub(crate) fn Viewer(
     live: Live,
     #[prop(optional, into)] failure: Signal<Option<String>>,
-    #[prop(optional)] on_link: Option<Callback<String>>,
+    #[prop(optional, into)] warning: Signal<Option<String>>,
+    #[prop(into, optional_no_strip)] on_link: Option<Callback<String>>,
+    #[prop(optional)] on_select: Option<Callback<String>>,
     #[prop(optional, into)] appearance: Signal<Option<&'static str>>,
     children: Children,
 ) -> impl IntoView {
@@ -270,6 +440,12 @@ pub(crate) fn Viewer(
             None => name.into_any(),
         }
     });
+    let selected = Signal::derive(move || {
+        screen.with(|screen| {
+            let post = screen.posts.get(screen.cursor?)?;
+            Some(post.id.clone())
+        })
+    });
     let split = Split::default();
     let messages = Signal::derive(move || {
         let mut messages = posts.with(|posts| messages(posts));
@@ -310,12 +486,15 @@ pub(crate) fn Viewer(
             >
                 <div class="sd-chat">
                     {move || failure.get().map(|error| view! { <p class="sd-error">{error}</p> })}
+                    {move || warning.get().map(|warning| view! { <p class="sd-warning sd-review-warning"><span>{warning}</span></p> })}
                     <Transcript
                         messages=messages
                         show_names=true
                         sender=sender
                         options=options
                         on_link=on_link
+                        selected=selected
+                        on_select=on_select
                     />
                 </div>
                 <Splitter split=split />

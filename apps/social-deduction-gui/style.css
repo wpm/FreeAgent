@@ -347,6 +347,28 @@ body,
   color: inherit;
 }
 
+/* Review: the file's name, the game with its list, and where the
+   cursor is, in the header beside the phase. */
+
+.sd-review-name {
+  font-weight: 600;
+}
+
+.sd-review-games {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sd-review-position {
+  color: var(--rc-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-review-warning {
+  padding: 0.75rem 1rem 0;
+}
+
 /* A problem: ink beside a marigold square holding a black "!". A bad
    API key isn't evil, so it is never red. */
 
@@ -1181,7 +1203,7 @@ body,
 
 /* Fields and selects are sunk slightly into the page. */
 
-:where(.sd-settings) :is(input, select, textarea):where(:not(.sd-stepper input)) {
+:where(.sd-settings, .sd-header) :is(input, select, textarea):where(:not(.sd-stepper input)) {
   box-sizing: border-box;
   min-width: 0;
   height: 36px;

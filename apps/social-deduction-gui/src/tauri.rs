@@ -217,6 +217,14 @@ pub fn stop() {
     command("stop", object(&[]));
 }
 
+/// Enable the menus for what the main window shows: **Open Game Log…**
+/// when `open`, and the **Go** menu while it reviews a log of `games`
+/// games, none outside review, its **Previous Game** and **Next Game**
+/// when there are several.
+pub fn menus(open: bool, games: usize) {
+    background("menus", json!({ "open": open, "games": games }));
+}
+
 /// Open `url` in the system browser.
 pub fn open_url(url: String) {
     command("plugin:opener|open_url", object(&[("url", &url.into())]));
