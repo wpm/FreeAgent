@@ -273,42 +273,43 @@ body,
   text-decoration: none;
 }
 
-/* The board is as wide as its handle sets it, and the chat keeps its
-   least width as the window narrows. */
+/* The board is as wide as its handle sets it. */
 
 .sd-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 0 min(var(--sd-board-width), calc(100% - var(--sd-min-chat)));
+  grid-template-columns: minmax(0, 1fr) 0 var(--sd-board-width);
   min-height: 0;
 }
 
-/* The handle is a 10px strip centered on the board's left line, with a
-   grip drawn as an outlined bar that fills with ink under the pointer. */
+/* The handle is a 10px strip along the board's left line, on the board's
+   side, clear of the chat's scrollbar. Its grip sits on the line, an
+   outlined bar that fills with ink under the pointer. */
 
 .sd-splitter {
   position: relative;
   z-index: 1;
   width: 10px;
-  margin: 0 -5px;
+  margin-right: -10px;
   cursor: col-resize;
   touch-action: none;
+  user-select: none;
 }
 
-.sd-splitter::after {
-  content: "";
+.sd-grip {
   position: absolute;
   top: 50%;
-  left: 2px;
+  left: -3px;
   width: 4px;
   height: 2.5rem;
   border: 1px solid var(--sd-ink);
   border-radius: 3px;
   background: var(--sd-paper);
   transform: translateY(-50%);
+  pointer-events: none;
 }
 
-.sd-splitter:hover::after,
-.sd-splitter:active::after {
+.sd-splitter:hover .sd-grip,
+.sd-splitter:active .sd-grip {
   background: var(--sd-ink);
 }
 
@@ -316,9 +317,15 @@ body,
   outline: none;
 }
 
-.sd-splitter:focus-visible::after {
+.sd-splitter:focus-visible .sd-grip {
   outline: 2px solid var(--sd-ink);
   outline-offset: 3px;
+}
+
+/* While the handle is dragged, the pointer selects no text. */
+
+.sd-dragging {
+  user-select: none;
 }
 
 .sd-chat {
@@ -458,6 +465,7 @@ body,
 
 .sd-board {
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 1.75rem;
   border-left: 1px solid var(--sd-ink);
   font-size: 15px;
