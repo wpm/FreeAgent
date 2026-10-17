@@ -15,7 +15,7 @@ dist = false
 [dependencies]
 leptos = { version = "0.8", features = ["csr"] }
 # Game talk needs no code highlighting or math fonts.
-leptos-rich-chat = { version = "0.2.0", default-features = false }
+leptos-rich-chat = { version = "0.2.1", default-features = false }
 social-deduction-stage = { path = "../social-deduction-stage" }
 console_error_panic_hook = "0.1"
 serde.workspace = true
