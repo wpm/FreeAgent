@@ -1,5 +1,5 @@
-//! The menus: **Settings…** in the app menu on macOS, and
-//! **Preferences…** in Edit elsewhere; **New Game**, **Import
+//! The menus: **Settings…** and **Install Command-Line Tool…** in the app
+//! menu on macOS, and **Preferences…** in Edit elsewhere; **New Game**, **Import
 //! Configuration…** and **Export Configuration…** in File; and the
 //! standard Edit and Window items, so text fields take the usual
 //! shortcuts.
@@ -60,32 +60,59 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &PredefinedMenuItem::maximize(app, None)?,
         ],
     )?;
-    if cfg!(target_os = "macos") {
-        let name = app.package_info().name.clone();
-        let app_menu = Submenu::with_items(
-            app,
-            &name,
-            true,
-            &[
-                &PredefinedMenuItem::about(app, None, None)?,
-                &separator()?,
-                &preferences,
-                &separator()?,
-                &PredefinedMenuItem::services(app, None)?,
-                &separator()?,
-                &PredefinedMenuItem::hide(app, None)?,
-                &PredefinedMenuItem::hide_others(app, None)?,
-                &PredefinedMenuItem::show_all(app, None)?,
-                &separator()?,
-                &PredefinedMenuItem::quit(app, None)?,
-            ],
-        )?;
-        Menu::with_items(app, &[&app_menu, &file, &edit, &window])
-    } else {
-        edit.append_items(&[&separator()?, &preferences])?;
-        file.append_items(&[&PredefinedMenuItem::quit(app, None)?])?;
-        Menu::with_items(app, &[&file, &edit, &window])
-    }
+    bar(app, &preferences, &file, &edit, &window)
+}
+
+/// The menu bar on macOS: an app menu holding `preferences` and
+/// **Install Command-Line Tool…**, then `file`, `edit` and `window`.
+#[cfg(target_os = "macos")]
+fn bar(
+    app: &AppHandle,
+    preferences: &MenuItem<Wry>,
+    file: &Submenu<Wry>,
+    edit: &Submenu<Wry>,
+    window: &Submenu<Wry>,
+) -> tauri::Result<Menu<Wry>> {
+    use tauri::Manager;
+    let separator = || PredefinedMenuItem::separator(app);
+    let name = app.package_info().name.clone();
+    let command_line = crate::command_line::item(app)?;
+    app.manage(crate::command_line::Item(command_line.clone()));
+    let app_menu = Submenu::with_items(
+        app,
+        &name,
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, None)?,
+            &separator()?,
+            preferences,
+            &command_line,
+            &separator()?,
+            &PredefinedMenuItem::services(app, None)?,
+            &separator()?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &separator()?,
+            &PredefinedMenuItem::quit(app, None)?,
+        ],
+    )?;
+    Menu::with_items(app, &[&app_menu, file, edit, window])
+}
+
+/// The menu bar elsewhere: `file`, with Quit, `edit`, with `preferences`,
+/// and `window`.
+#[cfg(not(target_os = "macos"))]
+fn bar(
+    app: &AppHandle,
+    preferences: &MenuItem<Wry>,
+    file: &Submenu<Wry>,
+    edit: &Submenu<Wry>,
+    window: &Submenu<Wry>,
+) -> tauri::Result<Menu<Wry>> {
+    edit.append_items(&[&PredefinedMenuItem::separator(app)?, preferences])?;
+    file.append_items(&[&PredefinedMenuItem::quit(app, None)?])?;
+    Menu::with_items(app, &[file, edit, window])
 }
 
 /// Do what the menu item of `event` says. A dialog blocks, so Import and
@@ -109,6 +136,15 @@ pub fn chosen(app: &AppHandle, event: MenuEvent) {
         "export" => {
             let app = app.clone();
             std::thread::spawn(move || settings::export(&app));
+        }
+        #[cfg(target_os = "macos")]
+        crate::command_line::ID => {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                use tauri::Manager;
+                let item = app.state::<crate::command_line::Item>();
+                crate::command_line::chosen(&app, &item);
+            });
         }
         _ => {}
     }
