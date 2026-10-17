@@ -272,10 +272,52 @@ body,
   text-decoration: none;
 }
 
+/* The board is as wide as its handle sets it, and the chat keeps its
+   least width as the window narrows. */
+
 .sd-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 22.5rem;
+  grid-template-columns: minmax(0, 1fr) 0 min(var(--sd-board-width), calc(100% - var(--sd-min-chat)));
   min-height: 0;
+}
+
+/* The handle is a 10px strip centered on the board's left line, with a
+   grip drawn as an outlined bar that fills with ink under the pointer. */
+
+.sd-splitter {
+  position: relative;
+  z-index: 1;
+  width: 10px;
+  margin: 0 -5px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sd-splitter::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 4px;
+  height: 2.5rem;
+  border: 1px solid var(--sd-ink);
+  border-radius: 3px;
+  background: var(--sd-paper);
+  transform: translateY(-50%);
+}
+
+.sd-splitter:hover::after,
+.sd-splitter:active::after {
+  background: var(--sd-ink);
+}
+
+.sd-splitter:focus-visible {
+  outline: none;
+}
+
+.sd-splitter:focus-visible::after {
+  outline: 2px solid var(--sd-ink);
+  outline-offset: 3px;
 }
 
 .sd-chat {
@@ -781,6 +823,10 @@ body,
 
   .sd-main {
     grid-template-columns: 1fr;
+  }
+
+  .sd-splitter {
+    display: none;
   }
 
   .sd-chat {
@@ -1530,13 +1576,10 @@ body,
   display: none;
 }
 
-span[data-tip],
-div[data-tip],
-p[data-tip],
-h2[data-tip],
-h3[data-tip],
-h4[data-tip],
-label[data-tip] {
+/* Help takes the help cursor, and an element's own cursor, such as a
+   handle's, wins over it. */
+
+:where(span, div, p, h2, h3, h4, label):where([data-tip]) {
   cursor: help;
 }
 
