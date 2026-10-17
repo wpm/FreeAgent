@@ -447,10 +447,10 @@ pub(crate) fn SeatSquare(mark: SeatMark, #[prop(optional)] out: bool) -> impl In
     view! { <span class=class>{mark.number}</span> }
 }
 
-/// The line over a player's bubbles: their seat square, on the side away
-/// from the speaker's edge, then their name and role. The square is in
-/// `--side-fill` and only decorates, since the name holds the number; a
-/// screen reader reads "Player 6, Seer".
+/// The line over a player's bubbles: their name and role, with their seat
+/// square on the speaker's edge. The square is in `--side-fill` and only
+/// decorates, since the name holds the number; a screen reader reads
+/// "Player 6, Seer".
 #[component]
 fn SenderLine(seat: Seat) -> impl IntoView {
     let number = screen::seat_number(&seat.name).to_string();
