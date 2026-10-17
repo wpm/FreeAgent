@@ -20,7 +20,8 @@
 // board resizes them, the board to no less than 240 px and the chat to no
 // less than 320 px, the arrow keys step it 16 px, and a double click puts
 // it back. At 420 px wide the board stacks under the chat, the handle is
-// hidden, and nothing scrolls sideways. The tab shows the mark. With a stand-in for the desktop app's backend,
+// hidden, and nothing scrolls sideways. The handle is the one edge that
+// resizes anything, and the page stays put past its ends. The tab shows the mark. With a stand-in for the desktop app's backend,
 // the main window opens on its start state: the mark, then one row per game
 // with what it is, its seats, its summary and its own Play, which a
 // settings error disables, linked to its field. #settings opens the
@@ -564,6 +565,34 @@ await section('splitter', async () => {
     );
   }
   await page.screenshot({ path: join(shots, 'werewolf-splitter.png'), fullPage: true });
+});
+
+// The handle is the window's one draggable edge: nothing else resizes or
+// shows a resize cursor, and the page itself stays put under a drag or a
+// scroll past its end, as on the bottom bar.
+await section('edges', async () => {
+  for (const game of ['avalon', 'werewolf']) {
+    await open(page, game);
+    const edges = await page.evaluate(() => ({
+      resizers: [...document.querySelectorAll('body *')]
+        .filter((element) => {
+          const style = getComputedStyle(element);
+          return style.resize !== 'none' || style.cursor.endsWith('resize');
+        })
+        .map((element) => element.className),
+      overscroll: [document.documentElement, document.body].map(
+        (element) => getComputedStyle(element).overscrollBehaviorY,
+      ),
+    }));
+    check(
+      JSON.stringify(edges.resizers) === JSON.stringify(['sd-splitter']),
+      `${game}: the handle is the one draggable edge (${edges.resizers.join(', ')})`,
+    );
+    check(
+      edges.overscroll.every((behavior) => behavior === 'none'),
+      `${game}: the page stays put past its ends (${edges.overscroll.join(', ')})`,
+    );
+  }
 });
 
 // A wide window sets the board beside the chat, and a narrow one stacks

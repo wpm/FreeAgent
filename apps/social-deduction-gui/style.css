@@ -110,12 +110,13 @@
   --sd-well: #1c1c1c;
 }
 
-/* The page */
+/* The page, which stays put when a scroll runs past its ends */
 
 html,
 body {
   margin: 0;
   height: 100%;
+  overscroll-behavior: none;
 }
 
 body {
