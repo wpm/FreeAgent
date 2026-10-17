@@ -438,7 +438,7 @@ mod tests {
     use super::*;
     use crate::game::Message;
     use crate::game::tests::{Fixture, drained, episode, logged, seated};
-    use crate::log::Writer;
+    use crate::log::{Secrets, Writer};
     use crate::strategy::RANDOM;
     use social_deduction_stage::{AvalonPanel, WerewolfPanel};
 
@@ -760,7 +760,7 @@ mod tests {
     /// episode `episode`, between its header and how it `ended`.
     fn recorded_as<G: Game>(episode: u128, events: &[Event<Entry<G>>], ended: Ended) -> String {
         let episode = Uuid::from_u128(episode);
-        let mut writer = Writer::<G, _>::start(Vec::new(), episode).unwrap();
+        let mut writer = Writer::<G, _>::start(Vec::new(), episode, Secrets::default()).unwrap();
         for event in events {
             writer
                 .write(&Event {
