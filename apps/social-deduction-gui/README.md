@@ -109,7 +109,9 @@ both in `~/Library/Application Support/io.github.wpm.social-deduction/`.
 
 It is a [Tauri](https://tauri.app) shell, in `src-tauri`, around the same
 page. Its bundle carries the `social-deduction` command line as a sidecar,
-which `.github/scripts/sidecar.sh` builds into `src-tauri/binaries/`. To
+which `.github/scripts/sidecar.sh` builds into `src-tauri/binaries/`. The
+Linux .deb and .rpm, on x86_64 and arm64, install it as
+`/usr/bin/social-deduction` beside the app. To
 run it in development, with Trunk and the Tauri CLI
 (`cargo install tauri-cli --locked`) installed, from the root of a
 checkout:

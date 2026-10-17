@@ -30,9 +30,11 @@ When it succeeds, a second workflow adds the desktop app's installers.
    twenty minutes later.
 7. Check the release page: a **Desktop app** table above the notes, and
    among the assets `Social-Deduction.dmg`, `Social-Deduction-setup.exe`,
-   `Social-Deduction.msi`, `Social-Deduction.AppImage`,
-   `social-deduction.deb` and `social-deduction.rpm`, each beside its
-   versioned twin. The website's download links point at these names.
+   `Social-Deduction.msi`, and for Linux `social-deduction-amd64.deb`,
+   `social-deduction-arm64.deb`, `social-deduction-x86_64.rpm`,
+   `social-deduction-aarch64.rpm`, `Social-Deduction-x86_64.AppImage` and
+   `Social-Deduction-aarch64.AppImage`, each beside its versioned twin.
+   The website's download links point at these names.
 
 ## The desktop app
 
