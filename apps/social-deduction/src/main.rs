@@ -243,7 +243,6 @@ mod tests {
     use free_agent::{ActorInit, Context};
     use social_deduction::game::Message;
     use social_deduction::log::Header;
-    use social_deduction::run;
     use social_deduction::werewolf::{self, Werewolf};
     use std::collections::{HashMap, HashSet};
 
@@ -602,9 +601,8 @@ mod tests {
             "/configs/werewolf/random.toml"
         ))
         .unwrap();
-        let Prepared::Werewolf(ready) = run::prepare(&text, &Environment).await.unwrap() else {
-            panic!("the file names Werewolf");
-        };
+        let settings = werewolf::config::parse(&text).unwrap().settle().unwrap();
+        let ready = Ready::new(settings, &Environment).await.unwrap();
         let mut written = Vec::new();
         let mut told = 0;
         super::play(
