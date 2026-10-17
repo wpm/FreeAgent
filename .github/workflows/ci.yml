@@ -70,7 +70,8 @@ jobs:
   # The viewer's frontend builds for the browser, so the jobs above leave it
   # out. This one checks it natively and for wasm, builds the page the
   # Website workflow deploys, from freshly played games and the recorded
-  # prompted ones, and drives the page in headless Chromium.
+  # prompted ones, and drives the page in headless Chromium, along with the
+  # website's download section as visitors on each platform see it.
   viewer:
     name: Viewer
     runs-on: ubuntu-latest

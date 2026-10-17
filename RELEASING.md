@@ -34,7 +34,9 @@ When it succeeds, a second workflow adds the desktop app's installers.
    `social-deduction-arm64.deb`, `social-deduction-x86_64.rpm`,
    `social-deduction-aarch64.rpm`, `Social-Deduction-x86_64.AppImage` and
    `Social-Deduction-aarch64.AppImage`, each beside its versioned twin.
-   The website's download links point at these names.
+   The website links to the .dmg, the setup.exe, and the `.deb` and `.rpm`
+   for each Linux architecture, and the workflow's last job, **The
+   website's downloads**, checks that the release has each of them.
 
 ## The desktop app
 
