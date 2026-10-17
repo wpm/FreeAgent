@@ -15,6 +15,10 @@ workflow takes a version's notes from here.
   error. One `log::Writer` writes them for the command line and the
   desktop app alike. Logs written before keep reading as format 0, and a
   log of a newer format is refused with both versions named.
+- `stage::recordings` reads a log of many episodes as many games, each
+  told apart by its episode ID and ending as its `Ended` line says. A log
+  cut off mid-game ends `Outcome::Unfinished`, and an episode with a bad
+  line is left out while the others load.
 - `Episode::id` gives the ID every event logged in the episode carries.
 - `social-deduction play --episodes N` plays N games in one run, one after
   another, for training data. Models are set up once, and every episode

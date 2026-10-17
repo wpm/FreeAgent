@@ -164,6 +164,9 @@ fn every_beat_round_trips() {
         Beat::Over {
             outcome: Outcome::Failed("The model is unreachable.".into()),
         },
+        Beat::Over {
+            outcome: Outcome::Unfinished,
+        },
     ];
     for (at, beat) in beats.into_iter().enumerate() {
         round_trips(Cue {

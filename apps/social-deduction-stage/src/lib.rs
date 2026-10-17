@@ -133,6 +133,8 @@ pub enum Outcome {
     Stopped,
     /// The game failed, for the reason given.
     Failed(String),
+    /// The log ends before the game does.
+    Unfinished,
 }
 
 /// One player at the table.

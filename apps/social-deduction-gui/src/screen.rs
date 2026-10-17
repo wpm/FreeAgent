@@ -1840,7 +1840,8 @@ mod tests {
     fn recorded(name: &str) -> Vec<Cue> {
         let path = format!("{}/fixtures/{name}.jsonl", env!("CARGO_MANIFEST_DIR"));
         let log = std::fs::read_to_string(&path).unwrap();
-        social_deduction::stage::cues(&log).unwrap()
+        let mut read = social_deduction::stage::recordings(&log).unwrap();
+        read.games.remove(0).cues
     }
 
     /// Every test game: two random games of each kind and the recorded
