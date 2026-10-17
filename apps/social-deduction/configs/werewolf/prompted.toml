@@ -1,10 +1,11 @@
 # The least a model-played game needs: one model and one prompted strategy
 # for everyone. The rules live in a prompt part the prompt pulls in, and the
-# prompt tells a werewolf apart from the rest with one conditional. Run it
-# from the root of a release archive, or from apps/social-deduction in a
-# checkout, with
+# prompt tells a werewolf apart from the rest with one conditional.
+# `social-deduction configs --write .` writes it out, and
 #
-#     social-deduction play configs/werewolf/prompted.toml
+#     social-deduction play werewolf/prompted.toml
+#
+# plays it.
 
 game = "werewolf"
 
