@@ -1,11 +1,11 @@
 //! Review: a game log's games, each folded at once into a [`Timeline`],
-//! and the bubble under the cursor. A game opens on its first bubble, and
-//! the cursor moves bubble by bubble, by chapter, to either end, or to
-//! another game.
+//! and the bubble under the cursor. A game opens on its first bubble, and a
+//! game just played on its last, where it left off. The cursor moves
+//! bubble by bubble, by chapter, to either end, or to another game.
 
 use serde::Deserialize;
 use social_deduction_stage::settings::game_title;
-use social_deduction_stage::{Opened, Outcome};
+use social_deduction_stage::{Cue, GameName, Opened, Outcome};
 
 use crate::screen::{Landed, Screen, Timeline, side_key};
 
@@ -59,11 +59,22 @@ struct Game {
     chapters: Vec<usize>,
 }
 
+impl Game {
+    /// The game of `game` that `timeline` folds.
+    fn new(game: GameName, timeline: Timeline) -> Self {
+        Self {
+            title: format!("{}, {}", game_title(game), ended(timeline.outcome())),
+            chapters: timeline.chapters(),
+            timeline,
+        }
+    }
+}
+
 /// A game log under review.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Review {
-    /// The file's name.
-    name: String,
+    /// The file's name, for a log.
+    name: Option<String>,
     /// Every game with a bubble to show, in the log's order.
     games: Vec<Game>,
     /// Why each episode left out was left out.
@@ -91,15 +102,7 @@ impl Review {
                 problems.push(format!("episode {} shows nothing", recording.episode));
                 continue;
             }
-            games.push(Game {
-                title: format!(
-                    "{}, {}",
-                    game_title(recording.game),
-                    ended(timeline.outcome())
-                ),
-                chapters: timeline.chapters(),
-                timeline,
-            });
+            games.push(Game::new(recording.game, timeline));
         }
         if games.is_empty() {
             return Err(if problems.is_empty() {
@@ -109,7 +112,7 @@ impl Review {
             });
         }
         Ok(Self {
-            name,
+            name: Some(name),
             games,
             problems,
             game: 0,
@@ -117,9 +120,27 @@ impl Review {
         })
     }
 
-    /// The file's name.
-    pub fn name(&self) -> &str {
-        &self.name
+    /// The game just played that `cues` tell, as they were shown, on its
+    /// last bubble, where the game left off. A game with no bubble has
+    /// nothing to review.
+    pub fn played(cues: &[Cue]) -> Option<Self> {
+        let timeline = Timeline::new(cues);
+        if timeline.is_empty() {
+            return None;
+        }
+        let game = timeline.game()?;
+        Some(Self {
+            name: None,
+            cursor: timeline.len() - 1,
+            games: vec![Game::new(game, timeline)],
+            problems: Vec::new(),
+            game: 0,
+        })
+    }
+
+    /// The file's name, for a log.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     /// Why each episode left out was left out.
@@ -267,7 +288,7 @@ mod tests {
     #[test]
     fn a_log_of_three_games_opens_on_the_first_bubble_of_the_first() {
         let review = three();
-        assert_eq!(review.name(), "three.jsonl");
+        assert_eq!(review.name(), Some("three.jsonl"));
         assert_eq!(review.games(), 3);
         assert_eq!((review.game(), review.cursor()), (0, 0));
         assert_eq!(review.position(), format!("1 / {}", review.len()));
@@ -277,6 +298,41 @@ mod tests {
             Timeline::new(&recording("werewolf-prompted", 1).cues).screen(0)
         );
         assert_eq!(review.problems(), ["the log is bad at line 9"]);
+    }
+
+    #[test]
+    fn a_game_just_played_opens_on_its_last_bubble_as_its_log_would_read_back() {
+        let played = recording("werewolf-prompted", 1);
+        let review = Review::played(&played.cues).unwrap();
+        let last = review.len() - 1;
+        assert_eq!(review.name(), None);
+        assert_eq!(
+            (review.games(), review.game(), review.cursor()),
+            (1, 0, last)
+        );
+        assert_eq!(review.screen(), Timeline::new(&played.cues).screen(last));
+        assert!(review.problems().is_empty());
+        let opened = Review::new(Opened {
+            name: "werewolf.jsonl".to_string(),
+            recordings: Recordings {
+                games: vec![played],
+                problems: Vec::new(),
+            },
+        })
+        .unwrap();
+        let read_back = Review {
+            name: None,
+            cursor: last,
+            ..opened
+        };
+        assert_eq!(review, read_back);
+    }
+
+    #[test]
+    fn a_game_that_showed_no_bubble_has_nothing_to_review() {
+        assert_eq!(Review::played(&[]), None);
+        let cast = recording("avalon-prompted", 1).cues[..1].to_vec();
+        assert_eq!(Review::played(&cast), None);
     }
 
     #[test]

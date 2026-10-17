@@ -9,6 +9,11 @@ workflow takes a version's notes from here.
 
 ### Added
 
+- A game just played in the desktop app is reviewed in one click:
+  **Review** on the game-over header opens it on its last bubble, where
+  it left off, and **Close** goes back to its end. The viewer's web page
+  shows each game in review, so the same keys and clicks step through it,
+  and its **Play** becomes **Play again** once pressed.
 - The desktop app reviews a game log: **File ▸ Open Game Log…** (⌘O)
   opens a log from the command line or the app, games and all, on its
   first bubble. The arrow keys, Home and End, a click and the new **Go**

@@ -33,9 +33,11 @@ trunk serve
 ```
 
 The page opens on the finished Avalon game, and `#werewolf` opens the
-Werewolf one. **Play** replays it from the start, a
-cue every quarter second, and a hash ending in `-fast` replays ten times
-as fast.
+Werewolf one. The game is in review on its last bubble: the arrow keys,
+Home and End, and a click move from bubble to bubble, as in the desktop
+app. **Play** plays it from the start, a cue every quarter second, and a
+hash ending in `-fast` plays it ten times as fast. Once every cue is
+shown, the game is back in review, and the button reads **Play again**.
 
 ## The desktop app
 
@@ -44,8 +46,8 @@ state that lists the games, each with what it is, a square per seat in
 its side's color, a line summing up its settings, and its own **Play**. A
 game whose settings have an error names the first one under its row,
 linked to its field in Settings, and the other games stay playable. The
-game plays live in the window, with **Stop**, and once it is over, **New
-game** appears. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
+game plays live in the window, with **Stop**, and once it is over,
+**Review** and **New game** appear. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
 start state.
 
 **Settings…** (⌘, on macOS, **Edit ▸ Preferences…** and Ctrl+, elsewhere)
@@ -114,6 +116,11 @@ header names the file, the game, with ‹ › and a list of the log's games
 when it holds several, and the position, `1 / 212`; **Close** returns to
 the start state. A log is opened anywhere but while a game is being
 prepared or played.
+
+**Review** on the game-over header reviews the game just played, with no
+file to save or open. It opens on the last bubble, where the game left
+off, so **Go ▸ First Bubble** (⌘↑) takes it back to the start. The header
+names the game, and **Close** returns to the game's end.
 
 | Action | Keys |
 |---|---|

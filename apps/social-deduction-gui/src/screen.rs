@@ -513,6 +513,11 @@ impl Timeline {
         self.last.outcome.as_ref()
     }
 
+    /// The game, once cast.
+    pub fn game(&self) -> Option<GameName> {
+        self.last.game
+    }
+
     /// The screen with the cursor on bubble `k`: every post, and the
     /// board, heading and outcome of its moment, the clock stopped at its
     /// time and nobody thinking.
@@ -1214,20 +1219,20 @@ mod tests {
     }
 
     #[test]
-    fn replaying_a_game_from_the_start_ends_on_the_same_screen() {
+    fn playing_a_game_again_from_the_start_ends_on_the_same_screen() {
         let cues = game();
-        let mut replayed = Screen::default();
+        let mut again = Screen::default();
         let mut flashes = Vec::new();
         for cue in &cues {
-            flashes.extend(replayed.apply(cue, true));
+            flashes.extend(again.apply(cue, true));
         }
         assert!(!flashes.is_empty());
         for number in flashes {
-            replayed.expire(number);
+            again.expire(number);
         }
-        assert!(replayed.clock.running);
-        replayed.clock.running = false;
-        assert_eq!(replayed, shown(&cues));
+        assert!(again.clock.running);
+        again.clock.running = false;
+        assert_eq!(again, shown(&cues));
     }
 
     /// `beat` at log time `at`.

@@ -27,7 +27,7 @@ use crate::settings::SettingsWindow;
 use crate::splitter::{Split, Splitter};
 use crate::tauri;
 
-/// How often a replay shows the next cue.
+/// How often **Play** shows the next cue.
 const STEP: Duration = Duration::from_millis(250);
 
 /// How long a choice flashes as it lands.
@@ -55,22 +55,34 @@ pub fn App() -> impl IntoView {
 
 /// The web page: it fetches the cues of the game the URL hash names,
 /// `#avalon` (the default) or `#werewolf`, from `game/` beside the page
-/// and shows the whole game at once. **Play** clears the screen and
-/// replays the cues, one every 250 ms, or ten times as fast for a hash
-/// that ends in `-fast`.
+/// and shows the whole game at once, in review on its last bubble.
+/// **Play** clears the screen and plays the cues again, one every 250 ms,
+/// or ten times as fast for a hash that ends in `-fast`, and the game is
+/// back in review once they have all been shown.
 #[component]
 fn Web() -> impl IntoView {
     let live = Live::default();
-    let screen = live.screen;
+    let reviewing = Reviewing::new(live);
+    let reviewed = Memo::new(move |_| reviewing.review.with(Option::is_some));
     let cues = StoredValue::new(Vec::<Cue>::new());
     let failure = RwSignal::new(None::<String>);
-    let replayed = RwSignal::new(false);
-    let replay = StoredValue::new(None::<IntervalHandle>);
+    let played = RwSignal::new(false);
+    let playing = StoredValue::new(None::<IntervalHandle>);
+    // The cue Play shows next. It belongs to the page, since Play leaves
+    // the review it was pressed in.
+    let next = StoredValue::new(0usize);
     let address = RwSignal::new(hashed());
 
     let stop = move || {
-        if let Some(handle) = replay.get_value() {
+        if let Some(handle) = playing.get_value() {
             handle.clear();
+        }
+    };
+    // The game at rest, in review on its last bubble.
+    let rest = StoredValue::new(None::<Review>);
+    let review = move || {
+        if let Some(review) = rest.get_value() {
+            reviewing.open(review);
         }
     };
 
@@ -78,8 +90,9 @@ fn Web() -> impl IntoView {
     Effect::new(move |_| {
         let name = address.get().game;
         stop();
-        live.reset();
-        replayed.set(false);
+        reviewing.close();
+        rest.set_value(None);
+        played.set(false);
         failure.set(None);
         spawn_local(async move {
             let fetched = fetched(name).await;
@@ -88,12 +101,9 @@ fn Web() -> impl IntoView {
             }
             match fetched {
                 Ok(fetched) => {
-                    screen.update(|screen| {
-                        for cue in &fetched {
-                            screen.apply(cue, false);
-                        }
-                    });
+                    rest.set_value(Review::played(&fetched));
                     cues.set_value(fetched);
+                    review();
                 }
                 Err(error) => failure.set(Some(error)),
             }
@@ -102,18 +112,17 @@ fn Web() -> impl IntoView {
 
     let play = move |_| {
         stop();
+        reviewing.close();
         let pace = address.get_untracked().pace;
         live.set_pace(pace);
-        live.reset();
-        replayed.set(true);
-        let next = StoredValue::new(0usize);
+        played.set(true);
+        next.set_value(0);
         let handle = set_interval_with_handle(
             move || {
                 let index = next.get_value();
                 let Some(cue) = cues.with_value(|cues| cues.get(index).cloned()) else {
-                    if let Some(handle) = replay.get_value() {
-                        handle.clear();
-                    }
+                    stop();
+                    review();
                     return;
                 };
                 next.set_value(index + 1);
@@ -121,11 +130,11 @@ fn Web() -> impl IntoView {
             },
             STEP.div_f64(pace),
         );
-        replay.set_value(handle.ok());
+        playing.set_value(handle.ok());
     };
 
-    view! {
-        <Viewer live=live failure=failure>
+    let controls = move || {
+        view! {
             <nav class="sd-games">
                 {GAMES
                     .map(|(name, title)| {
@@ -139,9 +148,17 @@ fn Web() -> impl IntoView {
                     .collect_view()}
             </nav>
             <button class="sd-primary" on:click=play>
-                {move || if replayed.get() { "Replay" } else { "Play" }}
+                {move || if played.get() { "Play again" } else { "Play" }}
             </button>
-        </Viewer>
+        }
+    };
+    view! {
+        <Show
+            when=move || !reviewed.get()
+            fallback=move || view! { <Reviewer reviewing=reviewing>{controls()}</Reviewer> }
+        >
+            <Viewer live=live failure=failure>{controls()}</Viewer>
+        </Show>
     }
 }
 
@@ -298,17 +315,17 @@ impl Reviewing {
     }
 }
 
-/// The log under review on `reviewing`'s screen: the viewer, its header
-/// naming the file, the game with ‹ › and a list of the log's games when
-/// it holds more than one, where the cursor is, and **Close**, which goes
-/// to `on_close`. Unmodified arrows and Home and End move the cursor, and
-/// a click on a bubble puts it there.
+/// The game under review on `reviewing`'s screen: the viewer, its header
+/// naming the file of a log, the game with ‹ › and a list of the log's
+/// games when it holds more than one, where the cursor is, and the
+/// `children`, which control it. Unmodified arrows and Home and End move
+/// the cursor, and a click on a bubble puts it there.
 #[component]
 pub(crate) fn Reviewer(
     reviewing: Reviewing,
-    on_close: Callback<()>,
     #[prop(into, optional_no_strip)] on_link: Option<Callback<String>>,
     #[prop(optional, into)] appearance: Signal<Option<&'static str>>,
+    children: Children,
 ) -> impl IntoView {
     let review = reviewing.review;
     let keys = window_event_listener(ev::keydown, move |event| {
@@ -336,9 +353,8 @@ pub(crate) fn Reviewer(
                 .then(|| format!("Some of this log couldn't be read: {}", problems.join(" ")))
         })
     });
-    let name = Memo::new(move |_| {
-        review.with(|review| review.as_ref().map(|review| review.name().to_string()))
-    });
+    let name =
+        Memo::new(move |_| review.with(|review| review.as_ref()?.name().map(str::to_string)));
     let games = Memo::new(move |_| review.with(|review| review.as_ref().map_or(0, Review::games)));
     let game = Memo::new(move |_| review.with(|review| review.as_ref().map_or(0, Review::game)));
     let position = move || review.with(|review| review.as_ref().map(Review::position));
@@ -374,10 +390,10 @@ pub(crate) fn Reviewer(
     };
     view! {
         <Viewer live=reviewing.live warning=warning on_link=on_link on_select=on_select appearance=appearance>
-            <span class="sd-review-name">{move || name.get()}</span>
+            {move || name.get().map(|name| view! { <span class="sd-review-name">{name}</span> })}
             {games_shown}
             <span class="sd-review-position" data-tip="The bubble you're on. Step with the arrow keys, jump to either end with Home and End, or click a bubble. The Go menu moves by chapter and by game too.">{position}</span>
-            <button on:click=move |_| on_close.run(()) data-tip="Close the log and go back to the games.">"Close"</button>
+            {children()}
         </Viewer>
     }
 }
