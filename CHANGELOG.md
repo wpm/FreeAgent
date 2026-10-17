@@ -26,6 +26,12 @@ workflow takes a version's notes from here.
   cut off mid-game ends `Outcome::Unfinished`, and an episode with a bad
   line is left out while the others load.
 - `Episode::id` gives the ID every event logged in the episode carries.
+- Configuration files name their format with a top-level `format = 1`:
+  the example configurations, **Export Configuration…** and the desktop
+  app's `settings.toml` write it. A file without one is format 1, and a
+  file of a newer format is refused with an error at the key that says so,
+  on the command line, in **Import Configuration…**, and when the app
+  loads its settings.
 - `social-deduction play --episodes N` plays N games in one run, one after
   another, for training data. Models are set up once, and every episode
   deals the same roles and strategies to the same players in a new random

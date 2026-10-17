@@ -117,6 +117,7 @@ prompts. The API key is never logged.
 ### The configuration file
 
 ```toml
+format = 1
 game = "werewolf"
 
 strategy = "cautious"         # every role not allotted otherwise; random unless it says
@@ -153,6 +154,10 @@ count = 0
 
 Every table may be left out, and a key the file does not know is an error.
 
+- `format`, at the top of the file: the configuration format the file is
+  written in, `1`. A file without one is format 1. Every file the project
+  writes names its format, and a file of a newer format is refused with an
+  error that says so.
 - `game`, at the top of the file, before any table: `"werewolf"`. Every
   file has one.
 - `[phases]`: `night_limit` and `day_limit`, how long each phase waits for

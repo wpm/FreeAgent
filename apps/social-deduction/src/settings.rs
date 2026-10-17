@@ -15,7 +15,7 @@
 pub use social_deduction_stage::settings::*;
 
 use crate::avalon::{self, Avalon};
-use crate::config::{self, Settled};
+use crate::config::{self, Format, Settled};
 use crate::game::Game;
 use crate::strategy::Strategy;
 use crate::werewolf::{self, Werewolf};
@@ -113,6 +113,8 @@ fn role_key(role: impl ToString) -> String {
 /// game's file may hold, with its values as written.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Written {
+    #[serde(default)]
+    format: Format,
     game: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     strategy: Option<String>,
@@ -189,6 +191,7 @@ fn written(app: &AppSettings, game: GameName) -> Written {
         })
         .collect();
     Written {
+        format: Format::NEWEST,
         game: game_key(game).to_string(),
         strategy: Some(settings.strategy.clone()),
         phases: settings
@@ -370,16 +373,35 @@ pub fn defaults() -> AppSettings {
     app
 }
 
+/// The `format` key of [`FILE`], the one key read first.
+#[derive(Deserialize)]
+struct Stored {
+    #[serde(default)]
+    #[expect(dead_code, reason = "a format is checked as it is read")]
+    format: Format,
+}
+
+/// The settings as [`save`] writes them: the format first.
+#[derive(Serialize)]
+struct Saved<'a> {
+    format: Format,
+    #[serde(flatten)]
+    app: &'a AppSettings,
+}
+
 /// The settings stored in the config directory `dir`, or, the first time,
-/// the [`defaults`]. Settings that cannot be read are the defaults.
-pub fn load(dir: &Path) -> AppSettings {
-    match std::fs::read_to_string(dir.join(FILE)) {
-        Ok(text) => toml::from_str(&text).unwrap_or_else(|error| {
-            tracing::warn!("{FILE} could not be read, so the settings are the defaults: {error}");
-            defaults()
-        }),
-        Err(_) => defaults(),
-    }
+/// the [`defaults`].
+///
+/// # Errors
+///
+/// When the stored settings do not parse, as when they are of a newer
+/// [`Format`], placed at its line and column.
+pub fn load(dir: &Path) -> anyhow::Result<AppSettings> {
+    let Ok(text) = std::fs::read_to_string(dir.join(FILE)) else {
+        return Ok(defaults());
+    };
+    toml::from_str::<Stored>(&text)?;
+    Ok(toml::from_str(&text)?)
 }
 
 /// Store `app` in the config directory `dir`, made if it is not there:
@@ -390,7 +412,11 @@ pub fn load(dir: &Path) -> AppSettings {
 /// When the directory or the file cannot be written.
 pub fn save(app: &AppSettings, dir: &Path) -> io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let text = toml::to_string_pretty(app).expect("every setting is TOML");
+    let saved = Saved {
+        format: Format::NEWEST,
+        app,
+    };
+    let text = toml::to_string_pretty(&saved).expect("every setting is TOML");
     let written = dir.join(format!("{FILE}.new"));
     std::fs::write(&written, text)?;
     std::fs::rename(written, dir.join(FILE))
@@ -711,7 +737,9 @@ mod tests {
             .strategies
             .insert("everyone".to_string(), 1);
         save(&app, &dir).unwrap();
-        assert_eq!(load(&dir), app);
+        let stored = std::fs::read_to_string(dir.join(FILE)).unwrap();
+        assert!(stored.starts_with("format = 1\n"), "{stored}");
+        assert_eq!(load(&dir).unwrap(), app);
         assert!(!dir.join(format!("{FILE}.new")).exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -726,7 +754,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            load(&dir).werewolf.prompt_parts["rules"],
+            load(&dir).unwrap().werewolf.prompt_parts["rules"],
             "Werewolves hunt."
         );
         std::fs::remove_dir_all(dir).unwrap();
@@ -741,16 +769,16 @@ mod tests {
             "[general]\nlogs = \"/tmp/logs\"\nappearance = \"dark\"\n",
         )
         .unwrap();
-        assert_eq!(load(&dir).general.appearance, Appearance::Dark);
+        assert_eq!(load(&dir).unwrap().general.appearance, Appearance::Dark);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn settings_that_cannot_be_read_are_the_defaults_and_cannot_be_saved_over_a_file() {
+    fn settings_that_cannot_be_read_are_an_error_and_cannot_be_saved_over_a_file() {
         let dir = scratch("unreadable");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(FILE), "general = 7\n").unwrap();
-        assert_eq!(load(&dir), defaults());
+        assert!(load(&dir).is_err());
         let file = dir.join(FILE);
         assert!(save(&defaults(), &file).is_err());
         std::fs::remove_dir_all(dir).unwrap();
@@ -759,14 +787,25 @@ mod tests {
     #[test]
     fn the_first_launch_starts_from_the_defaults_whatever_else_is_there() {
         let dir = scratch("first-launch");
-        assert_eq!(load(&dir), defaults());
+        assert_eq!(load(&dir).unwrap(), defaults());
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("last.toml"),
             include_str!("../configs/avalon/random.toml"),
         )
         .unwrap();
-        assert_eq!(load(&dir), defaults());
+        assert_eq!(load(&dir).unwrap(), defaults());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_of_a_newer_format_are_refused_at_the_key_s_line_and_column() {
+        let dir = scratch("format-2");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(FILE), "format = 2\n[general]\n").unwrap();
+        let shown = format!("{:#}", load(&dir).unwrap_err());
+        assert!(shown.contains("line 1, column 10"), "{shown}");
+        assert!(shown.contains("configuration format 2"), "{shown}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -814,6 +853,22 @@ mod tests {
             let parsed = format!("{:?}", config::parse(&text(&app, game)).unwrap());
             assert_eq!(structured, parsed);
         }
+    }
+
+    #[test]
+    fn an_exported_configuration_begins_with_its_format() {
+        for game in GameName::ALL {
+            let text = text(&defaults(), game);
+            assert!(text.starts_with("format = 1\n"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_configuration_of_a_newer_format_is_not_imported() {
+        let error = Imported::parse("format = 2\ngame = \"werewolf\"\n").unwrap_err();
+        let shown = format!("{error:#}");
+        assert!(shown.contains("line 1, column 10"), "{shown}");
+        assert!(shown.contains("configuration format 2"), "{shown}");
     }
 
     #[test]
