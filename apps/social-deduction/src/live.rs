@@ -227,6 +227,7 @@ mod tests {
     use super::*;
     use crate::avalon::Avalon;
     use crate::game::tests::logged;
+    use crate::log::Writer;
     use crate::model::spec::Environment;
     use crate::run::prepare;
     use crate::stage::recordings;
@@ -264,23 +265,24 @@ mod tests {
     }
 
     /// Play the game of `G` that is `ready` as [`start`] does, its events
-    /// also written as JSON Lines: the cues shown, and the log written.
+    /// also written by the log's writer, as a game won: the cues shown,
+    /// and the log written.
     async fn teed<G: Staged>(ready: Ready<G>) -> (Vec<Cue>, String)
     where
         Actor<G>: 'static,
     {
         let (logger, mut log) = unbounded_channel();
         let (episode, _) = ready.episode(logger);
+        let mut writer = Writer::<G, _>::start(Vec::new(), episode.id()).unwrap();
         let stopper = episode.stopper();
         let run = tokio::spawn(episode.run(PATIENCE));
         let (forward, events) = unbounded_channel();
         let copying = async move {
-            let mut written = Vec::new();
             while let Some(event) = log.recv().await {
-                event.write(&mut written).unwrap();
+                writer.write(&event).unwrap();
                 forward.send(event).unwrap();
             }
-            String::from_utf8(written).unwrap()
+            String::from_utf8(writer.end(Ended::Won).unwrap()).unwrap()
         };
         let (sender, receiver) = unbounded_channel();
         let reader = Reader {
@@ -293,16 +295,14 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_game_is_shown_as_its_log_folds_and_ends_with_its_outcome() {
+    async fn a_game_is_shown_as_its_saved_log_reads_back_and_ends_with_its_outcome() {
         for name in ["werewolf/random.toml", "avalon/random.toml"] {
             let (live, written) = match prepared(name).await {
                 Prepared::Werewolf(ready) => teed(*ready).await,
                 Prepared::Avalon(ready) => teed(*ready).await,
             };
             let expected = recordings(&written).unwrap().games.remove(0).cues;
-            let beats =
-                |cues: &[Cue]| -> Vec<Beat> { cues.iter().map(|c| c.beat.clone()).collect() };
-            assert_eq!(beats(&live), beats(&expected), "{name}");
+            assert_eq!(live, expected, "{name}");
             assert!(
                 matches!(
                     live.last().map(|cue| &cue.beat),

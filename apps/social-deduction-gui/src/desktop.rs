@@ -1,19 +1,20 @@
 //! The desktop app's main window: a start state listing the games, each
 //! with its own **Play**, and **Stop** while the game is prepared; then
-//! the game as it plays, with **Stop**, and once it is over, **New game**.
+//! the game as it plays, with **Stop**, and once it is over, **Review**,
+//! which steps through it from where it left off, and **New game**.
 //! **File ▸ Open Game Log…** reviews a log, from anywhere but a game being
-//! prepared or playing, and the **Go** menu moves through it. **File ▸
-//! New Game** comes back to the start state from anywhere.
+//! prepared or playing, and the **Go** menu moves through either. **File
+//! ▸ New Game** comes back to the start state from anywhere.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_rich_chat::RichChatStyle;
 use serde::de::IgnoredAny;
 use social_deduction_stage::settings::{Snapshot, game_title};
-use social_deduction_stage::{GameName, Side};
+use social_deduction_stage::{Cue, GameName, Side};
 
 use crate::review::{Go, Review};
-use crate::screen::side_key;
+use crate::screen::{Screen, side_key};
 use crate::tauri::{self, Cues};
 use crate::tip::Tips;
 use crate::view::{Live, Reviewer, Reviewing, Viewer};
@@ -55,6 +56,8 @@ pub fn Desktop() -> impl IntoView {
     let reviewed = Memo::new(move |_| reviewing.review.with(Option::is_some));
     // The channel of the game playing, kept for as long as it plays.
     let cues = StoredValue::new_local(None::<Cues>);
+    // Every cue the game has shown, to review it once it is over.
+    let shown = StoredValue::new(Vec::<Cue>::new());
 
     spawn_local(async move {
         match tauri::settings_get().await {
@@ -80,9 +83,11 @@ pub fn Desktop() -> impl IntoView {
         failed.set(None);
         pending.set(Some(game));
         live.reset();
+        shown.set_value(Vec::new());
         let channel = Cues::new(move |cue| {
             watching.set(true);
             live.show(&cue);
+            shown.update_value(|shown| shown.push(cue));
         });
         spawn_local(async move {
             let started = tauri::play(game, &channel).await;
@@ -96,26 +101,42 @@ pub fn Desktop() -> impl IntoView {
 
     let over = move || screen.with(|screen| screen.outcome.is_some());
     let new_game = move || {
-        if reviewed.get() {
+        if reviewed.get_untracked() {
             reviewing.close();
-            return;
-        }
-        if !over() {
+        } else if !over() {
             tauri::stop();
         }
         watching.set(false);
         live.reset();
     };
+    // The game just played, in review on its last bubble.
+    // The game's end, kept while it is reviewed.
+    let ended = StoredValue::new(None::<Screen>);
+    let review = move |_| {
+        if let Some(review) = shown.with_value(|shown| Review::played(shown)) {
+            ended.set_value(Some(screen.get_untracked()));
+            reviewing.open(review);
+        }
+    };
+    // Back from review to the game's end, or from a log to the start.
+    let close = Callback::new(move |()| {
+        reviewing.close();
+        if let Some(end) = ended.write_value().take() {
+            screen.set(end);
+        }
+    });
     tauri::listen("new-game", move |_: IgnoredAny| new_game());
     tauri::listen("review", move |opened| match Review::new(opened) {
         Ok(review) => {
             watching.set(false);
+            ended.set_value(None);
             reviewing.open(review);
         }
         Err(failure) => error.set(Some(failure)),
     });
     tauri::listen("go", move |go: Go| reviewing.go(go));
-    let playing = move || pending.with(Option::is_some) || (watching.get() && !over());
+    let playing =
+        move || pending.with(Option::is_some) || (watching.get() && !reviewed.get() && !over());
     // A memo, so that moving the cursor leaves the menus be.
     let menus = Memo::new(move |_| {
         let games = reviewing
@@ -132,13 +153,27 @@ pub fn Desktop() -> impl IntoView {
     // navigate away from the game.
     let on_link = Callback::new(tauri::open_url);
 
-    let close = Callback::new(move |()| reviewing.close());
     let start = move || view! { <Start snapshot=snapshot pending=pending error=error failed=failed run=run /> };
+    let closes = move || {
+        if watching.get_untracked() {
+            "Close the review and go back to the game's end."
+        } else {
+            "Close the log and go back to the games."
+        }
+    };
+    let reviewer = move || {
+        view! {
+            <Reviewer reviewing=reviewing on_link=on_link appearance=appearance>
+                <button on:click=move |_| close.run(()) data-tip=closes()>"Close"</button>
+            </Reviewer>
+        }
+    };
+    let blank = move || screen.with(|screen| screen.posts.is_empty());
     view! {
         <Tips />
         <Show
             when=move || !reviewed.get()
-            fallback=move || view! { <Reviewer reviewing=reviewing on_close=close on_link=on_link appearance=appearance /> }
+            fallback=reviewer
         >
         <Show
             when=move || watching.get()
@@ -149,6 +184,7 @@ pub fn Desktop() -> impl IntoView {
                     when=over
                     fallback=|| view! { <button on:click=|_| tauri::stop()>"Stop"</button> }
                 >
+                    <button on:click=review disabled=blank data-tip="Step through the game bubble by bubble, from where it left off.">"Review"</button>
                     <button class="sd-primary" on:click=move |_| new_game()>"New game"</button>
                 </Show>
             </Viewer>

@@ -44,8 +44,13 @@
 // first bubble with every later one dimmed; the arrow keys, Home and End,
 // ⌘↑ and ⌘↓, ⌥↓ and a click move the cursor, and the board, the outcome
 // and the position follow it; ⌘] and the list of games open another game
-// on its first bubble, and Close goes back to the start state. The
-// console stays clean throughout.
+// on its first bubble, and Close goes back to the start state. A game
+// just played offers Review beside New game, which opens on its last
+// bubble under the game's name, ⌘↑ goes to the first, and Close goes back
+// to the game's end. On the web page a game at rest is in review on its
+// last bubble, the keys and a click move the cursor, and Play, then Play
+// again, leaves review until every cue is shown. The console stays clean
+// throughout.
 // Screenshots land in ./screenshots for a human to look at.
 //
 //   npm test                 # against ../dist, from this directory
@@ -104,6 +109,22 @@ async function open(page, hash) {
   await page.waitForSelector('.sd-outcome');
   await page.waitForTimeout(SETTLE);
 }
+
+/** Where the review cursor is on `page`: the position shown, the
+ * selected bubble, how many bubbles there are and how many are dimmed,
+ * the file named, and the outcome shown. */
+const cursor = (page) =>
+  page.evaluate(() => {
+    const messages = [...document.querySelectorAll('.rc-message')];
+    return {
+      position: document.querySelector('.sd-review-position')?.textContent ?? null,
+      selected: messages.findIndex((message) => message.classList.contains('rc-selected')),
+      count: messages.length,
+      later: messages.filter((message) => message.classList.contains('rc-later')).length,
+      name: document.querySelector('.sd-review-name')?.textContent ?? null,
+      outcome: document.querySelector('.sd-outcome')?.textContent ?? null,
+    };
+  });
 
 /** Every narrator line in the chat, in order. */
 const narrated = (page) =>
@@ -397,6 +418,34 @@ await section('avalon-prompted', async () => {
   await screenshots(page, 'avalon-prompted');
 });
 
+// A game at rest is in review on its last bubble, and the keys and clicks
+// move the cursor.
+await section('web review', async () => {
+  await open(page, 'avalon-prompted');
+  const rest = await cursor(page);
+  check(
+    rest.selected === rest.count - 1 && rest.later === 0 && rest.position === `${rest.count} / ${rest.count}` && rest.name === null,
+    `web review: a game at rest is in review on its last bubble, with nothing dimmed (${JSON.stringify(rest)})`,
+  );
+  await page.keyboard.press('ArrowUp');
+  const back = await cursor(page);
+  check(
+    back.selected === rest.count - 2 && back.later === 1 && back.position === `${rest.count - 1} / ${rest.count}`,
+    `web review: the arrow keys step back, dimming the bubble after (${JSON.stringify(back)})`,
+  );
+  await page.keyboard.press('Home');
+  const first = await cursor(page);
+  check(first.selected === 0 && first.outcome === null, `web review: Home goes to the first bubble, before the outcome (${JSON.stringify(first)})`);
+  await page.keyboard.press('ArrowRight');
+  check((await cursor(page)).selected === 1, 'web review: the arrow keys step forward');
+  await (await page.$$('.rc-message'))[3].click();
+  check((await cursor(page)).selected === 3, 'web review: a click on a bubble puts the cursor there');
+  await page.keyboard.press('End');
+  const end = await cursor(page);
+  check(end.selected === rest.count - 1 && end.outcome !== null, 'web review: End goes back to the last bubble and its outcome');
+  await page.screenshot({ path: join(shots, 'web-review.png'), fullPage: true });
+});
+
 // Prompted Werewolf, at rest, then played at ten times the pace while a
 // mutation observer keeps a timeline of what the screen shows.
 await section('werewolf-prompted', async () => {
@@ -445,11 +494,28 @@ await section('werewolf-prompted', async () => {
       attributeFilter: ['data-theme'],
     });
   });
-  await page.click('.sd-header button');
+  const play = () => page.$eval('.sd-header button.sd-primary', (button) => button.textContent);
+  const label = await play();
+  check(label === 'Play', `werewolf-prompted: a game at rest offers Play (${label})`);
+  await page.click('.sd-header button.sd-primary');
+  const again = await play();
+  check(
+    again === 'Play again' && (await page.$('.sd-review-position')) === null,
+    `werewolf-prompted: Play leaves review and becomes Play again (${again})`,
+  );
   await page.waitForSelector('.rc-thinking');
   await page.screenshot({ path: join(shots, 'werewolf-prompted-thinking.png'), fullPage: true });
-  await page.waitForSelector('.sd-outcome', { timeout: 60_000 });
+  await page.waitForSelector('.sd-review-position', { timeout: 60_000 });
   await page.waitForTimeout(SETTLE);
+  const played = await cursor(page);
+  check(
+    played.selected === played.count - 1 && played.later === 0 && played.outcome !== null,
+    `werewolf-prompted: once Play has shown every cue, the game is back in review on its last bubble (${JSON.stringify(played)})`,
+  );
+  check(
+    !(await page.evaluate(() => document.body.innerText.includes('Replay'))),
+    'werewolf-prompted: no control is labeled Replay',
+  );
   const timeline = await page.evaluate(() => window.timeline);
   // From the cleared screen Play starts on.
   const playing = timeline.slice(timeline.findIndex((shot) => shot.spoken.length === 0));
@@ -1450,6 +1516,75 @@ await section('desktop review', async () => {
   check(
     JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true }),
     'desktop review: Close goes back to the start screen, and Go is disabled again',
+  );
+  await app.close();
+});
+
+// A game played live, shown cue by cue down the stand-in's channel, and
+// then reviewed from the game-over screen.
+await section('desktop review of a game just played', async () => {
+  const app = await browser.newContext({ colorScheme: 'light', viewport: { width: 1100, height: 760 } });
+  await app.addInitScript(backend, desktop);
+  const main = watch(await app.newPage());
+  await main.goto(origin);
+  await main.waitForSelector('.sd-start .sd-game-summary:not(:empty)');
+  await main.evaluate(() => {
+    const invoke = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = async (command, args) => {
+      if (command === 'play') {
+        window.playing = args.cues;
+        return null;
+      }
+      return invoke(command, args);
+    };
+  });
+  await main.click('.sd-game:first-child .sd-play');
+  await main.evaluate(async () => {
+    const cues = await (await fetch('game/werewolf-prompted.json')).json();
+    for (const cue of cues) window.playing.handler(cue);
+  });
+  await main.waitForSelector('.sd-outcome');
+  await main.waitForTimeout(SETTLE);
+  const buttons = () => main.$$eval('.sd-header button', (buttons) => buttons.map((button) => button.textContent));
+  const over = await buttons();
+  check(JSON.stringify(over) === JSON.stringify(['Review', 'New game']), `desktop review: the game-over header offers Review beside New game (${JSON.stringify(over)})`);
+  const live = await main.$$eval('.rc-message', (messages) => messages.length);
+  await main.click('.sd-header button:text("Review")');
+  await main.waitForSelector('.sd-review-position');
+  await main.waitForTimeout(SETTLE);
+  const last = await cursor(main);
+  const game = await main.$eval('.sd-header h1', (heading) => heading.textContent);
+  check(
+    last.count === live && last.selected === live - 1 && last.later === 0 && last.position === `${live} / ${live}` && last.outcome !== null,
+    `desktop review: Review opens on the last bubble, where the game left off, with nothing dimmed (${JSON.stringify(last)})`,
+  );
+  check(last.name === null && game === 'Werewolf', `desktop review: the header names the game, not a file (${game}, ${last.name})`);
+  check(
+    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 1, open: true }),
+    'desktop review: Open Game Log… and Go are enabled in the review of a game just played',
+  );
+  await main.screenshot({ path: join(shots, 'desktop-review-played.png') });
+  await main.keyboard.press('Meta+ArrowUp');
+  await main.waitForTimeout(SETTLE);
+  const first = await cursor(main);
+  check(
+    first.selected === 0 && first.later === live - 1 && first.outcome === null,
+    `desktop review: ⌘↑ goes to the first bubble (${JSON.stringify(first)})`,
+  );
+  await main.click('.sd-header button:text("Close")');
+  await main.waitForSelector('.sd-header button:text("Review")');
+  const closed = await cursor(main);
+  check(
+    closed.position === null && closed.selected === -1 && closed.count === live && closed.outcome !== null,
+    `desktop review: Close goes back to the game's end (${JSON.stringify(closed)})`,
+  );
+  await main.click('.sd-header button:text("Review")');
+  await main.waitForSelector('.sd-review-position');
+  await main.evaluate(() => window.standIn.emit('new-game', null, 'main'));
+  await main.waitForSelector('.sd-start');
+  check(
+    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true }),
+    'desktop review: New Game goes from the review to the start screen',
   );
   await app.close();
 });

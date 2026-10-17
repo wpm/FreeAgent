@@ -75,7 +75,7 @@ pub enum Beat {
         seats: Vec<Seat>,
     },
     /// How fast log time runs against the viewer's clock: 1.0 live. Sent
-    /// right after `Cast`, and again on any change (replay speed, later).
+    /// right after `Cast`, and again on any change (playback speed, later).
     Clock {
         /// Log milliseconds per viewer millisecond.
         rate: f64,

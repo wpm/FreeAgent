@@ -1,4 +1,4 @@
-//! Which game the page shows, and how fast **Play** replays it, from the
+//! Which game the page shows, and how fast **Play** plays it, from the
 //! URL hash.
 
 /// The games the page links to, each by the name of its cues file in
@@ -9,15 +9,15 @@ pub const GAMES: [(&str, &str); 2] = [("avalon", "Avalon"), ("werewolf", "Werewo
 /// The recorded prompted games, which the screen check opens by hash.
 pub const RECORDED: [&str; 2] = ["avalon-prompted", "werewolf-prompted"];
 
-/// The hash suffix that replays ten times as fast.
+/// The hash suffix that plays ten times as fast.
 const FAST: &str = "-fast";
 
-/// The game a hash names and the pace of its replay.
+/// The game a hash names and the pace **Play** plays it at.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Address {
     /// The name of the game's cues file, without `.json`.
     pub game: &'static str,
-    /// How many times the usual speed **Play** replays at.
+    /// How many times the usual speed **Play** plays at.
     pub pace: f64,
 }
 
@@ -62,7 +62,7 @@ mod tests {
     }
 
     #[test]
-    fn the_fast_suffix_replays_ten_times_as_fast() {
+    fn the_fast_suffix_plays_ten_times_as_fast() {
         assert_eq!(
             Address::parse("#werewolf-prompted-fast"),
             Address {
