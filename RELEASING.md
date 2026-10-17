@@ -44,6 +44,14 @@ over any that are there. Run the workflow by hand from the Actions tab to
 build every installer as a workflow artifact without touching a release;
 a pull request that changes the workflow or its scripts does the same.
 
+Every bundle carries the `social-deduction` command line that dist built
+for the release, so the workflow downloads dist's archives from the
+release: the Linux and Windows bundles hold dist's binaries as they are,
+and the macOS app holds dist's two joined into one universal binary and
+signed with the app. Each build job checks that its bundles' copy prints
+the release's version. A trial run builds the command line itself, or,
+given a tag in **sidecar-from**, takes it from that release.
+
 The macOS app is signed and notarized when the repository has the Apple
 secrets that `.github/scripts/apple-credentials.sh` names, and is unsigned
 otherwise. The release notes say which, and how to open an unsigned app.

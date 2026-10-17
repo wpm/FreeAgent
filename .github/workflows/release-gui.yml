@@ -21,11 +21,22 @@ name: Release the desktop app
 # The macOS build is signed and notarized when the repository has the
 # secrets for it (see .github/scripts/apple-credentials.sh for their
 # names) and is an unsigned build otherwise, which the release notes say.
+#
+# Each bundle carries the social-deduction command line as a sidecar. On a
+# release it is the binary dist built, from the release's archives; on a
+# trial run it is built here, or taken from the release that sidecar-from
+# names. .github/scripts/sidecar.sh puts it in place, and each bundle's
+# copy has to print the release's version.
 on:
   workflow_run:
     workflows: [Release]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      sidecar-from:
+        description: A release tag of this version whose command line the bundles carry, instead of one built here
+        required: false
+        default: ""
   pull_request:
     paths:
       - .github/workflows/release-gui.yml
@@ -55,6 +66,7 @@ jobs:
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       release-id: ${{ steps.release.outputs.id }}
+      version: ${{ steps.version.outputs.version }}
     env:
       TAG: ${{ github.event.workflow_run.head_branch }}
     steps:
@@ -109,6 +121,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # sidecar is the target the command line in the bundle is for.
         include:
           # One universal binary rather than one .dmg per chip, so there
           # is one macOS download and nobody has to know which Mac they have.
@@ -116,16 +129,19 @@ jobs:
             os: macos-latest
             targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin
             args: --target universal-apple-darwin
+            sidecar: universal-apple-darwin
           # The oldest Ubuntu GitHub still runs: the .deb, .rpm and AppImage
           # link against its glibc and webkit, and run on anything newer.
           - name: Linux
             os: ubuntu-22.04
             targets: wasm32-unknown-unknown
             args: ""
+            sidecar: x86_64-unknown-linux-gnu
           - name: Windows
             os: windows-latest
             targets: wasm32-unknown-unknown
             args: ""
+            sidecar: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -142,16 +158,18 @@ jobs:
         with:
           tool: trunk
       # The desktop shell's system libraries, as in ci.yml, plus what the
-      # AppImage bundler uses. macOS and Windows ship their webviews.
+      # AppImage bundler uses and what opens the .rpm to check it. macOS
+      # and Windows ship their webviews.
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf xdg-utils libdbus-1-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf xdg-utils libdbus-1-dev rpm2cpio
       # tauri-action installs Tauri's CLI with npm.
       - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Apple credentials, when set
+        id: apple
         if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -164,6 +182,18 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_PATH }}
         run: .github/scripts/apple-credentials.sh
+      # The command line, where tauri build picks it up as a sidecar.
+      - name: The command line
+        id: sidecar
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag || inputs.sidecar-from }}
+          TARGET: ${{ matrix.sidecar }}
+        run: |
+          if [ -n "$TAG" ]; then set -- --release "$TAG"; fi
+          path=$(.github/scripts/sidecar.sh --target "$TARGET" "$@" | tee /dev/stderr | tail -n 1)
+          echo "path=$path" >> "$GITHUB_OUTPUT"
       # Runs `tauri build`, which runs Trunk for the frontend first (the
       # beforeBuildCommand in tauri.conf.json), then uploads the bundles
       # to the release, or only as workflow artifacts on a trial run.
@@ -177,6 +207,25 @@ jobs:
           uploadWorkflowArtifacts: true
           uploadUpdaterJson: false
           args: ${{ matrix.args }}
+      # Every bundle's social-deduction is the release's. Tauri signs the
+      # macOS app's copy, ad hoc without the secrets, so only the others
+      # have to be the sidecar's very bytes.
+      - name: The bundled command line
+        shell: bash
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          VERSION: ${{ needs.check.outputs.version }}
+          SIDECAR: ${{ runner.os != 'macOS' && steps.sidecar.outputs.path || '' }}
+        run: .github/scripts/bundled-cli.sh "$VERSION" ${SIDECAR:+"$SIDECAR"} <<< "$ARTIFACTS"
+      - name: The macOS signature
+        if: steps.apple.outputs.signed == 'true'
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          NOTARIZED: ${{ steps.apple.outputs.notarized }}
+        run: |
+          app=$(jq -r '.[] | select(endswith(".app"))' <<< "$ARTIFACTS")
+          codesign --verify --deep --strict --verbose=2 "$app"
+          if [ "$NOTARIZED" = true ]; then spctl --assess --type execute --verbose "$app"; fi
       # The same installers again under the names the website links to.
       - name: Stable names
         shell: bash
