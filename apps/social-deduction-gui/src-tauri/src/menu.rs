@@ -6,7 +6,7 @@
 
 use crate::settings;
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{AppHandle, Emitter, Manager, Wry};
+use tauri::{AppHandle, Emitter, Wry};
 
 /// The app's menu bar.
 ///
@@ -73,6 +73,7 @@ fn bar(
     edit: &Submenu<Wry>,
     window: &Submenu<Wry>,
 ) -> tauri::Result<Menu<Wry>> {
+    use tauri::Manager;
     let separator = || PredefinedMenuItem::separator(app);
     let name = app.package_info().name.clone();
     let command_line = crate::command_line::item(app)?;
@@ -140,6 +141,7 @@ pub fn chosen(app: &AppHandle, event: MenuEvent) {
         crate::command_line::ID => {
             let app = app.clone();
             std::thread::spawn(move || {
+                use tauri::Manager;
                 let item = app.state::<crate::command_line::Item>();
                 crate::command_line::chosen(&app, &item);
             });
