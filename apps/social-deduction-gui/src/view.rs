@@ -23,7 +23,7 @@ use crate::screen::{
     dots_due, entry, side_key,
 };
 use crate::settings::SettingsWindow;
-use crate::splitter::{self, Splitter};
+use crate::splitter::{Split, Splitter};
 use crate::tauri;
 
 /// How often a replay shows the next cue.
@@ -270,7 +270,7 @@ pub(crate) fn Viewer(
             None => name.into_any(),
         }
     });
-    let board_width = RwSignal::new(splitter::BOARD);
+    let split = Split::default();
     let messages = Signal::derive(move || {
         let mut messages = posts.with(|posts| messages(posts));
         thinkers.with(|thinkers| {
@@ -306,13 +306,7 @@ pub(crate) fn Viewer(
             </header>
             <main
                 class="sd-main"
-                style=move || {
-                    format!(
-                        "--sd-board-width: {}px; --sd-min-chat: {}px",
-                        board_width.get(),
-                        splitter::MIN_CHAT,
-                    )
-                }
+                style=move || format!("--sd-board-width: {}px", split.width())
             >
                 <div class="sd-chat">
                     {move || failure.get().map(|error| view! { <p class="sd-error">{error}</p> })}
@@ -324,7 +318,7 @@ pub(crate) fn Viewer(
                         on_link=on_link
                     />
                 </div>
-                <Splitter width=board_width />
+                <Splitter split=split />
                 <aside class="sd-board">
                     {move || board.get().map(|board| view! { <AvalonBoard board=board /> })}
                     {move || {

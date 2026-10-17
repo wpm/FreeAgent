@@ -17,18 +17,22 @@
 // and tags it New as it lands, and shows a day closing, with speech
 // landing while it does, before the night falls. The prompted Avalon board names the Assassin's target.
 // In each game, dragging the handle on the line between the chat and the
-// board resizes them, the board to no less than 240 px and the chat to no
-// less than 320 px, the arrow keys step it 16 px, and a double click puts
-// it back. At 420 px wide the board stacks under the chat, the handle is
+// board resizes them by as far as the pointer moves, selecting no text,
+// the board to no less than 240 px and the chat to no less than 320 px,
+// the arrow keys step it 16 px, Home and End take it to its limits, and a
+// double click puts it back. The handle tells its width and limits, keeps
+// clear of the chat's scrollbar, and in a window narrowed under a wide
+// board, moves on from the width shown. At 420 px wide the board stacks under the chat, the handle is
 // hidden, and nothing scrolls sideways. The handle is the one edge that
-// resizes anything, and the page stays put past its ends. The tab shows the mark. With a stand-in for the desktop app's backend,
+// resizes anything, and the page and the board stay put past their ends. The tab shows the mark. With a stand-in for the desktop app's backend,
 // the main window opens on its start state: the mark, then one row per game
 // with what it is, its seats, its summary and its own Play, which a
 // settings error disables, linked to its field. #settings opens the
 // Settings window's four pages in a vertical tablist the arrows move
 // through, each page a few grouped lists with no box inside them and what
 // each role and phase does written under its name, help shows on hover and
-// on focus, and typing goes on in a field while each change is stored. Its Models tab
+// on focus, under the part of an element that places it, and not while
+// pressed, and typing goes on in a field while each change is stored. Its Models tab
 // shows each provider by name with where its key comes from, why it lists
 // nothing as a marigold warning, or the models that play; adding one asks for its name, and a
 // name taken or empty is refused; a context window typed overrides the
@@ -507,14 +511,20 @@ await section('werewolf-prompted', async () => {
 });
 
 // The handle on the line between the chat and the board drags the board
-// wider or narrower, within limits, and the arrow keys step it.
+// wider or narrower, within limits, and the keys move it.
 await section('splitter', async () => {
   const widths = () =>
     page.evaluate(() => ({
       chat: document.querySelector('.sd-chat').getBoundingClientRect().width,
       board: document.querySelector('.sd-board').getBoundingClientRect().width,
     }));
-  /** Drags the handle `by` pixels sideways. */
+  const value = () =>
+    page.$eval('.sd-splitter', (element) => ({
+      now: Number(element.getAttribute('aria-valuenow')),
+      min: Number(element.getAttribute('aria-valuemin')),
+      max: Number(element.getAttribute('aria-valuemax')),
+    }));
+  /** Drags the handle `by` pixels sideways, from the middle of its strip. */
   const drag = async (by) => {
     const handle = await page.$eval('.sd-splitter', (element) => {
       const box = element.getBoundingClientRect();
@@ -526,28 +536,52 @@ await section('splitter', async () => {
     await page.mouse.move(handle.x + by, handle.y);
     await page.mouse.up();
   };
+  /** Presses `key` on the handle. */
+  const press = async (key) => {
+    await page.focus('.sd-splitter');
+    await page.keyboard.press(key);
+  };
   for (const game of ['avalon', 'werewolf']) {
     await open(page, game);
     const separator = await page.$eval('.sd-splitter', (element) => {
+      const chat = document.querySelector('.sd-chat').getBoundingClientRect();
       const board = document.querySelector('.sd-board').getBoundingClientRect();
       const box = element.getBoundingClientRect();
+      const grip = element.querySelector('.sd-grip').getBoundingClientRect();
       return {
         role: element.getAttribute('role'),
         orientation: element.getAttribute('aria-orientation'),
         cursor: getComputedStyle(element).cursor,
-        onLine: Math.abs(box.left + box.width / 2 - board.left) <= 1,
+        onBoard: Math.abs(box.left - board.left) <= 1 && box.right <= board.right,
+        gripOnLine: Math.abs(grip.left + grip.width / 2 - board.left) <= 1,
+        // The chat's own scrollbar, at its right edge, takes the pointer.
+        scrollbar: document.elementFromPoint(chat.right - 2, chat.top + chat.height / 2)?.closest('.sd-chat') !== null,
       };
     });
     check(
-      separator.role === 'separator' && separator.orientation === 'vertical' && separator.cursor === 'col-resize' && separator.onLine,
-      `${game}: a handle sits on the line between the chat and the board (${JSON.stringify(separator)})`,
+      separator.role === 'separator' &&
+        separator.orientation === 'vertical' &&
+        separator.cursor === 'col-resize' &&
+        separator.onBoard &&
+        separator.gripOnLine &&
+        separator.scrollbar,
+      `${game}: a handle sits on the line between the chat and the board, clear of the chat (${JSON.stringify(separator)})`,
     );
     const before = await widths();
+    const limits = await value();
+    check(
+      JSON.stringify(limits) === JSON.stringify({ now: before.board, min: 240, max: 960 }),
+      `${game}: the handle tells its width and limits (${JSON.stringify(limits)})`,
+    );
     await drag(-100);
     const wider = await widths();
     check(
       Math.abs(wider.board - before.board - 100) <= 1 && Math.abs(before.chat - wider.chat - 100) <= 1,
-      `${game}: dragging the handle left widens the board (${before.board} to ${wider.board})`,
+      `${game}: dragging the handle left widens the board by as much, with no jump (${before.board} to ${wider.board})`,
+    );
+    check(
+      await page.evaluate(() => getSelection().toString() === ''),
+      `${game}: dragging the handle selects no text`,
     );
     await drag(1000);
     check((await widths()).board === 240, `${game}: the board narrows no further than 240 px`);
@@ -555,14 +589,37 @@ await section('splitter', async () => {
     check((await widths()).chat === 320, `${game}: the chat narrows no further than 320 px`);
     await page.dblclick('.sd-splitter');
     check((await widths()).board === before.board, `${game}: a double click puts the board back`);
-    await page.focus('.sd-splitter');
-    await page.keyboard.press('ArrowLeft');
+    await press('ArrowLeft');
     const stepped = (await widths()).board;
-    await page.keyboard.press('ArrowRight');
+    await press('ArrowRight');
     check(
       stepped === before.board + 16 && (await widths()).board === before.board,
       `${game}: the arrow keys step the board 16 px (${stepped})`,
     );
+    await press('Home');
+    const home = await widths();
+    await press('End');
+    const end = await widths();
+    check(
+      home.board === 240 && end.chat === 320,
+      `${game}: Home takes the board to its narrowest and End to its widest (${home.board}, ${end.board})`,
+    );
+    // A window narrowed under a wide board takes the board's width
+    // down, and the keys move on from the width shown.
+    await page.setViewportSize({ width: 1000, height: 900 });
+    // The page measures the narrower window a moment later.
+    await page.waitForTimeout(SETTLE);
+    const narrowed = await widths();
+    const told = await value();
+    await press('ArrowRight');
+    const moved = (await widths()).board;
+    check(
+      narrowed.board === 680 && told.now === 680 && told.max === 680 && moved === 664,
+      `${game}: in a narrower window the board keeps the chat's width, and the keys move from what shows (${narrowed.board}, ${JSON.stringify(told)}, ${moved})`,
+    );
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.waitForTimeout(SETTLE);
+    await page.dblclick('.sd-splitter');
   }
   await page.screenshot({ path: join(shots, 'werewolf-splitter.png'), fullPage: true });
 });
@@ -577,10 +634,12 @@ await section('edges', async () => {
       resizers: [...document.querySelectorAll('body *')]
         .filter((element) => {
           const style = getComputedStyle(element);
-          return style.resize !== 'none' || style.cursor.endsWith('resize');
+          // A resize cursor counts where it is set, not where it is inherited.
+          const inherited = getComputedStyle(element.parentElement).cursor === style.cursor;
+          return style.resize !== 'none' || (style.cursor.endsWith('resize') && !inherited);
         })
         .map((element) => element.className),
-      overscroll: [document.documentElement, document.body].map(
+      overscroll: [document.documentElement, document.body, document.querySelector('.sd-board')].map(
         (element) => getComputedStyle(element).overscrollBehaviorY,
       ),
     }));
@@ -589,8 +648,8 @@ await section('edges', async () => {
       `${game}: the handle is the one draggable edge (${edges.resizers.join(', ')})`,
     );
     check(
-      edges.overscroll.every((behavior) => behavior === 'none'),
-      `${game}: the page stays put past its ends (${edges.overscroll.join(', ')})`,
+      JSON.stringify(edges.overscroll) === JSON.stringify(['none', 'none', 'contain']),
+      `${game}: the page stays put past its ends, and so does it past the board's (${edges.overscroll.join(', ')})`,
     );
   }
 });
@@ -1065,6 +1124,30 @@ await section('desktop', async () => {
   await settings.screenshot({ path: join(shots, 'settings-tip.png') });
   await settings.keyboard.press('Escape');
   check(!(await tip()).shown, 'desktop: Escape hides help');
+  await settings.hover('#tab-general');
+  await settings.mouse.down();
+  const pressed = await tip();
+  await settings.mouse.up();
+  check(!pressed.shown, `desktop: pressing hides help (${JSON.stringify(pressed)})`);
+  // An element whose help is placed by a part of it, as the board's
+  // handle's is by its grip, shows its help under the part.
+  await settings.evaluate(() => {
+    const whole = document.createElement('div');
+    whole.id = 'whole';
+    whole.dataset.tip = 'The part help';
+    whole.dataset.tipAt = 'span';
+    whole.style.cssText = 'position: fixed; left: 0; top: 0; width: 40px; height: 400px';
+    whole.innerHTML = '<span style="position: absolute; top: 200px; width: 40px; height: 10px"></span>';
+    document.body.append(whole);
+  });
+  await settings.hover('#whole', { position: { x: 20, y: 20 } });
+  const onPart = await tip();
+  await settings.mouse.move(600, 600);
+  await settings.evaluate(() => document.getElementById('whole').remove());
+  check(
+    onPart.shown && onPart.text === 'The part help' && Math.abs(onPart.top - 218) <= 1,
+    `desktop: help on a part of an element shows under the part (${JSON.stringify(onPart)})`,
+  );
   await settings.click('#tab-werewolf');
   await settings.waitForSelector('.sd-page-head h1');
   await settings.screenshot({ path: join(shots, 'settings-werewolf.png'), fullPage: true });

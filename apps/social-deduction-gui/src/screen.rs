@@ -163,6 +163,8 @@ pub struct Screen {
     pub names: Names,
     /// How the game ended, once it has.
     pub outcome: Option<Outcome>,
+    /// When the game ended, in log time, once it has.
+    ended: Option<Millis>,
     /// The board as it stands.
     pub panel: Option<Panel>,
     /// The choices flashing now, each with the cue that landed it.
@@ -189,6 +191,7 @@ impl Default for Screen {
             seats: Vec::new(),
             names: Names::none(),
             outcome: None,
+            ended: None,
             panel: None,
             landed: Vec::new(),
             thinkers: Vec::new(),
@@ -262,6 +265,7 @@ impl Screen {
             }
             Beat::Over { outcome } => {
                 self.outcome = Some(outcome.clone());
+                self.ended = Some(cue.at);
                 self.thinking.clear();
                 self.thinkers.clear();
             }
@@ -338,6 +342,7 @@ impl Screen {
     fn drawn<P>(&self, panel: P) -> Board<P> {
         Board {
             panel,
+            ended: self.ended,
             seats: self.seats.clone(),
             landed: self
                 .landed
@@ -413,6 +418,8 @@ impl Screen {
 pub struct Board<P = AvalonPanel> {
     /// The board as it stands.
     pub panel: P,
+    /// When the game ended, in log time, once it has.
+    pub ended: Option<Millis>,
     /// Every seat, in seat order.
     pub seats: Vec<Seat>,
     /// The choices flashing now.
@@ -469,7 +476,7 @@ pub fn dots_due(cue: &Cue) -> Option<Millis> {
 
 impl Board<WerewolfPanel> {
     /// The day's tentative decision, its countdown stopped once the day
-    /// begins closing.
+    /// begins closing or the game ends.
     pub fn decision(&self) -> Option<Decision> {
         let ratify = self.panel.ratify.as_ref();
         let ratify = ratify.filter(|_| self.panel.phase == WerewolfPhase::Day)?;
@@ -478,7 +485,7 @@ impl Board<WerewolfPanel> {
             timer: Timer {
                 began: ratify.since,
                 limit_ms: ratify.limit_ms,
-                stopped: self.panel.closing,
+                stopped: self.panel.closing.or(self.ended),
             },
         })
     }
@@ -1318,6 +1325,29 @@ mod tests {
         };
         let screen = shown(&[werewolf_cast(), werewolf(&night)]);
         assert_eq!(screen.werewolf().unwrap().decision(), None);
+    }
+
+    #[test]
+    fn a_game_over_stops_the_decision_where_it_stood_when_the_game_ended() {
+        let over = Cue {
+            at: 12_000,
+            beat: Beat::Over {
+                outcome: Outcome::Stopped,
+            },
+        };
+        let screen = shown(&[werewolf_cast(), werewolf(&deciding()), over]);
+        let decision = screen.werewolf().unwrap().decision().unwrap();
+        assert_eq!(decision.timer.stopped, Some(12_000));
+        assert_eq!(decision.label(40_000.0), "Player 4 out");
+        let closed = shown(&[
+            werewolf_cast(),
+            werewolf(&closing(&deciding())),
+            cue(Beat::Over {
+                outcome: Outcome::Stopped,
+            }),
+        ]);
+        let decision = closed.werewolf().unwrap().decision().unwrap();
+        assert_eq!(decision.timer.stopped, Some(10_000));
     }
 
     /// The cast of a Werewolf game of four: a werewolf, a doctor, a seer
