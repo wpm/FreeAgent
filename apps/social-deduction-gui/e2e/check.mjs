@@ -45,9 +45,10 @@
 // ⌘↑ and ⌘↓, ⌥↓ and a click move the cursor, and the board, the outcome
 // and the position follow it; ⌘] and the list of games open another game
 // on its first bubble, and Close goes back to the start state. A game
-// just played offers Review beside New game, which opens on its last
-// bubble under the game's name, ⌘↑ goes to the first, and Close goes back
-// to the game's end. On the web page a game at rest is in review on its
+// just played offers Review and Save Log… beside New game; Save Game Log…
+// is enabled at the game's end and in its review, and nowhere else.
+// Review opens on its last bubble under the game's name, ⌘↑ goes to the
+// first, and Close goes back to the game's end. On the web page a game at rest is in review on its
 // last bubble, the keys and a click move the cursor, and Play, then Play
 // again, leaves review until every cue is shown. The console stays clean
 // throughout.
@@ -869,10 +870,15 @@ function backend(snapshot) {
       standIn.menus = enabled;
       return null;
     },
+    save_log: () => {
+      standIn.saved = (standIn.saved ?? 0) + 1;
+      return null;
+    },
   };
-  // The menus as the main window last enabled them, and the native
+  // The menus as the main window last enabled them, how many logs were
+  // saved, and the native
   // menu's Go shortcuts, which take their keys before the page sees them.
-  const standIn = { emit, menus: null };
+  const standIn = { emit, menus: null, saved: 0 };
   window.standIn = standIn;
   const shortcuts = {
     'Meta+ArrowUp': 'first',
@@ -1407,8 +1413,8 @@ await section('desktop review', async () => {
   await main.goto(origin);
   await main.waitForSelector('.sd-start .sd-game-summary:not(:empty)');
   check(
-    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true }),
-    'desktop review: Open Game Log… is enabled on the start screen, and Go is not',
+    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true, save: false }),
+    'desktop review: Open Game Log… is enabled on the start screen, and Go and Save Game Log… are not',
   );
   await main.evaluate(async () => {
     const cues = async (name) => (await fetch(`game/${name}.json`)).json();
@@ -1464,7 +1470,7 @@ await section('desktop review', async () => {
     `desktop review: ‹ and › step between games, ‹ off on the first (${JSON.stringify(arrows)})`,
   );
   check(
-    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 2, open: true }),
+    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 2, open: true, save: false }),
     'desktop review: Open Game Log… and Go are enabled in review, Previous and Next Game with them',
   );
   await main.screenshot({ path: join(shots, 'desktop-review-first.png') });
@@ -1514,7 +1520,7 @@ await section('desktop review', async () => {
   await main.click('.sd-header button:text("Close")');
   await main.waitForSelector('.sd-start');
   check(
-    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true }),
+    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true, save: false }),
     'desktop review: Close goes back to the start screen, and Go is disabled again',
   );
   await app.close();
@@ -1540,14 +1546,32 @@ await section('desktop review of a game just played', async () => {
   });
   await main.click('.sd-game:first-child .sd-play');
   await main.evaluate(async () => {
-    const cues = await (await fetch('game/werewolf-prompted.json')).json();
-    for (const cue of cues) window.playing.handler(cue);
+    window.cues = await (await fetch('game/werewolf-prompted.json')).json();
+    window.playing.handler(window.cues[0]);
+  });
+  await main.waitForTimeout(100);
+  check(
+    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: false, save: false }),
+    'desktop review: Open Game Log… and Save Game Log… are disabled while the game plays',
+  );
+  await main.evaluate(() => {
+    for (const cue of window.cues.slice(1)) window.playing.handler(cue);
   });
   await main.waitForSelector('.sd-outcome');
   await main.waitForTimeout(SETTLE);
   const buttons = () => main.$$eval('.sd-header button', (buttons) => buttons.map((button) => button.textContent));
   const over = await buttons();
-  check(JSON.stringify(over) === JSON.stringify(['Review', 'New game']), `desktop review: the game-over header offers Review beside New game (${JSON.stringify(over)})`);
+  check(
+    JSON.stringify(over) === JSON.stringify(['Review', 'Save Log…', 'New game']),
+    `desktop review: the game-over header offers Review and Save Log… beside New game (${JSON.stringify(over)})`,
+  );
+  check(
+    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true, save: true }),
+    'desktop review: Save Game Log… is enabled once the game is over',
+  );
+  await main.click('.sd-header button:text("Save Log…")');
+  await main.waitForTimeout(100);
+  check((await main.evaluate(() => window.standIn.saved)) === 1, 'desktop review: Save Log… saves the game\'s log');
   const live = await main.$$eval('.rc-message', (messages) => messages.length);
   await main.click('.sd-header button:text("Review")');
   await main.waitForSelector('.sd-review-position');
@@ -1560,8 +1584,8 @@ await section('desktop review of a game just played', async () => {
   );
   check(last.name === null && game === 'Werewolf', `desktop review: the header names the game, not a file (${game}, ${last.name})`);
   check(
-    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 1, open: true }),
-    'desktop review: Open Game Log… and Go are enabled in the review of a game just played',
+    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 1, open: true, save: true }),
+    'desktop review: Open Game Log…, Save Game Log… and Go are enabled in the review of a game just played',
   );
   await main.screenshot({ path: join(shots, 'desktop-review-played.png') });
   await main.keyboard.press('Meta+ArrowUp');
@@ -1583,8 +1607,8 @@ await section('desktop review of a game just played', async () => {
   await main.evaluate(() => window.standIn.emit('new-game', null, 'main'));
   await main.waitForSelector('.sd-start');
   check(
-    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true }),
-    'desktop review: New Game goes from the review to the start screen',
+    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true, save: false }),
+    'desktop review: New Game goes from the review to the start screen, and Save Game Log… is disabled',
   );
   await app.close();
 });

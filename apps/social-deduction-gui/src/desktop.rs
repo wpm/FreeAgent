@@ -1,7 +1,9 @@
 //! The desktop app's main window: a start state listing the games, each
 //! with its own **Play**, and **Stop** while the game is prepared; then
 //! the game as it plays, with **Stop**, and once it is over, **Review**,
-//! which steps through it from where it left off, and **New game**.
+//! which steps through it from where it left off, **Save Log…**, and **New
+//! game**. **File ▸ Save Game Log…** saves the log too, from the game's end
+//! and its review.
 //! **File ▸ Open Game Log…** reviews a log, from anywhere but a game being
 //! prepared or playing, and the **Go** menu moves through either. **File
 //! ▸ New Game** comes back to the start state from anywhere.
@@ -138,15 +140,17 @@ pub fn Desktop() -> impl IntoView {
     let playing =
         move || pending.with(Option::is_some) || (watching.get() && !reviewed.get() && !over());
     // A memo, so that moving the cursor leaves the menus be.
+    // The game just played is over, and shown at its end or in review.
+    let saveable = move || watching.get() && (reviewed.get() || over());
     let menus = Memo::new(move |_| {
         let games = reviewing
             .review
             .with(|review| review.as_ref().map_or(0, Review::games));
-        (!playing(), games)
+        (!playing(), saveable(), games)
     });
     Effect::new(move |_| {
-        let (open, games) = menus.get();
-        tauri::menus(open, games);
+        let (open, save, games) = menus.get();
+        tauri::menus(open, save, games);
     });
 
     // A link opens in the system browser, since the window must not
@@ -185,6 +189,7 @@ pub fn Desktop() -> impl IntoView {
                     fallback=|| view! { <button on:click=|_| tauri::stop()>"Stop"</button> }
                 >
                     <button on:click=review disabled=blank data-tip="Step through the game bubble by bubble, from where it left off.">"Review"</button>
+                    <button on:click=|_| tauri::save_log() data-tip="Save the game's log, to open in review later.">"Save Log…"</button>
                     <button class="sd-primary" on:click=move |_| new_game()>"New game"</button>
                 </Show>
             </Viewer>
@@ -284,7 +289,7 @@ fn Game(
             </div>
             <div class="sd-run">
                 {move || starting().then(|| view! { <button class="sd-large" on:click=|_| tauri::stop() data-tip="Stop starting the game.">"Stop"</button> })}
-                <button class="sd-play sd-primary sd-large" on:click=move |_| run.run(game) disabled=blocked data-tip=format!("Start a game of {title} with these settings. It plays live here.")>
+                <button class="sd-play sd-primary sd-large" on:click=move |_| run.run(game) disabled=blocked data-tip=format!("Start a game of {title} with these settings. It plays live here, and you can save its log when it ends.")>
                     {move || starting().then(|| view! { <span class="sd-spinner"></span> })}
                     "Play " {title}
                 </button>

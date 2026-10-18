@@ -47,7 +47,7 @@ its side's color, a line summing up its settings, and its own **Play**. A
 game whose settings have an error names the first one under its row,
 linked to its field in Settings, and the other games stay playable. The
 game plays live in the window, with **Stop**, and once it is over,
-**Review** and **New game** appear. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
+**Review**, **Save Log…** and **New game** appear. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
 start state.
 
 **Settings…** (⌘, on macOS, **Edit ▸ Preferences…** and Ctrl+, elsewhere)
@@ -118,7 +118,7 @@ the start state. A log is opened anywhere but while a game is being
 prepared or played.
 
 **Review** on the game-over header reviews the game just played, with no
-file to save or open. It opens on the last bubble, where the game left
+file to open. It opens on the last bubble, where the game left
 off, so **Go ▸ First Bubble** (⌘↑) takes it back to the start. The header
 names the game, and **Close** returns to the game's end.
 
@@ -146,8 +146,12 @@ cargo tauri dev
 On Linux, Tauri needs the WebKitGTK development packages:
 `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev`.
 
-A game played in the app is shown as it happens. Logs on disk come from
-`social-deduction play`.
+A game played in the app is shown as it happens, and once it is over,
+won, stopped or failed, **File ▸ Save Game Log…** (⌘S, Ctrl+S elsewhere)
+or **Save Log…** saves its log, at its end and in its review. The file is
+what `social-deduction play` writes, keys redacted, so it opens in review
+and in any tool that reads command-line logs. Nothing is written to disk
+until it is saved.
 
 A model's API key comes from the OS keychain, then from the environment
 variable that names it, such as `OPENAI_API_KEY`. Each key is a keychain

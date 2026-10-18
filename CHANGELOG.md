@@ -9,6 +9,11 @@ workflow takes a version's notes from here.
 
 ### Added
 
+- The desktop app saves a finished game's log: **File ▸ Save Game Log…**
+  (⌘S) and **Save Log…** on the game-over header write it, won, stopped
+  or failed, as `social-deduction play` writes it, through the same
+  redacting `log::Writer`, so it opens in review. A game writes nothing
+  to disk until it is saved.
 - A game just played in the desktop app is reviewed in one click:
   **Review** on the game-over header opens it on its last bubble, where
   it left off, and **Close** goes back to its end. The viewer's web page

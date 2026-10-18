@@ -8,8 +8,8 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::settings::error;
 
-/// The game logs the dialog shows.
-const FILTER: (&str, &[&str]) = ("Game log", &["jsonl"]);
+/// The game logs the dialogs show.
+pub(crate) const FILTER: (&str, &[&str]) = ("Game log", &["jsonl"]);
 
 /// Read a game log the user picks and send its games, with any problems
 /// and the file's name, to the main window as a `review` event. A file

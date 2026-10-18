@@ -16,6 +16,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::marker::PhantomData;
+use std::time::SystemTime;
 use uuid::Uuid;
 
 /// The shape of the log this version writes. It goes up whenever the
@@ -205,7 +206,7 @@ impl<G: Game, W: Write> Writer<G, W> {
             secrets,
             game: PhantomData,
         };
-        writer.stamped(Entry::Header(Header::of::<G>()))?;
+        writer.write(&Event::now(episode, Entry::Header(Header::of::<G>())))?;
         Ok(writer)
     }
 
@@ -228,15 +229,24 @@ impl<G: Game, W: Write> Writer<G, W> {
     /// # Errors
     ///
     /// Fails when writing to `sink` fails.
-    pub fn end(mut self, ended: Ended) -> io::Result<W> {
-        self.stamped(Entry::Ended(ended))?;
-        self.sink.flush()?;
-        Ok(self.sink)
+    pub fn end(self, ended: Ended) -> io::Result<W> {
+        self.end_at(ended, SystemTime::now())
     }
 
-    /// Write `entry` as an event of the episode, stamped now.
-    fn stamped(&mut self, entry: Entry<G>) -> io::Result<()> {
-        self.write(&Event::now(self.episode, entry))
+    /// Write how the episode `ended`, stamped `time`, its last line, and
+    /// give back the sink, flushed.
+    ///
+    /// # Errors
+    ///
+    /// Fails when writing to `sink` fails.
+    pub fn end_at(mut self, ended: Ended, time: SystemTime) -> io::Result<W> {
+        self.write(&Event {
+            time,
+            episode: self.episode,
+            payload: Entry::Ended(ended),
+        })?;
+        self.sink.flush()?;
+        Ok(self.sink)
     }
 }
 
@@ -330,6 +340,18 @@ mod tests {
     /// `payload` as a line of a log.
     fn line(payload: serde_json::Value) -> String {
         serde_json::to_string(&logged(payload)).unwrap()
+    }
+
+    #[test]
+    fn an_episode_ended_at_a_time_is_stamped_with_it() {
+        let time = SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(1_234);
+        let written = Writer::<Avalon, _>::start(Vec::new(), episode(), Secrets::default())
+            .unwrap()
+            .end_at(Ended::Stopped, time)
+            .unwrap();
+        let ended = read::<Avalon>(&written).pop().unwrap();
+        assert_eq!(ended.time, time);
+        assert_eq!(ended.payload, Entry::Ended(Ended::Stopped));
     }
 
     #[test]

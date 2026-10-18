@@ -4539,6 +4539,7 @@ name = "social-deduction-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "keyring",
  "secrecy",
  "serde",
