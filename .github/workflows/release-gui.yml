@@ -286,6 +286,8 @@ jobs:
     name: The website's downloads
     needs: [check, build]
     if: needs.check.outputs.tag != ''
+    permissions:
+      contents: read # it only reads the release's assets
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
