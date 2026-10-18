@@ -401,6 +401,22 @@ pub const CANARY: &str = "sk-canary-0123456789";
 /// The variable a [`leaking`] provider's key is read from.
 pub const CANARY_VARIABLE: &str = "SOCIAL_DEDUCTION_CANARY_KEY";
 
+/// A quick Werewolf configuration file whose players are the model served at
+/// `base_url`, a [`leaking`] provider's, asked with the key in
+/// [`CANARY_VARIABLE`], and random.
+pub fn leaking_werewolf(base_url: &str) -> String {
+    format!(
+        "game = \"werewolf\"\n[phases]\nnight_limit = \"1s\"\nday_limit = \"2s\"\nratify_limit = \"1s\"\n\
+         [models.qwen]\nbase_url = \"{base_url}\"\nid = \"qwen2.5-7b-instruct\"\n\
+         api_key_env = \"{CANARY_VARIABLE}\"\n\
+         [strategies.plain]\npolicy = \"prompted\"\nsystem = \"Play.\"\n\
+         [roles.werewolf]\nstrategy = \"random\"\n\
+         [roles.villager]\nstrategy = \"plain\"\n\
+         [roles.doctor]\nstrategy = \"plain\"\n\
+         [roles.seer]\nstrategy = \"plain\"\n"
+    )
+}
+
 /// The userinfo in the base URL of a [`leaking`] provider.
 pub const LEAKED_USERINFO: &str = "canary-user:canary-pass";
 

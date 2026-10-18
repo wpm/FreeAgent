@@ -149,7 +149,9 @@ impl Keys for Loading<'_> {
 mod tests {
     use super::*;
     use crate::log::{Ended, Writer};
-    use crate::model::canned::{CANARY, CANARY_VARIABLE, assert_redacted, leaking, playing};
+    use crate::model::canned::{
+        CANARY, CANARY_VARIABLE, assert_redacted, leaking, leaking_werewolf, playing,
+    };
     use crate::model::spec::Environment;
     use crate::secret::Keychain;
     use crate::secret::tests::Fake;
@@ -313,16 +315,7 @@ mod tests {
         keychain
             .store(CANARY_VARIABLE, &SecretString::from(CANARY))
             .unwrap();
-        let text = format!(
-            "[phases]\nnight_limit = \"1s\"\nday_limit = \"2s\"\nratify_limit = \"1s\"\n\
-             [models.qwen]\nbase_url = \"{base_url}\"\nid = \"qwen2.5-7b-instruct\"\n\
-             api_key_env = \"{CANARY_VARIABLE}\"\n\
-             [strategies.plain]\npolicy = \"prompted\"\nsystem = \"Play.\"\n\
-             [roles.werewolf]\nstrategy = \"random\"\n\
-             [roles.villager]\nstrategy = \"plain\"\n\
-             [roles.doctor]\nstrategy = \"plain\"\n\
-             [roles.seer]\nstrategy = \"plain\"\n"
-        );
+        let text = leaking_werewolf(&base_url);
         let settings = werewolf::config::parse(&text).unwrap().settle().unwrap();
         let ready = Ready::new(settings, &keychain).await.unwrap();
         let (logger, mut events) = unbounded_channel();
