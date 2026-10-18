@@ -1,10 +1,11 @@
 //! The menus: **Settings…** in the app menu on macOS, and
 //! **Preferences…** in Edit elsewhere; **New Game**, **Open Game Log…**,
-//! **Import Configuration…** and **Export Configuration…** in File; the
+//! **Save Game Log…**, **Import Configuration…** and **Export
+//! Configuration…** in File; the
 //! **Go** menu, which moves through a log under review; and the standard
 //! Edit and Window items, so text fields take the usual shortcuts.
 
-use crate::{review, settings};
+use crate::{game, review, settings};
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, State, Wry};
 
@@ -36,21 +37,25 @@ const GO: [(&str, &str, &str, &str, bool); 6] = [
 pub struct Items {
     /// **File ▸ Open Game Log…**
     open: MenuItem<Wry>,
+    /// **File ▸ Save Game Log…**
+    save: MenuItem<Wry>,
     /// The **Go** menu's items, each with whether it moves between games.
     go: Vec<(MenuItem<Wry>, bool)>,
 }
 
-/// Enable **Open Game Log…** when `open`, and the **Go** menu while the
-/// main window reviews a log of `games` games, none outside review, its
-/// **Previous Game** and **Next Game** only when there are several.
+/// Enable **Open Game Log…** when `open`, **Save Game Log…** when
+/// `save`, and the **Go** menu while the main window reviews a log of
+/// `games` games, none outside review, its **Previous Game** and **Next
+/// Game** only when there are several.
 #[tauri::command]
-pub fn menus(items: State<'_, Items>, open: bool, games: usize) {
+pub fn menus(items: State<'_, Items>, open: bool, save: bool, games: usize) {
     let enable = |item: &MenuItem<Wry>, enabled: bool| {
         if let Err(error) = item.set_enabled(enabled) {
             tracing::warn!("a menu item could not be enabled: {error}");
         }
     };
     enable(&items.open, open);
+    enable(&items.save, save);
     for (item, between) in &items.go {
         enable(item, games > usize::from(*between));
     }
@@ -72,6 +77,13 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let preferences = MenuItem::with_id(app, "settings", label, true, Some("CmdOrCtrl+,"))?;
     let new_game = MenuItem::with_id(app, "new_game", "New Game", true, Some("CmdOrCtrl+N"))?;
     let open = MenuItem::with_id(app, "open_log", "Open Game Log…", true, Some("CmdOrCtrl+O"))?;
+    let save = MenuItem::with_id(
+        app,
+        "save_log",
+        "Save Game Log…",
+        false,
+        Some("CmdOrCtrl+S"),
+    )?;
     let import = MenuItem::with_id(app, "import", "Import Configuration…", true, None::<&str>)?;
     let export = MenuItem::with_id(app, "export", "Export Configuration…", true, None::<&str>)?;
     let file = Submenu::with_items(
@@ -81,6 +93,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         &[
             &new_game,
             &open,
+            &save,
             &separator()?,
             &import,
             &export,
@@ -121,6 +134,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     }
     app.manage(Items {
         open: open.clone(),
+        save: save.clone(),
         go,
     });
     let window = Submenu::with_items(
@@ -160,8 +174,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     }
 }
 
-/// Do what the menu item of `event` says. A dialog blocks, so Open, Import
-/// and Export run on threads of their own. A **Go** item tells the main
+/// Do what the menu item of `event` says. A dialog blocks, so Open, Save,
+/// Import and Export run on threads of their own. A **Go** item tells the main
 /// window where the cursor goes.
 pub fn chosen(app: &AppHandle, event: MenuEvent) {
     let id = event.id().as_ref();
@@ -186,6 +200,7 @@ pub fn chosen(app: &AppHandle, event: MenuEvent) {
             let app = app.clone();
             std::thread::spawn(move || review::open(&app));
         }
+        "save_log" => game::save_log(app.clone()),
         "import" => {
             let app = app.clone();
             std::thread::spawn(move || settings::import(&app));

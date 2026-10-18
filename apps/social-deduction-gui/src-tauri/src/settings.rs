@@ -264,20 +264,39 @@ pub fn export(app: &AppHandle) {
         _ => return,
     };
     let key = social_deduction::settings::game_key(game);
+    let text = settings::text(&app.state::<Store>().settings(), game);
+    save_as(
+        app,
+        FILTER,
+        &format!("{key}.toml"),
+        "Export Configuration",
+        text.as_bytes(),
+    );
+}
+
+/// Write `contents` where the user picks, among the files `filter` shows,
+/// named `name` by default. A write that fails is shown, with why, in a
+/// dialog titled `title`.
+pub(crate) fn save_as(
+    app: &AppHandle,
+    filter: (&str, &[&str]),
+    name: &str,
+    title: &str,
+    contents: &[u8],
+) {
     let Some(path) = app
         .dialog()
         .file()
-        .add_filter(FILTER.0, FILTER.1)
-        .set_file_name(format!("{key}.toml"))
+        .add_filter(filter.0, filter.1)
+        .set_file_name(name)
         .blocking_save_file()
         .and_then(|path| path.into_path().ok())
     else {
         return;
     };
-    let text = settings::text(&app.state::<Store>().settings(), game);
-    if let Err(failure) = std::fs::write(&path, text) {
+    if let Err(failure) = std::fs::write(&path, contents) {
         let message = format!("{} couldn't be written: {failure}", path.display());
-        error(app, "Export Configuration", message);
+        error(app, title, message);
     }
 }
 
