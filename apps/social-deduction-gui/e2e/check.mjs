@@ -47,7 +47,7 @@
 //   node check.mjs <dist>    # against another build
 
 import { mkdir } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { serve } from './serve.mjs';
 
