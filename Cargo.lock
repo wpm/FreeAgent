@@ -2543,7 +2543,7 @@ dependencies = [
 [[package]]
 name = "leptos-rich-chat"
 version = "0.2.2"
-source = "git+https://github.com/wpm/Rich-Chat?rev=140806d0c409f31fef78462de9e596737d631c92#140806d0c409f31fef78462de9e596737d631c92"
+source = "git+https://github.com/wpm/Rich-Chat?rev=2c59c1445b1d178380cae2b8ab2cee93951dd754#2c59c1445b1d178380cae2b8ab2cee93951dd754"
 dependencies = [
  "leptos",
  "pulldown-cmark",
