@@ -7,12 +7,12 @@ use serde_json::Value;
 use social_deduction::avalon::{self, Avalon};
 use social_deduction::config::Configuration;
 use social_deduction::game::{self, Game};
-use social_deduction::log::Header;
+use social_deduction::log::{Header, without_credentials};
 use social_deduction::model::ToolChoice;
 use social_deduction::model::canned::{
-    day_refusal, playing, playing_only, playing_within, recording, refusal, refusing,
-    refusing_days, refusing_offers_of, refusing_required, reported, retracting, serving,
-    unreachable, wanting_a_key,
+    CANARY, CANARY_VARIABLE, assert_redacted, day_refusal, leaking, playing, playing_only,
+    playing_within, recording, refusal, refusing, refusing_days, refusing_offers_of,
+    refusing_required, reported, retracting, serving, unreachable, wanting_a_key,
 };
 use social_deduction::model::window::{ContextWindow, Source};
 use social_deduction::seat::PlayerId;
@@ -649,6 +649,30 @@ strategy = \"plain\"
     // Only the prompted players have prompts.
     let configuration = configuration(&events);
     assert_eq!(configuration.prompts.len(), 5);
+}
+
+#[test]
+fn a_game_against_a_provider_that_gives_its_key_away_logs_no_key_userinfo_or_query() {
+    let base_url = leaking(&[EXAMPLE_MODEL], CANARY);
+    let api_key_env = format!("api_key_env = \"{CANARY_VARIABLE}\"");
+    let config = configured::<Werewolf>("canary", &base_url, EXAMPLE_MODEL, &[&api_key_env]);
+    let output = Command::new(env!("CARGO_BIN_EXE_social-deduction"))
+        .args(["play", &config])
+        .env(CANARY_VARIABLE, CANARY)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let log = String::from_utf8(output.stderr).unwrap();
+    assert_redacted(&log, CANARY);
+    let events: Vec<Event<game::Entry<Werewolf>>> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let configuration = configuration(&events[1..]);
+    assert_eq!(
+        configuration.models["qwen"].base_url,
+        without_credentials(&base_url)
+    );
 }
 
 #[test]

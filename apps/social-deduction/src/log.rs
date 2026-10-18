@@ -3,11 +3,16 @@
 //! version that wrote it and the game, and closing with how its run
 //! [`Ended`]. One [`Writer`] writes every log, so a log written on the
 //! command line and one the desktop app saves are written alike.
+//!
+//! A log carries no secrets. The writer replaces every key the run loaded,
+//! its [`Secrets`], with [`REDACTED`], and writes every URL without its
+//! userinfo and query.
 
 use crate::config::Name;
 use crate::game::{Entry, Game};
 use anyhow::Context as _;
 use free_agent::Event;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::marker::PhantomData;
@@ -98,45 +103,123 @@ impl Ended {
     }
 }
 
+/// What a log writes in place of a secret.
+pub const REDACTED: &str = "[redacted]";
+
+/// The keys a run loaded, which its log never carries.
+#[derive(Debug, Clone, Default)]
+pub struct Secrets(
+    /// Each key as it is written inside a JSON string, escaped.
+    Vec<SecretString>,
+);
+
+impl FromIterator<SecretString> for Secrets {
+    /// The secrets `keys` are, each once. An empty key is no secret.
+    fn from_iter<I: IntoIterator<Item = SecretString>>(keys: I) -> Self {
+        let mut escaped: Vec<String> = keys
+            .into_iter()
+            .filter(|key| !key.expose_secret().is_empty())
+            .map(|key| {
+                let quoted = serde_json::Value::from(key.expose_secret()).to_string();
+                quoted[1..quoted.len() - 1].to_string()
+            })
+            .collect();
+        escaped.sort();
+        escaped.dedup();
+        Secrets(escaped.into_iter().map(SecretString::from).collect())
+    }
+}
+
+impl Secrets {
+    /// `line`, a line of JSON, with every secret replaced by [`REDACTED`]
+    /// and every URL written [`without_credentials`].
+    fn redacted(&self, line: &str) -> String {
+        let mut line = line.to_string();
+        for secret in &self.0 {
+            if line.contains(secret.expose_secret()) {
+                line = line.replace(secret.expose_secret(), REDACTED);
+            }
+        }
+        without_credentials(&line)
+    }
+}
+
+/// `text` with every `http` or `https` URL in it written without its
+/// userinfo, its query or its fragment: `https://user:pass@host/v1?key=abc`
+/// is written `https://host/v1`. A URL ends at a space, a quote, a
+/// backslash, an angle bracket, a parenthesis or a brace.
+pub fn without_credentials(text: &str) -> String {
+    let mut written = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = ["http://", "https://"]
+        .iter()
+        .filter_map(|scheme| rest.find(scheme))
+        .min()
+    {
+        let (before, from) = rest.split_at(start);
+        let end = from
+            .find(|c: char| c.is_whitespace() || "\"'`\\<>(){}".contains(c))
+            .unwrap_or(from.len());
+        let (url, after) = from.split_at(end);
+        written.push_str(before);
+        written.push_str(&stripped(url));
+        rest = after;
+    }
+    written.push_str(rest);
+    written
+}
+
+/// `url`, which starts with its scheme, without its userinfo, query and
+/// fragment.
+fn stripped(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or_default();
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    format!("{scheme}://{host}{path}")
+}
+
 /// Writes one episode of a game of `G` to `sink`: its [`Header`] first,
 /// then its events, each as [`Event::write`] writes it, and how it
-/// [`Ended`] last.
+/// [`Ended`] last, every line without its [`Secrets`].
 pub struct Writer<G, W> {
     sink: W,
-    /// Each line as it is written, kept between lines for its capacity.
-    line: Vec<u8>,
     episode: Uuid,
+    secrets: Secrets,
     game: PhantomData<fn() -> G>,
 }
 
 impl<G: Game, W: Write> Writer<G, W> {
     /// A writer of the episode `episode` to `sink`, which has written the
-    /// episode's header.
+    /// episode's header, and writes no line with any of `secrets` in it.
     ///
     /// # Errors
     ///
     /// Fails when writing to `sink` fails.
-    pub fn start(sink: W, episode: Uuid) -> io::Result<Self> {
+    pub fn start(sink: W, episode: Uuid, secrets: Secrets) -> io::Result<Self> {
         let mut writer = Writer {
             sink,
-            line: Vec::new(),
             episode,
+            secrets,
             game: PhantomData,
         };
         writer.stamped(Entry::Header(Header::of::<G>()))?;
         Ok(writer)
     }
 
-    /// Write `event`, one of the episode's.
+    /// Write `event`, one of the episode's, without its secrets.
     ///
     /// # Errors
     ///
     /// Fails when writing to `sink` fails, or when the event cannot be
     /// serialized.
     pub fn write(&mut self, event: &Event<Entry<G>>) -> io::Result<()> {
-        self.line.clear();
-        event.write(&mut self.line)?;
-        self.sink.write_all(&self.line)
+        let mut line = Vec::new();
+        event.write(&mut line)?;
+        let line = self.secrets.redacted(&String::from_utf8_lossy(&line));
+        self.sink.write_all(line.as_bytes())
     }
 
     /// Write how the episode `ended`, its last line, and give back the
@@ -183,7 +266,8 @@ mod tests {
             player: "Player 1".to_string(),
             seq: 1,
         });
-        let mut writer = Writer::<Avalon, _>::start(Vec::new(), episode()).unwrap();
+        let mut writer =
+            Writer::<Avalon, _>::start(Vec::new(), episode(), Secrets::default()).unwrap();
         writer.write(&thinking).unwrap();
         let written = writer.end(Ended::Won).unwrap();
         let events = read::<Avalon>(&written);
@@ -206,7 +290,8 @@ mod tests {
 
     #[test]
     fn the_header_and_the_end_are_written_as_a_reader_of_any_game_reads_them() {
-        let writer = Writer::<Werewolf, _>::start(Vec::new(), episode()).unwrap();
+        let writer =
+            Writer::<Werewolf, _>::start(Vec::new(), episode(), Secrets::default()).unwrap();
         let written = writer.end(Ended::Failed("no model".to_string())).unwrap();
         let lines: Vec<serde_json::Value> = std::str::from_utf8(&written)
             .unwrap()
@@ -249,7 +334,7 @@ mod tests {
 
     #[test]
     fn a_header_is_read_from_a_line_of_any_game() {
-        let written = Writer::<Werewolf, _>::start(Vec::new(), episode())
+        let written = Writer::<Werewolf, _>::start(Vec::new(), episode(), Secrets::default())
             .unwrap()
             .end(Ended::Stopped)
             .unwrap();
@@ -280,6 +365,92 @@ mod tests {
             error.to_string(),
             "This log was written by social-deduction 0.3.0 in log format 2. \
              This version reads log formats up to 1."
+        );
+    }
+
+    /// The secrets `keys` are.
+    fn secrets(keys: &[&str]) -> Secrets {
+        keys.iter().copied().map(SecretString::from).collect()
+    }
+
+    /// What a writer with `secrets` writes of an episode that failed with
+    /// `error`, as text.
+    fn failed_with(secrets: Secrets, error: &str) -> String {
+        let writer = Writer::<Werewolf, _>::start(Vec::new(), episode(), secrets).unwrap();
+        let written = writer.end(Ended::Failed(error.to_string())).unwrap();
+        String::from_utf8(written).unwrap()
+    }
+
+    #[test]
+    fn every_secret_is_written_redacted_and_the_log_still_reads() {
+        let written = failed_with(
+            secrets(&["sk-one", "sk-two", "sk-one", ""]),
+            "sk-one was refused, as was sk-two, and then sk-one again",
+        );
+        assert!(!written.contains("sk-one") && !written.contains("sk-two"));
+        let ended = written.lines().nth(1).unwrap();
+        let ended: Event<Entry<Werewolf>> = serde_json::from_str(ended).unwrap();
+        assert_eq!(
+            ended.payload,
+            Entry::Ended(Ended::Failed(
+                "[redacted] was refused, as was [redacted], and then [redacted] again".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_secret_with_characters_json_escapes_is_redacted() {
+        let key = "sk-\"quoted\"\\back\tslash\u{1}";
+        let written = failed_with(secrets(&[key]), &format!("the key {key} was refused"));
+        assert!(
+            written.contains("the key [redacted] was refused"),
+            "{written}"
+        );
+        let escaped = serde_json::Value::from(key).to_string();
+        assert!(
+            !written.contains(&escaped[1..escaped.len() - 1]),
+            "{written}"
+        );
+    }
+
+    #[test]
+    fn the_secrets_are_never_shown() {
+        assert!(!format!("{:?}", secrets(&["sk-shown"])).contains("sk-shown"));
+    }
+
+    #[test]
+    fn a_url_is_written_without_its_userinfo_or_its_query() {
+        for (url, written) in [
+            ("https://user:pass@host/v1", "https://host/v1"),
+            ("https://host/v1?key=abc", "https://host/v1"),
+            ("https://user:pass@host/v1?key=abc", "https://host/v1"),
+            ("https://host/v1#key=abc", "https://host/v1"),
+            ("http://localhost:1234/v1", "http://localhost:1234/v1"),
+            (
+                "http://token@localhost:1234?key=a@b",
+                "http://localhost:1234",
+            ),
+            ("https://host/models/a@b", "https://host/models/a@b"),
+            (
+                "http://u:p@[::1]:1234/v1?key=[redacted]",
+                "http://[::1]:1234/v1",
+            ),
+        ] {
+            assert_eq!(without_credentials(url), written, "{url}");
+        }
+    }
+
+    #[test]
+    fn every_url_in_a_text_is_written_without_credentials_and_the_rest_as_it_was() {
+        assert_eq!(
+            without_credentials(
+                "POST https://u:p@a.example/v1/chat?key=k failed \
+                 (error sending request for url (http://b.example/v1?key=k)): \
+                 \"https://c.example/?q=1\"; no URL here"
+            ),
+            "POST https://a.example/v1/chat failed \
+             (error sending request for url (http://b.example/v1)): \
+             \"https://c.example/\"; no URL here"
         );
     }
 

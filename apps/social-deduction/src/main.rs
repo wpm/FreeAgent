@@ -9,7 +9,7 @@ use free_agent::{Behavior, Episode, Event, Logger};
 use social_deduction::config;
 use social_deduction::game::{Entry, Game, Narrate};
 use social_deduction::live::PATIENCE;
-use social_deduction::log::{Ended, Writer};
+use social_deduction::log::{Ended, Secrets, Writer};
 use social_deduction::model::check::{Mark, checked};
 use social_deduction::model::spec::{Environment, required};
 use social_deduction::model::{
@@ -185,6 +185,7 @@ async fn run<G: Game>(
         let mut narrator = G::Narrator::default();
         play::<G, _, _>(
             logging.then(io::stderr),
+            ready.secrets(),
             move |event| narrator.narrate(event),
             |logger| ready.episode(logger),
         )
@@ -197,9 +198,11 @@ async fn run<G: Game>(
 /// the environment holds, with where its winning team comes. The narration
 /// `narrate` makes of each event goes to standard output as the game
 /// happens, and when there is a `log`, the episode is written to it as
-/// [`Writer`] writes it, ending with how its run came back.
+/// [`Writer`] writes it, without `secrets`, ending with how its run came
+/// back.
 async fn play<G, A, W>(
     log: Option<W>,
+    secrets: &Secrets,
     mut narrate: impl FnMut(&Event<Entry<G>>) -> Vec<Line>,
     game: impl FnOnce(Logger<Entry<G>>) -> (Episode<A>, oneshot::Receiver<G::Team>),
 ) -> anyhow::Result<()>
@@ -211,7 +214,7 @@ where
     let (logger, mut events) = unbounded_channel();
     let (episode, mut won) = game(logger);
     let mut writer = log
-        .map(|sink| Writer::<G, W>::start(sink, episode.id()))
+        .map(|sink| Writer::<G, W>::start(sink, episode.id(), secrets.clone()))
         .transpose()?;
     let telling = async {
         let mut stdout = io::stdout();
@@ -567,7 +570,8 @@ mod tests {
     #[tokio::test]
     async fn an_episode_that_fails_is_logged_as_failed_with_its_error() {
         let mut written = Vec::new();
-        let error = super::play(Some(&mut written), |_| vec![], failing(false))
+        let none = Secrets::default();
+        let error = super::play(Some(&mut written), &none, |_| vec![], failing(false))
             .await
             .unwrap_err();
         let shown = format!("{error:#}");
@@ -585,7 +589,8 @@ mod tests {
     #[tokio::test]
     async fn an_episode_that_is_stopped_is_logged_as_stopped() {
         let mut written = Vec::new();
-        super::play(Some(&mut written), |_| vec![], failing(true))
+        let none = Secrets::default();
+        super::play(Some(&mut written), &none, |_| vec![], failing(true))
             .await
             .unwrap();
         assert_eq!(
@@ -607,6 +612,7 @@ mod tests {
         let mut told = 0;
         super::play(
             Some(&mut written),
+            ready.secrets(),
             |_| {
                 told += 1;
                 vec![]
@@ -627,7 +633,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_episode_with_no_log_is_written_nowhere() {
-        let error = super::play::<Werewolf, _, Vec<u8>>(None, |_| vec![], failing(false))
+        let none = Secrets::default();
+        let error = super::play::<Werewolf, _, Vec<u8>>(None, &none, |_| vec![], failing(false))
             .await
             .unwrap_err();
         assert_eq!(format!("{error:#}"), "actor ann failed: no model");

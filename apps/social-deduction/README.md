@@ -56,6 +56,12 @@ and its causes. An episode with no `Ended` line was cut off. The format
 number goes up whenever the log's shape changes. A log with no header was
 written before logs had one, and reads as format 0.
 
+A log carries no secrets, so it is safe to share. Every API key the run
+loaded, from the environment or the keychain, is written `[redacted]`
+wherever a provider echoes it, and every URL is written without its
+userinfo and query: `https://user:pass@host/v1?key=abc` is logged as
+`https://host/v1`.
+
 A file is checked whole before the game begins: a
 missing or unknown `game`, a setting of the other game's or any other key
 the game does not know, a TOML syntax error, or settings that do not fit

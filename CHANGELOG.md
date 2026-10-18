@@ -30,6 +30,8 @@ workflow takes a version's notes from here.
   told apart by its episode ID and ending as its `Ended` line says. A log
   cut off mid-game ends `Outcome::Unfinished`, and an episode with a bad
   line is left out while the others load.
+- Game logs carry no secrets. `log::Writer` writes every API key the run
+  loaded as `[redacted]`, and every URL without its userinfo and query.
 - `Episode::id` gives the ID every event logged in the episode carries.
 - Configuration files name their format with a top-level `format = 1`:
   the example configurations, **Export Configuration…** and the desktop

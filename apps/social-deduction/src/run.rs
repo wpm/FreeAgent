@@ -3,16 +3,20 @@
 //! that can fail before the game starts: it settles the configuration,
 //! renders every prompt, sets up and probes every model in play, and deals
 //! the seats. What it gives back builds each episode, dealt afresh and
-//! logging to a logger its caller owns.
+//! logging to a logger its caller owns, and knows the keys it loaded, which
+//! no log carries.
 
 use crate::avalon::Avalon;
 use crate::config::{self, Configuration, Name, Settings, Settled, SystemPrompt};
 use crate::game::{self, Actor, Entry, Game};
+use crate::log::Secrets;
 use crate::model::spec::{Handles, Keys, Models};
 use crate::seat::{Dealt, PlayerId};
 use crate::werewolf::Werewolf;
 use free_agent::{Episode, Logger};
+use secrecy::SecretString;
 use std::collections::HashMap;
+use std::sync::Mutex;
 use tokio::sync::oneshot;
 
 /// A game ready to start, of either kind, boxed, since the two differ in
@@ -55,13 +59,14 @@ pub async fn prepare(text: &str, keys: &dyn Keys) -> anyhow::Result<Prepared> {
 }
 
 /// A game of `G` ready to start: the settings it is played under, every
-/// system prompt they render, the models in play as they were set up, and
-/// the handle each is asked through.
+/// system prompt they render, the models in play as they were set up, the
+/// handle each is asked through, and the keys they were set up with.
 pub struct Ready<G: Game> {
     settings: Settings<G>,
     prompts: Vec<SystemPrompt<G::Role>>,
     models: Models,
     handles: Handles,
+    secrets: Secrets,
 }
 
 impl<G: Game> Ready<G> {
@@ -71,13 +76,24 @@ impl<G: Game> Ready<G> {
     /// any actor is built.
     pub async fn new(settings: Settings<G>, keys: &dyn Keys) -> anyhow::Result<Self> {
         let prompts = settings.prompts()?;
-        let (models, handles) = settings.set_up(&prompts, keys).await?;
+        let loading = Loading {
+            keys,
+            loaded: Mutex::default(),
+        };
+        let (models, handles) = settings.set_up(&prompts, &loading).await?;
         Ok(Ready {
             settings,
             prompts,
             models,
             handles,
+            secrets: loading.loaded.into_inner().unwrap().into_iter().collect(),
         })
+    }
+
+    /// The keys the models in play were set up with, for the log's
+    /// [`Writer`](crate::log::Writer) to leave out.
+    pub fn secrets(&self) -> &Secrets {
+        &self.secrets
     }
 
     /// A fresh deal of the (role, strategy) pairs to the seats, in a new
@@ -115,11 +131,28 @@ impl<G: Game> Ready<G> {
     }
 }
 
+/// Keys that keep a copy of every key they give out.
+struct Loading<'a> {
+    keys: &'a dyn Keys,
+    loaded: Mutex<Vec<SecretString>>,
+}
+
+impl Keys for Loading<'_> {
+    fn key(&self, variable: &str) -> anyhow::Result<Option<SecretString>> {
+        let key = self.keys.key(variable)?;
+        self.loaded.lock().unwrap().extend(key.clone());
+        Ok(key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::canned::playing;
+    use crate::log::{Ended, Writer};
+    use crate::model::canned::{CANARY, CANARY_VARIABLE, assert_redacted, leaking, playing};
     use crate::model::spec::Environment;
+    use crate::secret::Keychain;
+    use crate::secret::tests::Fake;
     use crate::{avalon, werewolf};
     use free_agent::Event;
     use secrecy::SecretString;
@@ -271,5 +304,41 @@ mod tests {
             shown, "setting up the model gpt: OPENAI_API_KEY is not set",
             "{shown}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_game_whose_keys_come_from_the_keychain_logs_none_of_them() {
+        let base_url = leaking(&["qwen2.5-7b-instruct"], CANARY);
+        let keychain = Keychain(Fake::default());
+        keychain
+            .store(CANARY_VARIABLE, &SecretString::from(CANARY))
+            .unwrap();
+        let text = format!(
+            "[phases]\nnight_limit = \"1s\"\nday_limit = \"2s\"\nratify_limit = \"1s\"\n\
+             [models.qwen]\nbase_url = \"{base_url}\"\nid = \"qwen2.5-7b-instruct\"\n\
+             api_key_env = \"{CANARY_VARIABLE}\"\n\
+             [strategies.plain]\npolicy = \"prompted\"\nsystem = \"Play.\"\n\
+             [roles.werewolf]\nstrategy = \"random\"\n\
+             [roles.villager]\nstrategy = \"plain\"\n\
+             [roles.doctor]\nstrategy = \"plain\"\n\
+             [roles.seer]\nstrategy = \"plain\"\n"
+        );
+        let settings = werewolf::config::parse(&text).unwrap().settle().unwrap();
+        let ready = Ready::new(settings, &keychain).await.unwrap();
+        let (logger, mut events) = unbounded_channel();
+        let (episode, mut won) = ready.episode(logger);
+        let secrets = ready.secrets().clone();
+        let mut writer = Writer::<Werewolf, _>::start(Vec::new(), episode.id(), secrets).unwrap();
+        let ran = episode.run(Duration::from_secs(60 * 60)).await;
+        while let Some(event) = events.recv().await {
+            writer.write(&event).unwrap();
+        }
+        let written = writer.end(Ended::of(&ran, won.try_recv().is_ok())).unwrap();
+        let log = String::from_utf8(written).unwrap();
+        assert_redacted(&log, CANARY);
+        for line in log.lines() {
+            serde_json::from_str::<Event<Entry<Werewolf>>>(line).unwrap();
+        }
+        assert!(log.ends_with("{\"Ended\":\"won\"}}\n"), "{log}");
     }
 }
