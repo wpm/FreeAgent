@@ -5,8 +5,10 @@ name: Release the desktop app
 # Apple silicon and Intel), a setup .exe and an .msi for Windows, and a
 # .deb, an .rpm and an .AppImage for Linux on x86_64 and on arm64. Each is
 # uploaded twice, under tauri-action's versioned name and under a stable
-# one, which the website links to through releases/latest/download/. The install table and the
-# signing status go on top of the release's notes.
+# one, which the website links to through releases/latest/download/, and
+# a last job checks that the release has every file the website links to.
+# The install table and the signing status go on top of the release's
+# notes.
 #
 # It runs when the Release workflow succeeds on a v<version> tag, where
 # <version> is the workspace's, which both of the app's crates take. A tag
@@ -276,3 +278,20 @@ jobs:
         with:
           name: stable-${{ matrix.name }}
           path: stable/
+
+  # Every installer the website links to is on the release, under the
+  # name the link uses. CI's release-scripts-test.sh checks the same links
+  # against stable-names.sh, so a trial run skips this.
+  site:
+    name: The website's downloads
+    needs: [check, build]
+    if: needs.check.outputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+        run: .github/scripts/site-downloads.sh site/index.html <(gh release view "$TAG" --json assets --jq '.assets[].name')

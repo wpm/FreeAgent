@@ -5,12 +5,20 @@ random or by a language model: Werewolf and Avalon.
 
 ## Installing
 
-On a Mac, the desktop app carries the command line: install the app,
-then choose **Social Deduction ▸ Install Command-Line Tool…**.
+[Download Social Deduction](https://wpm.github.io/FreeAgent/#platforms) for
+macOS, Windows or Linux. Each installer gives you the desktop app and the
+`social-deduction` command line:
 
-Each [release](https://github.com/wpm/FreeAgent/releases) carries a built
-`social-deduction` binary for macOS, Linux, and Windows, and an installer
-that picks the right one:
+- **macOS:** open `Social-Deduction.dmg`, drag the app to Applications,
+  then choose **Social Deduction ▸ Install Command-Line Tool…**.
+- **Windows:** `Social-Deduction-setup.exe` puts `social-deduction` on your
+  PATH, in terminals opened after installing.
+- **Linux:** the `.deb` and `.rpm`, for x86_64 and arm64, install
+  `/usr/bin/social-deduction`.
+
+### Servers and CI
+
+The command line alone, without the desktop app or its webview libraries:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-installer.sh | sh
@@ -20,11 +28,10 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/wpm/FreeAgent/releases/
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-installer.ps1 | iex"
 ```
 
-The desktop app's Windows installer, `Social-Deduction-setup.exe`, puts
-`social-deduction` on your PATH, in terminals opened after installing.
-
 With a Rust toolchain, `cargo install --git https://github.com/wpm/FreeAgent social-deduction`
 builds it from source.
+
+## Playing
 
 A game is played from a configuration file. The binary carries the example
 configurations, a table of random players and a table of prompted players

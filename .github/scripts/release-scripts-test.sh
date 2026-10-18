@@ -74,6 +74,26 @@ check "an aarch64 AppImage is the aarch64 build" test "$(cat "$scratch/stable/So
 check "an old name is the x86_64 build" test "$(cat "$scratch/stable/social-deduction.rpm")" = "Social Deduction-1.2.3-1.x86_64.rpm"
 check "an x86_64 AppImage spelled amd64 is the x86_64 build" test "$(cat "$scratch/stable/Social-Deduction-x86_64.AppImage")" = "Social Deduction_1.2.3_amd64.AppImage"
 
+# The website offers six of the installers: the .dmg, the setup.exe, and
+# a .deb and an .rpm for each Linux architecture. The release notes'
+# table names the same ones.
+site=$(./site-downloads.sh ../../site/index.html | tr '\n' ' ')
+check "the site offers the installers that put the command line on the PATH" test "$site" = \
+  "Social-Deduction-setup.exe Social-Deduction.dmg social-deduction-aarch64.rpm social-deduction-amd64.deb social-deduction-arm64.deb social-deduction-x86_64.rpm "
+check "every download on the site has a stable name" quiet ./site-downloads.sh ../../site/index.html <(ls "$scratch/stable")
+check "the notes' table names the site's downloads" test \
+  "$(awk -F' [|] ' '/^\| / { print $2 }' <<< "$notes" | grep -oE '[[:alnum:]_.-]+[.](dmg|exe|deb|rpm)' | LC_ALL=C sort | tr '\n' ' ')" = "$site"
+check "the notes say the installers carry the command line" grep -q "Each download gives you the app and the \`social-deduction\` command line" <<< "$notes"
+check "the notes send the command line alone to the README" grep -q "Command line only, for servers and CI: see the \[README\](https://github.com/wpm/FreeAgent/tree/main/apps/social-deduction#servers-and-ci)." <<< "$notes"
+# A download the release doesn't have fails, and says which.
+rm "$scratch/stable/social-deduction-arm64.deb"
+status=0; missing=$(./site-downloads.sh ../../site/index.html <(ls "$scratch/stable") 2>&1 > /dev/null) || status=$?
+check "a download missing from the release fails" test "$status" -ne 0
+check "the missing download is named" test "$missing" = "not among the release's assets: social-deduction-arm64.deb"
+mkdir -p "$scratch/page"
+printf '<a href="https://example.com/">nothing to download</a>\n' > "$scratch/page/index.html"
+check "a page with no downloads fails" fails ./site-downloads.sh "$scratch/page/index.html"
+
 # A package for an architecture with no stable name fails.
 echo riscv > "$scratch/built/Social Deduction_1.2.3_riscv64.deb"
 check "an unknown architecture fails" fails ./stable-names.sh "$scratch/riscv" <<< "[\"$scratch/built/Social Deduction_1.2.3_riscv64.deb\"]"
