@@ -315,10 +315,16 @@ mod tests {
     use crate::avalon::Avalon;
     use crate::game::tests::logged;
     use crate::log::Writer;
+    use crate::model::canned::{
+        CANARY, CANARY_VARIABLE, assert_redacted, leaking, leaking_werewolf,
+    };
     use crate::model::spec::Environment;
     use crate::run::prepare;
+    use crate::secret::Keychain;
+    use crate::secret::tests::Fake;
     use crate::stage::recordings;
     use free_agent::Episode;
+    use secrecy::SecretString;
     use social_deduction_stage::Outcome;
     use std::collections::HashMap;
     use std::path::Path;
@@ -607,6 +613,28 @@ mod tests {
         let error = session.play(stopping, sending(sender)).await.unwrap_err();
         assert_eq!(error.to_string(), STOPPED);
         assert!(received(receiver).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_game_whose_keys_come_from_the_keychain_keeps_a_log_with_none_of_them() {
+        let base_url = leaking(&["qwen2.5-7b-instruct"], CANARY);
+        let keychain = Keychain(Fake::default());
+        keychain
+            .store(CANARY_VARIABLE, &SecretString::from(CANARY))
+            .unwrap();
+        let session = Session::default();
+        let (sender, receiver) = unbounded_channel();
+        let text = leaking_werewolf(&base_url);
+        let preparing = prepare(&text, &keychain);
+        session.play(preparing, sending(sender)).await.unwrap();
+        let cues = received(receiver).await;
+        let log = String::from_utf8(session.log().unwrap().bytes.to_vec()).unwrap();
+        assert_redacted(&log, CANARY);
+        assert_eq!(
+            recordings(&log).unwrap().games.remove(0).cues.len(),
+            cues.len()
+        );
+        assert!(log.ends_with("{\"Ended\":\"won\"}}\n"), "{log}");
     }
 
     #[tokio::test]
