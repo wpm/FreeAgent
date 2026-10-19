@@ -147,8 +147,8 @@ pub fn unreachable() -> String {
 /// canned player does, with the calls [`canned_calls`] makes: offered one
 /// tool, it calls it with the first value its enumerated parameter allows,
 /// as a player's `select` tool asks for a `target` from an `enum` of
-/// candidates; offered a day's tools, it speaks and votes once a day and
-/// waits after that. Anything else asked of it is not found.
+/// candidates; offered several, it speaks and acts once a phase and waits
+/// after that. Anything else asked of it is not found.
 pub fn playing(ids: &[&str]) -> String {
     playing_only(ids, ids)
 }
