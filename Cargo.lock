@@ -4532,6 +4532,7 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -4539,6 +4540,7 @@ name = "social-deduction-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "keyring",
  "secrecy",
  "serde",
@@ -4562,7 +4564,10 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "social-deduction",
  "social-deduction-stage",
+ "tokio",
+ "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -4575,6 +4580,7 @@ dependencies = [
  "minijinja",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

@@ -29,14 +29,28 @@ pub struct Store {
 impl Store {
     /// The settings stored for `app`, as [`settings::load`] reads them,
     /// stored at once the first time, so that the first launch's are kept.
+    /// Settings that cannot be read are the defaults, and a dialog says
+    /// why.
     ///
     /// # Errors
     ///
     /// When the app has no config directory.
     pub fn open(app: &AppHandle) -> tauri::Result<Self> {
         let dir = app.path().app_config_dir()?;
-        let first = !dir.join(settings::FILE).exists();
-        let loaded = settings::load(&dir);
+        let file = dir.join(settings::FILE);
+        let first = !file.exists();
+        let loaded = settings::load(&dir).unwrap_or_else(|failure| {
+            tracing::warn!("{} could not be read: {failure:#}", file.display());
+            app.dialog()
+                .message(format!(
+                    "{} couldn't be read, so the settings are the defaults:\n\n{failure:#}",
+                    file.display()
+                ))
+                .title("Settings")
+                .kind(MessageDialogKind::Error)
+                .show(|_| {});
+            settings::defaults()
+        });
         if first && let Err(error) = settings::save(&loaded, &dir) {
             tracing::warn!("the settings could not be saved: {error}");
         }
@@ -172,7 +186,7 @@ fn encoded(text: &str) -> String {
 const FILTER: (&str, &[&str]) = ("Configuration", &["toml"]);
 
 /// Tell the user `message`, titled `title`, as an error.
-fn error(app: &AppHandle, title: &str, message: String) {
+pub(crate) fn error(app: &AppHandle, title: &str, message: String) {
     app.dialog()
         .message(message)
         .title(title)
@@ -250,20 +264,39 @@ pub fn export(app: &AppHandle) {
         _ => return,
     };
     let key = social_deduction::settings::game_key(game);
+    let text = settings::text(&app.state::<Store>().settings(), game);
+    save_as(
+        app,
+        FILTER,
+        &format!("{key}.toml"),
+        "Export Configuration",
+        text.as_bytes(),
+    );
+}
+
+/// Write `contents` where the user picks, among the files `filter` shows,
+/// named `name` by default. A write that fails is shown, with why, in a
+/// dialog titled `title`.
+pub(crate) fn save_as(
+    app: &AppHandle,
+    filter: (&str, &[&str]),
+    name: &str,
+    title: &str,
+    contents: &[u8],
+) {
     let Some(path) = app
         .dialog()
         .file()
-        .add_filter(FILTER.0, FILTER.1)
-        .set_file_name(format!("{key}.toml"))
+        .add_filter(filter.0, filter.1)
+        .set_file_name(name)
         .blocking_save_file()
         .and_then(|path| path.into_path().ok())
     else {
         return;
     };
-    let text = settings::text(&app.state::<Store>().settings(), game);
-    if let Err(failure) = std::fs::write(&path, text) {
+    if let Err(failure) = std::fs::write(&path, contents) {
         let message = format!("{} couldn't be written: {failure}", path.display());
-        error(app, "Export Configuration", message);
+        error(app, title, message);
     }
 }
 

@@ -1,5 +1,5 @@
 //! The viewer's recorded prompted games fold into the cues its screen
-//! check looks for.
+//! check looks for, and a log from before logs had a header still reads.
 
 use social_deduction_stage::{Beat, Cue, Outcome, Panel, WerewolfPhase};
 
@@ -10,7 +10,10 @@ fn folded(name: &str) -> Vec<Cue> {
         env!("CARGO_MANIFEST_DIR")
     );
     let log = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
-    social_deduction::stage::cues(&log).unwrap()
+    let mut read = social_deduction::stage::recordings(&log).unwrap();
+    assert!(read.problems.is_empty(), "{:?}", read.problems);
+    assert_eq!(read.games.len(), 1);
+    read.games.remove(0).cues
 }
 
 /// Whether some cue's beat passes `test`.
@@ -78,6 +81,11 @@ fn the_prompted_werewolf_game_has_everything_the_screen_check_plays() {
         Beat::Panel(Panel::Werewolf(panel)) if !panel.nights.is_empty()
     )));
     assert!(won(&cues));
+}
+
+#[test]
+fn a_log_written_before_logs_had_a_header_reads_as_it_does_with_one() {
+    assert_eq!(folded("avalon-format-0"), folded("avalon-prompted"));
 }
 
 #[test]

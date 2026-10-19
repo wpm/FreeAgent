@@ -7,6 +7,7 @@
 #
 # plays it.
 
+format = 1
 game = "werewolf"
 
 # Every role not allotted otherwise plays this strategy.

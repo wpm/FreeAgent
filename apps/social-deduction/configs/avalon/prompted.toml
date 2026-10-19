@@ -6,6 +6,7 @@
 #
 # plays it.
 
+format = 1
 game = "avalon"
 
 # Every role not allotted otherwise plays this strategy.

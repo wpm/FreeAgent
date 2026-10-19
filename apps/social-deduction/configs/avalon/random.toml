@@ -6,6 +6,7 @@
 #
 # plays it.
 
+format = 1
 game = "avalon"
 
 [roles.merlin]

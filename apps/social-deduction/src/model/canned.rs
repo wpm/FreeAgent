@@ -7,6 +7,7 @@ use crate::report::seat_order;
 use std::cmp::Ordering;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{self, AtomicBool};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -34,11 +35,13 @@ impl Served {
         serde_json::from_str(&self.body).unwrap()
     }
 
-    /// The method and the path of the request line, such as `get` and
-    /// `/v1/models`.
+    /// The method and the path of the request line, without its query,
+    /// such as `get` and `/v1/models`.
     fn asked(&self) -> (&str, &str) {
         let mut words = self.head[0].split_whitespace();
-        (words.next().unwrap(), words.next().unwrap())
+        let method = words.next().unwrap();
+        let target = words.next().unwrap();
+        (method, target.split('?').next().unwrap())
     }
 }
 
@@ -365,6 +368,18 @@ fn serving_and(
     completing: impl Fn(&serde_json::Value) -> String + Send + 'static,
 ) -> String {
     let (listener, base_url) = bound();
+    serve(listener, listing, completing);
+    base_url
+}
+
+/// Answer every request to `listener`, for the rest of the process, as
+/// [`serving_and`] answers it, the paths it serves found at the end of what
+/// is asked, so that a base URL with a query still reaches them.
+fn serve(
+    listener: TcpListener,
+    listing: String,
+    completing: impl Fn(&serde_json::Value) -> String + Send + 'static,
+) {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
@@ -372,14 +387,86 @@ fn serving_and(
                 continue;
             };
             let answer = match served.asked() {
-                ("get", "/v1/models") => response("200 OK", &listing),
-                ("post", "/v1/chat/completions") => completing(&served.json()),
+                ("get", path) if path.ends_with("/models") => response("200 OK", &listing),
+                ("post", path) if path.ends_with("/chat/completions") => completing(&served.json()),
                 _ => response("404 Not Found", "{}"),
             };
             let _ = stream.write_all(answer.as_bytes());
         }
     });
+}
+
+/// A key for a [`leaking`] provider, which no test has any other reason to
+/// hold.
+pub const CANARY: &str = "sk-canary-0123456789";
+
+/// The variable a [`leaking`] provider's key is read from.
+pub const CANARY_VARIABLE: &str = "SOCIAL_DEDUCTION_CANARY_KEY";
+
+/// A quick Werewolf configuration file whose players are the model served at
+/// `base_url`, a [`leaking`] provider's, asked with the key in
+/// [`CANARY_VARIABLE`], and random.
+pub fn leaking_werewolf(base_url: &str) -> String {
+    format!(
+        "game = \"werewolf\"\n[phases]\nnight_limit = \"1s\"\nday_limit = \"2s\"\nratify_limit = \"1s\"\n\
+         [models.qwen]\nbase_url = \"{base_url}\"\nid = \"qwen2.5-7b-instruct\"\n\
+         api_key_env = \"{CANARY_VARIABLE}\"\n\
+         [strategies.plain]\npolicy = \"prompted\"\nsystem = \"Play.\"\n\
+         [roles.werewolf]\nstrategy = \"random\"\n\
+         [roles.villager]\nstrategy = \"plain\"\n\
+         [roles.doctor]\nstrategy = \"plain\"\n\
+         [roles.seer]\nstrategy = \"plain\"\n"
+    )
+}
+
+/// The userinfo in the base URL of a [`leaking`] provider.
+pub const LEAKED_USERINFO: &str = "canary-user:canary-pass";
+
+/// A provider that serves `ids` and plays each as [`playing`] does, but
+/// gives away everything it is asked with, kept for the rest of the
+/// process: its base URL carries [`LEAKED_USERINFO`] and `key` in its
+/// query, every usage it reports holds `key` and the base URL, and the
+/// first completion a player asks for is answered 400 Bad Request, saying
+/// both.
+pub fn leaking(ids: &[&str], key: &str) -> String {
+    let (listener, root) = bound();
+    let base_url = root.replacen("http://", &format!("http://{LEAKED_USERINFO}@"), 1);
+    let base_url = format!("{base_url}?key={key}");
+    let said = format!("{key} cannot be used at {base_url}");
+    let usage = serde_json::json!({"total_tokens": 2, "key": key, "base_url": base_url});
+    let failed = AtomicBool::new(false);
+    serve(listener, listing(ids, None), move |request| {
+        let asked = request["messages"]
+            .as_array()
+            .and_then(|messages| messages.last()?["content"].as_str())
+            .unwrap_or_default();
+        if asked.starts_with("You are ") && !failed.swap(true, atomic::Ordering::Relaxed) {
+            return response("400 Bad Request", &error(&said));
+        }
+        let calls = canned_calls(request).expect("the canned player answers what a game asks");
+        let mut completion: serde_json::Value =
+            serde_json::from_str(&completion_of(&calls)).unwrap();
+        completion["usage"] = usage.clone();
+        response("200 OK", &completion.to_string())
+    });
     base_url
+}
+
+/// Assert that `log`, written of a game played against a [`leaking`]
+/// provider whose key is `key`, holds neither the key, nor either half of
+/// the userinfo, nor the query, and that what the provider gave away is
+/// there, redacted.
+pub fn assert_redacted(log: &str, key: &str) {
+    let (user, password) = LEAKED_USERINFO.split_once(':').unwrap();
+    for leaked in [key, user, password, "?key="] {
+        assert!(!log.contains(leaked), "{leaked} in {log}");
+    }
+    for redacted in [
+        r#""key":"[redacted]""#,
+        "[redacted] cannot be used at http://127.0.0.1:",
+    ] {
+        assert!(log.contains(redacted), "no {redacted} in {log}");
+    }
 }
 
 /// A provider that serves `ids` and plays none of them: every completion

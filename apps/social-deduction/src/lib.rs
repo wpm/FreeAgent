@@ -10,6 +10,7 @@ pub mod config;
 pub mod examples;
 pub mod game;
 pub mod live;
+pub mod log;
 pub mod model;
 pub mod prompted;
 pub mod random;
