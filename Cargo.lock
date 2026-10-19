@@ -2542,9 +2542,9 @@ dependencies = [
 
 [[package]]
 name = "leptos-rich-chat"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26e939d3586e07120889b6740c0094edf639a2534bce45566d104e04f718889d"
+checksum = "badd35836fc8592dbb7f04dea4300d17b45a680c1ec32bd85476059510502a5d"
 dependencies = [
  "leptos",
  "pulldown-cmark",
