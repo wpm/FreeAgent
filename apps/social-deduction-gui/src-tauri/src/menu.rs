@@ -6,32 +6,23 @@
 //! fields take the usual shortcuts.
 
 use crate::{game, review, settings};
+use social_deduction_cues::go::{Go, MENU};
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, State, Wry};
 
-/// The **Go** menu's items: each one's ID, as the main window's `go`
-/// event names where the cursor goes, its label, its shortcut on macOS
-/// and elsewhere, and whether it moves between games.
-const GO: [(&str, &str, &str, &str, bool); 6] = [
-    ("first", "First Bubble", "Cmd+Up", "Ctrl+Home", false),
-    ("last", "Last Bubble", "Cmd+Down", "Ctrl+End", false),
-    (
-        "previous_chapter",
-        "Previous Chapter",
-        "Alt+Up",
-        "Alt+Up",
-        false,
-    ),
-    (
-        "next_chapter",
-        "Next Chapter",
-        "Alt+Down",
-        "Alt+Down",
-        false,
-    ),
-    ("previous_game", "Previous Game", "Cmd+[", "Ctrl+[", true),
-    ("next_game", "Next Game", "Cmd+]", "Ctrl+]", true),
-];
+/// The ID of the **Go** menu's item that goes where `go` says.
+fn id(go: Go) -> String {
+    format!("go_{go:?}")
+}
+
+/// Where the **Go** menu's item with the ID `id` goes, or nothing for any
+/// other item.
+fn go(id: &str) -> Option<Go> {
+    MENU.iter()
+        .flatten()
+        .map(|item| item.go)
+        .find(|&go| self::id(go) == id)
+}
 
 /// The items the main window enables as what it shows changes.
 pub struct Items {
@@ -39,8 +30,8 @@ pub struct Items {
     open: MenuItem<Wry>,
     /// **File ▸ Save Game Log…**
     save: MenuItem<Wry>,
-    /// The **Go** menu's items, each with whether it moves between games.
-    go: Vec<(MenuItem<Wry>, bool)>,
+    /// The **Go** menu's items, each with where it goes.
+    go: Vec<(MenuItem<Wry>, Go)>,
 }
 
 /// Enable **Open Game Log…** when `open`, **Save Game Log…** when
@@ -56,8 +47,8 @@ pub fn menus(items: State<'_, Items>, open: bool, save: bool, games: usize) {
     };
     enable(&items.open, open);
     enable(&items.save, save);
-    for (item, between) in &items.go {
-        enable(item, games > usize::from(*between));
+    for (item, go) in &items.go {
+        enable(item, games > usize::from(go.between_games()));
     }
 }
 
@@ -116,21 +107,17 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         ],
     )?;
     let mut go = Vec::new();
-    for (id, label, mac, elsewhere, between) in GO {
-        let shortcut = if cfg!(target_os = "macos") {
-            mac
-        } else {
-            elsewhere
-        };
-        let item = MenuItem::with_id(app, format!("go_{id}"), label, false, Some(shortcut))?;
-        go.push((item, between));
-    }
     let go_menu = Submenu::with_id(app, "go", "Go", true)?;
-    for (index, (item, _)) in go.iter().enumerate() {
-        if index > 0 && index % 2 == 0 {
+    for (index, group) in MENU.iter().enumerate() {
+        if index > 0 {
             go_menu.append(&separator()?)?;
         }
-        go_menu.append(item)?;
+        for item in group {
+            let shortcut = item.shortcut(cfg!(target_os = "macos"));
+            let made = MenuItem::with_id(app, id(item.go), item.label, false, Some(shortcut))?;
+            go_menu.append(&made)?;
+            go.push((made, item.go));
+        }
     }
     app.manage(Items {
         open: open.clone(),
@@ -207,7 +194,7 @@ fn bar(
 /// window where the cursor goes.
 pub fn chosen(app: &AppHandle, event: MenuEvent) {
     let id = event.id().as_ref();
-    if let Some(go) = id.strip_prefix("go_") {
+    if let Some(go) = go(id) {
         if let Err(error) = app.emit_to("main", "go", go) {
             tracing::warn!("Go could not be announced: {error}");
         }
@@ -247,5 +234,20 @@ pub fn chosen(app: &AppHandle, event: MenuEvent) {
             });
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_go_item_is_known_by_its_id_and_no_other_item_is() {
+        for item in MENU.iter().flatten() {
+            assert_eq!(go(&id(item.go)), Some(item.go));
+        }
+        assert_eq!(id(Go::PreviousChapter), "go_PreviousChapter");
+        assert_eq!(go("settings"), None);
+        assert_eq!(go("go"), None);
     }
 }

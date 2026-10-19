@@ -12,10 +12,12 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_rich_chat::RichChatStyle;
 use serde::de::IgnoredAny;
+use social_deduction_cues::go::Go;
 use social_deduction_cues::settings::{Snapshot, game_title};
-use social_deduction_cues::{Cue, GameName, Side};
+use social_deduction_cues::{Beat, Cue, GameName, Side};
 
-use crate::review::{Go, Review};
+use crate::mode::Mode;
+use crate::review::Review;
 use crate::screen::{Screen, side_key};
 use crate::tauri::{self, Cues};
 use crate::tip::Tips;
@@ -48,14 +50,16 @@ fn settings_shortcut(platform: &str) -> &'static str {
 #[component]
 pub fn Desktop() -> impl IntoView {
     let snapshot = RwSignal::new(None::<Snapshot>);
-    let pending = RwSignal::new(None::<GameName>);
+    let mode = RwSignal::new(Mode::Start);
     let error = RwSignal::new(None::<String>);
     let failed = RwSignal::new(None::<(GameName, String)>);
     let live = Live::default();
     let screen = live.screen;
-    let watching = RwSignal::new(false);
     let reviewing = Reviewing::new(live);
-    let reviewed = Memo::new(move |_| reviewing.review.with(Option::is_some));
+    // Memos, so that a change of mode redraws only what it changes.
+    let listing = Memo::new(move |_| mode.get().listing());
+    let reviewed = Memo::new(move |_| mode.get().reviewing());
+    let pending = Memo::new(move |_| mode.get().preparing());
     // The channel of the game playing, kept for as long as it plays.
     let cues = StoredValue::new_local(None::<Cues>);
     // Every cue the game has shown, to review it once it is over.
@@ -76,39 +80,46 @@ pub fn Desktop() -> impl IntoView {
         })
     });
     Effect::new(move |_| {
-        if !watching.get() && !reviewed.get() {
+        if listing.get() {
             set_theme(appearance.get());
         }
     });
 
     let run = Callback::new(move |game: GameName| {
         failed.set(None);
-        pending.set(Some(game));
+        mode.set(Mode::Preparing(game));
         live.reset();
         shown.set_value(Vec::new());
-        let channel = Cues::new(move |cue| {
-            watching.set(true);
+        let channel = Cues::new(move |cue: Cue| {
+            let over = matches!(cue.beat, Beat::Over { .. });
+            let Some(next) = mode.get_untracked().cued(over) else {
+                return;
+            };
             live.show(&cue);
             shown.update_value(|shown| shown.push(cue));
+            mode.set(next);
         });
         spawn_local(async move {
             let started = tauri::play(game, &channel).await;
             cues.set_value(Some(channel));
-            pending.set(None);
-            if let Err(failure) = started {
-                failed.set(Some((game, failure)));
+            match started {
+                Ok(()) => mode.update(|mode| *mode = mode.started()),
+                Err(failure) => {
+                    mode.update(|mode| *mode = mode.failed());
+                    failed.set(Some((game, failure)));
+                }
             }
         });
     });
 
-    let over = move || screen.with(|screen| screen.outcome.is_some());
     let new_game = move || {
-        if reviewed.get_untracked() {
+        let now = mode.get_untracked();
+        if now.reviewing() {
             reviewing.close();
-        } else if !over() {
+        } else if now.busy() {
             tauri::stop();
         }
-        watching.set(false);
+        mode.set(now.new_game());
         live.reset();
     };
     // The game just played, in review on its last bubble.
@@ -118,6 +129,7 @@ pub fn Desktop() -> impl IntoView {
         if let Some(review) = shown.with_value(|shown| Review::played(shown)) {
             ended.set_value(Some(screen.get_untracked()));
             reviewing.open(review);
+            mode.set(Mode::ReviewingGame);
         }
     };
     // Back from review to the game's end, or from a log to the start.
@@ -126,27 +138,25 @@ pub fn Desktop() -> impl IntoView {
         if let Some(end) = ended.write_value().take() {
             screen.set(end);
         }
+        mode.update(|mode| *mode = mode.closed());
     });
     tauri::listen("new-game", move |_: IgnoredAny| new_game());
     tauri::listen("review", move |opened| match Review::new(opened) {
         Ok(review) => {
-            watching.set(false);
             ended.set_value(None);
             reviewing.open(review);
+            mode.set(Mode::ReviewingLog);
         }
         Err(failure) => error.set(Some(failure)),
     });
     tauri::listen("go", move |go: Go| reviewing.go(go));
-    let playing =
-        move || pending.with(Option::is_some) || (watching.get() && !reviewed.get() && !over());
     // A memo, so that moving the cursor leaves the menus be.
-    // The game just played is over, and shown at its end or in review.
-    let saveable = move || watching.get() && (reviewed.get() || over());
     let menus = Memo::new(move |_| {
         let games = reviewing
             .review
             .with(|review| review.as_ref().map_or(0, Review::games));
-        (!playing(), saveable(), games)
+        let mode = mode.get();
+        (!mode.busy(), mode.saveable(), games)
     });
     Effect::new(move |_| {
         let (open, save, games) = menus.get();
@@ -158,13 +168,7 @@ pub fn Desktop() -> impl IntoView {
     let on_link = Callback::new(tauri::open_url);
 
     let start = move || view! { <Start snapshot=snapshot pending=pending error=error failed=failed run=run /> };
-    let closes = move || {
-        if watching.get_untracked() {
-            "Close the review and go back to the game's end."
-        } else {
-            "Close the log and go back to the games."
-        }
-    };
+    let closes = move || mode.get_untracked().closes();
     let reviewer = move || {
         view! {
             <Reviewer reviewing=reviewing on_link=on_link appearance=appearance>
@@ -180,12 +184,12 @@ pub fn Desktop() -> impl IntoView {
             fallback=reviewer
         >
         <Show
-            when=move || watching.get()
+            when=move || !listing.get()
             fallback=start
         >
             <Viewer live=live on_link=on_link appearance=appearance>
                 <Show
-                    when=over
+                    when=move || mode.get() == Mode::Over
                     fallback=|| view! { <button on:click=|_| tauri::stop()>"Stop"</button> }
                 >
                     <button on:click=review disabled=blank data-tip="Step through the game bubble by bubble, from where it left off.">"Review"</button>
@@ -204,7 +208,7 @@ pub fn Desktop() -> impl IntoView {
 #[component]
 fn Start(
     snapshot: RwSignal<Option<Snapshot>>,
-    pending: RwSignal<Option<GameName>>,
+    pending: Memo<Option<GameName>>,
     error: RwSignal<Option<String>>,
     failed: RwSignal<Option<(GameName, String)>>,
     run: Callback<GameName>,
@@ -243,7 +247,7 @@ fn Start(
 fn Game(
     game: GameName,
     snapshot: RwSignal<Option<Snapshot>>,
-    pending: RwSignal<Option<GameName>>,
+    pending: Memo<Option<GameName>>,
     failed: RwSignal<Option<(GameName, String)>>,
     run: Callback<GameName>,
 ) -> impl IntoView {
