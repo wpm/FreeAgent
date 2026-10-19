@@ -6,11 +6,11 @@ use std::collections::BTreeMap;
 use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use social_deduction_stage::settings::{
+use social_deduction_cues::settings::{
     Policy, RANDOM, RoleSettings, StrategySettings, game_key, game_title, is_part_name, label,
     part_variable,
 };
-use social_deduction_stage::{GameName, Role, Side};
+use social_deduction_cues::{GameName, Role, Side};
 
 use super::{
     Choice, Cross, Editor, Named, PageHead, Problem, Section, Segments, Tab, field_id, path,

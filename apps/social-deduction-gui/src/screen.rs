@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use leptos_rich_chat::{Look, Names, Position};
-use social_deduction_stage::{
+use social_deduction_cues::{
     AvalonPanel, Beat, Cue, Death, GameName, Learned, Millis, NightDeed, NightOutcome, Outcome,
     Panel, PlayerId, ProposalRow, QuestToken, Seat, Side, WerewolfPanel, WerewolfPhase,
 };
@@ -909,7 +909,7 @@ pub fn werewolf_landings(before: Option<&WerewolfPanel>, after: &WerewolfPanel) 
 mod tests {
     use super::*;
     use crate::address;
-    use social_deduction_stage::{
+    use social_deduction_cues::{
         Assassination, AvalonPhase, AvalonSeat, Deed, ProposalRow, QuestResult, QuestToken, Ratify,
         Role, SeatState,
     };

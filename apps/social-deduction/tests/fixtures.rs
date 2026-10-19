@@ -1,7 +1,7 @@
 //! The viewer's recorded prompted games fold into the cues its screen
 //! check looks for, and a log from before logs had a header still reads.
 
-use social_deduction_stage::{Beat, Cue, Outcome, Panel, WerewolfPhase};
+use social_deduction_cues::{Beat, Cue, Outcome, Panel, WerewolfPhase};
 
 /// The cues of the viewer's recorded game `name`.
 fn folded(name: &str) -> Vec<Cue> {

@@ -5,7 +5,7 @@
 use super::spec::{Keys, Probed, Spec};
 use super::{Model, ToolChoice};
 use crate::config::Name;
-use social_deduction_stage::settings::Check;
+use social_deduction_cues::settings::Check;
 use std::io::{self, Write};
 
 /// What asking `model` to play each game in [`Name::ALL`] as the model

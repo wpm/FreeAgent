@@ -15,7 +15,7 @@
 use keyring::Entry;
 use secrecy::{ExposeSecret, SecretString};
 use social_deduction::secret::{Keychain, SecretError, Store};
-use social_deduction_stage::settings::KeyStatus;
+use social_deduction_cues::settings::KeyStatus;
 
 /// The service every key's entry is stored under: the app's identifier.
 pub const SERVICE: &str = "io.github.wpm.social-deduction";

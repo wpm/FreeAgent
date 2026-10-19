@@ -7,10 +7,10 @@ use leptos::task::spawn_local;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
-use social_deduction_stage::settings::{
+use social_deduction_cues::settings::{
     AppSettings, FieldError, GameSettings, KeyStatus, Listing, Progress, Provider, Snapshot,
 };
-use social_deduction_stage::{Cue, GameName};
+use social_deduction_cues::{Cue, GameName};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]

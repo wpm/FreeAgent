@@ -17,8 +17,8 @@ use crate::werewolf::{self, Werewolf};
 use anyhow::Context;
 use free_agent::Event;
 use serde::de::IgnoredAny;
-use social_deduction_stage::{Beat, Cue, GameName, Millis, Outcome, Panel, Role, Seat, Side};
-pub use social_deduction_stage::{Opened, Recording, Recordings};
+use social_deduction_cues::{Beat, Cue, GameName, Millis, Outcome, Panel, Role, Seat, Side};
+pub use social_deduction_cues::{Opened, Recording, Recordings};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -440,7 +440,7 @@ mod tests {
     use crate::game::tests::{Fixture, drained, episode, logged, seated};
     use crate::log::{Secrets, Writer};
     use crate::strategy::RANDOM;
-    use social_deduction_stage::{AvalonPanel, WerewolfPanel};
+    use social_deduction_cues::{AvalonPanel, WerewolfPanel};
 
     /// The log of a game of `roles` under `rules`, every player random.
     async fn random_game<G: Fixture>(

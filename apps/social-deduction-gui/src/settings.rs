@@ -11,8 +11,8 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_rich_chat::RichChatStyle;
-use social_deduction_stage::GameName;
-use social_deduction_stage::settings::{
+use social_deduction_cues::GameName;
+use social_deduction_cues::settings::{
     AppSettings, Appearance, FieldError, GameSettings, ModelSettings, RoleSettings, Snapshot,
     StrategySettings, game_key, game_title,
 };

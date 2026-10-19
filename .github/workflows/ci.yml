@@ -53,7 +53,7 @@ jobs:
       - run: cargo build
       - run: cargo test
       # The viewer's frontend builds the cue types for the browser.
-      - run: cargo check -p social-deduction-stage --target wasm32-unknown-unknown
+      - run: cargo check -p social-deduction-cues --target wasm32-unknown-unknown
 
   docs:
     name: Docs

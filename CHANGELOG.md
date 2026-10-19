@@ -233,6 +233,8 @@ workflow takes a version's notes from here.
 
 ### Changed
 
+- The `social-deduction-stage` crate is now `social-deduction-cues`, in
+  `crates/`.
 - The desktop app's first launch starts from each game's prompted
   defaults. **Import Configuration…** brings in a configuration played
   before, such as an earlier version's `last.toml`.

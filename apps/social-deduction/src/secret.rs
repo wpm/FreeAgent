@@ -12,7 +12,7 @@
 use crate::model::spec::{Environment, Keys};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Serialize, Serializer};
-use social_deduction_stage::settings::KeyStatus;
+use social_deduction_cues::settings::KeyStatus;
 use std::fmt;
 
 /// What can go wrong with a credential store. Neither variant carries a

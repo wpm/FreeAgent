@@ -9,7 +9,7 @@
 use social_deduction::settings::{
     self, AppSettings, FieldError, GameSettings, Imported, Snapshot, game_title,
 };
-use social_deduction_stage::GameName;
+use social_deduction_cues::GameName;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
