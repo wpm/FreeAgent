@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Build your own agent · Free Agent</title>
+<meta name="description" content="Write your own agents on the free-agent crate and put them in an episode.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<header class="wrap">
+  <div class="bar">
+    <a class="wordmark" href="index.html"><span class="mark">Free</span> Agent</a>
+    <nav>
+      <a href="https://docs.rs/free-agent">Docs</a>
+      <a href="https://crates.io/crates/free-agent">Crate</a>
+      <a href="index.html#apps">Apps</a>
+    </nav>
+  </div>
+  <p class="crumb"><a href="index.html#apps">Apps</a> › Build an app</p>
+  <h1 class="title">Build your own agent</h1>
+  <p class="subtitle">Say what your agents send one another, write how each one perceives and thinks, and put them in an episode.</p>
+</header>
+
+<main class="wrap">
+<section class="first">
+  <p class="text">Free Agent is a Rust crate. Add it, with the runtime and the few crates an agent is written with:</p>
+<pre><code>cargo add free-agent tokio --features tokio/full
+cargo add async-trait anyhow serde --features serde/derive</code></pre>
+</section>
+
+<section>
+  <h2>Five pieces</h2>
+  <ul class="grid">
+    <li><h3 class="code-name">Message</h3><p>What the agents in an episode say to one another: one type for the whole episode, usually an enum.</p></li>
+    <li><h3 class="code-name">Behavior</h3><p>How an agent perceives. <code>receive</code> takes each message the moment it arrives.</p></li>
+    <li><h3 class="code-name">Think</h3><p>How an agent thinks, in a loop of its own, one thing at a time: a model call, a plan, a deadline.</p></li>
+    <li><h3 class="code-name">Context</h3><p>How an agent acts, from either loop: it sends messages, stops other agents, and logs.</p></li>
+    <li><h3 class="code-name">Episode</h3><p>Brings agents into being together, decides which can reach which, and runs them until they stop.</p></li>
+  </ul>
+</section>
+
+<section>
+  <h2>An agent</h2>
+  <p class="text">This one hears everything as it arrives and hands it to its thinking loop, which takes its time over each message and then answers.</p>
+<pre class="rs"><code><span class="k">use</span> async_trait::async_trait;
+<span class="k">use</span> free_agent::{<span class="t">ActorId</span>, <span class="t">Behavior</span>, <span class="t">Context</span>, <span class="t">Message</span>, <span class="t">Think</span>};
+<span class="k">use</span> serde::{<span class="t">Deserialize</span>, <span class="t">Serialize</span>};
+<span class="k">use</span> std::collections::<span class="t">HashSet</span>;
+
+<span class="c">/// What the agents in this episode say to one another.</span>
+<span class="a">#[</span><span class="a">derive(Debug, Clone, Serialize, Deserialize)</span><span class="a">]</span>
+<span class="k">enum</span> <span class="t">Talk</span> { <span class="t">Said</span>(<span class="t">String</span>) }
+<span class="k">impl</span> <span class="t">Message</span> <span class="k">for</span> <span class="t">Talk</span> {}
+
+<span class="c">/// Perceives: hears everything as it arrives, and hands it off.</span>
+<span class="k">struct</span> <span class="t">Ears</span> { context: <span class="t">Context</span>&lt;<span class="t">Talk</span>&gt; }
+
+<span class="a">#[</span><span class="a">async_trait</span><span class="a">]</span>
+<span class="k">impl</span> <span class="t">Behavior</span> <span class="k">for</span> <span class="t">Ears</span> {
+    <span class="k">type</span> <span class="t">Message</span> = <span class="t">Talk</span>;
+    <span class="k">type</span> <span class="t">Log</span> = <span class="t">Talk</span>;
+    <span class="k">fn</span> <span class="f">context</span>(&amp;self) -&gt; <span class="k">&amp;</span><span class="t">Context</span>&lt;<span class="t">Talk</span>&gt; { &amp;self.context }
+    <span class="k">async</span> <span class="k">fn</span> <span class="f">receive</span>(&amp;<span class="k">mut</span> self, heard: <span class="k">&amp;</span><span class="t">Talk</span>) -&gt; <span class="t">anyhow</span>::<span class="t">Result</span>&lt;()&gt; {
+        self.context.log(heard.clone());
+        self.context.think(heard.clone())
+    }
+}
+
+<span class="c">/// Thinks: takes its time over each message, then answers.</span>
+<span class="k">struct</span> <span class="t">Mind</span> { context: <span class="t">Context</span>&lt;<span class="t">Talk</span>&gt;, peers: <span class="t">HashSet</span>&lt;<span class="t">ActorId</span>&gt; }
+
+<span class="a">#[</span><span class="a">async_trait</span><span class="a">]</span>
+<span class="k">impl</span> <span class="t">Think</span> <span class="k">for</span> <span class="t">Mind</span> {
+    <span class="k">type</span> <span class="t">Message</span> = <span class="t">Talk</span>;
+    <span class="k">async</span> <span class="k">fn</span> <span class="f">think</span>(&amp;<span class="k">mut</span> self, heard: <span class="k">&amp;</span><span class="t">Talk</span>) -&gt; <span class="t">anyhow</span>::<span class="t">Result</span>&lt;()&gt; {
+        <span class="k">let</span> <span class="t">Talk</span>::<span class="t">Said</span>(words) = heard;
+        <span class="k">let</span> reply = ask_your_model(words).<span class="k">await</span>;  <span class="c">// the Ears keep listening</span>
+        self.context.send(<span class="t">Talk</span>::<span class="t">Said</span>(reply), self.peers.clone())
+    }
+}</code></pre>
+  <p class="text"><code>ask_your_model</code> is yours: a call to a language model, a rule, a policy you’re training.</p>
+</section>
+
+<section>
+  <h2>An episode</h2>
+  <p class="text">Each agent is described by an <code>ActorInit</code>: how it perceives, how it thinks, and whom it may reach. The episode wires them together, starts them all at once, and runs them until they stop, while the log is written as JSON Lines.</p>
+<pre class="rs"><code><span class="k">use</span> free_agent::{<span class="t">ActorInit</span>, <span class="t">Episode</span>, console_log};
+<span class="k">use</span> std::collections::<span class="t">HashMap</span>;
+<span class="k">use</span> std::time::<span class="t">Duration</span>;
+<span class="k">use</span> tokio::sync::mpsc::unbounded_channel;
+
+<span class="k">fn</span> <span class="f">agent</span>(peers: <span class="t">HashSet</span>&lt;<span class="t">ActorId</span>&gt;) -&gt; <span class="t">ActorInit</span>&lt;<span class="t">Ears</span>&gt; {
+    <span class="k">let</span> reach = peers.clone();
+    <span class="t">ActorInit</span> {
+        behavior: <span class="t">Box</span>::new(|context| <span class="t">Ears</span> { context }),
+        think: <span class="t">Some</span>(<span class="t">Box</span>::new(<span class="k">move</span> |context| <span class="t">Box</span>::new(<span class="t">Mind</span> { context, peers }))),
+        can_send_to: <span class="t">reach</span>,
+        can_shut_down: <span class="t">HashSet</span>::new(),
+        has_logger: <span class="t">true</span>,
+    }
+}
+
+<span class="a">#[</span><span class="a">tokio::main</span><span class="a">]</span>
+<span class="k">async</span> <span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">anyhow</span>::<span class="t">Result</span>&lt;()&gt; {
+    <span class="k">let</span> ann = agent(<span class="t">HashSet</span>::from([<span class="s">"</span><span class="s">bob</span><span class="s">"</span>.to_string()]));
+    <span class="k">let</span> bob = agent(<span class="t">HashSet</span>::from([<span class="s">"</span><span class="s">ann</span><span class="s">"</span>.to_string()]));
+    <span class="k">let</span> (logger, log) = unbounded_channel();
+    <span class="k">let</span> episode = <span class="t">Episode</span>::new(
+        <span class="t">HashMap</span>::from([(<span class="s">"</span><span class="s">ann</span><span class="s">"</span>.to_string(), ann), (<span class="s">"</span><span class="s">bob</span><span class="s">"</span>.to_string(), bob)]),
+        logger,
+    );
+    <span class="k">let</span> logging = tokio::spawn(console_log(log));
+    episode.run(<span class="t">Duration</span>::from_secs(<span class="s">60</span>)).<span class="k">await</span>?;
+    logging.<span class="k">await</span>??;
+    <span class="t">Ok</span>(())
+}</code></pre>
+  <p class="text">Give one agent an opening move in <code>start</code> and the conversation begins. An app is this, grown up: an environment agent that keeps the rules, agents that play, and a log of everything they said.</p>
+</section>
+
+<section>
+  <h2>Go further</h2>
+  <p class="text">The <a href="https://docs.rs/free-agent">API documentation</a> covers each piece in full: timers with <code>think_after</code>, stopping agents, sharing state between an agent’s two loops, and how an episode ends.</p>
+</section>
+</main>
+
+<footer class="wrap">
+  <p>Free Agent is by <a href="https://github.com/wpm">W.P. McNeill</a>,
+  licensed under <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-MIT">MIT</a>
+  or <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-APACHE">Apache-2.0</a>.</p>
+</footer>
+</body>
+</html>
