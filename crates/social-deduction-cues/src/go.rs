@@ -35,7 +35,7 @@ impl Go {
 }
 
 /// One item of the **Go** menu.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct Item {
     /// Where it takes the cursor.
     pub go: Go,

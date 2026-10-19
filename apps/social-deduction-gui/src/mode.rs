@@ -148,14 +148,15 @@ mod tests {
 
     #[test]
     fn a_cue_once_the_game_is_left_goes_by() {
-        for mode in [
-            Mode::Start,
-            Mode::Over,
-            Mode::ReviewingGame,
-            Mode::ReviewingLog,
-        ] {
-            assert_eq!(mode.cued(true), None, "{mode:?}");
-        }
+        assert_eq!(
+            which(|mode| mode.cued(true).is_none()),
+            [
+                Mode::Start,
+                Mode::Over,
+                Mode::ReviewingGame,
+                Mode::ReviewingLog
+            ]
+        );
     }
 
     #[test]

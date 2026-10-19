@@ -10,20 +10,6 @@ use social_deduction_cues::go::{Go, MENU};
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, State, Wry};
 
-/// The ID of the **Go** menu's item that goes where `go` says.
-fn id(go: Go) -> String {
-    format!("go_{go:?}")
-}
-
-/// Where the **Go** menu's item with the ID `id` goes, or nothing for any
-/// other item.
-fn go(id: &str) -> Option<Go> {
-    MENU.iter()
-        .flatten()
-        .map(|item| item.go)
-        .find(|&go| self::id(go) == id)
-}
-
 /// The items the main window enables as what it shows changes.
 pub struct Items {
     /// **File ▸ Open Game Log…**
@@ -114,7 +100,13 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         }
         for item in group {
             let shortcut = item.shortcut(cfg!(target_os = "macos"));
-            let made = MenuItem::with_id(app, id(item.go), item.label, false, Some(shortcut))?;
+            let made = MenuItem::with_id(
+                app,
+                format!("go_{:?}", item.go),
+                item.label,
+                false,
+                Some(shortcut),
+            )?;
             go_menu.append(&made)?;
             go.push((made, item.go));
         }
@@ -193,14 +185,15 @@ fn bar(
 /// Import and Export run on threads of their own. A **Go** item tells the main
 /// window where the cursor goes.
 pub fn chosen(app: &AppHandle, event: MenuEvent) {
-    let id = event.id().as_ref();
-    if let Some(go) = go(id) {
+    let items = app.state::<Items>();
+    let chosen = items.go.iter().find(|(item, _)| item.id() == event.id());
+    if let Some(&(_, go)) = chosen {
         if let Err(error) = app.emit_to("main", "go", go) {
             tracing::warn!("Go could not be announced: {error}");
         }
         return;
     }
-    match id {
+    match event.id().as_ref() {
         "settings" => {
             if let Err(error) = settings::show(app, None) {
                 tracing::warn!("the Settings window could not be shown: {error}");
@@ -234,20 +227,5 @@ pub fn chosen(app: &AppHandle, event: MenuEvent) {
             });
         }
         _ => {}
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn each_go_item_is_known_by_its_id_and_no_other_item_is() {
-        for item in MENU.iter().flatten() {
-            assert_eq!(go(&id(item.go)), Some(item.go));
-        }
-        assert_eq!(id(Go::PreviousChapter), "go_PreviousChapter");
-        assert_eq!(go("settings"), None);
-        assert_eq!(go("go"), None);
     }
 }

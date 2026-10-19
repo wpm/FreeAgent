@@ -14,7 +14,7 @@ use leptos_rich_chat::RichChatStyle;
 use serde::de::IgnoredAny;
 use social_deduction_cues::go::Go;
 use social_deduction_cues::settings::{Snapshot, game_title};
-use social_deduction_cues::{Beat, Cue, GameName, Side};
+use social_deduction_cues::{Cue, GameName, Side};
 
 use crate::mode::Mode;
 use crate::review::Review;
@@ -91,13 +91,16 @@ pub fn Desktop() -> impl IntoView {
         live.reset();
         shown.set_value(Vec::new());
         let channel = Cues::new(move |cue: Cue| {
-            let over = matches!(cue.beat, Beat::Over { .. });
-            let Some(next) = mode.get_untracked().cued(over) else {
+            let now = mode.get_untracked();
+            if !now.busy() {
                 return;
-            };
+            }
             live.show(&cue);
             shown.update_value(|shown| shown.push(cue));
-            mode.set(next);
+            let over = screen.with_untracked(|screen| screen.outcome.is_some());
+            if let Some(next) = now.cued(over).filter(|&next| next != now) {
+                mode.set(next);
+            }
         });
         spawn_local(async move {
             let started = tauri::play(game, &channel).await;
