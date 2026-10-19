@@ -12,7 +12,7 @@ use crate::run::{Prepared, Ready};
 use crate::stage::{Stage, Staged, millis};
 use anyhow::anyhow;
 use free_agent::{Event, Stopper};
-use social_deduction_stage::{Beat, Cue};
+use social_deduction_cues::{Beat, Cue};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime};
@@ -53,7 +53,7 @@ pub struct Playing {
 
 impl Playing {
     /// Stop the game. It ends with
-    /// [`Outcome::Stopped`](social_deduction_stage::Outcome::Stopped) unless it has
+    /// [`Outcome::Stopped`](social_deduction_cues::Outcome::Stopped) unless it has
     /// already ended.
     pub fn stop(&self) {
         self.stopper.stop();
@@ -187,8 +187,8 @@ impl Session {
 ///
 /// The last cue is [`Beat::Over`], after a thought for every call still
 /// out: the side that won,
-/// [`Outcome::Stopped`](social_deduction_stage::Outcome::Stopped) after a
-/// stop, or [`Outcome::Failed`](social_deduction_stage::Outcome::Failed)
+/// [`Outcome::Stopped`](social_deduction_cues::Outcome::Stopped) after a
+/// stop, or [`Outcome::Failed`](social_deduction_cues::Outcome::Failed)
 /// when the episode fails, after one [`Beat::Told`]
 /// line with the error.
 pub fn play(
@@ -325,7 +325,7 @@ mod tests {
     use crate::stage::recordings;
     use free_agent::Episode;
     use secrecy::SecretString;
-    use social_deduction_stage::Outcome;
+    use social_deduction_cues::Outcome;
     use std::collections::HashMap;
     use std::path::Path;
     use tokio::sync::mpsc::UnboundedSender;

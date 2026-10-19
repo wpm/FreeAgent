@@ -4,8 +4,8 @@
 //! bubble by bubble, by chapter, to either end, or to another game.
 
 use serde::Deserialize;
-use social_deduction_stage::settings::game_title;
-use social_deduction_stage::{Cue, GameName, Opened, Outcome};
+use social_deduction_cues::settings::game_title;
+use social_deduction_cues::{Cue, GameName, Opened, Outcome};
 
 use crate::screen::{Landed, Screen, Timeline, side_key};
 
@@ -254,7 +254,7 @@ fn ended(outcome: Option<&Outcome>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use social_deduction_stage::{Recording, Recordings};
+    use social_deduction_cues::{Recording, Recordings};
     use uuid::Uuid;
 
     /// The recorded game `name` in `fixtures/`, as the episode `episode`.

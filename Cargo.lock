@@ -4526,12 +4526,22 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
- "social-deduction-stage",
+ "social-deduction-cues",
  "tokio",
  "tokio-util",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "social-deduction-cues"
+version = "0.1.0"
+dependencies = [
+ "minijinja",
+ "serde",
+ "serde_json",
  "uuid",
 ]
 
@@ -4545,7 +4555,7 @@ dependencies = [
  "secrecy",
  "serde",
  "social-deduction",
- "social-deduction-stage",
+ "social-deduction-cues",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -4565,22 +4575,12 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
  "social-deduction",
- "social-deduction-stage",
+ "social-deduction-cues",
  "tokio",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
-]
-
-[[package]]
-name = "social-deduction-stage"
-version = "0.1.0"
-dependencies = [
- "minijinja",
- "serde",
- "serde_json",
- "uuid",
 ]
 
 [[package]]

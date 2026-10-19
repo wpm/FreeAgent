@@ -31,7 +31,7 @@ use minijinja::{Environment, UndefinedBehavior, Value, context};
 use rand::seq::SliceRandom;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use social_deduction_stage::settings::{is_part_name, part_variable};
+use social_deduction_cues::settings::{is_part_name, part_variable};
 use std::collections::{BTreeMap, HashMap, btree_map};
 use std::fmt;
 use std::hash::Hash;

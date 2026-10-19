@@ -12,7 +12,7 @@
 //! name, and [`settle`] settles it as a file would be, without writing it
 //! out.
 
-pub use social_deduction_stage::settings::*;
+pub use social_deduction_cues::settings::*;
 
 use crate::avalon::{self, Avalon};
 use crate::config::{self, Format, Settled};
@@ -22,7 +22,7 @@ use crate::werewolf::{self, Werewolf};
 use minijinja::value::merge_maps;
 use minijinja::{Environment, UndefinedBehavior, Value, context};
 use serde::{Deserialize, Serialize};
-use social_deduction_stage::GameName;
+use social_deduction_cues::GameName;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::Path;

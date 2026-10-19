@@ -1,5 +1,5 @@
 [package]
-name = "social-deduction-stage"
+name = "social-deduction-cues"
 version.workspace = true
 edition.workspace = true
 description = "The cues a social deduction game's viewer is drawn from"

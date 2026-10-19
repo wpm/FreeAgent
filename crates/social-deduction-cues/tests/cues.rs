@@ -1,7 +1,7 @@
 //! Every cue survives the trip to the frontend as JSON.
 
 use serde::{Serialize, de::DeserializeOwned};
-use social_deduction_stage::*;
+use social_deduction_cues::*;
 
 fn round_trips<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(value: T) {
     let json = serde_json::to_string(&value).unwrap();

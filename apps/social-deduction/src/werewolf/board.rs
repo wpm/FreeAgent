@@ -9,7 +9,7 @@ use crate::report::in_order;
 use crate::seat::PlayerId;
 use crate::stage::{self, Staged, millis, millis_of, set};
 use free_agent::Event;
-use social_deduction_stage::{
+use social_deduction_cues::{
     Death, Learned, Millis, NightDeed, NightOutcome, Panel, Ratify, SeatState, WerewolfPanel,
     WerewolfPhase,
 };
@@ -263,7 +263,7 @@ mod tests {
     use crate::strategy::RANDOM;
     use crate::werewolf::Rules;
     use crate::werewolf::tests::{closing, retraction, selection, tentative};
-    use social_deduction_stage::{Beat, Role as Shown};
+    use social_deduction_cues::{Beat, Role as Shown};
     use std::collections::HashSet;
     use std::num::NonZero;
 

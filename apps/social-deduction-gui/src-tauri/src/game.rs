@@ -9,7 +9,7 @@ use social_deduction::config::Name;
 use social_deduction::live::Session;
 use social_deduction::run::prepare;
 use social_deduction::settings;
-use social_deduction_stage::{Cue, GameName};
+use social_deduction_cues::{Cue, GameName};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, async_runtime};
 

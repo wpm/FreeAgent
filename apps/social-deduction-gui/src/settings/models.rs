@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use social_deduction_stage::settings::{
+use social_deduction_cues::settings::{
     AppSettings, Check, FieldError, KeyStatus, Listed, Listing, ModelSettings, Probe, Progress,
     Provider, Trouble, Unchecked, host, is_remote, provider_at,
 };

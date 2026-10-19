@@ -1,4 +1,5 @@
-# The library lives at the root, the applications built on it in apps/.
+# The library lives at the root, the applications built on it in apps/, and
+# the crates they share in crates/.
 [package]
 name = "free-agent"
 version.workspace = true
@@ -30,11 +31,11 @@ tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [workspace]
 # The desktop shell sits inside the viewer's frontend, out of reach of apps/*.
-members = ["apps/*", "apps/social-deduction-gui/src-tauri"]
+members = ["apps/*", "crates/*", "apps/social-deduction-gui/src-tauri"]
 # Without this a bare cargo command at the root would skip the applications.
 # The viewer's frontend is built for the browser, by Trunk, and the desktop
 # shell needs the system's webview libraries, so both are left out.
-default-members = [".", "apps/social-deduction", "apps/social-deduction-stage"]
+default-members = [".", "apps/social-deduction", "crates/social-deduction-cues"]
 resolver = "3"
 
 # Versions live here so the crates cannot drift apart on a shared dependency.

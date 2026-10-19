@@ -12,8 +12,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_rich_chat::RichChatStyle;
 use serde::de::IgnoredAny;
-use social_deduction_stage::settings::{Snapshot, game_title};
-use social_deduction_stage::{Cue, GameName, Side};
+use social_deduction_cues::settings::{Snapshot, game_title};
+use social_deduction_cues::{Cue, GameName, Side};
 
 use crate::review::{Go, Review};
 use crate::screen::{Screen, side_key};

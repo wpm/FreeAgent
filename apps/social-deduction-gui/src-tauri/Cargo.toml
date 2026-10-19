@@ -25,7 +25,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 secrecy.workspace = true
 social-deduction = { path = "../../social-deduction" }
-social-deduction-stage = { path = "../../social-deduction-stage" }
+social-deduction-cues = { path = "../../../crates/social-deduction-cues" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

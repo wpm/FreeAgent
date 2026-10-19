@@ -9,8 +9,8 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_rich_chat::{Message, RenderOptions, RichChatStyle, Transcript};
-use social_deduction_stage::settings::label;
-use social_deduction_stage::{
+use social_deduction_cues::settings::label;
+use social_deduction_cues::{
     Cue, Deed, GameName, NightDeed, Outcome, Seat, Side, WerewolfPanel, WerewolfPhase,
 };
 use wasm_bindgen::{JsCast, JsValue};
