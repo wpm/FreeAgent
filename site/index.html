@@ -55,31 +55,16 @@
   <p><a class="button" href="social-deduction.html">About Social Deduction</a></p>
 </section>
 
-<section>
-  <h2>Generate data from the command line</h2>
-  <p class="text">Social Deduction installs a command line beside its desktop app. <code>social-deduction</code> plays games headless, with models from any OpenAI-compatible server, local or hosted, and logs every event as JSON Lines.</p>
-<pre><code><span class="c"># Write out the example tables, then play 500 games of Werewolf</span>
-social-deduction configs --write .
-social-deduction play werewolf/prompted.toml --episodes 500 2&gt; werewolf.jsonl</code></pre>
-  <ul class="points">
-    <li>The game is told on standard output as it happens and logged on standard error, one JSON object per event.</li>
-    <li><code>--episodes N</code> plays N games in a row and deals the roles afresh each time, so a seat says nothing about a side.</li>
-    <li>Each episode opens with a header naming the log format and the version that wrote it, and closes with how it ended.</li>
-    <li>API keys are redacted, so a log is safe to share.</li>
-    <li>Players, prompts and models are a TOML file. Open any log in the desktop app to step through the game message by message.</li>
-  </ul>
-</section>
-
 <section id="apps">
   <h2>Apps</h2>
   <p class="text">An app is a crate that depends on <code>free-agent</code>: it defines an environment, its agents and their messages. Social Deduction is one, and yours can be another.</p>
   <ul class="apps">
     <li>
-      <div><span class="tag">Available now</span><h3><a href="social-deduction.html">Social Deduction</a></h3><p>Werewolf and Avalon, played by language models or at random.</p></div>
+      <div><span class="tag">Available now</span><h3>Social Deduction</h3><p>Werewolf and Avalon, played by language models or at random.</p></div>
       <a href="social-deduction.html">Details and download</a>
     </li>
     <li>
-      <div><span class="tag">Yours</span><h3><a href="build.html">Build an app</a></h3><p>Write your own agents on the <code>free-agent</code> crate and put them in an episode.</p></div>
+      <div><span class="tag">Yours</span><h3>Build an app</h3><p>Write your own agents on the <code>free-agent</code> crate and put them in an episode.</p></div>
       <a href="build.html">Build your own agent</a>
     </li>
   </ul>
