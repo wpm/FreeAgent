@@ -1,0 +1,48 @@
+name: Feature request
+description: An idea for Free Agent or Social Deduction.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. What you're trying to do matters as much as how, so start there.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: What is it for?
+      options:
+        - Social Deduction desktop app
+        - social-deduction command line
+        - free-agent crate
+        - The website or the sample game in the browser
+        - Something new
+    validations:
+      required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: What you're trying to do
+      description: The experiment, game or app you have in mind, and where Free Agent gets in the way or falls short.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: How you picture it working. A sketch of the API, a command, or what you'd see on screen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other ways you've tried
+      description: Workarounds, or other approaches you considered.
+
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else

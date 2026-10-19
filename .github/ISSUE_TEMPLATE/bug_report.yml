@@ -1,0 +1,95 @@
+name: Bug report
+description: Something in Free Agent or Social Deduction isn't working as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. The more of the form you fill in, the faster it can be reproduced and fixed.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Where did it happen?
+      options:
+        - Social Deduction desktop app
+        - social-deduction command line
+        - free-agent crate
+        - The website or the sample game in the browser
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >-
+        Run `social-deduction --version`, which the desktop app installs too.
+        On macOS, Social Deduction ▸ About Social Deduction also shows it.
+        For the crate, the version of `free-agent` in your Cargo.lock.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS, Apple silicon
+        - macOS, Intel
+        - Windows
+        - Linux x86_64
+        - Linux arm64
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model and server
+      description: If a game was involved, which model played and what served it.
+      placeholder: "qwen3-8b on LM Studio"
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, including any error message, word for word.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen
+      description: The steps that lead to it, starting from opening the app or running a command.
+      placeholder: |
+        1. Choose Play Werewolf
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: The game's log
+      description: >-
+        If a game was involved, attach its log: File ▸ Save Game Log… in the app, or what
+        `social-deduction play` wrote to standard error. API keys are redacted, so a log is safe
+        to share. Drag the file here, zipped if GitHub won't take the .jsonl as it is.
+
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Screenshots, your configuration file, or whatever else might help.
