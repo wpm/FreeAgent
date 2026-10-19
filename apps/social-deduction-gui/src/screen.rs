@@ -385,17 +385,18 @@ impl Screen {
             && matches!(&self.panel, Some(Panel::Werewolf(panel)) if panel.closing.is_some())
     }
 
-    /// The root element's `data-theme`: `dark` by night and `light` by day
-    /// in a Werewolf game underway, or in a saved one shown at rest, and
-    /// otherwise none, so the page follows the OS.
-    pub fn theme(&self) -> Option<&'static str> {
+    /// The root element's `data-theme` with the app's appearance held to
+    /// `appearance`: `dark` by night and `light` by day in a Werewolf game
+    /// underway, or in a saved one shown at rest, and otherwise the
+    /// appearance, or none, so the page follows the OS.
+    pub fn theme(&self, appearance: Option<&'static str>) -> Option<&'static str> {
         let underway = self.outcome.is_none() || !self.clock.running;
         match &self.panel {
             Some(Panel::Werewolf(panel)) if underway => Some(match panel.phase {
                 WerewolfPhase::Night => "dark",
                 WerewolfPhase::Day => "light",
             }),
-            _ => None,
+            _ => appearance,
         }
     }
 
@@ -1574,12 +1575,15 @@ mod tests {
 
     #[test]
     fn night_is_dark_and_day_light_and_otherwise_the_page_follows_the_os() {
-        assert_eq!(Screen::default().theme(), None);
-        assert_eq!(shown(&[werewolf_cast()]).theme(), None);
-        assert_eq!(shown(&[werewolf_cast(), tonight()]).theme(), Some("dark"));
+        assert_eq!(Screen::default().theme(None), None);
+        assert_eq!(shown(&[werewolf_cast()]).theme(None), None);
+        assert_eq!(
+            shown(&[werewolf_cast(), tonight()]).theme(None),
+            Some("dark")
+        );
         let day = werewolf(&first_day());
         assert_eq!(
-            shown(&[werewolf_cast(), tonight(), day.clone()]).theme(),
+            shown(&[werewolf_cast(), tonight(), day.clone()]).theme(None),
             Some("light")
         );
         let over = cue(Beat::Over {
@@ -1588,13 +1592,22 @@ mod tests {
         let ended = [werewolf_cast(), day, over];
         // A saved game at rest takes its final phase's theme, and one
         // played through follows the OS once it is over.
-        assert_eq!(shown(&ended).theme(), Some("light"));
+        assert_eq!(shown(&ended).theme(None), Some("light"));
         let mut played = Screen::default();
         for cue in &ended {
             played.apply(cue, true);
         }
-        assert_eq!(played.theme(), None);
-        assert_eq!(shown(&game()).theme(), None);
+        assert_eq!(played.theme(None), None);
+        assert_eq!(shown(&game()).theme(None), None);
+    }
+
+    #[test]
+    fn night_and_day_hold_whatever_the_appearance_and_otherwise_the_appearance_holds() {
+        let night = shown(&[werewolf_cast(), tonight()]);
+        assert_eq!(night.theme(Some("light")), Some("dark"));
+        let day = shown(&[werewolf_cast(), tonight(), werewolf(&first_day())]);
+        assert_eq!(day.theme(Some("dark")), Some("light"));
+        assert_eq!(shown(&game()).theme(Some("dark")), Some("dark"));
     }
 
     /// The choices that land as `after` follows `before` on a screen.

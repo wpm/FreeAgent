@@ -50,6 +50,8 @@
   --rc-surface: var(--sd-paper);
   --rc-error: var(--sd-ink);
   --rc-selection: color-mix(in srgb, var(--sd-ink) 18%, transparent);
+  /* A choice landing on the board. */
+  --sd-wash: color-mix(in srgb, var(--sd-ink) 12%, transparent);
   --rc-font: var(--sd-serif);
   --rc-font-size: 17px;
   --rc-line-height: 1.5;
@@ -816,12 +818,10 @@ body,
   font-weight: 700;
 }
 
-/* A choice landing: its row inverted, ink behind paper, and a vote's
-   tagged New. */
+/* A choice landing: its row washed with ink, and a vote's tagged New. */
 
 .sd-landed {
-  background: var(--sd-ink);
-  color: var(--sd-paper);
+  background: var(--sd-wash);
 }
 
 .sd-vote.sd-landed::after,

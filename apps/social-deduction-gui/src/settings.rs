@@ -435,13 +435,13 @@ fn General(editor: Editor) -> impl IntoView {
         <Section title="Appearance" tip="How the app looks.">
             <div class="sd-list">
                 <div class="sd-item">
-                    <Named name="Appearance" note="System follows the system's look, and keeps Werewolf dark by night and light by day." />
+                    <Named name="Appearance" note="Werewolf is dark by night and light by day, whatever the appearance." />
                     <Segments
                         label="Appearance"
                         options=vec![
-                            (Appearance::System, "System", "Follow the system's look. Werewolf turns dark by night and light by day."),
-                            (Appearance::Light, "Light", "Always light, whatever the system or the game shows."),
-                            (Appearance::Dark, "Dark", "Always dark, whatever the system or the game shows."),
+                            (Appearance::System, "System", "Follow the system's look."),
+                            (Appearance::Light, "Light", "Light, whatever the system shows."),
+                            (Appearance::Dark, "Dark", "Dark, whatever the system shows."),
                         ]
                         value=appearance.into()
                         set=set
