@@ -7,7 +7,6 @@
 
 use clap::{Args, Parser};
 use free_agent::{Behavior, Episode, Event, Logger};
-use serde::Serialize;
 use social_deduction::game::{Entry, Game, Narrate};
 use social_deduction::live::PATIENCE;
 use social_deduction::log::{Ended, Secrets, Writer};
