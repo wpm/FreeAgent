@@ -16,7 +16,7 @@ dist = false
 leptos = { version = "0.8", features = ["csr"] }
 # Game talk needs no code highlighting or math fonts. Review selects a
 # message, from wpm/Rich-Chat#101 until it is released as 0.2.2.
-leptos-rich-chat = { git = "https://github.com/wpm/Rich-Chat", rev = "2c59c1445b1d178380cae2b8ab2cee93951dd754", default-features = false }
+leptos-rich-chat = { version = "0.2.2", default-features = false }
 social-deduction-stage = { path = "../social-deduction-stage" }
 console_error_panic_hook = "0.1"
 serde.workspace = true
