@@ -498,7 +498,7 @@ mod tests {
     use crate::game::{Game, game};
     use crate::model::Request;
     use crate::model::canned;
-    use crate::model::fake::{FakeModel, SAID, canned_calls, choosing_first, voted_in_this_phase};
+    use crate::model::fake::{FakeModel, SAID, acted_in_this_phase, canned_calls, choosing_first};
     use crate::model::spec::{Handles, ModelInPlay};
     use crate::model::window::{ContextWindow, Source};
     use crate::model::{CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT};
@@ -1303,7 +1303,7 @@ mod tests {
         let roles = one_wolf_against(&["ann", "bob", "cat", "dan"]);
         let model = Arc::new(by_day(|request| {
             let bob = request.messages[0] == model::Message::system(told("bob"));
-            let calls = if bob && !voted_in_this_phase(&request.messages[1].content) {
+            let calls = if bob && !acted_in_this_phase(&request.messages[1].content) {
                 vec![speaking("Vote cat."), voting("cat")]
             } else {
                 vec![waiting(10)]
@@ -1419,7 +1419,7 @@ mod tests {
         let roles = one_wolf_against(&["ann", "bob", "cat", "dan"]);
         let model = Arc::new(by_day(|request| {
             let bob = request.messages[0] == model::Message::system(told("bob"));
-            let calls = if bob && !voted_in_this_phase(&request.messages[1].content) {
+            let calls = if bob && !acted_in_this_phase(&request.messages[1].content) {
                 vec![voting("cat"), retracting()]
             } else {
                 vec![waiting(10)]
@@ -1473,7 +1473,7 @@ mod tests {
         let roles = one_wolf_against(&["ann", "bob", "cat", "dan"]);
         let model = Arc::new(by_day(|request| {
             let bob = request.messages[0] == model::Message::system(told("bob"));
-            let target = match voted_in_this_phase(&request.messages[1].content) {
+            let target = match acted_in_this_phase(&request.messages[1].content) {
                 false => "cat",
                 true => "dan",
             };

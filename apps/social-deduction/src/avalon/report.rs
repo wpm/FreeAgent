@@ -551,6 +551,7 @@ mod tests {
         announcement, dealt, five, logged, logged_at, seated, utterance, view_of,
     };
     use crate::avalon::{Rules, State};
+    use crate::model::fake::acted_in_this_phase;
     use crate::report::FORGOTTEN;
     use crate::report::tests::estimated;
     use crate::seat::ENVIRONMENT;
@@ -1080,6 +1081,26 @@ mod tests {
                 "You say, \"Trust me.\"",
             ]
         );
+    }
+
+    #[test]
+    fn the_canned_player_knows_each_choice_its_story_tells_as_acting() {
+        // The canned player that tests play reads its own choices from the
+        // story, so every choice must be told in a way it recognizes, or it
+        // chooses again and waits out every phase.
+        let story = Story::of(id("Player 1"));
+        for choice in [
+            Choice::Team(team(&["Player 1", "Player 2"])),
+            Choice::Ballot(Ballot::Approve),
+            Choice::Ballot(Ballot::Reject),
+            Choice::Deed(Deed::Support),
+            Choice::Deed(Deed::Sabotage),
+            Choice::Target(id("Player 2")),
+        ] {
+            let told = story.chose(&choice);
+            let asked = format!("Quest 1.\n\nThe phase.\n{told}\n\nIt is quest 1.");
+            assert!(acted_in_this_phase(&asked), "{told}");
+        }
     }
 
     #[test]
