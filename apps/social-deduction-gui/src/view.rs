@@ -404,8 +404,8 @@ pub(crate) fn Reviewer(
 /// beside the board, and the footer. A `failure` or a `warning` shows
 /// above the chat, and a link goes to `on_link` when there is one. The
 /// bubble under the screen's cursor is selected, and a bubble clicked
-/// goes to `on_select`. The page takes the game's theme, unless the
-/// `appearance` holds it to one.
+/// goes to `on_select`. The page takes Werewolf's night and day, and
+/// otherwise the `appearance`.
 #[component]
 pub(crate) fn Viewer(
     live: Live,
@@ -428,7 +428,7 @@ pub(crate) fn Viewer(
         screen.with(|screen| screen.clock.now(waited))
     }));
 
-    let theme = Memo::new(move |_| appearance.get().or_else(|| screen.with(Screen::theme)));
+    let theme = Memo::new(move |_| screen.with(|screen| screen.theme(appearance.get())));
     Effect::new(move |_| set_theme(theme.get()));
 
     let options = RenderOptions {

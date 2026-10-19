@@ -13,7 +13,7 @@
 // The random Werewolf board's dead are those the narration kills, struck
 // through, and `data-theme` matches the last phase. The prompted Werewolf
 // game, played at ten times the pace, shows a thinking player's dots until
-// it speaks, turns dark by night and light by day, inverts a vote's row
+// it speaks, turns dark by night and light by day, washes a vote's row with ink
 // and tags it New as it lands, and shows a day closing, with speech
 // landing while it does, before the night falls. The prompted Avalon board names the Assassin's target.
 // In each game, dragging the handle on the line between the chat and the
@@ -434,11 +434,11 @@ await section('werewolf-prompted', async () => {
   await open(page, 'werewolf-prompted-fast');
   await page.evaluate(() => {
     window.timeline = [];
-    // Ink and paper as they stand, which a landing row takes inverted.
+    // The wash of ink that a landing row takes.
     const probe = document.createElement('div');
-    probe.style.cssText = 'color: var(--sd-paper); background: var(--sd-ink)';
+    probe.style.cssText = 'background: var(--sd-wash)';
     document.body.append(probe);
-    const inverted = getComputedStyle(probe);
+    const washed = getComputedStyle(probe);
     const snapshot = () => {
       const phase = document.querySelector('.sd-phase');
       const clock = phase?.querySelector('.sd-clock')?.textContent ?? '';
@@ -453,7 +453,7 @@ await section('werewolf-prompted', async () => {
         landed: [...document.querySelectorAll('.sd-vote.sd-landed')].map((row) => {
           const style = getComputedStyle(row);
           return {
-            inverted: style.backgroundColor === inverted.backgroundColor && style.color === inverted.color,
+            washed: style.backgroundColor === washed.backgroundColor,
             tag: getComputedStyle(row, '::after').content,
           };
         }),
@@ -522,8 +522,8 @@ await section('werewolf-prompted', async () => {
   );
   const landed = playing.flatMap((shot) => shot.landed);
   check(
-    landed.length > 0 && landed.every((row) => row.inverted && row.tag === '"New"'),
-    `werewolf-prompted: a landed vote's row is inverted and tagged New while it flashes (${landed.length} seen)`,
+    landed.length > 0 && landed.every((row) => row.washed && row.tag === '"New"'),
+    `werewolf-prompted: a landed vote's row is washed with ink and tagged New while it flashes (${landed.length} seen)`,
   );
   // The theme as each phase ends, before the next heading or the outcome.
   const ends = [];
@@ -1201,11 +1201,11 @@ await section('desktop', async () => {
     settings.$eval('.sd-tip', (element) => ({ text: element.textContent, shown: !element.hidden, top: element.getBoundingClientRect().top }));
   await settings.hover('.sd-segments button:has-text("Light")');
   const hovered = await tip();
-  check(hovered.shown && hovered.text.startsWith('Always light'), `desktop: hovering shows help (${JSON.stringify(hovered)})`);
+  check(hovered.shown && hovered.text.startsWith('Light, whatever'), `desktop: hovering shows help (${JSON.stringify(hovered)})`);
   await settings.mouse.move(0, 0);
   await settings.focus('.sd-segments button:has-text("Dark")');
   const focused = await tip();
-  check(focused.shown && focused.text.startsWith('Always dark'), `desktop: focus shows help (${JSON.stringify(focused)})`);
+  check(focused.shown && focused.text.startsWith('Dark, whatever'), `desktop: focus shows help (${JSON.stringify(focused)})`);
   await settings.screenshot({ path: join(shots, 'settings-tip.png') });
   await settings.keyboard.press('Escape');
   check(!(await tip()).shown, 'desktop: Escape hides help');

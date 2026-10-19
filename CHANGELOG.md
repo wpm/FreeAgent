@@ -233,6 +233,9 @@ workflow takes a version's notes from here.
 
 ### Changed
 
+- Werewolf is dark by night and light by day whatever the desktop app's
+  **Appearance**, which holds the rest of the app, and a choice landing
+  on the board is washed with ink rather than inverted.
 - The `social-deduction-stage` crate is now `social-deduction-cues`, in
   `crates/`.
 - The desktop app's first launch starts from each game's prompted
