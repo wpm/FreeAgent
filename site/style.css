@@ -397,7 +397,7 @@ figcaption {
 /* The Linux button's target: both Linux rows. */
 .downloads:has(#linux:target) .linux { background: var(--code); }
 
-.downloads li > a, .downloads .platform {
+.downloads .platform {
   min-width: 7rem;
   font-family: var(--sans);
   font-size: 0.85rem;
