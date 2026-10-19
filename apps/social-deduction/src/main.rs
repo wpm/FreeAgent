@@ -2,11 +2,11 @@
 //! the game, deal the roles and strategies, run one game or as many
 //! episodes as asked, log them to standard error as JSON lines, and tell
 //! them on standard output as they happen. Or list the models a provider
-//! serves, which belongs to no game.
+//! serves, or list or write out the example configurations, which belong
+//! to no game.
 
 use clap::{Args, Parser};
 use free_agent::{Behavior, Episode, Event, Logger};
-use social_deduction::config;
 use social_deduction::game::{Entry, Game, Narrate};
 use social_deduction::live::PATIENCE;
 use social_deduction::log::{Ended, Secrets, Writer};
@@ -17,10 +17,11 @@ use social_deduction::model::{
 };
 use social_deduction::report::Line;
 use social_deduction::run::{Prepared, Ready};
+use social_deduction::{config, examples};
 use std::fmt::Write as _;
-use std::io::{self, Write};
+use std::io::{self, ErrorKind::NotFound, Write};
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::oneshot;
 
@@ -45,6 +46,16 @@ enum CommandLine {
         /// -- when the base URL follows them
         #[arg(long, num_args = 0.., value_name = "ID", value_terminator = "--")]
         check: Option<Vec<String>>,
+    },
+    /// List the example configurations, or write them out to play
+    Configs {
+        /// Write the examples into this directory, in a folder for each
+        /// game
+        #[arg(long, value_name = "DIR")]
+        write: Option<PathBuf>,
+        /// Overwrite example files already in the directory
+        #[arg(long, requires = "write")]
+        force: bool,
     },
 }
 
@@ -90,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
             config,
             episodes,
             logging,
-        }) => match Prepared::new(config::load(&config)?, &Environment).await? {
+        }) => match Prepared::new(loaded(&config)?, &Environment).await? {
             Prepared::Werewolf(ready) => run(*ready, episodes, logging.enabled()).await,
             Prepared::Avalon(ready) => run(*ready, episodes, logging.enabled()).await,
         },
@@ -119,7 +130,34 @@ async fn main() -> anyhow::Result<()> {
             print!("{}", listing(&models));
             Ok(())
         }
+        CommandLine::Configs { write: None, .. } => {
+            print!("{}", examples::listing());
+            Ok(())
+        }
+        CommandLine::Configs {
+            write: Some(dir),
+            force,
+        } => examples::write(&dir, force),
     }
+}
+
+/// The configuration file at `path`, loaded. When there is no file there,
+/// the error says how to write out the examples.
+fn loaded(path: &Path) -> anyhow::Result<config::Settled> {
+    config::load(path).map_err(|error| {
+        let missing = error
+            .chain()
+            .any(|cause| cause.downcast_ref::<io::Error>().map(io::Error::kind) == Some(NotFound));
+        if missing {
+            error.context(format!(
+                "no configuration file {}; `social-deduction configs --write .` writes the \
+                 example configurations into the current directory",
+                path.display()
+            ))
+        } else {
+            error
+        }
+    })
 }
 
 /// What `models --help` ends with: a table of the providers known, the
@@ -407,7 +445,7 @@ mod tests {
             .map(|subcommand| subcommand.get_name())
             .filter(|name| *name != "help")
             .collect();
-        assert_eq!(commands, ["play", "models"]);
+        assert_eq!(commands, ["play", "models", "configs"]);
         let play = command.find_subcommand_mut("play").unwrap();
         assert_eq!(
             play.get_about().unwrap().to_string(),
@@ -492,6 +530,28 @@ mod tests {
                 "http://localhost:1234/v1"
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn the_configs_command_lists_unless_told_where_to_write_and_forces_only_a_write() {
+        assert_eq!(
+            parsed(&["configs"]),
+            CommandLine::Configs {
+                write: None,
+                force: false,
+            }
+        );
+        assert_eq!(
+            parsed(&["configs", "--write", ".", "--force"]),
+            CommandLine::Configs {
+                write: Some(PathBuf::from(".")),
+                force: true,
+            }
+        );
+        assert_eq!(
+            refused(&["configs", "--force"]),
+            Some(ErrorKind::MissingRequiredArgument)
         );
     }
 

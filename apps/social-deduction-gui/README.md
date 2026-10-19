@@ -50,6 +50,14 @@ game plays live in the window, with **Stop**, and once it is over,
 **Review**, **Save Log…** and **New game** appear. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
 start state.
 
+On a Mac, drag the app from its disk image to Applications, then choose
+**Social Deduction ▸ Install Command-Line Tool…** to put
+`social-deduction` on the PATH. It links `/usr/local/bin/social-deduction`
+to the command line inside the app, so updating the app updates it too,
+and asks once for an administrator password. If another
+`social-deduction` comes first on your PATH, the app names it. Once
+installed, the item reads **Uninstall Command-Line Tool…**.
+
 **Settings…** (⌘, on macOS, **Edit ▸ Preferences…** and Ctrl+, elsewhere)
 opens the Settings window. Every change is stored as it is made and
 applies to the next game. Each field's error shows in marigold beneath it, and
@@ -135,13 +143,22 @@ and what probing found in `probes.json` in its data directory: on macOS,
 both in `~/Library/Application Support/io.github.wpm.social-deduction/`.
 
 It is a [Tauri](https://tauri.app) shell, in `src-tauri`, around the same
-page. To run it in development, with Trunk and the Tauri CLI
-(`cargo install tauri-cli --locked`) installed:
+page. Its bundle carries the `social-deduction` command line as a sidecar,
+which `.github/scripts/sidecar.sh` builds into `src-tauri/binaries/`. The
+Linux .deb and .rpm, on x86_64 and arm64, install it as
+`/usr/bin/social-deduction` beside the app. To
+run it in development, with Trunk and the Tauri CLI
+(`cargo install tauri-cli --locked`) installed, from the root of a
+checkout:
 
 ```sh
+.github/scripts/sidecar.sh
 cd apps/social-deduction-gui/src-tauri
 cargo tauri dev
 ```
+
+Every build of `src-tauri`, `cargo test` and rust-analyzer among them,
+uses the sidecar, and running `sidecar.sh` again brings it up to date.
 
 On Linux, Tauri needs the WebKitGTK development packages:
 `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev`.

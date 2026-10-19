@@ -23,7 +23,9 @@ other actors, never to itself. A typical episode has one environment actor
 and several agent actors.
 
 The library lives at the root of the repository and the applications built on
-it under `apps/`. For games built on this, see [`social-deduction`](apps/social-deduction).
+it under `apps/`. For games built on this, see [`social-deduction`](apps/social-deduction), whose
+[Servers and CI](apps/social-deduction/README.md#servers-and-ci) section
+installs its command line alone.
 
 ## Development
 

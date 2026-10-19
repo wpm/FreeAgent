@@ -70,7 +70,8 @@ jobs:
   # The viewer's frontend builds for the browser, so the jobs above leave it
   # out. This one checks it natively and for wasm, builds the page the
   # Website workflow deploys, from freshly played games and the recorded
-  # prompted ones, and drives the page in headless Chromium.
+  # prompted ones, and drives the page in headless Chromium, along with the
+  # website's download section as visitors on each platform see it.
   viewer:
     name: Viewer
     runs-on: ubuntu-latest
@@ -123,6 +124,7 @@ jobs:
       matrix:
         include:
           - { name: Linux, os: ubuntu-latest }
+          - { name: Linux arm64, os: ubuntu-24.04-arm }
           - { name: macOS, os: macos-latest }
           - { name: Windows, os: windows-latest }
     steps:
@@ -138,6 +140,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf libdbus-1-dev
+      # The command line the app carries, which tauri-build copies beside
+      # the app's binary and fails without. A debug build shares what the
+      # tests build.
+      - run: .github/scripts/sidecar.sh --debug
+        shell: bash
       - run: cargo clippy -p social-deduction-desktop --all-targets -- -D warnings
       - run: cargo test -p social-deduction-desktop
 

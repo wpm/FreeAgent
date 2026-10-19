@@ -7,6 +7,7 @@
 <meta name="description" content="Episodes in which actors talk to each other by sending messages. A Rust platform for multi-agent applications.">
 <link rel="stylesheet" href="style.css">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
+<script src="download.js" defer></script>
 </head>
 <body>
 <header>
@@ -44,43 +45,44 @@
 
 <section>
   <h2>Play with it</h2>
-  <p><strong>Social deduction</strong> plays Werewolf: a few of the players
-  are secretly werewolves, the rest are villagers, among them a doctor and
-  a seer. Install the binary with one line, no Rust toolchain needed.</p>
-  <h3>macOS and Linux</h3>
-  <pre><code>curl --proto '=https' --tlsv1.2 -LsSf https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-installer.sh | sh</code></pre>
-  <h3>Windows</h3>
-  <pre><code>powershell -ExecutionPolicy Bypass -c "irm https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-installer.ps1 | iex"</code></pre>
-  <p>Then, from the root of a release archive, whose <code>configs/</code>
-  directory holds the example configurations, deal a table and watch a
+  <p><strong>Social Deduction</strong> plays Werewolf and Avalon, games in
+  which a few of the players are secretly on the other side. The desktop
+  app shows a game as a group chat, beside a live board.</p>
+  <div id="download" hidden>
+    <a class="button" href="#platforms">Download</a>
+    <p class="gets">The app and the <code>social-deduction</code> command line.</p>
+    <p data-platform="macos" hidden>Drag it to Applications, then choose
+    <strong>Social Deduction ▸ Install Command-Line Tool…</strong></p>
+    <p data-platform="windows" hidden>Windows may warn that the app is from
+    an unknown publisher: choose <strong>More info</strong>, then
+    <strong>Run anyway</strong>.</p>
+    <p data-platform="linux" hidden>The command line is installed to
+    <code>/usr/bin</code>.</p>
+  </div>
+  <h3 id="platforms">All platforms</h3>
+  <ul class="downloads">
+    <li id="macos"><a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction.dmg">macOS</a>
+      <span>Apple silicon and Intel, <code>Social-Deduction.dmg</code></span></li>
+    <li id="windows"><a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction-setup.exe">Windows</a>
+      <span>x64, <code>Social-Deduction-setup.exe</code></span></li>
+    <li id="linux" class="linux"><span class="platform">Linux x86_64</span>
+      <span><a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-amd64.deb"><code>.deb</code></a> ·
+      <a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-x86_64.rpm"><code>.rpm</code></a></span></li>
+    <li class="linux"><span class="platform">Linux arm64</span>
+      <span><a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-arm64.deb"><code>.deb</code></a> ·
+      <a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-aarch64.rpm"><code>.rpm</code></a></span></li>
+  </ul>
+  <p>Then write out the example configurations, deal a table and watch a
   game:</p>
-  <pre><code>social-deduction play configs/werewolf/random.toml</code></pre>
+  <pre><code>social-deduction configs --write .
+social-deduction play werewolf/random.toml</code></pre>
   <p>Watch a random game of <a href="viewer/#avalon">Avalon</a> or
   <a href="viewer/#werewolf">Werewolf</a>, played afresh on every change
   to <code>main</code>.</p>
-  <p>Every build is also on the
-  <a href="https://github.com/wpm/FreeAgent/releases">releases page</a>
-  as a plain archive.</p>
-</section>
-
-<section>
-  <h2>Desktop app</h2>
-  <p><strong>Social Deduction</strong> for the desktop plays one game of
-  Werewolf or Avalon and shows it as a group chat, beside a live board.</p>
-  <ul class="downloads">
-    <li><a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction.dmg">macOS</a>
-      <span>Apple silicon and Intel, <code>.dmg</code></span></li>
-    <li><a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction-setup.exe">Windows</a>
-      <span><code>setup.exe</code>, or the
-      <a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction.msi"><code>.msi</code></a></span></li>
-    <li><a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction.AppImage">Linux</a>
-      <span><code>.AppImage</code>, or the
-      <a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction.deb"><code>.deb</code></a>
-      or <a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction.rpm"><code>.rpm</code></a></span></li>
-  </ul>
-  <p>The macOS app may be unsigned. Drag it to Applications, then clear
-  its quarantine mark once and it opens normally:</p>
-  <pre><code>xattr -d com.apple.quarantine "/Applications/Social Deduction.app"</code></pre>
+  <p>Everything else is on the
+  <a href="https://github.com/wpm/FreeAgent/releases">releases page</a>.
+  For the command line alone, on servers and CI, see the
+  <a href="https://github.com/wpm/FreeAgent/tree/main/apps/social-deduction#servers-and-ci">README</a>.</p>
 </section>
 </main>
 

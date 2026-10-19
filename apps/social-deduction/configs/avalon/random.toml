@@ -1,8 +1,10 @@
-# Every role played by the random strategy, which is always defined: a
-# table of random players with no models. Run it from the root of a
-# release archive, or from apps/social-deduction in a checkout, with
+# Every role played by the random strategy, which is always defined: a table
+# of random players with no models. `social-deduction configs --write .`
+# writes it out, and
 #
-#     social-deduction play configs/avalon/random.toml
+#     social-deduction play avalon/random.toml
+#
+# plays it.
 
 format = 1
 game = "avalon"

@@ -1,9 +1,10 @@
 # The least a model-played game needs: one model and one prompted strategy
-# for everyone. The rules live in a prompt part the prompt pulls in. Run it
-# from the root of a release archive, or from apps/social-deduction in a
-# checkout, with
+# for everyone. The rules live in a prompt part the prompt pulls in.
+# `social-deduction configs --write .` writes it out, and
 #
-#     social-deduction play configs/avalon/prompted.toml
+#     social-deduction play avalon/prompted.toml
+#
+# plays it.
 
 format = 1
 game = "avalon"

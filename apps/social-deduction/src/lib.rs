@@ -7,6 +7,7 @@ pub mod announced;
 pub mod avalon;
 pub mod catalog;
 pub mod config;
+pub mod examples;
 pub mod game;
 pub mod live;
 pub mod log;

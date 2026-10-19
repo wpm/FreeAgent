@@ -58,7 +58,10 @@ workflow takes a version's notes from here.
   keychain, then the environment.
 - Installers for the desktop app on each release: a `.dmg` for macOS, a
   setup `.exe` and an `.msi` for Windows, and an `.AppImage`, a `.deb` and
-  an `.rpm` for Linux. The website links to the newest of each.
+  an `.rpm` for Linux. The website has one download button, for the
+  visitor's platform, above a list of every platform; the `curl | sh` and
+  PowerShell installers, for the command line alone on servers and CI, are
+  in the README.
 - The desktop app's settings live in a standard Settings window (⌘, on
   macOS, Ctrl+, elsewhere), stored as they change, with each field's error
   beneath it. Both games share one list of models, grouped by provider:
@@ -81,6 +84,9 @@ workflow takes a version's notes from here.
   cues, and the `stage` example, which folds a log file.
 - The release archives hold the example configurations in `configs/`,
   beside the binary.
+- `social-deduction configs` lists the example configurations the binary
+  carries, and `social-deduction configs --write .` writes them out to
+  play, so a binary installed alone has a game to play.
 - The `free-agent` library: episodes of actors that talk to each other by
   sending messages on the Tokio runtime.
 - `Episode::stopper`, a `Stopper` that ends a running episode from outside

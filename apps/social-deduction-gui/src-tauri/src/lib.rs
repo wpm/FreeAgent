@@ -7,7 +7,8 @@
 //! cues sent to the main window, which [`review`]s a game log too, and
 //! [`save_log`](game::save_log) saves its log once it is over. The
 //! [`menu`] opens Settings, starts a new game, opens a game log, moves
-//! through it, saves one, and imports and exports configuration files.
+//! through it, saves one, imports and exports configuration files, and on
+//! macOS puts the command line on the PATH.
 //! Closing the main window stops the game, whether it is being prepared or
 //! playing, and closes Settings. The opener plugin hands links to the
 //! system browser, and the dialog plugin picks files and asks before an
@@ -16,6 +17,8 @@
 #![warn(missing_docs)]
 
 pub mod catalog;
+#[cfg(target_os = "macos")]
+pub mod command_line;
 #[cfg(all(target_os = "macos", debug_assertions))]
 mod dev_bundle;
 pub mod game;

@@ -18,11 +18,18 @@ use social_deduction::model::window::{ContextWindow, Source};
 use social_deduction::seat::PlayerId;
 use social_deduction::werewolf::{Ending, Entry, Limits, Message, Move, Outcome, Role, Werewolf};
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
 
 fn run(args: &[&str]) -> Output {
+    run_in(Path::new("."), args)
+}
+
+/// Run the command in `dir`.
+fn run_in(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_social-deduction"))
+        .current_dir(dir)
         .args(args)
         .output()
         .unwrap()
@@ -286,7 +293,7 @@ fn help_lists_play_and_models_and_play_the_file_the_episodes_and_the_log_flags_a
         .lines()
         .filter_map(|line| line.split_whitespace().next())
         .collect();
-    assert_eq!(commands, ["play", "models", "help"], "{help}");
+    assert_eq!(commands, ["play", "models", "configs", "help"], "{help}");
     let help = printed(&["play", "--help"]);
     assert!(help.contains("<CONFIG>"), "{help}");
     let flags: Vec<&str> = help
@@ -806,6 +813,63 @@ fn a_ratify_limit_longer_than_the_day_limit_is_refused_before_anything_is_printe
 fn a_configuration_file_that_cannot_be_read_is_an_error_naming_it() {
     let stderr = refused(&["play", "no-such-file.toml"]);
     assert_invalid(&stderr, "no-such-file.toml");
+    assert!(
+        stderr.contains("social-deduction configs --write ."),
+        "{stderr}"
+    );
+}
+
+/// Run the command in `dir`, which must exit well; what it printed.
+fn printed_in(dir: &Path, args: &[&str]) -> String {
+    let output = run_in(dir, args);
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// An empty directory of its own for the test `test`.
+fn emptied(test: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(test);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn configs_lists_every_example_configuration_with_its_description() {
+    let listing = printed(&["configs"]);
+    let paths: Vec<&str> = listing
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "avalon/prompted.toml",
+            "avalon/random.toml",
+            "werewolf/prompted.toml",
+            "werewolf/random.toml",
+        ],
+        "{listing}"
+    );
+    assert!(
+        listing.contains("The least a model-played game needs"),
+        "{listing}"
+    );
+}
+
+#[test]
+fn configs_writes_the_examples_where_they_play_with_nothing_but_the_binary() {
+    let dir = emptied("configs-write");
+    assert_eq!(printed_in(&dir, &["configs", "--write", "."]), "");
+    for (game, name) in [("werewolf", "random.toml"), ("avalon", "prompted.toml")] {
+        assert_eq!(
+            std::fs::read(dir.join(game).join(name)).unwrap(),
+            std::fs::read(example(game, name)).unwrap(),
+            "{game}/{name}"
+        );
+    }
+    let told = printed_in(&dir, &["play", "werewolf/random.toml", "--no-log"]);
+    assert!(told.contains(" win after "), "{told}");
 }
 
 #[test]

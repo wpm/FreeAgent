@@ -109,6 +109,28 @@ code {
   font-size: 0.8rem;
 }
 
+#download { margin: 0 0 1.5rem; }
+
+.button {
+  display: inline-block;
+  margin: 0.25rem 0 0.75rem;
+  padding: 0.8rem 1.6rem;
+  color: var(--paper);
+  background: var(--red);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+}
+
+.button:hover, .button:focus-visible {
+  color: var(--paper);
+  background: var(--ink);
+}
+
+#download p { margin-bottom: 0.25rem; }
+
 .downloads {
   list-style: none;
   padding: 0;
@@ -124,13 +146,14 @@ code {
   border-bottom: 1px solid var(--rule);
 }
 
-.downloads li > a {
-  min-width: 6rem;
+/* The Linux button's target: both Linux rows. */
+.downloads:has(#linux:target) .linux { background: var(--code); }
+
+.downloads li > a, .downloads .platform {
+  min-width: 8rem;
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
 }
 
 .downloads span { font-size: 0.9rem; }

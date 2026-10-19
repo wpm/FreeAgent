@@ -3,10 +3,12 @@ name: Release the desktop app
 # Puts the desktop app's installers on the GitHub release that the Release
 # workflow (dist) made for a version tag: a .dmg for macOS (one build for
 # Apple silicon and Intel), a setup .exe and an .msi for Windows, and a
-# .deb, an .rpm and an .AppImage for Linux. Each is uploaded twice, under
-# tauri-action's versioned name and under a stable one, which the website
-# links to through releases/latest/download/. The install table and the
-# signing status go on top of the release's notes.
+# .deb, an .rpm and an .AppImage for Linux on x86_64 and on arm64. Each is
+# uploaded twice, under tauri-action's versioned name and under a stable
+# one, which the website links to through releases/latest/download/, and
+# a last job checks that the release has every file the website links to.
+# The install table and the signing status go on top of the release's
+# notes.
 #
 # It runs when the Release workflow succeeds on a v<version> tag, where
 # <version> is the workspace's, which both of the app's crates take. A tag
@@ -21,11 +23,22 @@ name: Release the desktop app
 # The macOS build is signed and notarized when the repository has the
 # secrets for it (see .github/scripts/apple-credentials.sh for their
 # names) and is an unsigned build otherwise, which the release notes say.
+#
+# Each bundle carries the social-deduction command line as a sidecar. On a
+# release it is the binary dist built, from the release's archives; on a
+# trial run it is built here, or taken from the release that sidecar-from
+# names. .github/scripts/sidecar.sh puts it in place, and each bundle's
+# copy has to print the release's version.
 on:
   workflow_run:
     workflows: [Release]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      sidecar-from:
+        description: A release tag of this version whose command line the bundles carry, instead of one built here
+        required: false
+        default: ""
   pull_request:
     paths:
       - .github/workflows/release-gui.yml
@@ -55,6 +68,7 @@ jobs:
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       release-id: ${{ steps.release.outputs.id }}
+      version: ${{ steps.version.outputs.version }}
     env:
       TAG: ${{ github.event.workflow_run.head_branch }}
     steps:
@@ -109,6 +123,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # sidecar is the target the command line in the bundle is for.
         include:
           # One universal binary rather than one .dmg per chip, so there
           # is one macOS download and nobody has to know which Mac they have.
@@ -116,16 +131,25 @@ jobs:
             os: macos-latest
             targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin
             args: --target universal-apple-darwin
+            sidecar: universal-apple-darwin
           # The oldest Ubuntu GitHub still runs: the .deb, .rpm and AppImage
           # link against its glibc and webkit, and run on anything newer.
-          - name: Linux
+          - name: Linux x86_64
             os: ubuntu-22.04
             targets: wasm32-unknown-unknown
             args: ""
+            sidecar: x86_64-unknown-linux-gnu
+          # The same Ubuntu on arm64, for the same reason.
+          - name: Linux arm64
+            os: ubuntu-22.04-arm
+            targets: wasm32-unknown-unknown
+            args: ""
+            sidecar: aarch64-unknown-linux-gnu
           - name: Windows
             os: windows-latest
             targets: wasm32-unknown-unknown
             args: ""
+            sidecar: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -142,16 +166,18 @@ jobs:
         with:
           tool: trunk
       # The desktop shell's system libraries, as in ci.yml, plus what the
-      # AppImage bundler uses. macOS and Windows ship their webviews.
+      # AppImage bundler uses and what opens the .rpm to check it. macOS
+      # and Windows ship their webviews.
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf xdg-utils libdbus-1-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf xdg-utils libdbus-1-dev libarchive-tools
       # tauri-action installs Tauri's CLI with npm.
       - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Apple credentials, when set
+        id: apple
         if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -164,6 +190,18 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_PATH }}
         run: .github/scripts/apple-credentials.sh
+      # The command line, where tauri build picks it up as a sidecar.
+      - name: The command line
+        id: sidecar
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag || inputs.sidecar-from }}
+          TARGET: ${{ matrix.sidecar }}
+        run: |
+          if [ -n "$TAG" ]; then set -- --release "$TAG"; fi
+          .github/scripts/sidecar.sh --target "$TARGET" "$@" | tee "$RUNNER_TEMP/sidecars.txt"
+          echo "path=$(tail -n 1 "$RUNNER_TEMP/sidecars.txt")" >> "$GITHUB_OUTPUT"
       # Runs `tauri build`, which runs Trunk for the frontend first (the
       # beforeBuildCommand in tauri.conf.json), then uploads the bundles
       # to the release, or only as workflow artifacts on a trial run.
@@ -177,6 +215,52 @@ jobs:
           uploadWorkflowArtifacts: true
           uploadUpdaterJson: false
           args: ${{ matrix.args }}
+      # Every bundle's social-deduction is the release's. Tauri signs the
+      # macOS app's copy, ad hoc without the secrets, so only the others
+      # have to be the sidecar's very bytes, the AppImage's aside.
+      - name: The bundled command line
+        shell: bash
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          VERSION: ${{ needs.check.outputs.version }}
+          SIDECAR: ${{ runner.os != 'macOS' && steps.sidecar.outputs.path || '' }}
+        run: .github/scripts/bundled-cli.sh "$VERSION" ${SIDECAR:+"$SIDECAR"} <<< "$ARTIFACTS"
+      # The .deb and the .rpm put the command line on the PATH, as the
+      # release's version, on Ubuntu and on Fedora.
+      - name: The installed command line
+        if: runner.os == 'Linux'
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          deb=$(jq -r '.[] | select(endswith(".deb"))' <<< "$ARTIFACTS")
+          rpm=$(jq -r '.[] | select(endswith(".rpm"))' <<< "$ARTIFACTS")
+          sudo apt-get install -y "$deb"
+          dpkg -L "$(dpkg-deb -f "$deb" Package)" | grep -x /usr/bin/social-deduction
+          test "$(/usr/bin/social-deduction --version)" = "social-deduction $VERSION"
+          docker run --rm -v "$(dirname "$rpm"):/packages:ro" -e VERSION -e RPM="/packages/$(basename "$rpm")" fedora:latest \
+            sh -c 'dnf install -y -q "$RPM" && rpm -ql "$(rpm -qp --qf "%{NAME}" "$RPM")" | grep -x /usr/bin/social-deduction &&
+              test "$(/usr/bin/social-deduction --version)" = "social-deduction $VERSION"'
+      # setup.exe puts social-deduction on the user's Path, once however
+      # often it is installed, and uninstalling takes exactly that off.
+      - name: The Windows Path
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          $setup = $env:ARTIFACTS | ConvertFrom-Json | Where-Object { $_ -like '*-setup.exe' }
+          .github/scripts/installer-path.ps1 $setup $env:VERSION
+      - name: The macOS signature
+        if: steps.apple.outputs.signed == 'true'
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          NOTARIZED: ${{ steps.apple.outputs.notarized }}
+        run: |
+          app=$(jq -r '.[] | select(endswith(".app"))' <<< "$ARTIFACTS")
+          codesign --verify --deep --strict --verbose=2 "$app"
+          if [ "$NOTARIZED" = true ]; then spctl --assess --type execute --verbose "$app"; fi
       # The same installers again under the names the website links to.
       - name: Stable names
         shell: bash
@@ -194,3 +278,22 @@ jobs:
         with:
           name: stable-${{ matrix.name }}
           path: stable/
+
+  # Every installer the website links to is on the release, under the
+  # name the link uses. CI's release-scripts-test.sh checks the same links
+  # against stable-names.sh, so a trial run skips this.
+  site:
+    name: The website's downloads
+    needs: [check, build]
+    if: needs.check.outputs.tag != ''
+    permissions:
+      contents: read # it only reads the release's assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+        run: .github/scripts/site-downloads.sh site/index.html <(gh release view "$TAG" --json assets --jq '.assets[].name')

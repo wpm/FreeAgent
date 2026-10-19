@@ -30,9 +30,13 @@ When it succeeds, a second workflow adds the desktop app's installers.
    twenty minutes later.
 7. Check the release page: a **Desktop app** table above the notes, and
    among the assets `Social-Deduction.dmg`, `Social-Deduction-setup.exe`,
-   `Social-Deduction.msi`, `Social-Deduction.AppImage`,
-   `social-deduction.deb` and `social-deduction.rpm`, each beside its
-   versioned twin. The website's download links point at these names.
+   `Social-Deduction.msi`, and for Linux `social-deduction-amd64.deb`,
+   `social-deduction-arm64.deb`, `social-deduction-x86_64.rpm`,
+   `social-deduction-aarch64.rpm`, `Social-Deduction-x86_64.AppImage` and
+   `Social-Deduction-aarch64.AppImage`, each beside its versioned twin.
+   The website links to the .dmg, the setup.exe, and the `.deb` and `.rpm`
+   for each Linux architecture, and the workflow's last job, **The
+   website's downloads**, checks that the release has each of them.
 
 ## The desktop app
 
@@ -43,6 +47,20 @@ open the run and choose **Re-run failed jobs**, which uploads them again
 over any that are there. Run the workflow by hand from the Actions tab to
 build every installer as a workflow artifact without touching a release;
 a pull request that changes the workflow or its scripts does the same.
+
+Every bundle carries the `social-deduction` command line that dist built
+for the release, so the workflow downloads dist's archives from the
+release: the Linux and Windows bundles hold dist's binaries as they are,
+and the macOS app holds dist's two joined into one universal binary and
+signed with the app. Each build job checks that its bundles' copy prints
+the release's version. A trial run builds the command line itself, or,
+given a tag in **sidecar-from**, takes it from that release.
+
+On Windows, the setup.exe adds its folder to the user's PATH and its
+uninstaller takes it off, through the hooks in
+`src-tauri/installer-hooks.nsh`. The Windows job installs it, runs
+`social-deduction --version` in a new shell, and uninstalls it, checking
+the PATH each time. The .msi installs the app alone.
 
 The macOS app is signed and notarized when the repository has the Apple
 secrets that `.github/scripts/apple-credentials.sh` names, and is unsigned

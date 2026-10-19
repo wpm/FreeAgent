@@ -19,9 +19,14 @@ Social Deduction $version for the desktop plays one game of Werewolf or Avalon a
 
 | Platform | Download | Then |
 | --- | --- | --- |
-| macOS (Apple silicon and Intel) | \`Social-Deduction.dmg\` | Open it and drag Social Deduction to Applications. |
-| Windows | \`Social-Deduction-setup.exe\` (or \`Social-Deduction.msi\`) | Run it. |
-| Linux | \`Social-Deduction.AppImage\`, \`social-deduction.deb\` or \`social-deduction.rpm\` | Mark the AppImage executable and run it, or install the package. |
+| macOS (Apple silicon and Intel) | \`Social-Deduction.dmg\` | Open it, drag Social Deduction to Applications, then choose **Social Deduction ▸ Install Command-Line Tool…** |
+| Windows (x64) | \`Social-Deduction-setup.exe\` | Run it, and terminals opened afterward have \`social-deduction\` on the PATH. |
+| Linux x86_64 | \`social-deduction-amd64.deb\` or \`social-deduction-x86_64.rpm\` | Install the package, which puts the command line in \`/usr/bin\`. |
+| Linux arm64 | \`social-deduction-arm64.deb\` or \`social-deduction-aarch64.rpm\` | Install the package, which puts the command line in \`/usr/bin\`. |
+
+Each download gives you the app and the \`social-deduction\` command line. \`Social-Deduction.msi\` installs the app alone.
+
+Command line only, for servers and CI: see the [README](https://github.com/wpm/FreeAgent/tree/main/apps/social-deduction#servers-and-ci).
 NOTES
 
 if [ "${MACOS_NOTARIZED:-}" = true ]; then
