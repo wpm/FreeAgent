@@ -9,6 +9,41 @@ workflow takes a version's notes from here.
 
 ### Added
 
+- The desktop app saves a finished game's log: **File ▸ Save Game Log…**
+  (⌘S) and **Save Log…** on the game-over header write it, won, stopped
+  or failed, as `social-deduction play` writes it, through the same
+  redacting `log::Writer`, so it opens in review. A game writes nothing
+  to disk until it is saved.
+- A game just played in the desktop app is reviewed in one click:
+  **Review** on the game-over header opens it on its last bubble, where
+  it left off, and **Close** goes back to its end. The viewer's web page
+  shows each game in review, so the same keys and clicks step through it,
+  and its **Play** becomes **Play again** once pressed.
+- The desktop app reviews a game log: **File ▸ Open Game Log…** (⌘O)
+  opens a log from the command line or the app, games and all, on its
+  first bubble. The arrow keys, Home and End, a click and the new **Go**
+  menu move from bubble to bubble, chapter to chapter and game to game,
+  and the board, phase and clock follow the selected bubble while the
+  bubbles after it are dimmed.
+- Every episode of a game's log opens with a `Header` line naming the log
+  format, the version of `social-deduction` that wrote it and the game, and
+  closes with an `Ended` line: `won`, `stopped`, or `failed` with the
+  error. One `log::Writer` writes them for the command line and the
+  desktop app alike. Logs written before keep reading as format 0, and a
+  log of a newer format is refused with both versions named.
+- `stage::recordings` reads a log of many episodes as many games, each
+  told apart by its episode ID and ending as its `Ended` line says. A log
+  cut off mid-game ends `Outcome::Unfinished`, and an episode with a bad
+  line is left out while the others load.
+- Game logs carry no secrets. `log::Writer` writes every API key the run
+  loaded as `[redacted]`, and every URL without its userinfo and query.
+- `Episode::id` gives the ID every event logged in the episode carries.
+- Configuration files name their format with a top-level `format = 1`:
+  the example configurations, **Export Configuration…** and the desktop
+  app's `settings.toml` write it. A file without one is format 1, and a
+  file of a newer format is refused with an error at the key that says so,
+  on the command line, in **Import Configuration…**, and when the app
+  loads its settings.
 - `social-deduction play --episodes N` plays N games in one run, one after
   another, for training data. Models are set up once, and every episode
   deals the same roles and strategies to the same players in a new random

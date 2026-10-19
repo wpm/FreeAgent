@@ -1,23 +1,40 @@
 //! A game played live for a viewer. [`play`] starts a [`Prepared`] game in
 //! the background and folds each event through the game's [`Stage`] into
-//! cues as it happens, ending with [`Beat::Over`]. A [`Session`] plays one
-//! game at a time, from preparing it to its end.
+//! cues as it happens, ending with [`Beat::Over`], and keeps its log, as
+//! `social-deduction play` writes it, as a [`GameLog`]. A [`Session`]
+//! plays one game at a time, from preparing it to its end, and keeps the
+//! last one's log until the next one starts.
 
+use crate::config::Name;
 use crate::game::{Actor, Entry};
+use crate::log::{Ended, Secrets, Writer};
 use crate::run::{Prepared, Ready};
 use crate::stage::{Stage, Staged, millis};
 use anyhow::anyhow;
 use free_agent::{Event, Stopper};
-use social_deduction_stage::{Beat, Cue, Outcome};
+use social_deduction_stage::{Beat, Cue};
 use std::future::Future;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 /// How long a game may take before it is abandoned.
 pub const PATIENCE: Duration = Duration::from_secs(60 * 60);
+
+/// The log of a game that is over, written as `social-deduction play`
+/// writes it, closing line included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameLog {
+    /// The game played.
+    pub game: Name,
+    /// When it started.
+    pub started: SystemTime,
+    /// The log, in JSON Lines.
+    pub bytes: Arc<[u8]>,
+}
 
 /// A game playing in the background.
 pub struct Playing {
@@ -26,10 +43,17 @@ pub struct Playing {
     /// The task that reads the game's log, which finishes after the
     /// episode does.
     task: JoinHandle<()>,
+    /// The game played.
+    game: Name,
+    /// When it started.
+    started: SystemTime,
+    /// The game's log, once it is over.
+    kept: Arc<OnceLock<Arc<[u8]>>>,
 }
 
 impl Playing {
-    /// Stop the game. It ends with [`Outcome::Stopped`] unless it has
+    /// Stop the game. It ends with
+    /// [`Outcome::Stopped`](social_deduction_stage::Outcome::Stopped) unless it has
     /// already ended.
     pub fn stop(&self) {
         self.stopper.stop();
@@ -43,6 +67,16 @@ impl Playing {
     /// Wait until the game has ended and its last cue is sent.
     pub async fn finished(self) {
         let _ = self.task.await;
+    }
+
+    /// The game's log, once it is over. It is kept before the last cue
+    /// is sent.
+    pub fn log(&self) -> Option<GameLog> {
+        Some(GameLog {
+            game: self.game,
+            started: self.started,
+            bytes: Arc::clone(self.kept.get()?),
+        })
     }
 }
 
@@ -127,6 +161,15 @@ impl Session {
         self.now().busy()
     }
 
+    /// The log of the last game played, once it is over, until the next
+    /// one is asked for.
+    pub fn log(&self) -> Option<GameLog> {
+        match &*self.now() {
+            Now::Playing(playing) => playing.log(),
+            Now::Idle | Now::Preparing(_) => None,
+        }
+    }
+
     /// Stop the game being prepared, so that it never starts, or the game
     /// playing.
     pub fn stop(&self) {
@@ -143,8 +186,10 @@ impl Session {
 /// game stops.
 ///
 /// The last cue is [`Beat::Over`], after a thought for every call still
-/// out: the side that won, [`Outcome::Stopped`] after a stop, or
-/// [`Outcome::Failed`] when the episode fails, after one [`Beat::Told`]
+/// out: the side that won,
+/// [`Outcome::Stopped`](social_deduction_stage::Outcome::Stopped) after a
+/// stop, or [`Outcome::Failed`](social_deduction_stage::Outcome::Failed)
+/// when the episode fails, after one [`Beat::Told`]
 /// line with the error.
 pub fn play(
     prepared: Prepared,
@@ -165,31 +210,65 @@ where
     Actor<G>: 'static,
 {
     let (logger, events) = unbounded_channel();
-    let episode = ready.episode(logger);
+    let (episode, _) = ready.episode(logger);
+    let started = SystemTime::now();
     let stopper = episode.stopper();
-    let run = tokio::spawn(episode.run(PATIENCE));
-    let reader = Reader {
+    let kept = Arc::<OnceLock<_>>::default();
+    let reader = Reader::new(
         show,
-        stopper: stopper.clone(),
-    };
-    let task = tokio::spawn(reader.read::<G>(events, async move { run.await? }));
-    Playing { stopper, task }
+        stopper.clone(),
+        episode.id(),
+        ready.secrets().clone(),
+        Arc::clone(&kept),
+    );
+    let run = tokio::spawn(episode.run(PATIENCE));
+    let task = tokio::spawn(reader.read(events, async move { run.await? }));
+    Playing {
+        stopper,
+        task,
+        game: G::KEY,
+        started,
+        kept,
+    }
 }
 
-/// What reads a game's log: where its cues go, and what stops the game
-/// when they can no longer go there.
-struct Reader<S> {
+/// What reads a game's log: where its cues go, what stops the game when
+/// they can no longer go there, and what writes the log down, until a
+/// line of it cannot be written, and where it is kept once it is over.
+struct Reader<G, S> {
     show: S,
     stopper: Stopper,
+    writer: Option<Writer<G, Vec<u8>>>,
+    kept: Arc<OnceLock<Arc<[u8]>>>,
 }
 
-impl<S> Reader<S>
+impl<G, S> Reader<G, S>
 where
+    G: Staged,
     S: FnMut(Cue) -> anyhow::Result<()>,
 {
-    /// Show every event from `events` until the episode `run` has ended,
-    /// then show how the game ended.
-    async fn read<G: Staged>(
+    /// A reader of the episode `episode` that shows its cues with `show`,
+    /// stops the game with `stopper`, and keeps its log, without
+    /// `secrets`, in `kept`.
+    fn new(
+        show: S,
+        stopper: Stopper,
+        episode: Uuid,
+        secrets: Secrets,
+        kept: Arc<OnceLock<Arc<[u8]>>>,
+    ) -> Self {
+        Reader {
+            show,
+            stopper,
+            writer: Writer::start(Vec::new(), episode, secrets).ok(),
+            kept,
+        }
+    }
+
+    /// Write down and show every event from `events` until the episode
+    /// `run` has ended, then keep the log, closed with how the game
+    /// ended, and show that, both stamped with one time.
+    async fn read(
         mut self,
         mut events: UnboundedReceiver<Event<Entry<G>>>,
         run: impl Future<Output = anyhow::Result<()>>,
@@ -197,34 +276,29 @@ where
         let mut stage = Stage::<G>::default();
         let mut won = None;
         while let Some(event) = events.recv().await {
+            self.writer = self
+                .writer
+                .take()
+                .and_then(|mut writer| writer.write(&event).ok().map(|()| writer));
             for cue in stage.fold(&event) {
                 match cue.beat {
-                    Beat::Over { outcome } => won = Some(outcome),
+                    Beat::Over { .. } => won = Some(cue),
                     _ => self.show(cue),
                 }
             }
         }
-        let ended = run.await;
-        let at = millis(SystemTime::now());
-        // No player is left thinking once the game is over.
-        for cue in stage.close(at) {
+        let ended = Ended::of(&run.await, won.is_some());
+        let at = SystemTime::now();
+        let closed = self
+            .writer
+            .take()
+            .map(|writer| writer.end_at(ended.clone(), at));
+        if let Some(Ok(log)) = closed {
+            let _ = self.kept.set(log.into());
+        }
+        for cue in stage.end(millis(at), won, Some(ended)) {
             self.show(cue);
         }
-        let outcome = match ended {
-            Err(error) => {
-                let error = format!("{error:#}");
-                self.show(Cue {
-                    at,
-                    beat: Beat::Told(vec![error.clone()]),
-                });
-                Outcome::Failed(error)
-            }
-            Ok(()) => won.unwrap_or(Outcome::Stopped),
-        };
-        self.show(Cue {
-            at,
-            beat: Beat::Over { outcome },
-        });
     }
 
     /// Show `cue`, or stop the game when it cannot be shown.
@@ -240,10 +314,18 @@ mod tests {
     use super::*;
     use crate::avalon::Avalon;
     use crate::game::tests::logged;
+    use crate::log::Writer;
+    use crate::model::canned::{
+        CANARY, CANARY_VARIABLE, assert_redacted, leaking, leaking_werewolf,
+    };
     use crate::model::spec::Environment;
     use crate::run::prepare;
-    use crate::stage::cues;
+    use crate::secret::Keychain;
+    use crate::secret::tests::Fake;
+    use crate::stage::recordings;
     use free_agent::Episode;
+    use secrecy::SecretString;
+    use social_deduction_stage::Outcome;
     use std::collections::HashMap;
     use std::path::Path;
     use tokio::sync::mpsc::UnboundedSender;
@@ -275,55 +357,103 @@ mod tests {
         prepare(&example(name), &Environment).await.unwrap()
     }
 
-    /// Play the game of `G` that is `ready` as [`start`] does, its events
-    /// also written as JSON Lines: the cues shown, and the log written.
-    async fn teed<G: Staged>(ready: Ready<G>) -> (Vec<Cue>, String)
+    /// `log` line by line, its first and last lines, the header and how
+    /// the game ended, without the times they were written.
+    fn unstamped(log: &str) -> Vec<String> {
+        let mut lines: Vec<String> = log.lines().map(str::to_string).collect();
+        let last = lines.len() - 1;
+        for line in [0, last] {
+            let mut event: serde_json::Value = serde_json::from_str(&lines[line]).unwrap();
+            event.as_object_mut().unwrap().remove("time");
+            lines[line] = event.to_string();
+        }
+        lines
+    }
+
+    /// Read the episode `episode`'s events from `log` as [`start`] does
+    /// until `run` comes back, each event also written by the log's
+    /// writer as the command line writes it, ending `ended`. The cues
+    /// shown, and the log the reader kept, which is the command line's
+    /// but for the times of its first and last lines.
+    async fn teed<G: Staged>(
+        episode: Uuid,
+        stopper: Stopper,
+        mut log: UnboundedReceiver<Event<Entry<G>>>,
+        run: impl Future<Output = anyhow::Result<()>>,
+        ended: Ended,
+    ) -> (Vec<Cue>, String) {
+        let mut writer = Writer::<G, _>::start(Vec::new(), episode, Secrets::default()).unwrap();
+        let (forward, events) = unbounded_channel();
+        let copying = async move {
+            while let Some(event) = log.recv().await {
+                writer.write(&event).unwrap();
+                forward.send(event).unwrap();
+            }
+            String::from_utf8(writer.end(ended).unwrap()).unwrap()
+        };
+        let (sender, receiver) = unbounded_channel();
+        let kept = Arc::<OnceLock<_>>::default();
+        let secrets = Secrets::default();
+        let reader = Reader::new(
+            sending(sender),
+            stopper,
+            episode,
+            secrets,
+            Arc::clone(&kept),
+        );
+        let ((), written) = tokio::join!(reader.read(events, run), copying);
+        let saved = String::from_utf8(kept.get().unwrap().to_vec()).unwrap();
+        assert_eq!(unstamped(&saved), unstamped(&written));
+        (received(receiver).await, saved)
+    }
+
+    /// Play the game of `G` that is `ready` as [`start`] does, stopped
+    /// at once when `stop`: the cues shown, and the log kept.
+    async fn played<G: Staged>(ready: Ready<G>, stop: bool) -> (Vec<Cue>, String)
     where
         Actor<G>: 'static,
     {
-        let (logger, mut log) = unbounded_channel();
-        let episode = ready.episode(logger);
-        let stopper = episode.stopper();
+        let (logger, log) = unbounded_channel();
+        let (episode, _) = ready.episode(logger);
+        let (id, stopper) = (episode.id(), episode.stopper());
+        let ended = if stop {
+            stopper.stop();
+            Ended::Stopped
+        } else {
+            Ended::Won
+        };
         let run = tokio::spawn(episode.run(PATIENCE));
-        let (forward, events) = unbounded_channel();
-        let copying = async move {
-            let mut written = Vec::new();
-            while let Some(event) = log.recv().await {
-                event.write(&mut written).unwrap();
-                forward.send(event).unwrap();
-            }
-            String::from_utf8(written).unwrap()
-        };
-        let (sender, receiver) = unbounded_channel();
-        let reader = Reader {
-            show: sending(sender),
-            stopper,
-        };
-        let ((), written) =
-            tokio::join!(reader.read::<G>(events, async move { run.await? }), copying);
-        (received(receiver).await, written)
+        teed(id, stopper, log, async move { run.await? }, ended).await
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_game_is_shown_as_its_log_folds_and_ends_with_its_outcome() {
+    async fn a_game_is_shown_as_its_saved_log_reads_back_and_ends_with_its_outcome() {
         for name in ["werewolf/random.toml", "avalon/random.toml"] {
-            let (live, written) = match prepared(name).await {
-                Prepared::Werewolf(ready) => teed(*ready).await,
-                Prepared::Avalon(ready) => teed(*ready).await,
-            };
-            let expected = cues(&written).unwrap();
-            let beats =
-                |cues: &[Cue]| -> Vec<Beat> { cues.iter().map(|c| c.beat.clone()).collect() };
-            assert_eq!(beats(&live), beats(&expected), "{name}");
-            assert!(
-                matches!(
-                    live.last().map(|cue| &cue.beat),
-                    Some(Beat::Over {
-                        outcome: Outcome::Won { .. }
-                    })
-                ),
-                "{name}"
-            );
+            for stop in [false, true] {
+                let (live, saved) = match prepared(name).await {
+                    Prepared::Werewolf(ready) => played(*ready, stop).await,
+                    Prepared::Avalon(ready) => played(*ready, stop).await,
+                };
+                let expected = recordings(&saved).unwrap().games.remove(0).cues;
+                assert_eq!(live, expected, "{name}");
+                let last = live.last().map(|cue| &cue.beat);
+                if stop {
+                    let stopped = Beat::Over {
+                        outcome: Outcome::Stopped,
+                    };
+                    assert_eq!(last, Some(&stopped), "{name}");
+                    assert!(saved.ends_with("{\"Ended\":\"stopped\"}}\n"), "{saved}");
+                } else {
+                    let won = matches!(
+                        last,
+                        Some(Beat::Over {
+                            outcome: Outcome::Won { .. }
+                        })
+                    );
+                    assert!(won, "{name}");
+                    assert!(saved.ends_with("{\"Ended\":\"won\"}}\n"), "{saved}");
+                }
+            }
         }
     }
 
@@ -380,20 +510,17 @@ mod tests {
         };
         logger.send(logged(thinking)).unwrap();
         drop(logger);
-        let (sender, receiver) = unbounded_channel();
         let (unused, _) = unbounded_channel();
-        let episode = Episode::<Actor<Avalon>>::new(HashMap::new(), unused);
-        let reader = Reader {
-            show: sending(sender),
-            stopper: episode.stopper(),
-        };
+        let stopper = Episode::<Actor<Avalon>>::new(HashMap::new(), unused).stopper();
         let run = async { Err(anyhow::anyhow!("no model").context("actor Player 1 failed")) };
-        reader.read::<Avalon>(events, run).await;
-        let beats: Vec<Beat> = received(receiver)
-            .await
-            .into_iter()
-            .map(|cue| cue.beat)
-            .collect();
+        let failed = Ended::Failed("actor Player 1 failed: no model".to_string());
+        let (cues, saved) = teed(Uuid::nil(), stopper, events, run, failed).await;
+        assert_eq!(cues, recordings(&saved).unwrap().games.remove(0).cues);
+        assert!(
+            saved.ends_with("{\"Ended\":{\"failed\":\"actor Player 1 failed: no model\"}}}\n"),
+            "{saved}"
+        );
+        let beats: Vec<Beat> = cues.into_iter().map(|cue| cue.beat).collect();
         let error = "actor Player 1 failed: no model".to_string();
         let who = "Player 2".to_string();
         assert_eq!(
@@ -428,6 +555,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), BUSY);
+        assert_eq!(session.log(), None);
         session.stop();
         let cues = received(receiver).await;
         assert!(matches!(
@@ -437,12 +565,19 @@ mod tests {
             })
         ));
         assert!(!session.busy());
+        let log = session.log().unwrap();
+        assert_eq!(log.game, Name::Avalon);
+        let text = String::from_utf8(log.bytes.to_vec()).unwrap();
+        assert_eq!(recordings(&text).unwrap().games.remove(0).cues, cues);
+        assert!(text.ends_with("{\"Ended\":\"stopped\"}}\n"), "{text}");
         let (sender, receiver) = unbounded_channel();
         session
             .play(preparing("werewolf/random.toml"), sending(sender))
             .await
             .unwrap();
+        assert_eq!(session.log(), None);
         received(receiver).await;
+        assert_eq!(session.log().unwrap().game, Name::Werewolf);
     }
 
     #[tokio::test(start_paused = true)]
@@ -481,6 +616,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_game_whose_keys_come_from_the_keychain_keeps_a_log_with_none_of_them() {
+        let base_url = leaking(&["qwen2.5-7b-instruct"], CANARY);
+        let keychain = Keychain(Fake::default());
+        keychain
+            .store(CANARY_VARIABLE, &SecretString::from(CANARY))
+            .unwrap();
+        let session = Session::default();
+        let (sender, receiver) = unbounded_channel();
+        let text = leaking_werewolf(&base_url);
+        let preparing = prepare(&text, &keychain);
+        session.play(preparing, sending(sender)).await.unwrap();
+        let cues = received(receiver).await;
+        let log = String::from_utf8(session.log().unwrap().bytes.to_vec()).unwrap();
+        assert_redacted(&log, CANARY);
+        assert_eq!(
+            recordings(&log).unwrap().games.remove(0).cues.len(),
+            cues.len()
+        );
+        assert!(log.ends_with("{\"Ended\":\"won\"}}\n"), "{log}");
+    }
+
+    #[tokio::test]
     async fn a_game_that_cannot_be_prepared_is_an_error_and_frees_the_session() {
         let session = Session::default();
         session.stop();
@@ -489,5 +646,6 @@ mod tests {
         let error = session.play(failing, sending(sender)).await.unwrap_err();
         assert_eq!(error.to_string(), "no model");
         assert!(!session.busy());
+        assert_eq!(session.log(), None);
     }
 }

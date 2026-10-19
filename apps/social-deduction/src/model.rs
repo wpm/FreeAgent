@@ -500,9 +500,15 @@ impl Provider {
         })
     }
 
-    /// The URL of `path` under the root of the API.
+    /// The URL of `path` under the root of the API, followed by the base
+    /// URL's query and fragment.
     fn url(&self, path: &str) -> String {
-        format!("{}/{path}", self.base_url.trim_end_matches('/'))
+        let end = self
+            .base_url
+            .find(['?', '#'])
+            .unwrap_or(self.base_url.len());
+        let (root, query) = self.base_url.split_at(end);
+        format!("{}/{path}{query}", root.trim_end_matches('/'))
     }
 
     /// What the provider answers `request`, described as `sent`, such as
@@ -803,6 +809,33 @@ mod tests {
         assert_eq!(key_variable(openai, None), Some("OPENAI_API_KEY"));
         assert_eq!(key_variable(openai, Some("MY_KEY")), Some("MY_KEY"));
         assert_eq!(key_variable("http://localhost:1234/v1", None), None);
+    }
+
+    #[test]
+    fn a_path_goes_under_the_base_url_s_root_and_before_its_query() {
+        let url = |base_url: &str| {
+            Provider::new(base_url, None, TIMEOUT)
+                .unwrap()
+                .url("chat/completions")
+        };
+        assert_eq!(url("https://host/v1/"), "https://host/v1/chat/completions");
+        assert_eq!(
+            url("https://host/v1?api-version=2024-06-01"),
+            "https://host/v1/chat/completions?api-version=2024-06-01"
+        );
+        assert_eq!(
+            url("https://host/v1/?api-version=2024-06-01#top"),
+            "https://host/v1/chat/completions?api-version=2024-06-01#top"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_listing_of_a_base_url_with_a_query_is_asked_with_that_query() {
+        let (base_url, served) = answering("200 OK", &listing(&["a"], None));
+        let provider = Provider::new(format!("{base_url}?api-version=1"), None, TIMEOUT).unwrap();
+        assert_eq!(provider.models().await.unwrap(), ["a"]);
+        let head = served.join().unwrap().head;
+        assert_eq!(head[0], "get /v1/models?api-version=1 http/1.1");
     }
 
     #[tokio::test]

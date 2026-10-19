@@ -3,7 +3,10 @@
 //! [`Screen::apply`] folds one cue at a time into the chat, the names
 //! table, the header, the clock and the board. The view draws a `Screen`
 //! and holds no state of its own, so the whole viewer is tested here,
-//! natively.
+//! natively. A [`Timeline`] holds the screen at each bubble of a game
+//! already folded, for review.
+
+use std::sync::Arc;
 
 use leptos_rich_chat::{Look, Names, Position};
 use social_deduction_stage::{
@@ -176,6 +179,8 @@ pub struct Screen {
     thinking: Vec<(PlayerId, Millis)>,
     /// The log-time clock.
     pub clock: Clock,
+    /// The bubble under review, and `None` in live play.
+    pub cursor: Option<usize>,
     /// How many cues have been applied.
     applied: usize,
     /// How many times the screen has been reset.
@@ -197,6 +202,7 @@ impl Default for Screen {
             thinkers: Vec::new(),
             thinking: Vec::new(),
             clock: Clock::default(),
+            cursor: None,
             applied: 0,
             era: 0,
         }
@@ -239,22 +245,10 @@ impl Screen {
             }
             Beat::Clock { rate } => self.clock.rate = *rate,
             Beat::Panel(panel) => {
-                let landed = match (flash, &self.panel, panel) {
-                    (true, before, Panel::Avalon(after)) => {
-                        let before = match before {
-                            Some(Panel::Avalon(before)) => Some(before),
-                            _ => None,
-                        };
-                        landings(before, after)
-                    }
-                    (true, before, Panel::Werewolf(after)) => {
-                        let before = match before {
-                            Some(Panel::Werewolf(before)) => Some(before),
-                            _ => None,
-                        };
-                        werewolf_landings(before, after)
-                    }
-                    _ => vec![],
+                let landed = if flash {
+                    panel_landings(self.panel.as_ref(), panel)
+                } else {
+                    vec![]
                 };
                 self.panel = Some(panel.clone());
                 if !landed.is_empty() {
@@ -309,6 +303,20 @@ impl Screen {
         if self.era == era {
             act(self);
         }
+    }
+
+    /// Show `shown`, a screen under review, in place of this one and in its
+    /// era, with `landed` flashing. As with [`Screen::apply`], the number
+    /// that ends the flash comes back when something lands.
+    pub fn review(&mut self, shown: Screen, landed: Vec<Landed>) -> Option<usize> {
+        let number = self.applied + 1;
+        *self = Screen {
+            landed: landed.into_iter().map(|landed| (number, landed)).collect(),
+            applied: number,
+            era: self.era,
+            ..shown
+        };
+        (!self.landed.is_empty()).then_some(number)
     }
 
     /// End the flash of what the cue numbered `number` landed.
@@ -409,6 +417,143 @@ impl Screen {
     fn post(&mut self, name: String, body: Body) {
         let id = format!("m{}", self.posts.len() + 1);
         self.posts.push(Post { id, name, body });
+    }
+}
+
+/// The bubble whose message ID is `id`: bubble `k` is posted as `m{k+1}`.
+pub fn bubble(id: &str) -> Option<usize> {
+    id.strip_prefix('m')?.parse::<usize>().ok()?.checked_sub(1)
+}
+
+/// The screen at every bubble of a game: the game's last screen, and one
+/// [`Moment`] per post. Headings are posts, so they are stops too.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Timeline {
+    /// The screen after every cue.
+    last: Screen,
+    /// The moment of each post, in post order.
+    moments: Vec<Moment>,
+}
+
+/// What the screen shows while a bubble is the latest: everything that
+/// happened from its cue up to the cue that posts the next bubble, or to
+/// the end of the game for the last one. A bubble telling a death so
+/// shows the board after it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Moment {
+    /// The board. Moments under one board share it.
+    pub panel: Option<Arc<Panel>>,
+    /// The latest chapter heading.
+    pub heading: Option<String>,
+    /// The log time.
+    pub at: Millis,
+    /// Whether the game is over.
+    pub over: bool,
+}
+
+impl Timeline {
+    /// The timeline of the game `cues` tell, folded at once.
+    pub fn new(cues: &[Cue]) -> Self {
+        let mut screen = Screen::default();
+        let mut moments = Vec::new();
+        let mut board: Option<Arc<Panel>> = None;
+        let mut moment = |screen: &Screen| {
+            if board.as_deref() != screen.panel.as_ref() {
+                board = screen.panel.clone().map(Arc::new);
+            }
+            Moment {
+                panel: board.clone(),
+                heading: screen.heading.clone(),
+                at: screen.clock.at as Millis,
+                over: screen.outcome.is_some(),
+            }
+        };
+        for cue in cues {
+            let before = screen.posts.len();
+            let now = (moments.len() < before).then(|| moment(&screen));
+            screen.apply(cue, false);
+            if let Some(now) = now.filter(|_| screen.posts.len() > before) {
+                moments.resize(before, now);
+            }
+        }
+        let now = moment(&screen);
+        moments.resize(screen.posts.len(), now);
+        Self {
+            last: screen,
+            moments,
+        }
+    }
+
+    /// How many bubbles there are.
+    pub fn len(&self) -> usize {
+        self.moments.len()
+    }
+
+    /// Whether there are no bubbles.
+    pub fn is_empty(&self) -> bool {
+        self.moments.is_empty()
+    }
+
+    /// Each bubble's moment, in post order.
+    pub fn moments(&self) -> &[Moment] {
+        &self.moments
+    }
+
+    /// The bubbles that are chapter headings, in order.
+    pub fn chapters(&self) -> Vec<usize> {
+        let posts = self.last.posts.iter().enumerate();
+        posts
+            .filter(|(_, post)| matches!(post.body, Body::Heading(_)))
+            .map(|(k, _)| k)
+            .collect()
+    }
+
+    /// How the game ended, once it has.
+    pub fn outcome(&self) -> Option<&Outcome> {
+        self.last.outcome.as_ref()
+    }
+
+    /// The game, once cast.
+    pub fn game(&self) -> Option<GameName> {
+        self.last.game
+    }
+
+    /// The screen with the cursor on bubble `k`: every post, and the
+    /// board, heading and outcome of its moment, the clock stopped at its
+    /// time and nobody thinking.
+    ///
+    /// # Panics
+    ///
+    /// When there is no bubble `k`.
+    pub fn screen(&self, k: usize) -> Screen {
+        let moment = &self.moments[k];
+        Screen {
+            heading: moment.heading.clone(),
+            panel: moment.panel.as_deref().cloned(),
+            outcome: self.last.outcome.clone().filter(|_| moment.over),
+            ended: self.last.ended.filter(|_| moment.over),
+            clock: Clock {
+                at: moment.at as f64,
+                running: false,
+                ..self.last.clock
+            },
+            cursor: Some(k),
+            landed: Vec::new(),
+            thinkers: Vec::new(),
+            thinking: Vec::new(),
+            ..self.last.clone()
+        }
+    }
+
+    /// The choices that land as the cursor steps forward onto bubble `k`:
+    /// those its board makes that the board of bubble `k - 1` did not.
+    pub fn landed(&self, k: usize) -> Vec<Landed> {
+        let before = k.checked_sub(1).map(|j| &self.moments[j]);
+        let before = before.and_then(|moment| moment.panel.as_deref());
+        match &self.moments[k].panel {
+            Some(after) => panel_landings(before, after),
+            None => Vec::new(),
+        }
     }
 }
 
@@ -667,6 +812,19 @@ pub fn side_key(side: Side) -> &'static str {
     }
 }
 
+/// The choices the board `after` makes that the board `before` it did
+/// not have, a board of the other game counting as none.
+fn panel_landings(before: Option<&Panel>, after: &Panel) -> Vec<Landed> {
+    match (before, after) {
+        (Some(Panel::Avalon(before)), Panel::Avalon(after)) => landings(Some(before), after),
+        (_, Panel::Avalon(after)) => landings(None, after),
+        (Some(Panel::Werewolf(before)), Panel::Werewolf(after)) => {
+            werewolf_landings(Some(before), after)
+        }
+        (_, Panel::Werewolf(after)) => werewolf_landings(None, after),
+    }
+}
+
 /// The choices `after` makes that the board `before` it did not have: a
 /// newly proposed team, each new ballot, each new deed, and the
 /// Assassin's target.
@@ -750,6 +908,7 @@ pub fn werewolf_landings(before: Option<&WerewolfPanel>, after: &WerewolfPanel) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::address;
     use social_deduction_stage::{
         Assassination, AvalonPhase, AvalonSeat, Deed, ProposalRow, QuestResult, QuestToken, Ratify,
         Role, SeatState,
@@ -1060,20 +1219,20 @@ mod tests {
     }
 
     #[test]
-    fn replaying_a_game_from_the_start_ends_on_the_same_screen() {
+    fn playing_a_game_again_from_the_start_ends_on_the_same_screen() {
         let cues = game();
-        let mut replayed = Screen::default();
+        let mut again = Screen::default();
         let mut flashes = Vec::new();
         for cue in &cues {
-            flashes.extend(replayed.apply(cue, true));
+            flashes.extend(again.apply(cue, true));
         }
         assert!(!flashes.is_empty());
         for number in flashes {
-            replayed.expire(number);
+            again.expire(number);
         }
-        assert!(replayed.clock.running);
-        replayed.clock.running = false;
-        assert_eq!(replayed, shown(&cues));
+        assert!(again.clock.running);
+        again.clock.running = false;
+        assert_eq!(again, shown(&cues));
     }
 
     /// `beat` at log time `at`.
@@ -1695,5 +1854,248 @@ mod tests {
             assert!(css.contains(&format!("--sd-{key}-text:")), "{key}");
         }
         assert!(!css.contains("--role-"));
+    }
+
+    /// The cues of a random game played from the example `config`, such
+    /// as `werewolf/random.toml`.
+    async fn random(config: &str) -> Vec<Cue> {
+        let path = format!(
+            "{}/../social-deduction/configs/{config}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        let environment = social_deduction::model::spec::Environment;
+        let prepared = social_deduction::run::prepare(&text, &environment)
+            .await
+            .unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let playing = social_deduction::live::play(prepared, move |cue| Ok(sender.send(cue)?));
+        playing.finished().await;
+        receiver.try_iter().collect()
+    }
+
+    /// The cues of the recorded game `name` in `fixtures/`.
+    fn recorded(name: &str) -> Vec<Cue> {
+        let path = format!("{}/fixtures/{name}.jsonl", env!("CARGO_MANIFEST_DIR"));
+        let log = std::fs::read_to_string(&path).unwrap();
+        let mut read = social_deduction::stage::recordings(&log).unwrap();
+        read.games.remove(0).cues
+    }
+
+    /// Every test game: two random games of each kind and the recorded
+    /// prompted ones.
+    async fn test_games() -> Vec<(String, Vec<Cue>)> {
+        let mut games = Vec::new();
+        for config in ["avalon/random.toml", "werewolf/random.toml"] {
+            for round in 0..2 {
+                games.push((format!("{config} {round}"), random(config).await));
+            }
+        }
+        for name in address::RECORDED {
+            games.push((name.to_string(), recorded(name)));
+        }
+        games
+    }
+
+    /// The screen a fresh `Screen` shows after every cue up to the first
+    /// to post once bubble `k` is posted: the screen while bubble `k` is
+    /// the latest.
+    fn latest_at(cues: &[Cue], k: usize) -> Screen {
+        let mut screen = Screen::default();
+        for cue in cues {
+            let mut next = screen.clone();
+            next.apply(cue, false);
+            if screen.posts.len() > k && next.posts.len() > screen.posts.len() {
+                break;
+            }
+            screen = next;
+        }
+        screen
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_screen_at_each_bubble_is_the_screen_folded_until_the_next_bubble() {
+        for (name, cues) in test_games().await {
+            let timeline = Timeline::new(&cues);
+            let last = shown(&cues);
+            assert!(!timeline.is_empty(), "{name}");
+            assert_eq!(timeline.len(), last.posts.len(), "{name}");
+            for k in 0..timeline.len() {
+                let screen = timeline.screen(k);
+                let folded = latest_at(&cues, k);
+                assert_eq!(screen.panel, folded.panel, "{name} {k}");
+                assert_eq!(screen.heading, folded.heading, "{name} {k}");
+                assert_eq!(screen.outcome, folded.outcome, "{name} {k}");
+                assert_eq!(screen.ended, folded.ended, "{name} {k}");
+                assert_eq!(screen.clock, folded.clock, "{name} {k}");
+                assert_eq!(screen.posts, last.posts, "{name} {k}");
+                assert_eq!(screen.cursor, Some(k), "{name} {k}");
+                assert!(screen.thinkers.is_empty(), "{name} {k}");
+                assert!(screen.landed.is_empty(), "{name} {k}");
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn moments_under_one_board_share_it_and_the_last_is_the_screen_at_rest() {
+        for (name, cues) in test_games().await {
+            let timeline = Timeline::new(&cues);
+            let moments = timeline.moments();
+            for pair in moments.windows(2) {
+                if let (Some(before), Some(after)) = (&pair[0].panel, &pair[1].panel) {
+                    assert_eq!(before == after, Arc::ptr_eq(before, after), "{name}");
+                }
+            }
+            let shared = moments.windows(2).filter(|pair| match &pair[..] {
+                [Moment { panel: Some(a), .. }, Moment { panel: Some(b), .. }] => Arc::ptr_eq(a, b),
+                _ => false,
+            });
+            assert!(shared.count() > 0, "{name}");
+            let at_rest = timeline.screen(timeline.len() - 1);
+            assert_eq!(
+                Screen {
+                    cursor: None,
+                    ..at_rest
+                },
+                shown(&cues),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bubble_that_tells_a_death_shows_the_board_after_it() {
+        let mut dead = first_night();
+        dead.seats[3].died = Some(Death {
+            round: 1,
+            phase: WerewolfPhase::Night,
+        });
+        let cues = [
+            werewolf_cast(),
+            cue(Beat::Heading("Night 1.".to_string())),
+            tonight(),
+            cue_at(5_000, Beat::Told(vec!["Player 4 is killed.".to_string()])),
+            cue_at(5_000, Beat::Panel(Panel::Werewolf(dead.clone()))),
+            cue_at(
+                8_000,
+                Beat::Heading("Day 1. The village wakes.".to_string()),
+            ),
+        ];
+        let timeline = Timeline::new(&cues);
+        assert_eq!(timeline.len(), 4);
+        let night = timeline.screen(0);
+        assert_eq!(night.heading.as_deref(), Some("Night 1"));
+        assert_eq!(night.panel, Some(Panel::Werewolf(first_night())));
+        assert_eq!(night.clock.at, 0.0);
+        let killed = timeline.screen(1);
+        assert_eq!(killed.panel, Some(Panel::Werewolf(dead.clone())));
+        assert_eq!(killed.clock.at, 5_000.0);
+        assert_eq!(timeline.landed(1), [Landed::Death("Player 4".to_string())]);
+        // A heading and the words told under it are one chapter.
+        assert_eq!(timeline.screen(2).heading.as_deref(), Some("Day 1"));
+        assert_eq!(timeline.screen(3).heading.as_deref(), Some("Day 1"));
+        assert_eq!(timeline.screen(3).clock.at, 8_000.0);
+        assert!(timeline.landed(2).is_empty());
+        assert!(timeline.landed(0).is_empty());
+    }
+
+    #[test]
+    fn the_outcome_shows_only_from_the_end_of_the_game() {
+        let timeline = Timeline::new(&game());
+        assert_eq!(timeline.len(), 3);
+        assert_eq!(timeline.screen(1).outcome, None);
+        assert!(!timeline.moments()[1].over);
+        assert_eq!(timeline.screen(2).outcome, shown(&game()).outcome);
+        assert!(timeline.moments()[2].over);
+        // The first bubble is posted under a board with nothing chosen,
+        // and the second is followed by a team proposed and a ballot cast.
+        assert!(timeline.landed(0).is_empty());
+        assert_eq!(timeline.landed(1).len(), 2);
+        assert!(timeline.landed(2).is_empty());
+    }
+
+    #[test]
+    fn a_board_of_the_other_game_or_none_lands_as_if_first() {
+        let mut voted = first_day();
+        voted.votes[0].1 = Some("Player 2".to_string());
+        let said = |at| {
+            cue_at(
+                at,
+                Beat::Said {
+                    who: "Player 1".to_string(),
+                    text: "Hi.".to_string(),
+                },
+            )
+        };
+        let cues = [
+            said(0),
+            said(1),
+            panel(&board()),
+            said(2),
+            werewolf(&voted),
+            said(3),
+        ];
+        let timeline = Timeline::new(&cues);
+        assert_eq!(timeline.screen(0).panel, None);
+        assert!(timeline.landed(0).is_empty());
+        assert!(timeline.landed(1).is_empty());
+        assert_eq!(timeline.landed(2), [Landed::Vote("Player 1".to_string())]);
+        assert!(Timeline::new(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_screen_under_review_shows_in_the_era_it_replaces_with_what_lands_flashing() {
+        let cues = recorded("werewolf-prompted");
+        let timeline = Timeline::new(&cues);
+        let mut screen = Screen::default();
+        screen.reset();
+        let k = (1..timeline.len())
+            .find(|&k| !timeline.landed(k).is_empty())
+            .unwrap();
+        let number = screen.review(timeline.screen(k), timeline.landed(k));
+        assert_eq!(screen.era(), 1);
+        assert_eq!(screen.cursor, Some(k));
+        let landed: Vec<Landed> = screen
+            .landed
+            .iter()
+            .map(|(_, landed)| landed.clone())
+            .collect();
+        assert_eq!(landed, timeline.landed(k));
+        screen.expire(number.unwrap());
+        assert!(screen.landed.is_empty());
+        let later = screen.review(timeline.screen(k), timeline.landed(k));
+        assert_ne!(later, number);
+        assert_eq!(screen.review(timeline.screen(0), Vec::new()), None);
+        assert!(screen.landed.is_empty());
+    }
+
+    #[test]
+    fn a_bubble_is_found_by_its_message_id() {
+        let screen = shown(&game());
+        for (k, post) in screen.posts.iter().enumerate() {
+            assert_eq!(bubble(&post.id), Some(k));
+        }
+        assert_eq!(bubble("m0"), None);
+        assert_eq!(bubble("think-Player 3"), None);
+    }
+
+    #[test]
+    fn a_timeline_knows_its_chapters_and_how_the_game_ended() {
+        let cues = recorded("werewolf-prompted");
+        let timeline = Timeline::new(&cues);
+        let last = timeline.screen(timeline.len() - 1);
+        let headings: Vec<usize> = (0..last.posts.len())
+            .filter(|&k| matches!(last.posts[k].body, Body::Heading(_)))
+            .collect();
+        assert!(!headings.is_empty());
+        assert_eq!(timeline.chapters(), headings);
+        assert_eq!(timeline.outcome(), last.outcome.as_ref());
+        assert_eq!(Timeline::new(&[]).outcome(), None);
+    }
+
+    #[test]
+    fn live_play_has_no_cursor() {
+        assert_eq!(Screen::default().cursor, None);
+        assert_eq!(shown(&game()).cursor, None);
     }
 }

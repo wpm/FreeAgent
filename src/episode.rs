@@ -17,6 +17,8 @@ use uuid::Uuid;
 /// A set of actors brought into being together, wired to one another as
 /// their inits allow, and run until every one of them has stopped.
 pub struct Episode<B: Behavior> {
+    /// The ID every event logged in this episode carries.
+    id: Uuid,
     actors: HashMap<ActorId, Actor<B>>,
     /// One-time signals from each actor that it is running its message loop.
     readies: HashMap<ActorId, oneshot::Receiver<()>>,
@@ -95,11 +97,17 @@ impl<B: Behavior> Episode<B> {
             })
             .collect();
         Self {
+            id: episode,
             actors,
             readies,
             starts,
             stop,
         }
+    }
+
+    /// The ID every event logged in this episode carries.
+    pub fn id(&self) -> Uuid {
+        self.id
     }
 
     /// A handle that stops this episode once it runs. Take it before
@@ -647,6 +655,7 @@ mod tests {
         assert_eq!(reaches, ["bob"]);
         let stops: Vec<_> = think.shutdown.others.keys().cloned().collect();
         assert_eq!(stops, ["bob"]);
+        assert_eq!(think.episode, episode.id());
         assert!(think.log.is_some(), "ann's think loop should log");
         assert!(think.thoughts.is_some(), "ann's think loop should think");
         assert!(perceive.thoughts.is_some(), "ann should think");

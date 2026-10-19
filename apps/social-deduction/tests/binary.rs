@@ -3,15 +3,16 @@
 //! them to standard error as JSON lines.
 
 use free_agent::Event;
-use serde::de::DeserializeOwned;
+use serde_json::Value;
 use social_deduction::avalon::{self, Avalon};
 use social_deduction::config::Configuration;
 use social_deduction::game::{self, Game};
+use social_deduction::log::{Header, without_credentials};
 use social_deduction::model::ToolChoice;
 use social_deduction::model::canned::{
-    day_refusal, playing, playing_only, playing_within, recording, refusal, refusing,
-    refusing_days, refusing_offers_of, refusing_required, reported, retracting, serving,
-    unreachable, wanting_a_key,
+    CANARY, CANARY_VARIABLE, assert_redacted, day_refusal, leaking, playing, playing_only,
+    playing_within, recording, refusal, refusing, refusing_days, refusing_offers_of,
+    refusing_required, reported, retracting, serving, unreachable, wanting_a_key,
 };
 use social_deduction::model::window::{ContextWindow, Source};
 use social_deduction::seat::PlayerId;
@@ -48,16 +49,56 @@ fn refused(args: &[&str]) -> String {
     String::from_utf8(output.stderr).unwrap()
 }
 
-/// Play a game with `args` after `play`: the events on standard error,
-/// parsed as entries of `E`, and what was printed.
-fn played<E: DeserializeOwned>(args: &[&str]) -> (Vec<Event<E>>, String) {
+/// Play a game with `args` after `play`, and check that every episode is
+/// logged as [`assert_framed`] says: the events on standard error between
+/// each episode's header and its end, parsed as entries of `G`, and what
+/// was printed.
+fn played<G: Game>(args: &[&str]) -> (Vec<Event<game::Entry<G>>>, String) {
     let output = succeeded(&[&["play"], args].concat());
     let stderr = String::from_utf8(output.stderr).unwrap();
-    let events = stderr
+    let lines: Vec<Event<Value>> = stderr
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
+    assert_framed(&lines, &Header::of::<G>());
+    let events = lines
+        .into_iter()
+        .filter(|event| !framing(event))
+        .map(
+            |Event {
+                 time,
+                 episode,
+                 payload,
+             }| Event {
+                time,
+                episode,
+                payload: serde_json::from_value(payload).unwrap(),
+            },
+        )
+        .collect();
     (events, String::from_utf8(output.stdout).unwrap())
+}
+
+/// Whether `event` is an episode's header or its end, which the log's
+/// writer adds around the game's own events.
+fn framing(event: &Event<Value>) -> bool {
+    event.payload.get("Header").is_some() || event.payload.get("Ended").is_some()
+}
+
+/// Check that each episode `events` holds comes in one run of lines, which
+/// opens with `header` and closes with the game won, with no other header
+/// or end between.
+fn assert_framed(events: &[Event<Value>], header: &Header) {
+    let runs: Vec<&[Event<Value>]> = events.chunk_by(|a, b| a.episode == b.episode).collect();
+    let episodes: HashSet<_> = events.iter().map(|event| event.episode).collect();
+    assert_eq!(runs.len(), episodes.len(), "{events:?}");
+    for run in runs {
+        let opened: Header = serde_json::from_value(run[0].payload["Header"].clone()).unwrap();
+        assert_eq!(opened, *header);
+        let last = &run[run.len() - 1];
+        assert_eq!(last.payload, serde_json::json!({"Ended": "won"}));
+        assert!(!run[1..run.len() - 1].iter().any(framing), "{run:?}");
+    }
 }
 
 /// Assert that `stderr` calls the configuration file at `path` invalid.
@@ -296,8 +337,6 @@ fn example(game: &str, name: &str) -> String {
 
 /// A game as these tests play it.
 trait Tested: Game {
-    /// The game's name, as a configuration file's `game` key gives it.
-    const KEY: &str;
     /// How many players the default table seats.
     const SEATS: usize;
     /// The `[phases]` a prompted game is played under: short ones, so
@@ -310,7 +349,6 @@ trait Tested: Game {
 }
 
 impl Tested for Werewolf {
-    const KEY: &str = "werewolf";
     const SEATS: usize = 7;
     const PHASES: &[&str] = &QUICK;
     // One request as by night, and one as by day.
@@ -319,7 +357,6 @@ impl Tested for Werewolf {
 }
 
 impl Tested for Avalon {
-    const KEY: &str = "avalon";
     const SEATS: usize = 5;
     // Avalon's phases end once the players they wait on have acted, which
     // the models these tests play do at once.
@@ -356,7 +393,7 @@ fn rephased(path: &str, phases: &[&str]) {
 /// tests do not collide.
 fn configured<G: Tested>(test: &str, base_url: &str, id: &str, lines: &[&str]) -> String {
     let path = format!("{}/{test}.toml", env!("CARGO_TARGET_TMPDIR"));
-    std::fs::copy(example(G::KEY, "prompted.toml"), &path).unwrap();
+    std::fs::copy(example(&G::KEY.to_string(), "prompted.toml"), &path).unwrap();
     edited(&path, |file| {
         let qwen = file["models"]["qwen"].as_table_mut().unwrap();
         for key in ["base_url", "id"] {
@@ -612,6 +649,30 @@ strategy = \"plain\"
     // Only the prompted players have prompts.
     let configuration = configuration(&events);
     assert_eq!(configuration.prompts.len(), 5);
+}
+
+#[test]
+fn a_game_against_a_provider_that_gives_its_key_away_logs_no_key_userinfo_or_query() {
+    let base_url = leaking(&[EXAMPLE_MODEL], CANARY);
+    let api_key_env = format!("api_key_env = \"{CANARY_VARIABLE}\"");
+    let config = configured::<Werewolf>("canary", &base_url, EXAMPLE_MODEL, &[&api_key_env]);
+    let output = Command::new(env!("CARGO_BIN_EXE_social-deduction"))
+        .args(["play", &config])
+        .env(CANARY_VARIABLE, CANARY)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let log = String::from_utf8(output.stderr).unwrap();
+    assert_redacted(&log, CANARY);
+    let events: Vec<Event<game::Entry<Werewolf>>> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let configuration = configuration(&events[1..]);
+    assert_eq!(
+        configuration.models["qwen"].base_url,
+        without_credentials(&base_url)
+    );
 }
 
 #[test]
@@ -1035,7 +1096,7 @@ fn avalon_roles(events: &[Event<avalon::Entry>]) -> Vec<avalon::Role> {
 
 #[test]
 fn avalon_plays_the_default_table_to_the_end_and_tells_it() {
-    let (events, printed) = played::<avalon::Entry>(&[&example("avalon", "random.toml")]);
+    let (events, printed) = played::<Avalon>(&[&example("avalon", "random.toml")]);
     let episode = events[0].episode;
     assert!(events.iter().all(|event| event.episode == episode));
     use avalon::Role::{Assassin, Merlin, Minion, Servant};
@@ -1081,7 +1142,7 @@ fn avalon_plays_any_valid_table_under_the_limits_the_file_gives() {
         "game = \"avalon\"\n[phases]\nvote_limit = \"90s\"\n[roles.servant]\ncount = 3\n[roles.minion]\ncount = 2\n\
          [roles.percival]\ncount = 1\n[roles.morgana]\ncount = 1\n",
     );
-    let (events, printed) = played::<avalon::Entry>(&[&config]);
+    let (events, printed) = played::<Avalon>(&[&config]);
     use avalon::Role::{Assassin, Merlin, Minion, Morgana, Percival, Servant};
     assert_eq!(
         avalon_roles(&events),
@@ -1119,7 +1180,7 @@ fn avalon_refuses_an_invalid_table_saying_what_is_wrong() {
 
 #[test]
 fn avalon_logs_the_configuration_of_the_random_config_s_players() {
-    let (events, printed) = played::<avalon::Entry>(&[&example("avalon", "random.toml")]);
+    let (events, printed) = played::<Avalon>(&[&example("avalon", "random.toml")]);
     use avalon::Role::{Assassin, Merlin, Minion, Servant};
     assert_eq!(
         avalon_roles(&events),
@@ -1158,7 +1219,7 @@ fn avalon_plays_a_table_of_random_evil_and_prompted_good_to_the_end() {
         ];
         file.insert("roles".to_string(), table(&roles).into());
     });
-    let (events, printed) = played::<avalon::Entry>(&[&config]);
+    let (events, printed) = played::<Avalon>(&[&config]);
     let (roles, strategies) = start(&events);
     for (seat, role) in roles {
         let expected = match role.team() {
@@ -1211,7 +1272,7 @@ fn assert_every_call_logs_its_usage_and_the_probe_none<G: Tested>() {
     let (base_url, requests) = recording(&[EXAMPLE_MODEL]);
     let test = format!("{}-usage", G::KEY);
     let config = configured::<G>(&test, &base_url, EXAMPLE_MODEL, &[]);
-    let (events, _) = played::<game::Entry<G>>(&[&config]);
+    let (events, _) = played::<G>(&[&config]);
     let (roles, _) = start(&events);
     let usages: Vec<(&PlayerId, &serde_json::Value)> = events
         .iter()
@@ -1242,13 +1303,13 @@ fn every_call_a_player_makes_logs_its_usage_and_the_probe_logs_none_in_avalon() 
 /// error is left empty and the game is still told; and that `--log`, given
 /// after it, puts the log back.
 fn assert_no_log_leaves_standard_error_empty<G: Tested>() {
-    let random = example(G::KEY, "random.toml");
+    let random = example(&G::KEY.to_string(), "random.toml");
     let output = succeeded(&["play", &random, "--no-log"]);
     assert!(output.stderr.is_empty(), "{output:?}");
     let printed = String::from_utf8(output.stdout).unwrap();
     let seated = format!("{} players:\n", G::SEATS);
     assert!(printed.starts_with(&seated), "{printed}");
-    let (events, _) = played::<game::Entry<G>>(&[&random, "--no-log", "--log"]);
+    let (events, _) = played::<G>(&[&random, "--no-log", "--log"]);
     assert_eq!(start(&events).0.len(), G::SEATS);
 }
 
@@ -1277,13 +1338,13 @@ fn pairs<R: ToString>(
 }
 
 /// Play the random example of `G` for three episodes, and check that they
-/// are logged one after another, each under an episode id of its own and
-/// opening with its deal, that every deal gives the same pairs to the same
+/// are logged one after another, each under an episode id of its own,
+/// between its header, which names `G`, and its end, and opening with its deal, that every deal gives the same pairs to the same
 /// players, and that the episodes are told in turn, set off by a blank
 /// line.
 fn assert_episodes_play_in_turn<G: Tested>() {
-    let random = example(G::KEY, "random.toml");
-    let (events, printed) = played::<game::Entry<G>>(&[&random, "--episodes", "3"]);
+    let random = example(&G::KEY.to_string(), "random.toml");
+    let (events, printed) = played::<G>(&[&random, "--episodes", "3"]);
     let mut episodes: Vec<_> = events.iter().map(|event| event.episode).collect();
     episodes.dedup();
     assert_eq!(episodes.len(), 3, "{episodes:?}");
@@ -1372,7 +1433,7 @@ fn assert_takes_the_role_counts_and_the_limits_from_the_file<G: Tested>(
 ) {
     let test = format!("{}-counted", G::KEY);
     let config = written(&test, &format!("game = \"{}\"\n{file}", G::KEY));
-    let (events, printed) = played::<game::Entry<G>>(&[&config]);
+    let (events, printed) = played::<G>(&[&config]);
     let (roles, _) = start(&events);
     for (role, count) in counts {
         let dealt = roles.values().filter(|dealt| *dealt == role).count();

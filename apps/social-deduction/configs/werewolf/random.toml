@@ -4,6 +4,7 @@
 #
 #     social-deduction play configs/werewolf/random.toml
 
+format = 1
 game = "werewolf"
 
 [roles.werewolf]

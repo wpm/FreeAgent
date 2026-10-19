@@ -33,9 +33,11 @@ trunk serve
 ```
 
 The page opens on the finished Avalon game, and `#werewolf` opens the
-Werewolf one. **Play** replays it from the start, a
-cue every quarter second, and a hash ending in `-fast` replays ten times
-as fast.
+Werewolf one. The game is in review on its last bubble: the arrow keys,
+Home and End, and a click move from bubble to bubble, as in the desktop
+app. **Play** plays it from the start, a cue every quarter second, and a
+hash ending in `-fast` plays it ten times as fast. Once every cue is
+shown, the game is back in review, and the button reads **Play again**.
 
 ## The desktop app
 
@@ -44,8 +46,8 @@ state that lists the games, each with what it is, a square per seat in
 its side's color, a line summing up its settings, and its own **Play**. A
 game whose settings have an error names the first one under its row,
 linked to its field in Settings, and the other games stay playable. The
-game plays live in the window, with **Stop**, and once it is over, **New
-game** appears. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
+game plays live in the window, with **Stop**, and once it is over,
+**Review**, **Save Log…** and **New game** appear. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
 start state.
 
 **Settings…** (⌘, on macOS, **Edit ▸ Preferences…** and Ctrl+, elsewhere)
@@ -103,6 +105,31 @@ strategies that ask it to match. **File ▸ Export Configuration…** writes a
 game's configuration file, with its models, and `social-deduction play`
 plays it as **Play** does.
 
+### Review
+
+**File ▸ Open Game Log…** (⌘O, Ctrl+O elsewhere) opens a `.jsonl` game
+log, from the command line or the app, with as many games as it holds.
+It opens on the first bubble of the first game, with the whole game in
+the chat and every bubble after the selected one dimmed. The board, the
+phase and the clock show the game as it stood at the selected bubble. The
+header names the file, the game, with ‹ › and a list of the log's games
+when it holds several, and the position, `1 / 212`; **Close** returns to
+the start state. A log is opened anywhere but while a game is being
+prepared or played.
+
+**Review** on the game-over header reviews the game just played, with no
+file to open. It opens on the last bubble, where the game left
+off, so **Go ▸ First Bubble** (⌘↑) takes it back to the start. The header
+names the game, and **Close** returns to the game's end.
+
+| Action | Keys |
+|---|---|
+| Previous / next bubble | ↑ / ↓, and ← / → |
+| First / last bubble | **Go ▸ First Bubble** ⌘↑ / **Last Bubble** ⌘↓ (Ctrl+Home / Ctrl+End elsewhere), and Home / End |
+| Jump to a bubble | click it |
+| Previous / next chapter | **Go ▸ Previous Chapter** ⌥↑ / **Next Chapter** ⌥↓ |
+| Previous / next game | **Go ▸ Previous Game** ⌘[ / **Next Game** ⌘] (Ctrl+[ / Ctrl+] elsewhere) |
+
 The settings are kept in `settings.toml` in the app's config directory,
 and what probing found in `probes.json` in its data directory: on macOS,
 both in `~/Library/Application Support/io.github.wpm.social-deduction/`.
@@ -119,8 +146,12 @@ cargo tauri dev
 On Linux, Tauri needs the WebKitGTK development packages:
 `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev`.
 
-A game played in the app is shown as it happens. Logs on disk come from
-`social-deduction play`.
+A game played in the app is shown as it happens, and once it is over,
+won, stopped or failed, **File ▸ Save Game Log…** (⌘S, Ctrl+S elsewhere)
+or **Save Log…** saves its log, at its end and in its review. The file is
+what `social-deduction play` writes, keys redacted, so it opens in review
+and in any tool that reads command-line logs. Nothing is written to disk
+until it is saved.
 
 A model's API key comes from the OS keychain, then from the environment
 variable that names it, such as `OPENAI_API_KEY`. Each key is a keychain
@@ -134,8 +165,9 @@ model, with talk, thinking and Werewolf phases closing while players
 finish speaking, which random players never produce. `#avalon-prompted`
 and `#werewolf-prompted` open them. CI's Viewer job builds the page with
 `build-page.sh` and drives it in headless Chromium with `e2e/check.mjs`,
-which checks what each game shows, opens the desktop app's start state and
-Settings window against a stand-in backend, and saves screenshots. To run it locally, from the root of a checkout:
+which checks what each game shows, opens the desktop app's start state,
+review and Settings window against a stand-in backend, and saves
+screenshots. To run it locally, from the root of a checkout:
 
 ```sh
 apps/social-deduction-gui/build-page.sh

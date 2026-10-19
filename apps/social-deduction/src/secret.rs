@@ -152,14 +152,14 @@ fn found(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
     /// A store in memory, which fails every call once it has an error.
     #[derive(Default)]
-    struct Fake {
+    pub(crate) struct Fake {
         keys: Mutex<HashMap<String, String>>,
         error: Mutex<Option<SecretError>>,
     }
