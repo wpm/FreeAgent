@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Avalon · Social Deduction · Free Agent</title>
+<meta name="description" content="Avalon, played by language models in Social Deduction on Free Agent.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<header class="wrap">
+  <div class="bar">
+    <a class="wordmark" href="index.html"><span class="mark">Free</span> Agent</a>
+    <nav>
+      <a href="https://docs.rs/free-agent">Docs</a>
+      <a href="https://crates.io/crates/free-agent">Crate</a>
+      <a href="index.html#apps">Apps</a>
+    </nav>
+  </div>
+  <p class="crumb"><a href="index.html#apps">Apps</a> › <a href="social-deduction.html">Social Deduction</a> › Avalon</p>
+  <h1 class="title">Avalon</h1>
+  <p class="subtitle">Five quests, a hidden few who want them to fail, and one guess at Merlin.</p>
+</header>
+
+<main class="wrap">
+<section class="first">
+  <div class="text">
+    <p class="big">Five to ten players split into good and evil and play at most five quests. Each quest has a leader, who proposes a team of the size the quest needs.</p>
+    <p>Everyone votes on the team in secret, and it goes when a majority approves. Each member of the team then supports or sabotages the quest in secret, and only the number of sabotages is told. Good wins with three successful quests, unless the Assassin then names Merlin. Evil wins with three failed quests, five rejected teams in a row, or Merlin named.</p>
+  </div>
+  <figure>
+    <img src="images/avalon.png" width="2560" height="1600" alt="Avalon with a quest in progress: evil players speak from the left and good players from the right, beside the quests, the team on the table and the votes so far">
+    <figcaption>Quest 3. One quest has succeeded and one has failed. Merlin argues for caution while the team on the table includes a Minion.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>What it asks of agents</h2>
+  <ul class="points">
+    <li><strong>Merlin knows, and must hide it.</strong> Merlin sees nearly every evil player from the start, but if evil works out who Merlin is, good loses at the very end.</li>
+    <li><strong>Evil plays as a team.</strong> The evil players see one another and must steer teams and votes without giving themselves away.</li>
+    <li><strong>Evidence comes in pieces.</strong> Votes on teams are revealed, sabotages arrive only as a count, and each player builds a theory from what can be seen.</li>
+    <li><strong>Talk runs the whole game.</strong> Everyone may speak in every phase, from the first proposal to the Assassin’s guess.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>The roles</h2>
+  <ul class="grid">
+    <li><h3 class="good">Merlin</h3><p>Sees every evil player but Mordred, and must stay hidden from the Assassin.</p></li>
+    <li><h3 class="good">Percival</h3><p>Sees Merlin and Morgana, without knowing which is which.</p></li>
+    <li><h3 class="good">Servant</h3><p>A loyal servant of Arthur, who knows only their own role.</p></li>
+    <li><h3 class="evil">Assassin</h3><p>Sees the other evil players but Oberon. If good wins three quests, gets one guess at Merlin.</p></li>
+    <li><h3 class="evil">Morgana</h3><p>Appears to Percival as Merlin might.</p></li>
+    <li><h3 class="evil">Mordred</h3><p>Hidden from Merlin.</p></li>
+    <li><h3 class="evil">Oberon</h3><p>Unseen by the other evil players, and sees none of them.</p></li>
+    <li><h3 class="evil">Minion</h3><p>A minion of Mordred, who sees the other evil players but Oberon.</p></li>
+  </ul>
+  <p class="text" style="margin-top: 1.5rem">The table seats Merlin, the Assassin, two Servants and a Minion, and gives each phase a minute. Seat up to ten, with any of the roles, in a configuration file or in the app’s Settings.</p>
+</section>
+
+<section>
+  <h2>Play it</h2>
+  <p class="text">In the desktop app, choose <strong>Play Avalon</strong>. From the command line:</p>
+<pre><code>social-deduction play avalon/prompted.toml</code></pre>
+  <p class="text"><a href="social-deduction.html#platforms">Download Social Deduction</a>.</p>
+  <div class="sample">
+    <h3>A sample in your browser</h3>
+    <p><a href="viewer/#avalon">Play a sample game of Avalon</a> right in your browser. Press Play to watch it unfold, then step back through it move by move. It’s a random table: every player chooses at random, with no language model. Games played by models, your own tables and settings, and the command line are in the app.</p>
+  </div>
+</section>
+</main>
+
+<footer class="wrap">
+  <p>Free Agent is by <a href="https://github.com/wpm">W.P. McNeill</a>,
+  licensed under <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-MIT">MIT</a>
+  or <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-APACHE">Apache-2.0</a>.</p>
+</footer>
+</body>
+</html>

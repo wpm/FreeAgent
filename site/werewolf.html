@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Werewolf · Social Deduction · Free Agent</title>
+<meta name="description" content="Werewolf, played by language models in Social Deduction on Free Agent.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<header class="wrap">
+  <div class="bar">
+    <a class="wordmark" href="index.html"><span class="mark">Free</span> Agent</a>
+    <nav>
+      <a href="https://docs.rs/free-agent">Docs</a>
+      <a href="https://crates.io/crates/free-agent">Crate</a>
+      <a href="index.html#apps">Apps</a>
+    </nav>
+  </div>
+  <p class="crumb"><a href="index.html#apps">Apps</a> › <a href="social-deduction.html">Social Deduction</a> › Werewolf</p>
+  <h1 class="title">Werewolf</h1>
+  <p class="subtitle">A village, the werewolves hiding in it, and a vote every day.</p>
+</header>
+
+<main class="wrap">
+<section class="first">
+  <div class="text">
+    <p class="big">A few of the players are secretly werewolves. The rest are villagers, among them a doctor and a seer. Play alternates between night and day, starting with night.</p>
+    <p>By night the werewolves, who know one another, choose a villager to kill, the doctor chooses one player to save, and the seer learns one player’s side. By day everyone talks and votes, and the player the village settles on is out. The villagers win when the last werewolf is dead. The werewolves win once they are as many as the villagers.</p>
+  </div>
+  <figure>
+    <img src="images/werewolf-day.png" width="2560" height="1600" alt="Werewolf by day: werewolves speak from the left and villagers from the right, beside the live vote and the players">
+    <figcaption>Day 1. The seer shares what it learned overnight while two werewolves steer the vote toward a villager.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>What it asks of agents</h2>
+  <ul class="points">
+    <li><strong>A day is one open conversation.</strong> Any player may speak at any moment, and every message reaches every living player as it’s said.</li>
+    <li><strong>Votes stay live all day.</strong> A player can change a vote or take it back while the day is open. Whoever has the most votes is out once they have held the lead long enough, so timing and persuasion decide the day.</li>
+    <li><strong>Night leaves secrets.</strong> The werewolves know each other, the seer knows what it has seen, and the doctor knows whom it saved. Each decides by day how much to reveal.</li>
+    <li><strong>Every game has a winner,</strong> so every game is a result.</li>
+  </ul>
+  <figure>
+    <img src="images/werewolf-night.png" width="2560" height="1600" alt="Werewolf by night: the werewolves confer while the village sleeps">
+    <figcaption>Night 2. The werewolves agree on their next victim while the rest of the village sleeps.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>The roles</h2>
+  <ul class="grid">
+    <li><h3 class="evil">Werewolf</h3><p>Knows the other werewolves. Each night they kill a villager.</p></li>
+    <li><h3 class="good">Villager</h3><p>Knows only their own role.</p></li>
+    <li><h3 class="good">Seer</h3><p>Learns one player’s side each night.</p></li>
+    <li><h3 class="good">Doctor</h3><p>Picks one player each night to save from the werewolves.</p></li>
+  </ul>
+  <p class="text" style="margin-top: 1.5rem">The table seats two werewolves, three villagers, a doctor and a seer, and gives each phase a minute. Change the counts and limits in a configuration file or in the app’s Settings.</p>
+</section>
+
+<section>
+  <h2>Play it</h2>
+  <p class="text">In the desktop app, choose <strong>Play Werewolf</strong>. From the command line:</p>
+<pre><code>social-deduction play werewolf/prompted.toml</code></pre>
+  <p class="text"><a href="social-deduction.html#platforms">Download Social Deduction</a>.</p>
+  <div class="sample">
+    <h3>A sample in your browser</h3>
+    <p><a href="viewer/#werewolf">Play a sample game of Werewolf</a> right in your browser. Press Play to watch it unfold, then step back through it move by move. It’s a random table: every player chooses at random, with no language model. Games played by models, your own tables and settings, and the command line are in the app.</p>
+  </div>
+</section>
+</main>
+
+<footer class="wrap">
+  <p>Free Agent is by <a href="https://github.com/wpm">W.P. McNeill</a>,
+  licensed under <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-MIT">MIT</a>
+  or <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-APACHE">Apache-2.0</a>.</p>
+</footer>
+</body>
+</html>

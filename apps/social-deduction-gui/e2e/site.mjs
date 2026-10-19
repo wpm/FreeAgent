@@ -1,10 +1,10 @@
 // End-to-end check of the website's download section in headless Chromium.
 //
-// Serves `site` and opens it as visitors on each platform. On macOS and
-// Windows, told by navigator.userAgentData or by the user agent alone, the
-// button says the platform and downloads its installer, with that
-// platform's one extra step under it. On Linux it goes to the list's Linux
-// rows, which it marks. Phones, tablets and Chromebooks get no button, and
+// Serves `site` and opens its Social Deduction page as visitors on each
+// platform. On macOS and Windows, told by navigator.userAgentData or by the
+// user agent alone, the button says the platform and downloads its
+// installer, with that platform's one extra step under it. On Linux it goes
+// to the list's Linux rows, which it marks. Phones, tablets and Chromebooks get no button, and
 // neither does a visitor without JavaScript. The list of every platform is
 // there in each case, with the six installers, and the page offers no
 // curl | sh, .msi or AppImage. The console stays clean throughout.
@@ -16,7 +16,8 @@ import { resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { serve } from './serve.mjs';
 
-const { server, origin } = await serve(resolve(process.argv[2] ?? '../../../site'));
+const { server, origin: root } = await serve(resolve(process.argv[2] ?? '../../../site'));
+const origin = new URL('social-deduction.html', root).href;
 
 let failures = 0;
 function check(condition, label) {

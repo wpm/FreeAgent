@@ -4,89 +4,89 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Free Agent</title>
-<meta name="description" content="Episodes in which actors talk to each other by sending messages. A Rust platform for multi-agent applications.">
+<meta name="description" content="Agents acting on their own. A Rust platform for experiments in how AI agents interact when each one perceives, thinks and acts on its own initiative.">
 <link rel="stylesheet" href="style.css">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
-<script src="download.js" defer></script>
 </head>
 <body>
-<header>
+<header class="wrap masthead">
   <h1><span class="mark">Free</span> Agent</h1>
-  <p class="tagline">Episodes in which actors talk to each other by sending messages.</p>
+  <p class="tagline">Agents acting on their own</p>
+  <p class="intro">A Rust platform for experiments in how AI agents interact when each one perceives, thinks and acts on its own initiative.</p>
   <nav>
     <a href="https://docs.rs/free-agent">Docs</a>
     <a href="https://crates.io/crates/free-agent">Crate</a>
-    <a href="https://github.com/wpm/FreeAgent">Source</a>
+    <a href="#apps">Apps</a>
     <a href="https://github.com/wpm/FreeAgent/blob/main/CHANGELOG.md">Changelog</a>
   </nav>
+  <div class="start">
+    <code>cargo add free-agent</code>
+    <a class="button" href="social-deduction.html">Download Social Deduction</a>
+  </div>
 </header>
 
-<main>
-<section>
-  <h2>What it is</h2>
-  <p>An <strong>episode</strong> brings a set of actors into being together,
-  decides which of them can reach which, and runs them on the
-  <a href="https://tokio.rs">Tokio</a> runtime until every one of them has
-  stopped. An <strong>actor</strong> keeps its own state, takes messages
-  from a mailbox one at a time, and reaches other actors only by sending
-  them messages. A typical episode has one environment actor and several
-  agent actors, some of them language models.</p>
-  <p>Free Agent is the platform. The applications built on it are
-  separate crates, and yours can be one of them.</p>
-</section>
+<main class="wrap">
+<p class="lead">Every agent in Free Agent is autonomous. It hears each message the moment it arrives, thinks at its own pace, and speaks when it decides to, while every other agent does the same. Like people, agents interrupt, hesitate, persuade and change their minds.</p>
 
 <section>
-  <h2>Build on it</h2>
-  <p>Add the library to a Rust project:</p>
-  <pre><code>cargo add free-agent</code></pre>
-  <p>The <a href="https://docs.rs/free-agent">API documentation</a> walks
-  through an episode from the actors up.</p>
-</section>
-
-<section>
-  <h2>Play with it</h2>
-  <p><strong>Social Deduction</strong> plays Werewolf and Avalon, games in
-  which a few of the players are secretly on the other side. The desktop
-  app shows a game as a group chat, beside a live board.</p>
-  <div id="download" hidden>
-    <a class="button" href="#platforms">Download</a>
-    <p class="gets">The app and the <code>social-deduction</code> command line.</p>
-    <p data-platform="macos" hidden>Drag it to Applications, then choose
-    <strong>Social Deduction ▸ Install Command-Line Tool…</strong></p>
-    <p data-platform="windows" hidden>Windows may warn that the app is from
-    an unknown publisher: choose <strong>More info</strong>, then
-    <strong>Run anyway</strong>.</p>
-    <p data-platform="linux" hidden>The command line is installed to
-    <code>/usr/bin</code>.</p>
-  </div>
-  <h3 id="platforms">All platforms</h3>
-  <ul class="downloads">
-    <li id="macos"><a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction.dmg">macOS</a>
-      <span>Apple silicon and Intel, <code>Social-Deduction.dmg</code></span></li>
-    <li id="windows"><a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction-setup.exe">Windows</a>
-      <span>x64, <code>Social-Deduction-setup.exe</code></span></li>
-    <li id="linux" class="linux"><span class="platform">Linux x86_64</span>
-      <span><a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-amd64.deb"><code>.deb</code></a> ·
-      <a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-x86_64.rpm"><code>.rpm</code></a></span></li>
-    <li class="linux"><span class="platform">Linux arm64</span>
-      <span><a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-arm64.deb"><code>.deb</code></a> ·
-      <a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-aarch64.rpm"><code>.rpm</code></a></span></li>
+  <h2>What makes it different</h2>
+  <ul class="grid">
+    <li><h3>No turns</h3><p>An episode wires up which agents can reach which, starts them all at once, and runs them until they stop. Each agent chooses its own moment to act, and the order of a conversation emerges from the agents themselves.</p></li>
+    <li><h3>Perceiving apart from thinking</h3><p>Each agent takes in every message the moment it arrives, and thinks in a loop of its own, so it keeps listening through a slow model call. A timer can wake it at a deadline.</p></li>
+    <li><h3>Messages</h3><p>Each agent keeps its own state and reaches the others by sending messages, as actors do. Everything they send can be logged, so an episode’s log is a complete record of what happened.</p></li>
+    <li><h3>Built for experiments</h3><p>An episode has an environment and its agents, and ends with a record of everything that happened, ready to score, replay or train on. It fits reinforcement learning, and any other experiment that needs a complete record.</p></li>
   </ul>
-  <p>Then write out the example configurations, deal a table and watch a
-  game:</p>
-  <pre><code>social-deduction configs --write .
-social-deduction play werewolf/random.toml</code></pre>
-  <p>Watch a random game of <a href="viewer/#avalon">Avalon</a> or
-  <a href="viewer/#werewolf">Werewolf</a>, played afresh on every change
-  to <code>main</code>.</p>
-  <p>Everything else is on the
-  <a href="https://github.com/wpm/FreeAgent/releases">releases page</a>.
-  For the command line alone, on servers and CI, see the
-  <a href="https://github.com/wpm/FreeAgent/tree/main/apps/social-deduction#servers-and-ci">README</a>.</p>
+</section>
+
+<section>
+  <h2>Inside an agent</h2>
+  <ol class="flow">
+    <li><b>Other agents</b>send it messages, whenever they like.</li>
+    <li><b>Perceive</b><code>receive</code> takes each message as it arrives, updates what the agent knows, and decides what’s worth thinking about.</li>
+    <li><b>Think</b><code>think</code> works through its queue one item at a time: a model call, a plan. <code>think_after</code> sets a deadline.</li>
+    <li><b>Act</b>Its <code>Context</code> sends messages, stops other agents and logs, from either loop.</li>
+  </ol>
+  <p class="note">Perceiving and thinking run side by side, in two tasks. Every agent in an episode runs this way at once, on the Tokio runtime.</p>
+</section>
+
+<section>
+  <h2>See it work: Social Deduction</h2>
+  <p class="text">The first app on Free Agent has language models play Werewolf and Avalon, games in which some of the players are secretly on the other side. It’s a showcase for the platform. Games are where Free Agent starts because they make interaction easy to see and easy to measure.</p>
+  <p><a class="button" href="social-deduction.html">About Social Deduction</a></p>
+</section>
+
+<section>
+  <h2>Generate data from the command line</h2>
+  <p class="text">Social Deduction installs a command line beside its desktop app. <code>social-deduction</code> plays games headless, with models from any OpenAI-compatible server, local or hosted, and logs every event as JSON Lines.</p>
+<pre><code><span class="c"># Write out the example tables, then play 500 games of Werewolf</span>
+social-deduction configs --write .
+social-deduction play werewolf/prompted.toml --episodes 500 2&gt; werewolf.jsonl</code></pre>
+  <ul class="points">
+    <li>The game is told on standard output as it happens and logged on standard error, one JSON object per event.</li>
+    <li><code>--episodes N</code> plays N games in a row and deals the roles afresh each time, so a seat says nothing about a side.</li>
+    <li>Each episode opens with a header naming the log format and the version that wrote it, and closes with how it ended.</li>
+    <li>API keys are redacted, so a log is safe to share.</li>
+    <li>Players, prompts and models are a TOML file. Open any log in the desktop app to step through the game message by message.</li>
+  </ul>
+</section>
+
+<section id="apps">
+  <h2>Apps</h2>
+  <p class="text">An app is a crate that depends on <code>free-agent</code>: it defines an environment, its agents and their messages. Social Deduction is one, and yours can be another.</p>
+  <ul class="apps">
+    <li>
+      <div><span class="tag">Available now</span><h3><a href="social-deduction.html">Social Deduction</a></h3><p>Werewolf and Avalon, played by language models or at random.</p></div>
+      <a href="social-deduction.html">Details and download</a>
+    </li>
+    <li>
+      <div><span class="tag">Yours</span><h3><a href="build.html">Build an app</a></h3><p>Write your own agents on the <code>free-agent</code> crate and put them in an episode.</p></div>
+      <a href="build.html">Build your own agent</a>
+    </li>
+  </ul>
 </section>
 </main>
 
-<footer>
+<footer class="wrap">
   <p>Free Agent is by <a href="https://github.com/wpm">W.P. McNeill</a>,
   licensed under <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-MIT">MIT</a>
   or <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-APACHE">Apache-2.0</a>.</p>

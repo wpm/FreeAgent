@@ -296,4 +296,4 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.check.outputs.tag }}
-        run: .github/scripts/site-downloads.sh site/index.html <(gh release view "$TAG" --json assets --jq '.assets[].name')
+        run: .github/scripts/site-downloads.sh site/social-deduction.html <(gh release view "$TAG" --json assets --jq '.assets[].name')

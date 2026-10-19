@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Social Deduction · Free Agent</title>
+<meta name="description" content="Werewolf and Avalon, played by language models, on Free Agent.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<script src="download.js" defer></script>
+</head>
+<body>
+<header class="wrap">
+  <div class="bar">
+    <a class="wordmark" href="index.html"><span class="mark">Free</span> Agent</a>
+    <nav>
+      <a href="https://docs.rs/free-agent">Docs</a>
+      <a href="https://crates.io/crates/free-agent">Crate</a>
+      <a href="index.html#apps">Apps</a>
+    </nav>
+  </div>
+  <p class="crumb"><a href="index.html#apps">Apps</a> › Social Deduction</p>
+  <h1 class="title">Social Deduction</h1>
+  <p class="subtitle">Werewolf and Avalon, played by language models.</p>
+</header>
+
+<main class="wrap">
+<section class="first">
+  <div class="text">
+    <p class="big">Social deduction games put agents in psychologically complicated situations. Some of the players are secretly on the other side, and everyone has to decide whom to trust from what the others say and how they vote.</p>
+    <p>The hidden players have to lie convincingly, keep their story straight, and work together without being seen to. The rest have to read intentions they can’t check, while everyone else is talking too and the clock is running. An accusation lands, a vote shifts, a quiet player suddenly speaks up. Every game ends with a winner, so each one is a measured result.</p>
+  </div>
+  <figure>
+    <img src="images/start.png" width="2560" height="1600" alt="The Social Deduction desktop app’s start screen, listing Werewolf and Avalon, each with its seats and a Play button">
+  </figure>
+</section>
+
+<section>
+  <h2>The games</h2>
+  <ul class="grid games">
+    <li>
+      <h3><a href="werewolf.html">Werewolf</a></h3>
+      <p>A village hides its werewolves. Each night the wolves kill, the seer learns one player’s nature and the doctor saves one life. Each day the village argues and votes someone out.</p>
+      <a class="more" href="werewolf.html">About Werewolf</a>
+    </li>
+    <li>
+      <h3><a href="avalon.html">Avalon</a></h3>
+      <p>Arthur’s servants send teams on quests; Mordred’s minions slip onto them and sabotage. Three good quests win it, unless the Assassin can name Merlin.</p>
+      <a class="more" href="avalon.html">About Avalon</a>
+    </li>
+  </ul>
+</section>
+
+<section>
+  <h2>Set the table</h2>
+  <ul class="points">
+    <li>Every player plays a strategy: a prompt and a model, or a random player that needs neither.</li>
+    <li>Mix them at one table: random werewolves against prompted villagers, or two prompts head to head.</li>
+    <li>Use any OpenAI-compatible server, hosted or on your own machine. The app finds LM Studio, Ollama, llama.cpp and vLLM by itself.</li>
+    <li>Every model is checked before it plays, so you know which ones can follow the rules.</li>
+  </ul>
+</section>
+
+<section id="platforms">
+  <h2>Download</h2>
+  <p class="text">Each installer gives you the desktop app, to watch games live and review them move by move, and the <code>social-deduction</code> command line, to play them by the hundred.</p>
+  <div id="download" hidden>
+    <a class="button" href="#platforms">Download</a>
+    <p class="gets" data-platform="macos" hidden>Drag it to Applications, then choose
+    <strong>Social Deduction ▸ Install Command-Line Tool…</strong></p>
+    <p class="gets" data-platform="windows" hidden>Windows may warn that the app is from
+    an unknown publisher: choose <strong>More info</strong>, then
+    <strong>Run anyway</strong>.</p>
+    <p class="gets" data-platform="linux" hidden>The command line is installed to
+    <code>/usr/bin</code>.</p>
+  </div>
+  <ul class="downloads">
+    <li id="macos"><a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction.dmg">macOS</a>
+      <span>Apple silicon and Intel, <code>Social-Deduction.dmg</code></span></li>
+    <li id="windows"><a href="https://github.com/wpm/FreeAgent/releases/latest/download/Social-Deduction-setup.exe">Windows</a>
+      <span>x64, <code>Social-Deduction-setup.exe</code></span></li>
+    <li id="linux" class="linux"><span class="platform">Linux x86_64</span>
+      <span><a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-amd64.deb"><code>.deb</code></a> ·
+      <a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-x86_64.rpm"><code>.rpm</code></a></span></li>
+    <li class="linux"><span class="platform">Linux arm64</span>
+      <span><a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-arm64.deb"><code>.deb</code></a> ·
+      <a href="https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-aarch64.rpm"><code>.rpm</code></a></span></li>
+  </ul>
+  <p class="text">Then write out the example tables and play one:</p>
+<pre><code>social-deduction configs --write .
+social-deduction play werewolf/random.toml</code></pre>
+</section>
+</main>
+
+<footer class="wrap">
+  <p>Free Agent is by <a href="https://github.com/wpm">W.P. McNeill</a>,
+  licensed under <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-MIT">MIT</a>
+  or <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-APACHE">Apache-2.0</a>.</p>
+</footer>
+</body>
+</html>
