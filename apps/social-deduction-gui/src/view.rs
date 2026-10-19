@@ -9,6 +9,7 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_rich_chat::{Message, RenderOptions, RichChatStyle, Transcript};
+use social_deduction_cues::go::Go;
 use social_deduction_cues::settings::label;
 use social_deduction_cues::{
     Cue, Deed, GameName, NightDeed, Outcome, Seat, Side, WerewolfPanel, WerewolfPhase,
@@ -18,7 +19,7 @@ use wasm_bindgen_futures::JsFuture;
 
 use crate::address::{Address, GAMES};
 use crate::desktop::{Desktop, set_theme};
-use crate::review::{self, Go, Review};
+use crate::review::{self, Review};
 use crate::screen::{
     self, Board, Body, Landed, NARRATOR, Post, Screen, SeatMark, THINKING_DELAY, Thinker, Timer,
     dots_due, entry, side_key,

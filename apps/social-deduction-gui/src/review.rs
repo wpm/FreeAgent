@@ -3,34 +3,11 @@
 //! game just played on its last, where it left off. The cursor moves
 //! bubble by bubble, by chapter, to either end, or to another game.
 
-use serde::Deserialize;
+use social_deduction_cues::go::Go;
 use social_deduction_cues::settings::game_title;
 use social_deduction_cues::{Cue, GameName, Opened, Outcome};
 
 use crate::screen::{Landed, Screen, Timeline, side_key};
-
-/// Where the cursor goes: the **Go** menu's items, and the keys the main
-/// window handles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Go {
-    /// The bubble before.
-    Previous,
-    /// The bubble after.
-    Next,
-    /// The first bubble.
-    First,
-    /// The last bubble.
-    Last,
-    /// The chapter heading before.
-    PreviousChapter,
-    /// The chapter heading after.
-    NextChapter,
-    /// The first bubble of the game before.
-    PreviousGame,
-    /// The first bubble of the game after.
-    NextGame,
-}
 
 /// Where the key `key` takes the cursor, pressed with a modifier or not:
 /// an unmodified arrow to the bubble before or after, and Home or End to
@@ -439,12 +416,6 @@ mod tests {
         ] {
             assert_eq!(keyed(key, true), None);
         }
-    }
-
-    #[test]
-    fn the_menu_names_where_the_cursor_goes() {
-        let go: Go = serde_json::from_str("\"previous_chapter\"").unwrap();
-        assert_eq!(go, Go::PreviousChapter);
     }
 
     #[test]
