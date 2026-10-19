@@ -35,11 +35,13 @@ impl Served {
         serde_json::from_str(&self.body).unwrap()
     }
 
-    /// The method and the path of the request line, such as `get` and
-    /// `/v1/models`.
+    /// The method and the path of the request line, without its query,
+    /// such as `get` and `/v1/models`.
     fn asked(&self) -> (&str, &str) {
         let mut words = self.head[0].split_whitespace();
-        (words.next().unwrap(), words.next().unwrap())
+        let method = words.next().unwrap();
+        let target = words.next().unwrap();
+        (method, target.split('?').next().unwrap())
     }
 }
 
