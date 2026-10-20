@@ -10,6 +10,12 @@ name: Release the desktop app
 # The install table and the signing status go on top of the release's
 # notes.
 #
+# Each release also carries a signed update bundle for each platform and
+# a latest.json naming them, which the installed app reads on launch to
+# offer the update. They are signed with the minisign key in the
+# TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+# secrets, which are required: the build fails without them.
+#
 # It runs when the Release workflow succeeds on a v<version> tag, where
 # <version> is the workspace's, which both of the app's crates take. A tag
 # that does not match fails the run before anything is built. dist creates
@@ -209,11 +215,13 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/social-deduction-gui
           releaseId: ${{ needs.check.outputs.release-id }}
           uploadWorkflowArtifacts: true
-          uploadUpdaterJson: false
+          uploadUpdaterJson: true
           args: ${{ matrix.args }}
       # Every bundle's social-deduction is the release's. Tauri signs the
       # macOS app's copy, ad hoc without the secrets, so only the others

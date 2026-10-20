@@ -160,6 +160,24 @@ cargo tauri dev
 Every build of `src-tauri`, `cargo test` and rust-analyzer among them,
 uses the sidecar, and running `sidecar.sh` again brings it up to date.
 
+The installed app updates itself. On launch, a release build asks GitHub
+for the latest release and, when it is newer, offers **Install and
+Restart** or **Later**. A Mac, Windows or AppImage install updates this
+way; a `.deb` or `.rpm` install is updated by the package manager
+instead.
+
+A local `cargo tauri build` signs the update bundles, so it needs
+`TAURI_SIGNING_PRIVATE_KEY` (the key file's path or its contents) and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` in the environment, or skips the
+update bundles with:
+
+```sh
+cargo tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+```
+
+The bundles land in the workspace's `target/`, as in
+`target/release/bundle/dmg/`, not in `src-tauri/target/`.
+
 On Linux, Tauri needs the WebKitGTK development packages:
 `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev`.
 

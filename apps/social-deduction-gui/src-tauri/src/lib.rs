@@ -12,7 +12,8 @@
 //! Closing the main window stops the game, whether it is being prepared or
 //! playing, and closes Settings. The opener plugin hands links to the
 //! system browser, and the dialog plugin picks files and asks before an
-//! import.
+//! import. On launch, the app checks for an update and, when the user
+//! agrees, installs it and restarts, as [`update`] does.
 
 #![warn(missing_docs)]
 
@@ -26,6 +27,7 @@ pub mod menu;
 pub mod review;
 pub mod secret;
 pub mod settings;
+pub mod update;
 
 use social_deduction::live::Session;
 use tauri::{Manager, WindowEvent};
@@ -43,12 +45,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Session::default())
         .setup(|app| {
             let handle = app.handle();
             app.manage(settings::Store::open(handle)?);
             app.manage(catalog::Catalog::open(handle)?);
             catalog::check_in_background(handle);
+            #[cfg(not(debug_assertions))]
+            update::check_in_background(handle);
             app.set_menu(menu::build(handle)?)?;
             Ok(())
         })
