@@ -1,5 +1,5 @@
 # Checks that the Windows setup.exe puts social-deduction on the user's
-# Path and that uninstalling takes it off again, for release-gui.yml.
+# Path and that uninstalling takes it off again, for release-social-deduction.yml.
 #
 #   installer-path.ps1 <setup.exe> <version>
 #

@@ -1,0 +1,19 @@
+name: Label
+
+# Labels each pull request with the products it changes, as
+# .github/labeler.yml says, so that a release's generated notes group it
+# under its product. It runs in the base repository's context and checks
+# out no code from the pull request.
+on:
+  pull_request_target:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    name: Label by product
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v7

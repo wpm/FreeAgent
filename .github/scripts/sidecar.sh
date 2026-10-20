@@ -4,31 +4,27 @@
 # Tauri's name for it: binaries/social-deduction-<target triple>, with
 # .exe on Windows.
 #
-#   sidecar.sh [--target <triple>] [--release <tag> | --debug]
+#   sidecar.sh [--target <triple>] [--debug]
 #
-# The target is the host's by default. On a release, the sidecar is the
-# binary dist built, taken from its archive on the release with <tag>;
-# otherwise cargo builds it here, optimized, or with --debug as a debug
-# build that shares what `cargo test` builds. universal-apple-darwin is
-# the two macOS binaries joined with lipo, and the two stay beside it,
-# since cargo builds the app once for each chip and Tauri looks for each
-# chip's sidecar then. Prints each file it writes, the target's last.
+# The target is the host's by default. cargo builds it, optimized, or with
+# --debug as a debug build that shares what `cargo test` builds.
+# universal-apple-darwin is the two macOS binaries joined with lipo, and
+# the two stay beside it, since cargo builds the app once for each chip
+# and Tauri looks for each chip's sidecar then. Prints each file it
+# writes, the target's last.
 #
 # Environment:
 #   SIDECAR_DIR       where the sidecars go (default the desktop app's
 #                     src-tauri/binaries)
 #   CARGO_TARGET_DIR  where cargo builds (default the workspace's target)
-#   GH_TOKEN          for gh, on a release
 set -euo pipefail
 
-usage="usage: sidecar.sh [--target <triple>] [--release <tag> | --debug]"
+usage="usage: sidecar.sh [--target <triple>] [--debug]"
 target=
-tag=
 profile=release
 while [ $# -gt 0 ]; do
   case $1 in
     --target) target=${2:?$usage}; shift 2 ;;
-    --release) tag=${2:?$usage}; shift 2 ;;
     --debug) profile=debug; shift ;;
     *) echo "$usage" >&2; exit 2 ;;
   esac
@@ -52,28 +48,11 @@ name() { # <triple>
 
 # Puts the binary for one target into the sidecar directory.
 one() { # <triple>
-  local triple=$1 binary
-  binary=social-deduction$(exe "$triple")
-  if [ -n "$tag" ]; then
-    local scratch archive=social-deduction-$triple.tar.xz
-    case $triple in *windows*) archive=social-deduction-$triple.zip ;; esac
-    scratch=$(mktemp -d)
-    gh release download "$tag" -p "$archive" -D "$scratch"
-    mkdir "$scratch/x"
-    case $archive in
-      *.zip) unzip -q "$scratch/$archive" -d "$scratch/x" ;;
-      *) tar -xJf "$scratch/$archive" -C "$scratch/x" ;;
-    esac
-    # dist's tarballs hold a directory named for the archive; its zips don't.
-    cp "$(find "$scratch/x" -type f -name "$binary" | head -n 1)" "$out/$(name "$triple")"
-    rm -rf "$scratch"
-  else
-    local built=${CARGO_TARGET_DIR:-$root/target} args=(--locked -p social-deduction --bin social-deduction)
-    if [ "$profile" = release ]; then args+=(--release); fi
-    if [ "$triple" != "$host" ]; then args+=(--target "$triple"); built=$built/$triple; fi
-    cargo build "${args[@]}"
-    cp "$built/$profile/$binary" "$out/$(name "$triple")"
-  fi
+  local triple=$1 built=${CARGO_TARGET_DIR:-$root/target} args=(--locked -p social-deduction --bin social-deduction)
+  if [ "$profile" = release ]; then args+=(--release); fi
+  if [ "$triple" != "$host" ]; then args+=(--target "$triple"); built=$built/$triple; fi
+  cargo build "${args[@]}"
+  cp "$built/$profile/social-deduction$(exe "$triple")" "$out/$(name "$triple")"
   echo "$out/$(name "$triple")"
 }
 

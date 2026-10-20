@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The top of a release's notes: the desktop app's installers, one row per
 # platform, so that the list of assets under it needs no explaining.
-# dist's notes from CHANGELOG.md follow it.
+# The notes GitHub generated follow it.
 #
 #   release-notes.sh <version>
 #

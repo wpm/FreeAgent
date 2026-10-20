@@ -18,15 +18,16 @@ macOS, Windows or Linux. Each installer gives you the desktop app and the
 
 ### Servers and CI
 
-The command line alone, without the desktop app or its webview libraries:
+The command line comes with every desktop installer: on the PATH with
+the `.deb`, the `.rpm` and the Windows setup, and from the macOS app's
+**Social Deduction ▸ Install Command-Line Tool…** menu.
 
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-installer.sh | sh
-```
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/wpm/FreeAgent/releases/latest/download/social-deduction-installer.ps1 | iex"
-```
+Without the desktop app or its webview libraries, the command line is an
+archive for each platform on the latest `social-deduction-v*` release on
+the [Releases page](https://github.com/wpm/FreeAgent/releases):
+`social-deduction-<target>.tar.gz`, or `.zip` for Windows, each with a
+`.sha256` beside it. It holds the binary, the example configurations, this
+README and the licenses.
 
 With a Rust toolchain, `cargo install --git https://github.com/wpm/FreeAgent social-deduction`
 builds it from source.

@@ -1,6 +1,7 @@
 [package]
 name = "social-deduction"
-version.workspace = true
+# The release workflow stamps the version from the tag; see RELEASING.md.
+version = "0.0.0"
 edition.workspace = true
 description = "Social deduction games, played at random or by language model"
 readme = "README.md"
@@ -10,12 +11,6 @@ homepage.workspace = true
 # The applications ship as binaries from GitHub Releases; the library is what
 # goes to crates.io. Drop this line to publish the application there too.
 publish = false
-
-# Which is not to say dist should skip it: it is the binary dist ships.
-[package.metadata.dist]
-dist = true
-# A game needs a configuration file, so the examples ship beside the binary.
-include = ["configs/"]
 
 [dependencies]
 anyhow.workspace = true
