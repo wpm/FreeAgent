@@ -22,7 +22,7 @@ name: Release Social Deduction
 # .github/scripts/stamp-version.sh, so the bundles and the command line
 # say that version. Releases of other products are skipped.
 #
-# Run by hand, or on a pull request that changes it or its scripts, it
+# Run by hand, or on a push to main that changes it or its scripts, it
 # builds everything at version 0.0.0 as workflow artifacts and touches no
 # release, for trying the pipeline out.
 #
@@ -37,7 +37,8 @@ on:
   release:
     types: [published]
   workflow_dispatch:
-  pull_request:
+  push:
+    branches: [main]
     paths:
       - .github/workflows/release-social-deduction.yml
       - .github/scripts/**

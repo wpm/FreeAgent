@@ -62,6 +62,10 @@ Publishing runs the product's workflow under Actions:
 When a job fails, open the run and choose **Re-run failed jobs**, which
 uploads over what is there.
 
+To try **Release Social Deduction** without a release, run it by hand from
+the Actions tab. A push to `main` that changes it or its scripts does the
+same. Either builds everything at version `0.0.0` as workflow artifacts.
+
 ## Choosing a version
 
 Each product follows [semver](https://semver.org) on its own. Before 1.0,
