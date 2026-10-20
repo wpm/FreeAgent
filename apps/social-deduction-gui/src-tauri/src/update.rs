@@ -1,7 +1,7 @@
 //! The app updating itself to the latest release.
 //!
-//! On launch, a release build asks GitHub for the latest release's
-//! `latest.json`, through the updater plugin. When it names a newer
+//! On launch, a release build asks the website for the newest full
+//! release's `latest.json`, through the updater plugin. When it names a newer
 //! version, a dialog offers to install it. Installing downloads the update,
 //! checks its signature against the public key in `tauri.conf.json`,
 //! installs it, stops any game and restarts the app as the new version.

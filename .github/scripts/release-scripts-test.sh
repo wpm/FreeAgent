@@ -11,12 +11,12 @@ check() { # <description> <condition>...
 fails() { ! "$@" > /dev/null 2>&1; }
 quiet() { "$@" > /dev/null; }
 
-generated=$'## Install social-deduction 1.2.3\n\nThe notes from CHANGELOG.md.'
+generated=$'## What\'s Changed\n\nThe notes GitHub generated.'
 notes=$(./release-notes.sh 1.2.3)
 
 section=$'<!-- desktop-app -->\n'"$notes"$'\n<!-- /desktop-app -->'
 
-# The notes go on top of what dist wrote, between markers, with a blank
+# The notes go on top of the generated ones, between markers, with a blank
 # line after them.
 body=$(./release-body.sh 1.2.3 <<< "$generated")
 check "notes come first" test "$body" = "$section"$'\n\n'"$generated"
@@ -75,24 +75,67 @@ check "an old name is the x86_64 build" test "$(cat "$scratch/stable/social-dedu
 check "an x86_64 AppImage spelled amd64 is the x86_64 build" test "$(cat "$scratch/stable/Social-Deduction-x86_64.AppImage")" = "Social Deduction_1.2.3_amd64.AppImage"
 
 # The website offers six of the installers: the .dmg, the setup.exe, and
-# a .deb and an .rpm for each Linux architecture. The release notes'
-# table names the same ones.
-site=$(./site-downloads.sh ../../site/social-deduction.html | tr '\n' ' ')
+# a .deb and an .rpm for each Linux architecture, each linked through the
+# newest full release of social-deduction. The release notes' table names
+# the same ones.
+cp -R ../../site "$scratch/site"
+cat > "$scratch/releases.json" <<'JSON'
+[
+  {"tag_name": "social-deduction-v0.3.0-rc.1", "draft": false, "prerelease": true},
+  {"tag_name": "social-deduction-v0.4.0", "draft": true, "prerelease": false},
+  {"tag_name": "social-deduction-v0.1.4", "draft": false, "prerelease": false},
+  {"tag_name": "free-agent-v9.0.0", "draft": false, "prerelease": false},
+  {"tag_name": "v0.9.0", "draft": false, "prerelease": false}
+]
+[
+  {"tag_name": "social-deduction-v0.2.10", "draft": false, "prerelease": false},
+  {"tag_name": "social-deduction-v0.2.9", "draft": false, "prerelease": false},
+  {"tag_name": "social-deduction-gui-v5.0.0", "draft": false, "prerelease": false}
+]
+JSON
+resolved=$(./site-releases.sh "$scratch/site" < "$scratch/releases.json")
+check "the site resolves social-deduction to its newest full release" test "$resolved" = "social-deduction social-deduction-v0.2.10"
+check "no placeholder is left" fails grep -rq '{{release:' "$scratch/site"
+check "no link goes through releases/latest" fails grep -rq 'releases/latest' "$scratch/site"
+check "the source page links through the placeholder" grep -q 'href="{{release:social-deduction}}/Social-Deduction.dmg"' ../../site/social-deduction.html
+release=https://github.com/wpm/FreeAgent/releases/download/social-deduction-v0.2.10
+check "a placeholder becomes the release's download address" grep -q "href=\"$release/Social-Deduction.dmg\"" "$scratch/site/social-deduction.html"
+check "pages without placeholders are left alone" cmp -s ../../site/index.html "$scratch/site/index.html"
+# Another product is resolved from its own releases, and a product with no
+# full release fails, naming it.
+mkdir -p "$scratch/two"
+printf '<a href="{{release:free-agent}}/a.txt">a</a> <a href="{{release:social-deduction}}/b.txt">b</a>\n' > "$scratch/two/index.html"
+check "each product resolves to its own release" test "$(./site-releases.sh "$scratch/two" < "$scratch/releases.json")" = \
+  $'free-agent free-agent-v9.0.0\nsocial-deduction social-deduction-v0.2.10'
+mkdir -p "$scratch/none"
+printf '<a href="{{release:mathdoku}}/a.txt">a</a>\n' > "$scratch/none/index.html"
+status=0; unknown=$(./site-releases.sh "$scratch/none" < "$scratch/releases.json" 2>&1 > /dev/null) || status=$?
+check "a placeholder with no release fails" test "$status" -ne 0
+check "the product with no release is named" grep -q "mathdoku" <<< "$unknown"
+check "a site with no release fails before changing anything" grep -q '{{release:mathdoku}}' "$scratch/none/index.html"
+# A link through releases/latest may reach a release of another product,
+# so the placeholder is the only way to link to a release.
+mkdir -p "$scratch/latest"
+printf '<a href="https://github.com/wpm/FreeAgent/releases/latest/download/a.txt">a</a>\n' > "$scratch/latest/index.html"
+status=0; latest=$(./site-releases.sh "$scratch/latest" < "$scratch/releases.json" 2>&1 > /dev/null) || status=$?
+check "a link through releases/latest fails" test "$status" -ne 0
+check "the page linking through releases/latest is named" grep -q "$scratch/latest/index.html" <<< "$latest"
+
+site=$(./site-downloads.sh "$scratch/site" social-deduction-v0.2.10 | tr '\n' ' ')
 check "the site offers the installers that put the command line on the PATH" test "$site" = \
   "Social-Deduction-setup.exe Social-Deduction.dmg social-deduction-aarch64.rpm social-deduction-amd64.deb social-deduction-arm64.deb social-deduction-x86_64.rpm "
-check "every download on the site has a stable name" quiet ./site-downloads.sh ../../site/social-deduction.html <(ls "$scratch/stable")
+check "every download on the site has a stable name" quiet ./site-downloads.sh "$scratch/site" social-deduction-v0.2.10 <(ls "$scratch/stable")
 check "the notes' table names the site's downloads" test \
   "$(awk -F' [|] ' '/^\| / { print $2 }' <<< "$notes" | grep -oE '[[:alnum:]_.-]+[.](dmg|exe|deb|rpm)' | LC_ALL=C sort | tr '\n' ' ')" = "$site"
 check "the notes say the installers carry the command line" grep -q "Each download gives you the app and the \`social-deduction\` command line" <<< "$notes"
 check "the notes send the command line alone to the README" grep -q "Command line only, for servers and CI: see the \[README\](https://github.com/wpm/FreeAgent/tree/main/apps/social-deduction#servers-and-ci)." <<< "$notes"
 # A download the release doesn't have fails, and says which.
 rm "$scratch/stable/social-deduction-arm64.deb"
-status=0; missing=$(./site-downloads.sh ../../site/social-deduction.html <(ls "$scratch/stable") 2>&1 > /dev/null) || status=$?
+status=0; missing=$(./site-downloads.sh "$scratch/site" social-deduction-v0.2.10 <(ls "$scratch/stable") 2>&1 > /dev/null) || status=$?
 check "a download missing from the release fails" test "$status" -ne 0
 check "the missing download is named" test "$missing" = "not among the release's assets: social-deduction-arm64.deb"
-mkdir -p "$scratch/page"
-printf '<a href="https://example.com/">nothing to download</a>\n' > "$scratch/page/index.html"
-check "a page with no downloads fails" fails ./site-downloads.sh "$scratch/page/index.html"
+check "a site with no downloads from the release fails" fails ./site-downloads.sh "$scratch/site" social-deduction-v0.2.9
+check "a site with no downloads at all fails" fails ./site-downloads.sh "$scratch/none" social-deduction-v0.2.10
 
 # A package for an architecture with no stable name fails.
 echo riscv > "$scratch/built/Social Deduction_1.2.3_riscv64.deb"
@@ -106,10 +149,9 @@ check "a carriage return is ignored" test -f "$scratch/crlf/Social-Deduction.msi
 check "no installer fails" fails ./stable-names.sh "$scratch/none" <<< "[\"$scratch/built/Social Deduction.app\"]"
 
 # sidecar.sh, with stand-ins for the tools it runs: cargo writes what it
-# was asked to build, lipo joins its inputs, and gh hands over archives
-# shaped like dist's.
+# was asked to build, and lipo joins its inputs.
 tools="$scratch/tools"
-mkdir -p "$tools" "$scratch/releases"
+mkdir -p "$tools"
 cat > "$tools/rustc" <<'TOOL'
 #!/usr/bin/env bash
 printf 'rustc 1.0.0\nhost: x86_64-unknown-linux-gnu\r\n'
@@ -128,26 +170,10 @@ cat > "$tools/lipo" <<'TOOL'
 inputs=(); while [ $# -gt 0 ]; do case $1 in -create) shift ;; -output) out=$2; shift 2 ;; *) inputs+=("$1"); shift ;; esac; done
 cat "${inputs[@]}" > "$out"
 TOOL
-cat > "$tools/gh" <<'TOOL'
-#!/usr/bin/env bash
-# gh release download <tag> -p <pattern>... -D <directory>
-tag=$3; shift 3; patterns=()
-while [ $# -gt 0 ]; do case $1 in -p) patterns+=("$2"); shift 2 ;; -D) dir=$2; shift 2 ;; *) shift ;; esac; done
-for pattern in "${patterns[@]}"; do cp "$RELEASES/$tag/"$pattern "$dir/"; done
-TOOL
 chmod +x "$tools"/*
-for triple in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
-  mkdir -p "$scratch/archive/social-deduction-$triple" "$scratch/releases/v1.2.3"
-  echo "dist's $triple" > "$scratch/archive/social-deduction-$triple/social-deduction"
-  tar -cJf "$scratch/releases/v1.2.3/social-deduction-$triple.tar.xz" -C "$scratch/archive" "social-deduction-$triple"
-done
-mkdir -p "$scratch/archive/windows"
-echo "dist's windows" > "$scratch/archive/windows/social-deduction.exe"
-(cd "$scratch/archive/windows" && zip -q "$scratch/releases/v1.2.3/social-deduction-x86_64-pc-windows-msvc.zip" social-deduction.exe)
-
 sidecar() { # <directory> <argument>...
   local out=$1; shift
-  PATH="$tools:$PATH" CARGO_TARGET_DIR="$scratch/target" RELEASES="$scratch/releases" \
+  PATH="$tools:$PATH" CARGO_TARGET_DIR="$scratch/target" \
     SIDECAR_DIR="$out" ./sidecar.sh "$@" > /dev/null
 }
 files() { find "$1" -type f -exec basename {} \; | LC_ALL=C sort | tr '\n' ' '; }
@@ -169,15 +195,7 @@ check "a universal sidecar comes with one for each chip" test "$(files "$scratch
 check "a universal sidecar joins the two" test "$(cat "$scratch/universal/social-deduction-universal-apple-darwin")" = \
   $'release build for aarch64-apple-darwin\nrelease build for x86_64-apple-darwin'
 
-# On a release, the sidecar is the binary dist built, from its archive.
-sidecar "$scratch/released-linux" --target x86_64-unknown-linux-gnu --release v1.2.3
-check "a released sidecar is dist's binary" test "$(cat "$scratch/released-linux/social-deduction-x86_64-unknown-linux-gnu")" = "dist's x86_64-unknown-linux-gnu"
-sidecar "$scratch/released-windows" --target x86_64-pc-windows-msvc --release v1.2.3
-check "a released Windows sidecar comes out of dist's zip" test "$(cat "$scratch/released-windows/social-deduction-x86_64-pc-windows-msvc.exe")" = "dist's windows"
-sidecar "$scratch/released-universal" --target universal-apple-darwin --release v1.2.3
-check "a released universal sidecar joins dist's two" test "$(cat "$scratch/released-universal/social-deduction-universal-apple-darwin")" = \
-  $'dist\'s aarch64-apple-darwin\ndist\'s x86_64-apple-darwin'
-check "a release without the target's archive fails" fails sidecar "$scratch/missing" --target aarch64-unknown-linux-gnu --release v1.2.3
+check "there is no release mode" fails sidecar "$scratch/gone" --release social-deduction-v1.2.3
 
 # bundled-cli.sh finds social-deduction in each bundle and asks its version.
 mkdir -p "$scratch/bundles/Social Deduction.app/Contents/MacOS" "$scratch/bundles/Empty.app/Contents/MacOS"
@@ -207,5 +225,86 @@ check "an AppImage's CLI need only say the version" quiet ./bundled-cli.sh 1.2.3
 echo "not an rpm" > "$scratch/bundles/broken.rpm"
 check "a bundle that doesn't open fails" fails ./bundled-cli.sh 1.2.3 \
   <<< "[\"$scratch/bundles/Social Deduction.app\", \"$scratch/bundles/broken.rpm\"]"
+
+
+# stamp-version.sh, in a workspace with the crates of both products, each
+# at 0.0.0 as on main.
+workspace="$scratch/workspace"
+crate() { # <directory> <name>
+  mkdir -p "$workspace/$1/src"
+  printf '[package]\nname = "%s"\n# Stamped from the tag.\nversion = "0.0.0"\nedition = "2024"\n' "$2" > "$workspace/$1/Cargo.toml"
+  touch "$workspace/$1/src/lib.rs"
+}
+crate . free-agent
+printf '\n[workspace]\nmembers = ["apps/*", "crates/*", "apps/social-deduction-gui/src-tauri"]\nresolver = "3"\n' >> "$workspace/Cargo.toml"
+crate apps/social-deduction social-deduction
+crate apps/social-deduction-gui social-deduction-gui
+crate apps/social-deduction-gui/src-tauri social-deduction-desktop
+crate crates/social-deduction-cues social-deduction-cues
+crate crates/other other
+cp -R "$workspace" "$scratch/pristine"
+scripts=$PWD
+stamp() { # <tag>, in a fresh copy of the workspace
+  rm -rf "$workspace" && cp -R "$scratch/pristine" "$workspace"
+  (cd "$workspace" && GITHUB_OUTPUT='' "$scripts/stamp-version.sh" "$@")
+}
+versions() { # every crate's version in the workspace, sorted by name
+  (cd "$workspace" && cargo metadata --no-deps --format-version 1 --offline) \
+    | jq -r '.packages | sort_by(.name)[] | "\(.name) \(.version)"' | tr '\n' ' '
+}
+locked() { # every workspace crate's version in Cargo.lock
+  awk '/^name = / { name = $3 } /^version = / && name { print name, $3 }' "$workspace/Cargo.lock" | tr -d '"' | LC_ALL=C sort | tr '\n' ' '
+}
+
+output=$(stamp social-deduction-v0.2.0 2> /dev/null)
+check "stamping social-deduction reports the product and version" test "$output" = $'product=social-deduction\nversion=0.2.0'
+check "stamping social-deduction sets its four crates" test "$(versions)" = \
+  "free-agent 0.0.0 other 0.0.0 social-deduction 0.2.0 social-deduction-cues 0.2.0 social-deduction-desktop 0.2.0 social-deduction-gui 0.2.0 "
+check "the lock file agrees" test "$(locked)" = "$(versions)"
+check "the comment above the version stays" grep -q '^# Stamped from the tag.' "$workspace/apps/social-deduction/Cargo.toml"
+stamp free-agent-v0.3.0 > /dev/null 2>&1
+check "stamping free-agent sets only free-agent" test "$(versions)" = \
+  "free-agent 0.3.0 other 0.0.0 social-deduction 0.0.0 social-deduction-cues 0.0.0 social-deduction-desktop 0.0.0 social-deduction-gui 0.0.0 "
+stamp free-agent-v0.3.0-rc.1 > /dev/null 2>&1
+check "a prerelease version is stamped as it is" test "$(versions)" = \
+  "free-agent 0.3.0-rc.1 other 0.0.0 social-deduction 0.0.0 social-deduction-cues 0.0.0 social-deduction-desktop 0.0.0 social-deduction-gui 0.0.0 "
+(cd "$workspace" && GITHUB_OUTPUT="$scratch/github-output" "$scripts/stamp-version.sh" free-agent-v1.0.0 > /dev/null 2>&1)
+check "the outputs go to GITHUB_OUTPUT when it is set" test "$(cat "$scratch/github-output")" = $'product=free-agent\nversion=1.0.0'
+for tag in mathdoku-v1.0.0 social-deduction-1.0.0 social-deduction-v1.0 v1.0.0 social-deduction-v01.0.0 ""; do
+  status=0; said=$(stamp "$tag" 2>&1 > /dev/null) || status=$?
+  check "the tag '$tag' fails" test "$status" -ne 0
+  check "the tag '$tag' is named" grep -qF "'$tag'" <<< "$said"
+done
+stamp mathdoku-v1.0.0 > /dev/null 2>&1 || true
+check "a failed stamp changes nothing" test "$(versions)" = \
+  "free-agent 0.0.0 other 0.0.0 social-deduction 0.0.0 social-deduction-cues 0.0.0 social-deduction-desktop 0.0.0 social-deduction-gui 0.0.0 "
+
+# cli-archive.sh packs the command line with the example configurations,
+# the README and the licenses.
+printf 'the binary\n' > "$scratch/social-deduction-x86_64-unknown-linux-gnu"
+printf 'the Windows binary\n' > "$scratch/social-deduction-x86_64-pc-windows-msvc.exe"
+archives=$(./cli-archive.sh x86_64-unknown-linux-gnu "$scratch/social-deduction-x86_64-unknown-linux-gnu" "$scratch/archives")
+check "an archive and its checksum are printed" test "$archives" = \
+  "$scratch/archives/social-deduction-x86_64-unknown-linux-gnu.tar.gz"$'\n'"$scratch/archives/social-deduction-x86_64-unknown-linux-gnu.tar.gz.sha256"
+listing=$(tar -tzf "$scratch/archives/social-deduction-x86_64-unknown-linux-gnu.tar.gz" | grep -v '/$' | grep -v '/configs/.*/' | LC_ALL=C sort | tr '\n' ' ')
+check "a tarball holds the binary, the README and the licenses in a folder named for it" test "$listing" = \
+  "social-deduction-x86_64-unknown-linux-gnu/LICENSE-APACHE social-deduction-x86_64-unknown-linux-gnu/LICENSE-MIT social-deduction-x86_64-unknown-linux-gnu/README.md social-deduction-x86_64-unknown-linux-gnu/social-deduction "
+check "a tarball holds the example configurations" quiet \
+  tar -xzOf "$scratch/archives/social-deduction-x86_64-unknown-linux-gnu.tar.gz" social-deduction-x86_64-unknown-linux-gnu/configs/werewolf/random.toml
+check "a tarball's binary is the one given" test \
+  "$(tar -xzOf "$scratch/archives/social-deduction-x86_64-unknown-linux-gnu.tar.gz" social-deduction-x86_64-unknown-linux-gnu/social-deduction)" = "the binary"
+check "a tarball's README is the command line's" test \
+  "$(tar -xzOf "$scratch/archives/social-deduction-x86_64-unknown-linux-gnu.tar.gz" social-deduction-x86_64-unknown-linux-gnu/README.md)" = "$(cat ../../apps/social-deduction/README.md)"
+sums() { # <directory> <checksum file>
+  (cd "$1" && if command -v sha256sum > /dev/null; then sha256sum -c "$2"; else shasum -a 256 -c "$2"; fi) > /dev/null 2>&1
+}
+check "a checksum checks out" sums \
+  "$scratch/archives" social-deduction-x86_64-unknown-linux-gnu.tar.gz.sha256
+quiet ./cli-archive.sh x86_64-pc-windows-msvc "$scratch/social-deduction-x86_64-pc-windows-msvc.exe" "$scratch/archives"
+check "a Windows archive is a zip with the binary at its top" test \
+  "$(unzip -p "$scratch/archives/social-deduction-x86_64-pc-windows-msvc.zip" social-deduction.exe)" = "the Windows binary"
+check "a zip holds the README" quiet unzip -l "$scratch/archives/social-deduction-x86_64-pc-windows-msvc.zip" README.md
+check "a zip has its checksum" test -s "$scratch/archives/social-deduction-x86_64-pc-windows-msvc.zip.sha256"
+check "a missing binary fails" fails ./cli-archive.sh x86_64-unknown-linux-gnu "$scratch/nothing" "$scratch/archives"
 
 [ "$failures" -eq 0 ]

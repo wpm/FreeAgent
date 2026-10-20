@@ -41,7 +41,7 @@
   },
   "plugins": {
     "updater": {
-      "endpoints": ["https://github.com/wpm/FreeAgent/releases/latest/download/latest.json"],
+      "endpoints": ["https://wpm.github.io/FreeAgent/social-deduction/latest.json"],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUwOEY5NDVDNUE5REMxMUMKUldRY3daMWFYSlNQVUdpTFhzWWRmdkhzM3JaM3FmUmE4UUJoRGJtUjlZSE1ydS82Z3lVaXRwejQK"
     }
   }

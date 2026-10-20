@@ -1,92 +1,71 @@
-name: Release the desktop app
+name: Release Social Deduction
 
-# Puts the desktop app's installers on the GitHub release that the Release
-# workflow (dist) made for a version tag: a .dmg for macOS (one build for
-# Apple silicon and Intel), a setup .exe and an .msi for Windows, and a
-# .deb, an .rpm and an .AppImage for Linux on x86_64 and on arm64. Each is
-# uploaded twice, under tauri-action's versioned name and under a stable
-# one, which the website links to through releases/latest/download/, and
-# a last job checks that the release has every file the website links to.
-# The install table and the signing status go on top of the release's
-# notes.
+# Builds Social Deduction for a release published in the Releases page
+# with a social-deduction-v<version> tag, and uploads it to that release:
+# a .dmg for macOS (one build for Apple silicon and Intel), a setup .exe
+# and an .msi for Windows, and a .deb, an .rpm and an .AppImage for Linux
+# on x86_64 and on arm64. Each installer is uploaded twice, under
+# tauri-action's versioned name and under a stable one, which the website
+# links to. Beside them go the social-deduction command line alone, an
+# archive per platform with its .sha256, for servers and CI. The install
+# table and the signing status go on top of the release's generated notes.
 #
 # Each release also carries a signed update bundle for each platform and
-# a latest.json naming them, which the installed app reads on launch to
-# offer the update. They are signed with the minisign key in the
+# a latest.json naming them. They are signed with the minisign key in the
 # TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-# secrets, which are required: the build fails without them.
+# secrets, which are required: the build fails without them. The last job
+# starts the website's build, which links its downloads to the newest full
+# release and serves its latest.json, where the installed app looks for
+# updates.
 #
-# It runs when the Release workflow succeeds on a v<version> tag, where
-# <version> is the workspace's, which both of the app's crates take. A tag
-# that does not match fails the run before anything is built. dist creates
-# the release with GITHUB_TOKEN, whose events start no workflows, so this
-# waits for the Release workflow to finish instead of for the release.
+# Every job first stamps the tag's version into the product's crates with
+# .github/scripts/stamp-version.sh, so the bundles and the command line
+# say that version. Releases of other products are skipped.
 #
-# Run by hand, or on a push to main that changes it, it builds everything
-# as workflow artifacts and touches no release, for trying the pipeline
-# out.
+# Run by hand, or on a pull request that changes it or its scripts, it
+# builds everything at version 0.0.0 as workflow artifacts and touches no
+# release, for trying the pipeline out.
 #
 # The macOS build is signed and notarized when the repository has the
 # secrets for it (see .github/scripts/apple-credentials.sh for their
 # names) and is an unsigned build otherwise, which the release notes say.
 #
-# Each bundle carries the social-deduction command line as a sidecar. On a
-# release it is the binary dist built, from the release's archives; on a
-# trial run it is built here, or taken from the release that sidecar-from
-# names. .github/scripts/sidecar.sh puts it in place, and each bundle's
-# copy has to print the release's version.
+# Each bundle carries the social-deduction command line as a sidecar,
+# which .github/scripts/sidecar.sh builds and puts in place, and each
+# bundle's copy has to print the release's version.
 on:
-  workflow_run:
-    workflows: [Release]
-    types: [completed]
+  release:
+    types: [published]
   workflow_dispatch:
-    inputs:
-      sidecar-from:
-        description: A release tag of this version whose command line the bundles carry, instead of one built here
-        required: false
-        default: ""
-  push:
-    branches: [main]
+  pull_request:
     paths:
-      - .github/workflows/release-gui.yml
+      - .github/workflows/release-social-deduction.yml
       - .github/scripts/**
 
 permissions:
   contents: write # the release's notes and assets
 
 concurrency:
-  group: release-gui-${{ github.event.workflow_run.head_branch || github.ref }}
+  group: release-social-deduction-${{ github.event.release.tag_name || github.ref }}
 
 env:
   CARGO_TERM_COLOR: always
+  TAG: ${{ github.event.release.tag_name }}
 
 jobs:
   check:
     name: Check the version
-    # A tag push's run names the tag as its branch. Pull requests run the
-    # Release workflow too, only to plan, and are skipped.
-    if: >-
-      github.event_name != 'workflow_run' || (
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
-        startsWith(github.event.workflow_run.head_branch, 'v'))
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'social-deduction-v')
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.release.outputs.tag }}
-      release-id: ${{ steps.release.outputs.id }}
-      version: ${{ steps.version.outputs.version }}
-    env:
-      TAG: ${{ github.event.workflow_run.head_branch }}
+      version: ${{ steps.version.outputs.version || '0.0.0' }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      # The tag has to say what the manifests say, or nothing is built.
-      # (The runner's own cargo serves: the script only reads metadata.)
+      # The tag says the version, or nothing is built. (The runner's own
+      # cargo serves.)
       - id: version
-        run: |
-          if [ -n "$TAG" ]; then set -- --tag "$TAG"; fi
-          .github/scripts/release-version.sh v social-deduction-desktop social-deduction-gui "$@"
+        if: env.TAG != ''
+        run: .github/scripts/stamp-version.sh "$TAG"
       # Which mode the macOS build will be in, from the script that puts
       # it there, so that the notes and the build agree.
       - id: apple
@@ -101,31 +80,21 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_PATH }}
         run: .github/scripts/apple-credentials.sh
-      # The release dist made for the tag, and the install table and the
-      # signing status above its notes. A rerun finds them there.
-      - id: release
-        if: env.TAG != ''
+      # The install table and the signing status above the generated
+      # notes. A rerun finds them there.
+      - if: env.TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
           MACOS_SIGNED: ${{ steps.apple.outputs.signed }}
           MACOS_NOTARIZED: ${{ steps.apple.outputs.notarized }}
         run: |
-          id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .id)
           gh release view "$TAG" --json body --jq .body | .github/scripts/release-body.sh "$VERSION" > notes.md
           gh release edit "$TAG" --notes-file notes.md
-          printf 'tag=%s\nid=%s\n' "$TAG" "$id" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build for ${{ matrix.name }}
     needs: check
-    # The same guard as check's, so that only a tag push's code is checked
-    # out here with the release's token and the Apple secrets.
-    if: >-
-      github.event_name != 'workflow_run' || (
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
-        startsWith(github.event.workflow_run.head_branch, 'v'))
     strategy:
       fail-fast: false
       matrix:
@@ -159,14 +128,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.targets }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-gui
+          key: release-social-deduction
       # The frontend, which tauri build builds first with Trunk.
       - uses: taiki-e/install-action@v2
         with:
@@ -196,18 +163,26 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_PATH }}
         run: .github/scripts/apple-credentials.sh
+      - name: The release's version
+        if: env.TAG != ''
+        shell: bash
+        run: .github/scripts/stamp-version.sh "$TAG"
       # The command line, where tauri build picks it up as a sidecar.
       - name: The command line
         id: sidecar
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.check.outputs.tag || inputs.sidecar-from }}
           TARGET: ${{ matrix.sidecar }}
         run: |
-          if [ -n "$TAG" ]; then set -- --release "$TAG"; fi
-          .github/scripts/sidecar.sh --target "$TARGET" "$@" | tee "$RUNNER_TEMP/sidecars.txt"
+          .github/scripts/sidecar.sh --target "$TARGET" | tee "$RUNNER_TEMP/sidecars.txt"
           echo "path=$(tail -n 1 "$RUNNER_TEMP/sidecars.txt")" >> "$GITHUB_OUTPUT"
+      # The same binary alone, for servers and CI.
+      - name: The command line's archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.sidecar }}
+          SIDECAR: ${{ steps.sidecar.outputs.path }}
+        run: .github/scripts/cli-archive.sh "$TARGET" "$SIDECAR" cli
       # Runs `tauri build`, which runs Trunk for the frontend first (the
       # beforeBuildCommand in tauri.conf.json), then uploads the bundles
       # to the release, or only as workflow artifacts on a trial run.
@@ -219,7 +194,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/social-deduction-gui
-          releaseId: ${{ needs.check.outputs.release-id }}
+          releaseId: ${{ github.event.release.id }}
           uploadWorkflowArtifacts: true
           uploadUpdaterJson: true
           args: ${{ matrix.args }}
@@ -275,33 +250,30 @@ jobs:
         env:
           ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
         run: .github/scripts/stable-names.sh stable <<< "$ARTIFACTS"
-      - if: needs.check.outputs.tag != ''
+      - if: env.TAG != ''
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.check.outputs.tag }}
-        run: gh release upload "$TAG" stable/* --clobber
-      - if: needs.check.outputs.tag == ''
+        run: gh release upload "$TAG" stable/* cli/* --clobber
+      - if: env.TAG == ''
         uses: actions/upload-artifact@v7
         with:
           name: stable-${{ matrix.name }}
-          path: stable/
+          path: |
+            stable/
+            cli/
 
-  # Every installer the website links to is on the release, under the
-  # name the link uses. CI's release-scripts-test.sh checks the same links
-  # against stable-names.sh, so a trial run skips this.
-  site:
-    name: The website's downloads
-    needs: [check, build]
-    if: needs.check.outputs.tag != ''
+  # The website links its downloads to the newest full release and serves
+  # its latest.json, and checks that the release has every file it links
+  # to, so it is built again once the release's files are up.
+  pages:
+    name: The website
+    needs: build
+    if: github.event_name == 'release'
     permissions:
-      contents: read # it only reads the release's assets
+      actions: write # to start the website's workflow
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
       - env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.check.outputs.tag }}
-        run: .github/scripts/site-downloads.sh site/social-deduction.html <(gh release view "$TAG" --json assets --jq '.assets[].name')
+        run: gh workflow run pages.yml --ref main --repo "$GITHUB_REPOSITORY"

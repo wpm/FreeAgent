@@ -691,7 +691,7 @@ mod tests {
     fn probes_another_version_kept_are_run_again() {
         let path = scratch("version");
         let mut probes = Probes {
-            version: "0.0.0".to_string(),
+            version: format!("{}-earlier", env!("CARGO_PKG_VERSION")),
             ..Probes::default()
         };
         probes.record("https://api.openai.com/v1", "gpt-4.1", Check::Plays);

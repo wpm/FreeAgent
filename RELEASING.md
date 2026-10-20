@@ -1,118 +1,111 @@
 # Releasing
 
-A release is a git tag. Pushing `v0.1.0` runs the release workflow, which
-builds the applications for macOS, Linux, and Windows, uploads the binaries
-and their installers to a GitHub Release with that version's notes from
-[CHANGELOG.md](CHANGELOG.md), and then publishes `free-agent` to crates.io.
-When it succeeds, a second workflow adds the desktop app's installers.
+Each product is released on its own, with its own version, by publishing
+a release in the [Releases page](https://github.com/wpm/FreeAgent/releases).
+The crates in a product share its version.
 
-## Cutting a release
+| Product | Crates | Tag | A release produces |
+|---|---|---|---|
+| `free-agent` | `free-agent` | `free-agent-v<version>` | `free-agent` on crates.io |
+| `social-deduction` | `social-deduction`, `social-deduction-gui`, `social-deduction-desktop`, `social-deduction-cues` | `social-deduction-v<version>` | Desktop installers for macOS, Windows and Linux, command-line archives, signed update bundles and `latest.json` |
 
-1. Set `version` under `[workspace.package]` in `Cargo.toml` and the version
-   of the `free-agent` entry under `[workspace.dependencies]` to match.
-   Every crate in the workspace shares the one version.
-2. Move the `Unreleased` notes in `CHANGELOG.md` under a heading for the
-   version and date, and add the version's compare link at the bottom.
-3. Check what will ship: `dist plan` lists the artifacts and
-   `cargo publish --workspace --dry-run` packages the library.
-4. Merge, then tag the merge commit on `main` and push the tag:
+The tag is the version. Every manifest on `main` says `version = "0.0.0"`,
+and the release workflow stamps the tag's version into the product's
+crates with `.github/scripts/stamp-version.sh` before it builds or
+publishes.
 
-   ```sh
-   git tag v0.1.0
-   git push origin v0.1.0
-   ```
+## Release a product
 
-5. Watch the Release workflow under Actions. It creates the GitHub Release
-   when the binaries are up and publishes to crates.io after that.
-6. Watch **Release the desktop app** under Actions, which starts when the
-   Release workflow succeeds. It builds the desktop app's installers on
-   macOS, Linux and Windows and puts them on the release, some fifteen to
-   twenty minutes later.
-7. Check the release page: a **Desktop app** table above the notes, and
-   among the assets `Social-Deduction.dmg`, `Social-Deduction-setup.exe`,
-   `Social-Deduction.msi`, and for Linux `social-deduction-amd64.deb`,
-   `social-deduction-arm64.deb`, `social-deduction-x86_64.rpm`,
-   `social-deduction-aarch64.rpm`, `Social-Deduction-x86_64.AppImage` and
-   `Social-Deduction-aarch64.AppImage`, each beside its versioned twin,
-   and `latest.json`, with entries for `darwin-aarch64`, `darwin-x86_64`,
-   `linux-x86_64`, `linux-aarch64` and `windows-x86_64`.
-   `https://github.com/wpm/FreeAgent/releases/latest/download/latest.json`
-   serves it. A prerelease never becomes `releases/latest`, so installed
-   apps are offered only full releases.
-   The website links to the .dmg, the setup.exe, and the `.deb` and `.rpm`
-   for each Linux architecture, and the workflow's last job, **The
-   website's downloads**, checks that the release has each of them.
+1. **Releases → Draft a new release.**
+2. **Choose a tag:** type `<product>-v<version>`, for example
+   `social-deduction-v0.2.0`, and choose **Create new tag on publish**.
+   Leave **Target** as `main`.
+3. **Previous tag:** choose that product's last tag, for example
+   `social-deduction-v0.1.0`. GitHub may otherwise pick another product's
+   tag.
+4. Click **Generate release notes**. Delete lines in other categories that
+   don't belong to this product. Title the release `<Product> <version>`,
+   for example "Social Deduction 0.2.0".
+5. For a candidate (`-rc.N`), check **Set as a pre-release**. It is built
+   and uploaded, and the website and installed apps keep to the last full
+   release.
+6. Click **Publish release**.
 
-## The desktop app
+Publishing runs the product's workflow under Actions:
 
-`.github/workflows/release-gui.yml` builds the installers with
-[tauri-action](https://github.com/tauri-apps/tauri-action), one job per
-platform. A failed platform leaves the release without its installers:
-open the run and choose **Re-run failed jobs**, which uploads them again
-over any that are there. Run the workflow by hand from the Actions tab to
-build every installer as a workflow artifact without touching a release;
-a push to `main` that changes the workflow or its scripts does the same.
+- **Social Deduction:** **Release Social Deduction**
+  (`.github/workflows/release-social-deduction.yml`), about 15–20
+  minutes. It puts the desktop app's install table above the notes and
+  uploads, each beside its versioned twin, `Social-Deduction.dmg`,
+  `Social-Deduction-setup.exe`, `Social-Deduction.msi`,
+  `social-deduction-amd64.deb`, `social-deduction-arm64.deb`,
+  `social-deduction-x86_64.rpm`, `social-deduction-aarch64.rpm`,
+  `Social-Deduction-x86_64.AppImage` and
+  `Social-Deduction-aarch64.AppImage`; the command line's archives
+  `social-deduction-universal-apple-darwin.tar.gz`,
+  `social-deduction-x86_64-unknown-linux-gnu.tar.gz`,
+  `social-deduction-aarch64-unknown-linux-gnu.tar.gz` and
+  `social-deduction-x86_64-pc-windows-msvc.zip`, each with its `.sha256`;
+  the update bundles with their `.sig`; and `latest.json`, with entries
+  for `darwin-aarch64`, `darwin-x86_64`, `linux-x86_64`, `linux-aarch64`
+  and `windows-x86_64`. Its last job starts the **Website** workflow,
+  which points the download links at the new release and checks that it
+  has each linked file. Then
+  `https://wpm.github.io/FreeAgent/social-deduction/latest.json` shows
+  the new version.
+- **The library:** **Publish to crates.io**
+  (`.github/workflows/publish-crates.yml`), about a minute. Check the
+  version on [crates.io/crates/free-agent](https://crates.io/crates/free-agent).
+  It runs in the `release` environment, which crates.io's trusted
+  publisher for `publish-crates.yml` expects.
 
-Every bundle carries the `social-deduction` command line that dist built
-for the release, so the workflow downloads dist's archives from the
-release: the Linux and Windows bundles hold dist's binaries as they are,
-and the macOS app holds dist's two joined into one universal binary and
-signed with the app. Each build job checks that its bundles' copy prints
-the release's version. A trial run builds the command line itself, or,
-given a tag in **sidecar-from**, takes it from that release.
+When a job fails, open the run and choose **Re-run failed jobs**, which
+uploads over what is there.
 
-On Windows, the setup.exe adds its folder to the user's PATH and its
-uninstaller takes it off, through the hooks in
-`src-tauri/installer-hooks.nsh`. The Windows job installs it, runs
-`social-deduction --version` in a new shell, and uninstalls it, checking
-the PATH each time. The .msi installs the app alone.
+## Choosing a version
 
-Each release carries a signed update bundle for each platform and a
-`latest.json` that the installed app reads on launch to offer the update.
-The bundles are signed with the minisign key in the
-`TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-secrets, and the build fails without them. The matching public key is
-`plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. The key pair
-cannot be recovered, and replacing it strands every installed copy, which
-then has to be reinstalled by hand, so the private key and its password
-are kept backed up outside this machine and repository.
+Each product follows [semver](https://semver.org) on its own. Before 1.0,
+a breaking change bumps the minor version; from 1.0 on, the major. A
+feature bumps the minor version and a fix the patch. Versions live only in
+tags: `main` stays at `0.0.0`, and development builds report it.
+
+## Undoing a release
+
+Delete the release and its tag (`git push origin :refs/tags/<tag>`), fix
+`main`, and publish again with the next patch version. A library version
+on crates.io stays there: `cargo yank` hides it from new dependents.
+
+## The desktop app's signing and updates
 
 The macOS app is signed and notarized when the repository has the Apple
 secrets that `.github/scripts/apple-credentials.sh` names, and is unsigned
 otherwise. The release notes say which, and how to open an unsigned app.
 
-## One-time setup
+Each release carries a signed update bundle for each platform. They are
+signed with the minisign key in the `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets, and the build fails without
+them. The matching public key is `plugins.updater.pubkey` in
+`apps/social-deduction-gui/src-tauri/tauri.conf.json`. Every installed
+copy trusts that key for good, so the private key and its password are
+kept backed up outside this machine and repository, and the key is never
+replaced.
 
-The release workflow authenticates to crates.io by
-[trusted publishing](https://crates.io/docs/trusted-publishing), which is
-configured on a crate that already exists. So the very first release goes
-like this:
+The installed app looks for updates at its updater endpoint,
+`https://wpm.github.io/FreeAgent/social-deduction/latest.json`, which the
+website's build copies from the newest full release. Every installed copy
+keeps the endpoint it was built with.
 
-1. Create the `release` environment under Settings → Environments. The
-   crates.io job runs in it, so the environment can be given required
-   reviewers to make publishing a deliberate click.
-2. Publish the library by hand once, with a token from
-   [crates.io/settings/tokens](https://crates.io/settings/tokens) that has
-   the `publish-new` scope:
+## Adding an application
 
-   ```sh
-   cargo login
-   cargo publish -p free-agent
-   ```
+1. List its crates under a new product in the table in
+   `.github/scripts/stamp-version.sh`.
+2. Copy `.github/workflows/release-social-deduction.yml` with the new tag
+   prefix.
+3. Add a label for it to `.github/labeler.yml`, create the label, and add
+   a category for it to `.github/release.yml`.
+4. Link its downloads on the website as
+   `{{release:<product>}}/<file>`, which the website's build resolves to
+   its newest full release. The build needs one, so these links go in
+   with or after its first full release.
 
-3. On [crates.io/crates/free-agent/settings](https://crates.io/crates/free-agent/settings),
-   add a trusted publisher: owner `wpm`, repository `FreeAgent`, workflow
-   `publish-crates.yml`, environment `release`.
-
-From the second release on, the tag does everything. The first tag still
-builds the binaries and the GitHub Release; its crates.io job sees the
-version already published and skips it.
-
-## Tooling
-
-The release workflow and `dist-workspace.toml` are generated by
-[dist](https://axodotdev.github.io/cargo-dist/book/), installed with
-`cargo install cargo-dist --locked`. After changing `dist-workspace.toml`,
-run `dist init` to regenerate the workflow, and `dist plan` to see the
-result. The workflow checks itself for staleness and fails a release whose
-configuration and workflow disagree.
+Its first release then needs no other setup.

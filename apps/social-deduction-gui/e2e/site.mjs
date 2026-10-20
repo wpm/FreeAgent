@@ -25,7 +25,8 @@ function check(condition, label) {
   if (!condition) failures += 1;
 }
 
-const download = 'https://github.com/wpm/FreeAgent/releases/latest/download/';
+// The website's build resolves the placeholder to the newest release.
+const download = '{{release:social-deduction}}/';
 const installers = [
   'Social-Deduction.dmg',
   'Social-Deduction-setup.exe',
@@ -82,7 +83,7 @@ async function visit({ userAgent, platform = null, touch = 0, javaScript = true,
     return {
       button: shown(button) ? { label: button.textContent.trim(), href: button.getAttribute('href') } : null,
       steps: [...document.querySelectorAll('#download [data-platform]')].filter(shown).map((p) => p.dataset.platform),
-      links: [...document.querySelectorAll('.downloads a')].filter(shown).map((a) => a.href),
+      links: [...document.querySelectorAll('.downloads a')].filter(shown).map((a) => a.getAttribute('href')),
       marked: [...document.querySelectorAll('.downloads li')]
         .filter((li) => getComputedStyle(li).backgroundColor !== 'rgba(0, 0, 0, 0)')
         .map((li) => li.querySelector('.platform')?.textContent.trim()),

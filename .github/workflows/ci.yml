@@ -148,8 +148,8 @@ jobs:
       - run: cargo clippy -p social-deduction-desktop --all-targets -- -D warnings
       - run: cargo test -p social-deduction-desktop
 
-  # The release workflows and their scripts, which otherwise run only at a
-  # release. dist generates release.yml, so actionlint leaves it out.
+  # The workflows and the release scripts, which otherwise run only at a
+  # release.
   workflows:
     name: Workflows
     runs-on: ubuntu-latest
@@ -159,8 +159,7 @@ jobs:
       # actionlint runs on each script step.
       - run: |
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
-          shopt -s extglob
-          ./actionlint .github/workflows/!(release).yml
+          ./actionlint
       - run: shellcheck .github/scripts/*.sh
       - run: .github/scripts/release-scripts-test.sh
 
