@@ -12,7 +12,7 @@
 
 use social_deduction::live::Session;
 use tauri::{AppHandle, Manager, async_runtime};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 /// Whether this install updates itself, given whether it runs as an
@@ -29,16 +29,17 @@ pub fn check_in_background(app: &AppHandle) {
     }
     let app = app.clone();
     async_runtime::spawn(async move {
-        let update = match app.updater() {
-            Ok(updater) => updater.check().await,
-            Err(error) => Err(error),
-        };
-        match update {
+        match check(&app).await {
             Ok(Some(update)) => offer(app, update),
             Ok(None) => {}
             Err(error) => tracing::warn!("the check for an update failed: {error}"),
         }
     });
+}
+
+/// The latest release, if it is newer than this one.
+async fn check(app: &AppHandle) -> tauri_plugin_updater::Result<Option<Update>> {
+    app.updater()?.check().await
 }
 
 /// Ask the user whether to install `update`, and install it if they agree.
@@ -67,14 +68,10 @@ fn offer(app: AppHandle, update: Update) {
 /// why it failed.
 async fn install(app: AppHandle, update: Update) {
     if let Err(error) = update.download_and_install(|_, _| {}, || {}).await {
-        app.dialog()
-            .message(format!(
-                "The update failed: {error}. The installer can be downloaded from the website."
-            ))
-            .title("Update Failed")
-            .kind(MessageDialogKind::Error)
-            .show(|_| {});
-        return;
+        let message = format!(
+            "The update failed: {error}. The installer can be downloaded from the website."
+        );
+        return crate::settings::error(&app, "Update Failed", message);
     }
     app.state::<Session>().stop();
     app.restart();
