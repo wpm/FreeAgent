@@ -23,8 +23,15 @@ other actors, never to itself. A typical episode has one environment actor
 and several agent actors.
 
 The library lives at the root of the repository and the applications built on
-it under `apps/`. For games built on this, see [`social-deduction`](apps/social-deduction), whose
-[Servers and CI](apps/social-deduction/README.md#servers-and-ci) section
+it under `apps/`, one folder each. An application's folder holds whichever of
+these it has: `cli/`, its command line; `gui/`, its web frontend, built for
+WASM; `gui/src-tauri/`, its desktop shell; and `gui-types/`, the types and
+helpers its native code shares with its frontend, which build for WASM too.
+The workspace picks these up by their folders. Crates shared by more than one
+application go in `crates/`.
+
+For games built on this, see [`social-deduction`](apps/social-deduction/cli), whose
+[Servers and CI](apps/social-deduction/cli/README.md#servers-and-ci) section
 installs its command line alone.
 
 ## Development

@@ -1,0 +1,280 @@
+name: Release Social Deduction
+
+# Builds Social Deduction for a release published in the Releases page
+# with a social-deduction-v<version> tag, and uploads it to that release:
+# a .dmg for macOS (one build for Apple silicon and Intel), a setup .exe
+# and an .msi for Windows, and a .deb, an .rpm and an .AppImage for Linux
+# on x86_64 and on arm64. Each installer is uploaded twice, under
+# tauri-action's versioned name and under a stable one, which the website
+# links to. Beside them go the social-deduction command line alone, an
+# archive per platform with its .sha256, for servers and CI. The install
+# table and the signing status go on top of the release's generated notes.
+#
+# Each release also carries a signed update bundle for each platform and
+# a latest.json naming them. They are signed with the minisign key in the
+# TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+# secrets, which are required: the build fails without them. The last job
+# starts the website's build, which links its downloads to the newest full
+# release and serves its latest.json, where the installed app looks for
+# updates.
+#
+# Every job first stamps the tag's version into the product's crates with
+# .github/scripts/stamp-version.sh, so the bundles and the command line
+# say that version. Releases of other products are skipped.
+#
+# Run by hand, or on a push to main that changes it or its scripts, it
+# builds everything at version 0.0.0 as workflow artifacts and touches no
+# release, for trying the pipeline out.
+#
+# The macOS build is signed and notarized when the repository has the
+# secrets for it (see .github/scripts/apple-credentials.sh for their
+# names) and is an unsigned build otherwise, which the release notes say.
+#
+# Each bundle carries the social-deduction command line as a sidecar,
+# which .github/scripts/sidecar.sh builds and puts in place, and each
+# bundle's copy has to print the release's version.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release-social-deduction.yml
+      - .github/scripts/**
+
+permissions:
+  contents: write # the release's notes and assets
+
+concurrency:
+  group: release-social-deduction-${{ github.event.release.tag_name || github.ref }}
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.event.release.tag_name }}
+
+jobs:
+  check:
+    name: Check the version
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'social-deduction-v')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version || '0.0.0' }}
+    steps:
+      - uses: actions/checkout@v7
+      # The tag says the version, or nothing is built. (The runner's own
+      # cargo serves.)
+      - id: version
+        if: env.TAG != ''
+        run: .github/scripts/stamp-version.sh "$TAG"
+      # Which mode the macOS build will be in, from the script that puts
+      # it there, so that the notes and the build agree.
+      - id: apple
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_PATH }}
+        run: .github/scripts/apple-credentials.sh
+      # The install table and the signing status above the generated
+      # notes. A rerun finds them there.
+      - if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          MACOS_SIGNED: ${{ steps.apple.outputs.signed }}
+          MACOS_NOTARIZED: ${{ steps.apple.outputs.notarized }}
+        run: |
+          gh release view "$TAG" --json body --jq .body | .github/scripts/release-body.sh "$VERSION" > notes.md
+          gh release edit "$TAG" --notes-file notes.md
+
+  build:
+    name: Build for ${{ matrix.name }}
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        # sidecar is the target the command line in the bundle is for.
+        include:
+          # One universal binary rather than one .dmg per chip, so there
+          # is one macOS download and nobody has to know which Mac they have.
+          - name: macOS
+            os: macos-latest
+            targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin
+            sidecar: universal-apple-darwin
+          # The oldest Ubuntu GitHub still runs: the .deb, .rpm and AppImage
+          # link against its glibc and webkit, and run on anything newer.
+          - name: Linux x86_64
+            os: ubuntu-22.04
+            targets: wasm32-unknown-unknown
+            args: ""
+            sidecar: x86_64-unknown-linux-gnu
+          # The same Ubuntu on arm64, for the same reason.
+          - name: Linux arm64
+            os: ubuntu-22.04-arm
+            targets: wasm32-unknown-unknown
+            args: ""
+            sidecar: aarch64-unknown-linux-gnu
+          - name: Windows
+            os: windows-latest
+            targets: wasm32-unknown-unknown
+            args: ""
+            sidecar: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-social-deduction
+      # The frontend, which tauri build builds first with Trunk.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      # The desktop shell's system libraries, as in ci.yml, plus what the
+      # AppImage bundler uses and what opens the .rpm to check it. macOS
+      # and Windows ship their webviews.
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf xdg-utils libdbus-1-dev libarchive-tools
+      # tauri-action installs Tauri's CLI with npm.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Apple credentials, when set
+        id: apple
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_PATH }}
+        run: .github/scripts/apple-credentials.sh
+      - name: The release's version
+        if: env.TAG != ''
+        shell: bash
+        run: .github/scripts/stamp-version.sh "$TAG"
+      # The command line, where tauri build picks it up as a sidecar.
+      - name: The command line
+        id: sidecar
+        shell: bash
+        env:
+          TARGET: ${{ matrix.sidecar }}
+        run: |
+          .github/scripts/sidecar.sh --target "$TARGET" | tee "$RUNNER_TEMP/sidecars.txt"
+          echo "path=$(tail -n 1 "$RUNNER_TEMP/sidecars.txt")" >> "$GITHUB_OUTPUT"
+      # The same binary alone, for servers and CI.
+      - name: The command line's archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.sidecar }}
+          SIDECAR: ${{ steps.sidecar.outputs.path }}
+        run: .github/scripts/cli-archive.sh "$TARGET" "$SIDECAR" cli
+      # Runs `tauri build`, which runs Trunk for the frontend first (the
+      # beforeBuildCommand in tauri.conf.json), then uploads the bundles
+      # to the release, or only as workflow artifacts on a trial run.
+      - id: tauri
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/social-deduction/gui
+          releaseId: ${{ github.event.release.id }}
+          uploadWorkflowArtifacts: true
+          uploadUpdaterJson: true
+          args: ${{ matrix.args }}
+      # Every bundle's social-deduction is the release's. Tauri signs the
+      # macOS app's copy, ad hoc without the secrets, so only the others
+      # have to be the sidecar's very bytes, the AppImage's aside.
+      - name: The bundled command line
+        shell: bash
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          VERSION: ${{ needs.check.outputs.version }}
+          SIDECAR: ${{ runner.os != 'macOS' && steps.sidecar.outputs.path || '' }}
+        run: .github/scripts/bundled-cli.sh "$VERSION" ${SIDECAR:+"$SIDECAR"} <<< "$ARTIFACTS"
+      # The .deb and the .rpm put the command line on the PATH, as the
+      # release's version, on Ubuntu and on Fedora.
+      - name: The installed command line
+        if: runner.os == 'Linux'
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          deb=$(jq -r '.[] | select(endswith(".deb"))' <<< "$ARTIFACTS")
+          rpm=$(jq -r '.[] | select(endswith(".rpm"))' <<< "$ARTIFACTS")
+          sudo apt-get install -y "$deb"
+          dpkg -L "$(dpkg-deb -f "$deb" Package)" | grep -x /usr/bin/social-deduction
+          test "$(/usr/bin/social-deduction --version)" = "social-deduction $VERSION"
+          docker run --rm -v "$(dirname "$rpm"):/packages:ro" -e VERSION -e RPM="/packages/$(basename "$rpm")" fedora:latest \
+            sh -c 'dnf install -y -q "$RPM" && rpm -ql "$(rpm -qp --qf "%{NAME}" "$RPM")" | grep -x /usr/bin/social-deduction &&
+              test "$(/usr/bin/social-deduction --version)" = "social-deduction $VERSION"'
+      # setup.exe puts social-deduction on the user's Path, once however
+      # often it is installed, and uninstalling takes exactly that off.
+      - name: The Windows Path
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          $setup = $env:ARTIFACTS | ConvertFrom-Json | Where-Object { $_ -like '*-setup.exe' }
+          .github/scripts/installer-path.ps1 $setup $env:VERSION
+      - name: The macOS signature
+        if: steps.apple.outputs.signed == 'true'
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          NOTARIZED: ${{ steps.apple.outputs.notarized }}
+        run: |
+          app=$(jq -r '.[] | select(endswith(".app"))' <<< "$ARTIFACTS")
+          codesign --verify --deep --strict --verbose=2 "$app"
+          if [ "$NOTARIZED" = true ]; then spctl --assess --type execute --verbose "$app"; fi
+      # The same installers again under the names the website links to.
+      - name: Stable names
+        shell: bash
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+        run: .github/scripts/stable-names.sh stable <<< "$ARTIFACTS"
+      - if: env.TAG != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" stable/* cli/* --clobber
+      - if: env.TAG == ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: stable-${{ matrix.name }}
+          path: |
+            stable/
+            cli/
+
+  # The website links its downloads to the newest full release and serves
+  # its latest.json, and checks that the release has every file it links
+  # to, so it is built again once the release's files are up.
+  pages:
+    name: The website
+    needs: build
+    if: github.event_name == 'release'
+    permissions:
+      actions: write # to start the website's workflow
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref main --repo "$GITHUB_REPOSITORY"

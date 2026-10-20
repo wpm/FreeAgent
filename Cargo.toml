@@ -1,8 +1,9 @@
-# The library lives at the root, the applications built on it in apps/, and
-# the crates they share in crates/.
+# The library lives at the root and the applications built on it in apps/,
+# one folder each.
 [package]
 name = "free-agent"
-version.workspace = true
+# The release workflow stamps the version from the tag; see RELEASING.md.
+version = "0.0.0"
 edition.workspace = true
 description = "Episodes in which actors talk to each other by sending messages"
 readme = "README.md"
@@ -13,7 +14,7 @@ documentation = "https://docs.rs/free-agent"
 keywords = ["actor", "agent", "multi-agent", "episode", "tokio"]
 categories = ["asynchronous", "simulation"]
 # What goes to crates.io: the library, not the website or the workflows.
-include = ["src/**", "README.md", "CHANGELOG.md", "LICENSE-*"]
+include = ["src/**", "README.md", "LICENSE-*"]
 
 [dependencies]
 anyhow.workspace = true
@@ -31,12 +32,18 @@ uuid = { workspace = true, features = ["v4"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [workspace]
-# The desktop shell sits inside the viewer's frontend, out of reach of apps/*.
-members = ["apps/*", "crates/*", "apps/social-deduction-gui/src-tauri"]
-# Without this a bare cargo command at the root would skip the applications.
-# The viewer's frontend is built for the browser, by Trunk, and the desktop
-# shell needs the system's webview libraries, so both are left out.
-default-members = [".", "apps/social-deduction", "crates/social-deduction-cues"]
+# Each application is a folder under apps/ whose crates sit in fixed
+# subfolders: cli/, gui/, gui/src-tauri/ and gui-types/. The globs pick up
+# a new application's crates without a change here. Cargo fails on a glob
+# that matches nothing at all, so a glob for a subfolder is listed only
+# while some application has one; crates/* comes back with the first
+# crate shared between applications.
+members = ["apps/*/cli", "apps/*/gui", "apps/*/gui/src-tauri", "apps/*/gui-types"]
+# Without this a bare cargo command at the root would skip the
+# applications. The web frontends are built for the browser, by Trunk,
+# and the desktop shells need the system's webview libraries, so both are
+# left out.
+default-members = [".", "apps/*/cli", "apps/*/gui-types"]
 resolver = "3"
 
 # Versions live here so the crates cannot drift apart on a shared dependency.
@@ -63,19 +70,12 @@ rand = "0.10.3"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
 # Serde alone, so the viewer's crates build for wasm32-unknown-unknown.
 uuid = { version = "1.27.0", features = ["serde"] }
-# The version lets a crate that depends on the library be published too.
-free-agent = { path = ".", version = "0.1.0" }
-social-deduction = { path = "apps/social-deduction" }
-social-deduction-cues = { path = "crates/social-deduction-cues" }
+free-agent = { path = "." }
+social-deduction = { path = "apps/social-deduction/cli" }
+social-deduction-gui-types = { path = "apps/social-deduction/gui-types" }
 
 [workspace.package]
-version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/wpm/FreeAgent"
 homepage = "https://wpm.github.io/FreeAgent/"
-
-# The profile that 'dist' will build with
-[profile.dist]
-inherits = "release"
-lto = "thin"

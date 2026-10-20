@@ -1,0 +1,10 @@
+# The product each pull request changes, for actions/labeler
+# (.github/workflows/label.yml). The release notes GitHub generates group
+# pull requests by these labels (.github/release.yml).
+free-agent:
+  - changed-files:
+      - any-glob-to-any-file: src/**
+
+social-deduction:
+  - changed-files:
+      - any-glob-to-any-file: apps/social-deduction/**

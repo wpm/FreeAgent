@@ -2,7 +2,11 @@ name: Website
 
 # The site under site/ goes to GitHub Pages on every push to main, with the
 # viewer at viewer/ showing a random game of Avalon and one of Werewolf,
-# played for the push.
+# played for the push. Each product's download links go to its newest full
+# release, whose latest.json, where the desktop app looks for updates, is
+# served at <product>/latest.json. A product's release workflow runs this
+# once the release's files are up, and a link to a file the release lacks
+# fails the deploy.
 on:
   push:
     branches: [main]
@@ -39,8 +43,26 @@ jobs:
           tool: trunk
       # The page's footer names the commit, from GITHUB_SHA, which Actions
       # sets for every step.
-      - run: apps/social-deduction-gui/build-page.sh
-      - run: cp -R apps/social-deduction-gui/dist site/viewer
+      - run: apps/social-deduction/gui/build-page.sh
+      - run: cp -R apps/social-deduction/gui/dist site/viewer
+      # Each {{release:<product>}} placeholder becomes the address of the
+      # product's newest full release, which has to have every file the
+      # site links to.
+      - name: Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate > "$RUNNER_TEMP/releases.json"
+          .github/scripts/site-releases.sh site < "$RUNNER_TEMP/releases.json" > "$RUNNER_TEMP/releases.txt"
+          while read -r product tag; do
+            assets=$RUNNER_TEMP/$product.assets
+            jq -rs --arg tag "$tag" 'add[] | select(.tag_name == $tag) | .assets[].name' "$RUNNER_TEMP/releases.json" > "$assets"
+            .github/scripts/site-downloads.sh site "$tag" "$assets"
+            if grep -qx latest.json "$assets"; then
+              mkdir -p "site/$product"
+              gh release download "$tag" --pattern latest.json --dir "site/$product"
+            fi
+          done < "$RUNNER_TEMP/releases.txt"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

@@ -1,0 +1,14 @@
+# How Generate release notes, in the Releases page, groups the pull
+# requests since the previous tag: by the product labels that
+# .github/labeler.yml puts on them.
+changelog:
+  categories:
+    - title: Social Deduction
+      labels:
+        - social-deduction
+    - title: Free Agent library
+      labels:
+        - free-agent
+    - title: Other
+      labels:
+        - "*"

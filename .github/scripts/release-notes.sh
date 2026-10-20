@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The top of a release's notes: the desktop app's installers, one row per
 # platform, so that the list of assets under it needs no explaining.
-# dist's notes from CHANGELOG.md follow it.
+# The notes GitHub generated follow it.
 #
 #   release-notes.sh <version>
 #
@@ -26,7 +26,7 @@ Social Deduction $version for the desktop plays one game of Werewolf or Avalon a
 
 Each download gives you the app and the \`social-deduction\` command line. \`Social-Deduction.msi\` installs the app alone.
 
-Command line only, for servers and CI: see the [README](https://github.com/wpm/FreeAgent/tree/main/apps/social-deduction#servers-and-ci).
+Command line only, for servers and CI: see the [README](https://github.com/wpm/FreeAgent/tree/main/apps/social-deduction/cli#servers-and-ci).
 NOTES
 
 if [ "${MACOS_NOTARIZED:-}" = true ]; then

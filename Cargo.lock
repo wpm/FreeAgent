@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "free-agent"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4576,7 +4576,7 @@ checksum = "5b3dc8af474f516a851ff4bd12db780f948b9250ad37211e4eec0bccea54e01b"
 
 [[package]]
 name = "social-deduction"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4591,7 +4591,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
- "social-deduction-cues",
+ "social-deduction-gui-types",
  "tokio",
  "tokio-util",
  "toml 1.1.8+spec-1.1.0",
@@ -4601,18 +4601,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "social-deduction-cues"
-version = "0.1.0"
-dependencies = [
- "minijinja",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
 name = "social-deduction-desktop"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4621,7 +4611,7 @@ dependencies = [
  "serde",
  "serde_json",
  "social-deduction",
- "social-deduction-cues",
+ "social-deduction-gui-types",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -4632,7 +4622,7 @@ dependencies = [
 
 [[package]]
 name = "social-deduction-gui"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",
@@ -4642,12 +4632,22 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
  "social-deduction",
- "social-deduction-cues",
+ "social-deduction-gui-types",
  "tokio",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "social-deduction-gui-types"
+version = "0.0.0"
+dependencies = [
+ "minijinja",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

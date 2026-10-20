@@ -4,7 +4,7 @@
 #
 #   gh release view <tag> --json body --jq .body | release-body.sh <version>
 #
-# Reads the body the release has, the CHANGELOG notes dist wrote, and
+# Reads the body the release has, the notes GitHub generated, and
 # prints it with the desktop app's notes above it, between the markers
 # <!-- desktop-app --> and <!-- /desktop-app -->. Notes already between
 # those markers are replaced, so rerunning the workflow keeps one copy,
