@@ -29,5 +29,8 @@ social-deduction-cues.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
 serde.workspace = true
+# tauri::generate_context! reads the updater plugin's config with it.
+serde_json.workspace = true
 tracing.workspace = true

@@ -33,7 +33,12 @@ When it succeeds, a second workflow adds the desktop app's installers.
    `Social-Deduction.msi`, and for Linux `social-deduction-amd64.deb`,
    `social-deduction-arm64.deb`, `social-deduction-x86_64.rpm`,
    `social-deduction-aarch64.rpm`, `Social-Deduction-x86_64.AppImage` and
-   `Social-Deduction-aarch64.AppImage`, each beside its versioned twin.
+   `Social-Deduction-aarch64.AppImage`, each beside its versioned twin,
+   and `latest.json`, with entries for `darwin-aarch64`, `darwin-x86_64`,
+   `linux-x86_64`, `linux-aarch64` and `windows-x86_64`.
+   `https://github.com/wpm/FreeAgent/releases/latest/download/latest.json`
+   serves it. A prerelease never becomes `releases/latest`, so installed
+   apps are offered only full releases.
    The website links to the .dmg, the setup.exe, and the `.deb` and `.rpm`
    for each Linux architecture, and the workflow's last job, **The
    website's downloads**, checks that the release has each of them.
@@ -46,7 +51,7 @@ platform. A failed platform leaves the release without its installers:
 open the run and choose **Re-run failed jobs**, which uploads them again
 over any that are there. Run the workflow by hand from the Actions tab to
 build every installer as a workflow artifact without touching a release;
-a pull request that changes the workflow or its scripts does the same.
+a push to `main` that changes the workflow or its scripts does the same.
 
 Every bundle carries the `social-deduction` command line that dist built
 for the release, so the workflow downloads dist's archives from the
@@ -61,6 +66,16 @@ uninstaller takes it off, through the hooks in
 `src-tauri/installer-hooks.nsh`. The Windows job installs it, runs
 `social-deduction --version` in a new shell, and uninstalls it, checking
 the PATH each time. The .msi installs the app alone.
+
+Each release carries a signed update bundle for each platform and a
+`latest.json` that the installed app reads on launch to offer the update.
+The bundles are signed with the minisign key in the
+`TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+secrets, and the build fails without them. The matching public key is
+`plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. The key pair
+cannot be recovered, and replacing it strands every installed copy, which
+then has to be reinstalled by hand, so the private key and its password
+are kept backed up outside this machine and repository.
 
 The macOS app is signed and notarized when the repository has the Apple
 secrets that `.github/scripts/apple-credentials.sh` names, and is unsigned
