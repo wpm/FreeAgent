@@ -7,5 +7,4 @@ free-agent:
 
 social-deduction:
   - changed-files:
-      - any-glob-to-any-file:
-          - apps/social-deduction/**
+      - any-glob-to-any-file: apps/social-deduction/**

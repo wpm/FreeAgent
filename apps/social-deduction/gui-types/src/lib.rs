@@ -8,9 +8,7 @@
 //!
 //! The viewer shows one Werewolf or Avalon game in God mode, as a group chat
 //! beside a live board. Library code folds the game's log into a stream of
-//! [`Cue`]s, and the frontend draws each one as it arrives. These types are
-//! everything that crosses between the two, and they build for
-//! `wasm32-unknown-unknown`, so the frontend shares them. A log's games
+//! [`Cue`]s, and the frontend draws each one as it arrives. A log's games
 //! cross as [`Recordings`], and the desktop app's [`settings`] and the
 //! [`go`] menu's moves cross the same way.
 

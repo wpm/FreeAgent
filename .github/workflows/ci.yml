@@ -52,7 +52,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build
       - run: cargo test
-      # The viewer's frontend builds the cue types for the browser.
+      # Social Deduction's frontend builds its gui-types for the browser.
       - run: cargo check -p social-deduction-gui-types --target wasm32-unknown-unknown
 
   docs:

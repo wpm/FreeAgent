@@ -236,12 +236,12 @@ crate() { # <directory> <name>
   touch "$workspace/$1/src/lib.rs"
 }
 crate . free-agent
-printf '\n[workspace]\nmembers = ["apps/*/cli", "apps/*/gui", "apps/*/gui/src-tauri", "apps/*/gui-types", "crates/*"]\nresolver = "3"\n' >> "$workspace/Cargo.toml"
+printf '\n[workspace]\nmembers = ["apps/*/cli", "apps/*/gui", "apps/*/gui/src-tauri", "apps/*/gui-types"]\nresolver = "3"\n' >> "$workspace/Cargo.toml"
 crate apps/social-deduction/cli social-deduction
 crate apps/social-deduction/gui social-deduction-gui
 crate apps/social-deduction/gui/src-tauri social-deduction-desktop
 crate apps/social-deduction/gui-types social-deduction-gui-types
-crate crates/other other
+crate apps/other/cli other
 cp -R "$workspace" "$scratch/pristine"
 scripts=$PWD
 stamp() { # <tag>, in a fresh copy of the workspace
