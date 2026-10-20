@@ -43,8 +43,8 @@ jobs:
           tool: trunk
       # The page's footer names the commit, from GITHUB_SHA, which Actions
       # sets for every step.
-      - run: apps/social-deduction-gui/build-page.sh
-      - run: cp -R apps/social-deduction-gui/dist site/viewer
+      - run: apps/social-deduction/gui/build-page.sh
+      - run: cp -R apps/social-deduction/gui/dist site/viewer
       # Each {{release:<product>}} placeholder becomes the address of the
       # product's newest full release, which has to have every file the
       # site links to.

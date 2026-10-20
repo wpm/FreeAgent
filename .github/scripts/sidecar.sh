@@ -14,8 +14,8 @@
 # writes, the target's last.
 #
 # Environment:
-#   SIDECAR_DIR       where the sidecars go (default the desktop app's
-#                     src-tauri/binaries)
+#   SIDECAR_DIR       where the sidecars go (default
+#                     apps/social-deduction/gui/src-tauri/binaries)
 #   CARGO_TARGET_DIR  where cargo builds (default the workspace's target)
 set -euo pipefail
 
@@ -36,7 +36,7 @@ host=${host%$'\r'}
 target=${target:-$host}
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-out=${SIDECAR_DIR:-$root/apps/social-deduction-gui/src-tauri/binaries}
+out=${SIDECAR_DIR:-$root/apps/social-deduction/gui/src-tauri/binaries}
 mkdir -p "$out"
 
 exe() { # <triple>

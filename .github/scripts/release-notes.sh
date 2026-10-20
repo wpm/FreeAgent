@@ -26,7 +26,7 @@ Social Deduction $version for the desktop plays one game of Werewolf or Avalon a
 
 Each download gives you the app and the \`social-deduction\` command line. \`Social-Deduction.msi\` installs the app alone.
 
-Command line only, for servers and CI: see the [README](https://github.com/wpm/FreeAgent/tree/main/apps/social-deduction#servers-and-ci).
+Command line only, for servers and CI: see the [README](https://github.com/wpm/FreeAgent/tree/main/apps/social-deduction/cli#servers-and-ci).
 NOTES
 
 if [ "${MACOS_NOTARIZED:-}" = true ]; then
