@@ -45,10 +45,10 @@
 // ⌘↑ and ⌘↓, ⌥↓ and a click move the cursor, and the board, the outcome
 // and the position follow it; ⌘] and the list of games open another game
 // on its first bubble, and Close goes back to the start state. A game
-// just played offers Review and Save Log… beside New game; Save Game Log…
-// is enabled at the game's end and in its review, and nowhere else.
-// Review opens on its last bubble under the game's name, ⌘↑ goes to the
-// first, and Close goes back to the game's end. On the web page a game at rest is in review on its
+// just played goes into review on its last bubble under the game's name,
+// offering Save Log… beside New game; Save Game Log… is enabled there and
+// nowhere else, and ⌘↑ goes to the first bubble; a log opened from there
+// offers Close. On the web page a game at rest is in review on its
 // last bubble, the keys and a click move the cursor, and Play, then Play
 // again, leaves review until every cue is shown. The console stays clean
 // throughout.
@@ -1505,7 +1505,7 @@ await section('desktop review', async () => {
 });
 
 // A game played live, shown cue by cue down the stand-in's channel, and
-// then reviewed from the game-over screen.
+// in review once it is over.
 await section('desktop review of a game just played', async () => {
   const app = await browser.newContext({ colorScheme: 'light', viewport: { width: 1100, height: 760 } });
   await app.addInitScript(backend, desktop);
@@ -1535,53 +1535,45 @@ await section('desktop review of a game just played', async () => {
   await main.evaluate(() => {
     for (const cue of window.cues.slice(1)) window.playing.handler(cue);
   });
-  await main.waitForSelector('.sd-outcome');
-  await main.waitForTimeout(SETTLE);
-  const buttons = () => main.$$eval('.sd-header button', (buttons) => buttons.map((button) => button.textContent));
-  const over = await buttons();
-  check(
-    JSON.stringify(over) === JSON.stringify(['Review', 'Save Log…', 'New game']),
-    `desktop review: the game-over header offers Review and Save Log… beside New game (${JSON.stringify(over)})`,
-  );
-  check(
-    JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true, save: true }),
-    'desktop review: Save Game Log… is enabled once the game is over',
-  );
-  await main.click('.sd-header button:text("Save Log…")');
-  await main.waitForTimeout(100);
-  check((await main.evaluate(() => window.standIn.saved)) === 1, 'desktop review: Save Log… saves the game\'s log');
-  const live = await main.$$eval('.rc-message', (messages) => messages.length);
-  await main.click('.sd-header button:text("Review")');
   await main.waitForSelector('.sd-review-position');
   await main.waitForTimeout(SETTLE);
+  const buttons = await main.$$eval('.sd-header button', (buttons) => buttons.map((button) => button.textContent));
+  check(
+    JSON.stringify(buttons) === JSON.stringify(['Save Log…', 'New game']),
+    `desktop review: the game just played offers Save Log… beside New game (${JSON.stringify(buttons)})`,
+  );
   const last = await cursor(main);
   const game = await main.$eval('.sd-header h1', (heading) => heading.textContent);
   check(
-    last.count === live && last.selected === live - 1 && last.later === 0 && last.position === `${live} / ${live}` && last.outcome !== null,
-    `desktop review: Review opens on the last bubble, where the game left off, with nothing dimmed (${JSON.stringify(last)})`,
+    last.count > 0 && last.selected === last.count - 1 && last.later === 0 && last.position === `${last.count} / ${last.count}` && last.outcome !== null,
+    `desktop review: a game over goes into review on its last bubble, where it left off, with nothing dimmed (${JSON.stringify(last)})`,
   );
   check(last.name === null && game === 'Werewolf', `desktop review: the header names the game, not a file (${game}, ${last.name})`);
   check(
     JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 1, open: true, save: true }),
     'desktop review: Open Game Log…, Save Game Log… and Go are enabled in the review of a game just played',
   );
+  await main.click('.sd-header button:text("Save Log…")');
+  await main.waitForTimeout(100);
+  check((await main.evaluate(() => window.standIn.saved)) === 1, 'desktop review: Save Log… saves the game\'s log');
   await main.screenshot({ path: join(shots, 'desktop-review-played.png') });
   await main.keyboard.press('Meta+ArrowUp');
   await main.waitForTimeout(SETTLE);
   const first = await cursor(main);
   check(
-    first.selected === 0 && first.later === live - 1 && first.outcome === null,
+    first.selected === 0 && first.later === last.count - 1 && first.outcome === null,
     `desktop review: ⌘↑ goes to the first bubble (${JSON.stringify(first)})`,
   );
-  await main.click('.sd-header button:text("Close")');
-  await main.waitForSelector('.sd-header button:text("Review")');
-  const closed = await cursor(main);
+  await main.evaluate(() => {
+    const games = [{ episode: '00000000-0000-0000-0000-000000000001', game: 'Werewolf', cues: window.cues }];
+    window.standIn.emit('review', { name: 'one.jsonl', recordings: { games, problems: [] } }, 'main');
+  });
+  await main.waitForSelector('.sd-review-name');
+  const logged = await main.$$eval('.sd-header button', (buttons) => buttons.map((button) => button.textContent));
   check(
-    closed.position === null && closed.selected === -1 && closed.count === live && closed.outcome !== null,
-    `desktop review: Close goes back to the game's end (${JSON.stringify(closed)})`,
+    JSON.stringify(logged) === JSON.stringify(['Close']),
+    `desktop review: a log opened from the review of a game just played offers Close (${JSON.stringify(logged)})`,
   );
-  await main.click('.sd-header button:text("Review")');
-  await main.waitForSelector('.sd-review-position');
   await main.evaluate(() => window.standIn.emit('new-game', null, 'main'));
   await main.waitForSelector('.sd-start');
   check(

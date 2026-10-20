@@ -1,9 +1,8 @@
 //! The desktop app's main window: a start state listing the games, each
 //! with its own **Play**, and **Stop** while the game is prepared; then
-//! the game as it plays, with **Stop**, and once it is over, **Review**,
-//! which steps through it from where it left off, **Save Log…**, and **New
-//! game**. **File ▸ Save Game Log…** saves the log too, from the game's end
-//! and its review.
+//! the game as it plays, with **Stop**, and once it is over, the game in
+//! review from where it left off, with **Save Log…** and **New game**.
+//! **File ▸ Save Game Log…** saves the log too.
 //! **File ▸ Open Game Log…** reviews a log, from anywhere but a game being
 //! prepared or playing, and the **Go** menu moves through either. **File
 //! ▸ New Game** comes back to the start state from anywhere.
@@ -18,7 +17,7 @@ use social_deduction_cues::{Cue, GameName, Side};
 
 use crate::mode::Mode;
 use crate::review::Review;
-use crate::screen::{Screen, side_key};
+use crate::screen::side_key;
 use crate::tauri::{self, Cues};
 use crate::tip::Tips;
 use crate::view::{Live, Reviewer, Reviewing, Viewer};
@@ -99,6 +98,13 @@ pub fn Desktop() -> impl IntoView {
             shown.update_value(|shown| shown.push(cue));
             let over = screen.with_untracked(|screen| screen.outcome.is_some());
             if let Some(next) = now.cued(over).filter(|&next| next != now) {
+                // The cues go to the review, which has no more need of them.
+                if over
+                    && let Some(review) =
+                        Review::played(&shown.try_update_value(std::mem::take).unwrap_or_default())
+                {
+                    reviewing.open(review);
+                }
                 mode.set(next);
             }
         });
@@ -125,28 +131,14 @@ pub fn Desktop() -> impl IntoView {
         mode.set(now.new_game());
         live.reset();
     };
-    // The game just played, in review on its last bubble.
-    // The game's end, kept while it is reviewed.
-    let ended = StoredValue::new(None::<Screen>);
-    let review = move |_| {
-        if let Some(review) = shown.with_value(|shown| Review::played(shown)) {
-            ended.set_value(Some(screen.get_untracked()));
-            reviewing.open(review);
-            mode.set(Mode::ReviewingGame);
-        }
-    };
-    // Back from review to the game's end, or from a log to the start.
+    // Back from a log to the start.
     let close = Callback::new(move |()| {
         reviewing.close();
-        if let Some(end) = ended.write_value().take() {
-            screen.set(end);
-        }
-        mode.update(|mode| *mode = mode.closed());
+        mode.set(Mode::Start);
     });
     tauri::listen("new-game", move |_: IgnoredAny| new_game());
     tauri::listen("review", move |opened| match Review::new(opened) {
         Ok(review) => {
-            ended.set_value(None);
             reviewing.open(review);
             mode.set(Mode::ReviewingLog);
         }
@@ -171,15 +163,25 @@ pub fn Desktop() -> impl IntoView {
     let on_link = Callback::new(tauri::open_url);
 
     let start = move || view! { <Start snapshot=snapshot pending=pending error=error failed=failed run=run /> };
-    let closes = move || mode.get_untracked().closes();
+    let saveable = Memo::new(move |_| mode.get().saveable());
     let reviewer = move || {
+        let controls = move || {
+            if saveable.get() {
+                view! {
+                    <button on:click=|_| tauri::save_log() data-tip="Save the game's log, to open in review later.">"Save Log…"</button>
+                    <button class="sd-primary" on:click=move |_| new_game()>"New game"</button>
+                }
+                .into_any()
+            } else {
+                view! { <button on:click=move |_| close.run(()) data-tip="Close the log and go back to the games.">"Close"</button> }.into_any()
+            }
+        };
         view! {
             <Reviewer reviewing=reviewing on_link=on_link appearance=appearance>
-                <button on:click=move |_| close.run(()) data-tip=closes()>"Close"</button>
+                {controls}
             </Reviewer>
         }
     };
-    let blank = move || screen.with(|screen| screen.posts.is_empty());
     view! {
         <Tips />
         <Show
@@ -191,14 +193,7 @@ pub fn Desktop() -> impl IntoView {
             fallback=start
         >
             <Viewer live=live on_link=on_link appearance=appearance>
-                <Show
-                    when=move || mode.get() == Mode::Over
-                    fallback=|| view! { <button on:click=|_| tauri::stop()>"Stop"</button> }
-                >
-                    <button on:click=review disabled=blank data-tip="Step through the game bubble by bubble, from where it left off.">"Review"</button>
-                    <button on:click=|_| tauri::save_log() data-tip="Save the game's log, to open in review later.">"Save Log…"</button>
-                    <button class="sd-primary" on:click=move |_| new_game()>"New game"</button>
-                </Show>
+                <button on:click=|_| tauri::stop()>"Stop"</button>
             </Viewer>
         </Show>
         </Show>

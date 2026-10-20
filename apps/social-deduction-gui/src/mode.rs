@@ -1,6 +1,6 @@
 //! What the desktop app's main window is doing, and how each thing it
-//! does leads to the next: from the list of games, a game is prepared,
-//! plays and ends, and the game just played or a log opened is reviewed.
+//! does leads to the next: from the list of games, a game is prepared and
+//! plays, and once it ends it is in review, as is a log opened.
 
 use social_deduction_cues::GameName;
 
@@ -13,9 +13,7 @@ pub enum Mode {
     Preparing(GameName),
     /// A game playing.
     Playing,
-    /// The game just played, at its end.
-    Over,
-    /// The game just played, in review.
+    /// The game just played, in review from its end.
     ReviewingGame,
     /// A log opened, in review.
     ReviewingLog,
@@ -49,16 +47,7 @@ impl Mode {
 
     /// Whether the game just played is over, so its log saves.
     pub fn saveable(self) -> bool {
-        matches!(self, Mode::Over | Mode::ReviewingGame)
-    }
-
-    /// What **Close** says it does in review.
-    pub fn closes(self) -> &'static str {
-        if self == Mode::ReviewingGame {
-            "Close the review and go back to the game's end."
-        } else {
-            "Close the log and go back to the games."
-        }
+        self == Mode::ReviewingGame
     }
 
     /// After a cue of the game being prepared or playing, which is the
@@ -66,7 +55,7 @@ impl Mode {
     /// the game goes by.
     pub fn cued(self, over: bool) -> Option<Mode> {
         match self {
-            Mode::Preparing(_) | Mode::Playing if over => Some(Mode::Over),
+            Mode::Preparing(_) | Mode::Playing if over => Some(Mode::ReviewingGame),
             Mode::Preparing(_) | Mode::Playing => Some(Mode::Playing),
             _ => None,
         }
@@ -96,27 +85,16 @@ impl Mode {
             _ => Mode::Start,
         }
     }
-
-    /// After **Close**: the game's end, from its review, or the list of
-    /// games, from a log.
-    pub fn closed(self) -> Mode {
-        match self {
-            Mode::ReviewingGame => Mode::Over,
-            Mode::ReviewingLog => Mode::Start,
-            mode => mode,
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const ALL: [Mode; 6] = [
+    const ALL: [Mode; 5] = [
         Mode::Start,
         Mode::Preparing(GameName::Werewolf),
         Mode::Playing,
-        Mode::Over,
         Mode::ReviewingGame,
         Mode::ReviewingLog,
     ];
@@ -127,13 +105,13 @@ mod tests {
     }
 
     #[test]
-    fn a_game_is_prepared_plays_and_ends() {
+    fn a_game_is_prepared_plays_and_ends_in_review() {
         let preparing = Mode::Preparing(GameName::Avalon);
         assert_eq!(preparing.preparing(), Some(GameName::Avalon));
         assert_eq!(preparing.cued(false), Some(Mode::Playing));
         assert_eq!(Mode::Playing.cued(false), Some(Mode::Playing));
-        assert_eq!(Mode::Playing.cued(true), Some(Mode::Over));
-        assert_eq!(preparing.cued(true), Some(Mode::Over));
+        assert_eq!(Mode::Playing.cued(true), Some(Mode::ReviewingGame));
+        assert_eq!(preparing.cued(true), Some(Mode::ReviewingGame));
         assert_eq!(Mode::Playing.preparing(), None);
     }
 
@@ -142,7 +120,7 @@ mod tests {
         let preparing = Mode::Preparing(GameName::Werewolf);
         assert_eq!(preparing.started(), Mode::Playing);
         assert_eq!(preparing.failed(), Mode::Start);
-        assert_eq!(Mode::Over.started(), Mode::Over);
+        assert_eq!(Mode::ReviewingGame.started(), Mode::ReviewingGame);
         assert_eq!(Mode::Start.failed(), Mode::Start);
     }
 
@@ -150,12 +128,7 @@ mod tests {
     fn a_cue_once_the_game_is_left_goes_by() {
         assert_eq!(
             which(|mode| mode.cued(true).is_none()),
-            [
-                Mode::Start,
-                Mode::Over,
-                Mode::ReviewingGame,
-                Mode::ReviewingLog
-            ]
+            [Mode::Start, Mode::ReviewingGame, Mode::ReviewingLog]
         );
     }
 
@@ -172,21 +145,6 @@ mod tests {
     }
 
     #[test]
-    fn close_goes_back_to_the_game_s_end_or_to_the_games() {
-        assert_eq!(Mode::ReviewingGame.closed(), Mode::Over);
-        assert_eq!(Mode::ReviewingLog.closed(), Mode::Start);
-        assert_eq!(Mode::Playing.closed(), Mode::Playing);
-        assert_eq!(
-            Mode::ReviewingGame.closes(),
-            "Close the review and go back to the game's end."
-        );
-        assert_eq!(
-            Mode::ReviewingLog.closes(),
-            "Close the log and go back to the games."
-        );
-    }
-
-    #[test]
     fn each_mode_shows_the_games_a_game_or_a_review() {
         let preparing = Mode::Preparing(GameName::Werewolf);
         assert_eq!(which(Mode::listing), [Mode::Start, preparing]);
@@ -200,6 +158,6 @@ mod tests {
     fn a_log_opens_unless_a_game_is_busy_and_saves_once_the_game_is_over() {
         let preparing = Mode::Preparing(GameName::Werewolf);
         assert_eq!(which(Mode::busy), [preparing, Mode::Playing]);
-        assert_eq!(which(Mode::saveable), [Mode::Over, Mode::ReviewingGame]);
+        assert_eq!(which(Mode::saveable), [Mode::ReviewingGame]);
     }
 }
