@@ -51,7 +51,7 @@ platform. A failed platform leaves the release without its installers:
 open the run and choose **Re-run failed jobs**, which uploads them again
 over any that are there. Run the workflow by hand from the Actions tab to
 build every installer as a workflow artifact without touching a release;
-a pull request that changes the workflow or its scripts does the same.
+a push to `main` that changes the workflow or its scripts does the same.
 
 Every bundle carries the `social-deduction` command line that dist built
 for the release, so the workflow downloads dist's archives from the

@@ -22,7 +22,7 @@ name: Release the desktop app
 # the release with GITHUB_TOKEN, whose events start no workflows, so this
 # waits for the Release workflow to finish instead of for the release.
 #
-# Run by hand, or on a pull request that changes it, it builds everything
+# Run by hand, or on a push to main that changes it, it builds everything
 # as workflow artifacts and touches no release, for trying the pipeline
 # out.
 #
@@ -45,7 +45,8 @@ on:
         description: A release tag of this version whose command line the bundles carry, instead of one built here
         required: false
         default: ""
-  pull_request:
+  push:
+    branches: [main]
     paths:
       - .github/workflows/release-gui.yml
       - .github/scripts/**
@@ -55,7 +56,6 @@ permissions:
 
 concurrency:
   group: release-gui-${{ github.event.workflow_run.head_branch || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
