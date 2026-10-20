@@ -194,7 +194,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          projectPath: apps/social-deduction-gui
+          projectPath: apps/social-deduction/gui
           releaseId: ${{ github.event.release.id }}
           uploadWorkflowArtifacts: true
           uploadUpdaterJson: true

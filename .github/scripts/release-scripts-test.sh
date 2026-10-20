@@ -128,7 +128,7 @@ check "every download on the site has a stable name" quiet ./site-downloads.sh "
 check "the notes' table names the site's downloads" test \
   "$(awk -F' [|] ' '/^\| / { print $2 }' <<< "$notes" | grep -oE '[[:alnum:]_.-]+[.](dmg|exe|deb|rpm)' | LC_ALL=C sort | tr '\n' ' ')" = "$site"
 check "the notes say the installers carry the command line" grep -q "Each download gives you the app and the \`social-deduction\` command line" <<< "$notes"
-check "the notes send the command line alone to the README" grep -q "Command line only, for servers and CI: see the \[README\](https://github.com/wpm/FreeAgent/tree/main/apps/social-deduction#servers-and-ci)." <<< "$notes"
+check "the notes send the command line alone to the README" grep -q "Command line only, for servers and CI: see the \[README\](https://github.com/wpm/FreeAgent/tree/main/apps/social-deduction/cli#servers-and-ci)." <<< "$notes"
 # A download the release doesn't have fails, and says which.
 rm "$scratch/stable/social-deduction-arm64.deb"
 status=0; missing=$(./site-downloads.sh "$scratch/site" social-deduction-v0.2.10 <(ls "$scratch/stable") 2>&1 > /dev/null) || status=$?
@@ -236,12 +236,12 @@ crate() { # <directory> <name>
   touch "$workspace/$1/src/lib.rs"
 }
 crate . free-agent
-printf '\n[workspace]\nmembers = ["apps/*", "crates/*", "apps/social-deduction-gui/src-tauri"]\nresolver = "3"\n' >> "$workspace/Cargo.toml"
-crate apps/social-deduction social-deduction
-crate apps/social-deduction-gui social-deduction-gui
-crate apps/social-deduction-gui/src-tauri social-deduction-desktop
-crate crates/social-deduction-cues social-deduction-cues
-crate crates/other other
+printf '\n[workspace]\nmembers = ["apps/*/cli", "apps/*/gui", "apps/*/gui/src-tauri", "apps/*/gui-types"]\nresolver = "3"\n' >> "$workspace/Cargo.toml"
+crate apps/social-deduction/cli social-deduction
+crate apps/social-deduction/gui social-deduction-gui
+crate apps/social-deduction/gui/src-tauri social-deduction-desktop
+crate apps/social-deduction/gui-types social-deduction-gui-types
+crate apps/other/cli other
 cp -R "$workspace" "$scratch/pristine"
 scripts=$PWD
 stamp() { # <tag>, in a fresh copy of the workspace
@@ -259,15 +259,15 @@ locked() { # every workspace crate's version in Cargo.lock
 output=$(stamp social-deduction-v0.2.0 2> /dev/null)
 check "stamping social-deduction reports the product and version" test "$output" = $'product=social-deduction\nversion=0.2.0'
 check "stamping social-deduction sets its four crates" test "$(versions)" = \
-  "free-agent 0.0.0 other 0.0.0 social-deduction 0.2.0 social-deduction-cues 0.2.0 social-deduction-desktop 0.2.0 social-deduction-gui 0.2.0 "
+  "free-agent 0.0.0 other 0.0.0 social-deduction 0.2.0 social-deduction-desktop 0.2.0 social-deduction-gui 0.2.0 social-deduction-gui-types 0.2.0 "
 check "the lock file agrees" test "$(locked)" = "$(versions)"
-check "the comment above the version stays" grep -q '^# Stamped from the tag.' "$workspace/apps/social-deduction/Cargo.toml"
+check "the comment above the version stays" grep -q '^# Stamped from the tag.' "$workspace/apps/social-deduction/cli/Cargo.toml"
 stamp free-agent-v0.3.0 > /dev/null 2>&1
 check "stamping free-agent sets only free-agent" test "$(versions)" = \
-  "free-agent 0.3.0 other 0.0.0 social-deduction 0.0.0 social-deduction-cues 0.0.0 social-deduction-desktop 0.0.0 social-deduction-gui 0.0.0 "
+  "free-agent 0.3.0 other 0.0.0 social-deduction 0.0.0 social-deduction-desktop 0.0.0 social-deduction-gui 0.0.0 social-deduction-gui-types 0.0.0 "
 stamp free-agent-v0.3.0-rc.1 > /dev/null 2>&1
 check "a prerelease version is stamped as it is" test "$(versions)" = \
-  "free-agent 0.3.0-rc.1 other 0.0.0 social-deduction 0.0.0 social-deduction-cues 0.0.0 social-deduction-desktop 0.0.0 social-deduction-gui 0.0.0 "
+  "free-agent 0.3.0-rc.1 other 0.0.0 social-deduction 0.0.0 social-deduction-desktop 0.0.0 social-deduction-gui 0.0.0 social-deduction-gui-types 0.0.0 "
 (cd "$workspace" && GITHUB_OUTPUT="$scratch/github-output" "$scripts/stamp-version.sh" free-agent-v1.0.0 > /dev/null 2>&1)
 check "the outputs go to GITHUB_OUTPUT when it is set" test "$(cat "$scratch/github-output")" = $'product=free-agent\nversion=1.0.0'
 for tag in mathdoku-v1.0.0 social-deduction-1.0.0 social-deduction-v1.0 v1.0.0 social-deduction-v01.0.0 ""; do
@@ -277,7 +277,7 @@ for tag in mathdoku-v1.0.0 social-deduction-1.0.0 social-deduction-v1.0 v1.0.0 s
 done
 stamp mathdoku-v1.0.0 > /dev/null 2>&1 || true
 check "a failed stamp changes nothing" test "$(versions)" = \
-  "free-agent 0.0.0 other 0.0.0 social-deduction 0.0.0 social-deduction-cues 0.0.0 social-deduction-desktop 0.0.0 social-deduction-gui 0.0.0 "
+  "free-agent 0.0.0 other 0.0.0 social-deduction 0.0.0 social-deduction-desktop 0.0.0 social-deduction-gui 0.0.0 social-deduction-gui-types 0.0.0 "
 
 # cli-archive.sh packs the command line with the example configurations,
 # the README and the licenses.
@@ -294,7 +294,7 @@ check "a tarball holds the example configurations" quiet \
 check "a tarball's binary is the one given" test \
   "$(tar -xzOf "$scratch/archives/social-deduction-x86_64-unknown-linux-gnu.tar.gz" social-deduction-x86_64-unknown-linux-gnu/social-deduction)" = "the binary"
 check "a tarball's README is the command line's" test \
-  "$(tar -xzOf "$scratch/archives/social-deduction-x86_64-unknown-linux-gnu.tar.gz" social-deduction-x86_64-unknown-linux-gnu/README.md)" = "$(cat ../../apps/social-deduction/README.md)"
+  "$(tar -xzOf "$scratch/archives/social-deduction-x86_64-unknown-linux-gnu.tar.gz" social-deduction-x86_64-unknown-linux-gnu/README.md)" = "$(cat ../../apps/social-deduction/cli/README.md)"
 sums() { # <directory> <checksum file>
   (cd "$1" && if command -v sha256sum > /dev/null; then sha256sum -c "$2"; else shasum -a 256 -c "$2"; fi) > /dev/null 2>&1
 }

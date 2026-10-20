@@ -26,7 +26,7 @@ tag=${1-}
 crates() { # <product>
   case $1 in
     free-agent) echo free-agent ;;
-    social-deduction) echo social-deduction social-deduction-gui social-deduction-desktop social-deduction-cues ;;
+    social-deduction) echo social-deduction social-deduction-gui social-deduction-desktop social-deduction-gui-types ;;
     *) return 1 ;;
   esac
 }

@@ -1,0 +1,32 @@
+[package]
+name = "social-deduction-gui"
+# The release workflow stamps the version from the tag; see RELEASING.md.
+version = "0.0.0"
+edition.workspace = true
+description = "A viewer for social deduction games: a group chat beside a live board"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# The viewer's web page, built with Trunk; it ships as a page, not a crate.
+publish = false
+
+[dependencies]
+leptos = { version = "0.8", features = ["csr"] }
+# Game talk needs no code highlighting or math fonts.
+leptos-rich-chat = { version = "0.2.2", default-features = false }
+social-deduction-gui-types.workspace = true
+console_error_panic_hook = "0.1"
+serde.workspace = true
+serde_json.workspace = true
+serde-wasm-bindgen = "0.6"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console", "CssStyleDeclaration", "Document", "DomRect", "DomTokenList", "Element", "HtmlElement", "HtmlInputElement", "HtmlSelectElement", "HtmlTextAreaElement", "KeyboardEvent", "Location", "Navigator", "Performance", "PointerEvent", "Request", "RequestInit", "ResizeObserver", "Response", "Window"] }
+
+[dev-dependencies]
+# The timeline's tests play random games and fold the recorded ones, on a
+# paused clock.
+social-deduction.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+uuid.workspace = true

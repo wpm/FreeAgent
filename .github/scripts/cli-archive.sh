@@ -28,8 +28,8 @@ trap 'rm -rf "$scratch"' EXIT
 staged=$scratch/$name
 mkdir "$staged"
 cp "$binary" "$staged/social-deduction$exe"
-cp -R "$root/apps/social-deduction/configs" "$staged/configs"
-cp "$root/apps/social-deduction/README.md" "$staged/README.md"
+cp -R "$root/apps/social-deduction/cli/configs" "$staged/configs"
+cp "$root/apps/social-deduction/cli/README.md" "$staged/README.md"
 cp "$root"/LICENSE-* "$staged/"
 
 if [ -n "$exe" ]; then

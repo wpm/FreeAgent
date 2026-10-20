@@ -52,8 +52,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build
       - run: cargo test
-      # The viewer's frontend builds the cue types for the browser.
-      - run: cargo check -p social-deduction-cues --target wasm32-unknown-unknown
+      # Social Deduction's frontend builds its gui-types for the browser.
+      - run: cargo check -p social-deduction-gui-types --target wasm32-unknown-unknown
 
   docs:
     name: Docs
@@ -88,29 +88,29 @@ jobs:
       - run: cargo clippy -p social-deduction-gui --all-targets -- -D warnings
       - run: cargo test -p social-deduction-gui
       - run: cargo check -p social-deduction-gui --target wasm32-unknown-unknown
-      - run: apps/social-deduction-gui/build-page.sh
+      - run: apps/social-deduction/gui/build-page.sh
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/social-deduction-gui/e2e/package-lock.json
+          cache-dependency-path: apps/social-deduction/gui/e2e/package-lock.json
       - run: npm ci
-        working-directory: apps/social-deduction-gui/e2e
+        working-directory: apps/social-deduction/gui/e2e
       # Playwright's Chromium, kept between runs for as long as the lock
       # file pins the same Playwright.
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('apps/social-deduction-gui/e2e/package-lock.json') }}
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/social-deduction/gui/e2e/package-lock.json') }}
       - run: npx playwright install --with-deps chromium
-        working-directory: apps/social-deduction-gui/e2e
+        working-directory: apps/social-deduction/gui/e2e
       - run: npm test
-        working-directory: apps/social-deduction-gui/e2e
+        working-directory: apps/social-deduction/gui/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: viewer-screenshots
-          path: apps/social-deduction-gui/e2e/screenshots
+          path: apps/social-deduction/gui/e2e/screenshots
 
   # The desktop shell needs each platform's webview, so the jobs above
   # leave it out. One leg per platform, since the shell has code only one

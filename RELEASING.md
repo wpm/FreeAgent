@@ -7,7 +7,7 @@ The crates in a product share its version.
 | Product | Crates | Tag | A release produces |
 |---|---|---|---|
 | `free-agent` | `free-agent` | `free-agent-v<version>` | `free-agent` on crates.io |
-| `social-deduction` | `social-deduction`, `social-deduction-gui`, `social-deduction-desktop`, `social-deduction-cues` | `social-deduction-v<version>` | Desktop installers for macOS, Windows and Linux, command-line archives, signed update bundles and `latest.json` |
+| `social-deduction` | `social-deduction`, `social-deduction-gui`, `social-deduction-desktop`, `social-deduction-gui-types` | `social-deduction-v<version>` | Desktop installers for macOS, Windows and Linux, command-line archives, signed update bundles and `latest.json` |
 
 The tag is the version. Every manifest on `main` says `version = "0.0.0"`,
 and the release workflow stamps the tag's version into the product's
@@ -89,7 +89,7 @@ Each release carries a signed update bundle for each platform. They are
 signed with the minisign key in the `TAURI_SIGNING_PRIVATE_KEY` and
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets, and the build fails without
 them. The matching public key is `plugins.updater.pubkey` in
-`apps/social-deduction-gui/src-tauri/tauri.conf.json`. Every installed
+`apps/social-deduction/gui/src-tauri/tauri.conf.json`. Every installed
 copy trusts that key for good, so the private key and its password are
 kept backed up outside this machine and repository, and the key is never
 replaced.
@@ -101,15 +101,22 @@ keeps the endpoint it was built with.
 
 ## Adding an application
 
+Create `apps/<app>/` with whichever of `cli/`, `gui/`, `gui/src-tauri/` and
+`gui-types/` it has; the workspace picks them up. Then:
+
 1. List its crates under a new product in the table in
    `.github/scripts/stamp-version.sh`.
 2. Copy `.github/workflows/release-social-deduction.yml` with the new tag
    prefix.
-3. Add a label for it to `.github/labeler.yml`, create the label, and add
-   a category for it to `.github/release.yml`.
+3. Add a label for it to `.github/labeler.yml`, matching `apps/<app>/**`,
+   create the label, and add a category for it to `.github/release.yml`.
 4. Link its downloads on the website as
    `{{release:<product>}}/<file>`, which the website's build resolves to
    its newest full release. The build needs one, so these links go in
    with or after its first full release.
 
 Its first release then needs no other setup.
+
+The first crate shared between applications goes in `crates/`, and
+`crates/*` then goes back into the workspace's `members` and
+`default-members` in the root `Cargo.toml`.
