@@ -46,8 +46,8 @@ state that lists the games, each with what it is, a square per seat in
 its side's color, a line summing up its settings, and its own **Play**. A
 game whose settings have an error names the first one under its row,
 linked to its field in Settings, and the other games stay playable. The
-game plays live in the window, with **Stop**, and once it is over,
-**Review**, **Save Log…** and **New game** appear. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
+game plays live in the window, with **Stop**, and once it is over, it is
+in review on its last bubble, with **Save Log…** and **New game**. **File ▸ New Game** (⌘N, Ctrl+N elsewhere) returns to the
 start state.
 
 On a Mac, drag the app from its disk image to Applications, then choose
@@ -125,10 +125,10 @@ when it holds several, and the position, `1 / 212`; **Close** returns to
 the start state. A log is opened anywhere but while a game is being
 prepared or played.
 
-**Review** on the game-over header reviews the game just played, with no
-file to open. It opens on the last bubble, where the game left
-off, so **Go ▸ First Bubble** (⌘↑) takes it back to the start. The header
-names the game, and **Close** returns to the game's end.
+A game just played goes into review as soon as it is over, with no file
+to open. It opens on the last bubble, where the game left off, so **Go ▸
+First Bubble** (⌘↑) takes it back to the start. The header names the
+game, with **Save Log…** and **New game**.
 
 | Action | Keys |
 |---|---|
