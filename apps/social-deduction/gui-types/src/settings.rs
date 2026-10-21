@@ -12,15 +12,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 pub use free_agent_gui_types::settings::{
-    Appearance, Check, FieldError, General, KeyStatus, Listed, Listing, ModelSettings, Probe,
-    Progress, Provider, Trouble, Unchecked, host, is_part_name, is_remote, label, part_variable,
-    provider_at, root, unique, whole,
+    Appearance, Check, FieldError, General, KeyStatus, Listed, Listing, ModelSettings, Policy,
+    Probe, Progress, Provider, RANDOM, Settings, Strategies, StrategySettings, Trouble, Unchecked,
+    host, is_part_name, is_remote, label, part_variable, provider_at, root, unique, whole,
 };
 
 use crate::{GameName, Role, Side};
-
-/// The strategy that is always defined, with the random policy.
-pub const RANDOM: &str = "random";
 
 /// Everything the app's settings hold.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,125 +95,6 @@ impl AppSettings {
         })
     }
 
-    /// Why `name` cannot name a model other than `except`: it is empty, or
-    /// another model has it.
-    fn name_problem(&self, name: &str, except: &str) -> Result<(), String> {
-        if name.is_empty() {
-            return Err("Give it a name.".to_string());
-        }
-        if name != except && self.models.contains_key(name) {
-            return Err("Another model already has that name.".to_string());
-        }
-        Ok(())
-    }
-
-    /// Add `model` as `name`, trimmed, unless that cannot name it.
-    ///
-    /// # Errors
-    ///
-    /// When the name is empty or another model has it.
-    pub fn add_model(&mut self, name: &str, model: ModelSettings) -> Result<(), String> {
-        let name = name.trim();
-        self.name_problem(name, "")?;
-        self.models.insert(name.to_string(), model);
-        Ok(())
-    }
-
-    /// Rename the model `old` to `new`, trimmed, and every strategy of
-    /// either game that asks it with it, unless `new` cannot name it.
-    ///
-    /// # Errors
-    ///
-    /// When the name is empty or another model has it.
-    pub fn rename_model(&mut self, old: &str, new: &str) -> Result<(), String> {
-        let new = new.trim();
-        self.name_problem(new, old)?;
-        let Some(model) = self.models.remove(old) else {
-            return Ok(());
-        };
-        self.models.insert(new.to_string(), model);
-        for game in [&mut self.werewolf, &mut self.avalon] {
-            for strategy in game.strategies.values_mut() {
-                if strategy.model == old {
-                    strategy.model = new.to_string();
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// The prompted strategies that ask the model `name`, each as its game
-    /// and its name: `Werewolf “everyone”`.
-    pub fn users_of_model(&self, name: &str) -> Vec<String> {
-        GameName::ALL
-            .into_iter()
-            .flat_map(|game| {
-                let settings = self.game(game);
-                settings
-                    .strategies
-                    .keys()
-                    .filter(move |strategy| settings.model_of(strategy) == Some(name))
-                    .map(move |strategy| format!("{} “{strategy}”", game_title(game)))
-            })
-            .collect()
-    }
-
-    /// Add `provider`, its name and base URL trimmed, the base URL's
-    /// final slash too, unless it lacks a name or a whole base URL: an
-    /// `http` or `https` URL ending in `/v1`.
-    ///
-    /// # Errors
-    ///
-    /// When it lacks a name or a whole base URL.
-    pub fn add_provider(&mut self, provider: Provider) -> Result<(), String> {
-        let name = provider.name.trim();
-        let base_url = root(&provider.base_url);
-        if name.is_empty() || !whole(base_url) {
-            return Err("Give it a name and a base URL ending in /v1.".to_string());
-        }
-        self.providers.push(Provider {
-            name: name.to_string(),
-            base_url: base_url.to_string(),
-            api_key_env: provider.api_key_env,
-        });
-        Ok(())
-    }
-
-    /// The providers the Models tab shows: those `found`, known and local,
-    /// then those added, then the provider of each model's base URL that
-    /// is none of them, as a local server when it is one on this machine,
-    /// whether or not it is up, and otherwise named for its host.
-    pub fn providers_shown(&self, found: &[Provider]) -> Vec<Provider> {
-        let mut shown = found.to_vec();
-        for provider in &self.providers {
-            if provider_at(&shown, &provider.base_url).is_none() {
-                shown.push(provider.clone());
-            }
-        }
-        for model in self.models.values() {
-            if model.base_url.trim().is_empty() || provider_at(&shown, &model.base_url).is_some() {
-                continue;
-            }
-            shown.push(match Provider::local_port(&model.base_url) {
-                Some(port) => Provider::local(port),
-                None => Provider {
-                    name: host(&model.base_url).to_string(),
-                    base_url: root(&model.base_url).to_string(),
-                    api_key_env: model.api_key_env.clone(),
-                },
-            });
-        }
-        shown
-    }
-
-    /// Remove the provider added at `base_url`, and every model reached
-    /// through it.
-    pub fn remove_provider(&mut self, base_url: &str) {
-        let at = |url: &str| root(url) == root(base_url);
-        self.providers.retain(|provider| !at(&provider.base_url));
-        self.models.retain(|_, model| !at(&model.base_url));
-    }
-
     /// The first error among `errors` that stops a game of `game`, with
     /// the game's title before it, and where it is.
     pub fn first_error(&self, game: GameName, errors: &[FieldError]) -> Option<FieldError> {
@@ -225,6 +103,96 @@ impl AppSettings {
             path: error.path.clone(),
             message: format!("{}: {}", game_title(game), error.message),
         })
+    }
+}
+
+impl Settings for AppSettings {
+    fn general(&self) -> &General {
+        &self.general
+    }
+
+    fn general_mut(&mut self) -> &mut General {
+        &mut self.general
+    }
+
+    fn models(&self) -> &BTreeMap<String, ModelSettings> {
+        &self.models
+    }
+
+    fn models_mut(&mut self) -> &mut BTreeMap<String, ModelSettings> {
+        &mut self.models
+    }
+
+    fn providers(&self) -> &[Provider] {
+        &self.providers
+    }
+
+    fn providers_mut(&mut self) -> &mut Vec<Provider> {
+        &mut self.providers
+    }
+
+    /// The prompted strategies of each game, each as its game and its
+    /// name: `Werewolf “everyone”`.
+    fn strategies_asking(&self) -> Vec<(String, &str)> {
+        GameName::ALL
+            .into_iter()
+            .flat_map(|game| {
+                let settings = self.game(game);
+                settings.strategies.keys().filter_map(move |strategy| {
+                    let model = settings.model_of(strategy)?;
+                    Some((format!("{} “{strategy}”", game_title(game)), model))
+                })
+            })
+            .collect()
+    }
+
+    fn rename_in_strategies(&mut self, old: &str, new: &str) {
+        for game in [&mut self.werewolf, &mut self.avalon] {
+            for strategy in game.strategies.values_mut() {
+                if strategy.model == old {
+                    strategy.model = new.to_string();
+                }
+            }
+        }
+    }
+}
+
+impl Strategies for AppSettings {
+    type Of = GameName;
+
+    const RANDOM: bool = true;
+
+    fn at(game: GameName) -> Vec<String> {
+        vec![game_key(game).to_string()]
+    }
+
+    fn strategies(&self, game: GameName) -> &BTreeMap<String, StrategySettings> {
+        &self.game(game).strategies
+    }
+
+    fn strategies_mut(&mut self, game: GameName) -> &mut BTreeMap<String, StrategySettings> {
+        &mut self.game_mut(game).strategies
+    }
+
+    fn prompt_parts(&self, game: GameName) -> &BTreeMap<String, String> {
+        &self.game(game).prompt_parts
+    }
+
+    fn prompt_parts_mut(&mut self, game: GameName) -> &mut BTreeMap<String, String> {
+        &mut self.game_mut(game).prompt_parts
+    }
+
+    fn part_users(&self, game: GameName) -> BTreeMap<String, Vec<String>> {
+        self.game(game)
+            .part_users()
+            .into_iter()
+            .map(|(part, users)| {
+                (
+                    part.to_string(),
+                    users.into_iter().map(String::from).collect(),
+                )
+            })
+            .collect()
     }
 }
 
@@ -397,38 +365,8 @@ pub struct PhaseSettings {
     pub limit: String,
 }
 
-/// A strategy: a policy and its parameters.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct StrategySettings {
-    /// What the strategy's players do.
-    pub policy: Policy,
-    /// The name of the model a prompted strategy asks.
-    pub model: String,
-    /// A prompted strategy's system prompt template.
-    pub system: String,
-}
-
-/// What a strategy's players do.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Policy {
-    /// Ask a language model.
-    #[default]
-    Prompted,
-    /// Choose at random.
-    Random,
-}
-
 /// The settings as the backend holds them, and what is wrong with them.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Snapshot {
-    /// The settings.
-    pub settings: AppSettings,
-    /// Every field's error.
-    pub errors: Vec<FieldError>,
-}
+pub type Snapshot = free_agent_gui_types::settings::Snapshot<AppSettings>;
 
 #[cfg(test)]
 mod tests {
@@ -603,48 +541,34 @@ mod tests {
     }
 
     #[test]
-    fn a_model_is_renamed_and_the_strategies_that_ask_it_follow() {
+    fn a_model_is_renamed_in_both_games() {
         let mut settings = two_strategies();
         settings
             .avalon
             .strategies
             .insert("all".to_string(), prompted("gpt"));
-        assert_eq!(settings.rename_model("gpt", " opus "), Ok(()));
+        assert_eq!(settings.rename_model("gpt", "opus"), Ok(()));
         assert!(settings.models.contains_key("opus") && !settings.models.contains_key("gpt"));
         assert_eq!(settings.werewolf.strategies["smart"].model, "opus");
         assert_eq!(settings.avalon.strategies["all"].model, "opus");
         assert_eq!(settings.werewolf.strategies["everyone"].model, "local");
-        assert_eq!(settings.rename_model("opus", "opus"), Ok(()));
-        assert_eq!(
-            settings.rename_model("opus", " "),
-            Err("Give it a name.".to_string())
-        );
-        assert_eq!(
-            settings.rename_model("opus", "local"),
-            Err("Another model already has that name.".to_string())
-        );
-        assert_eq!(settings.rename_model("missing", "found"), Ok(()));
-        assert!(!settings.models.contains_key("found"));
     }
 
     #[test]
-    fn a_model_is_added_under_a_name_no_other_has() {
+    fn the_look_and_the_providers_are_the_app_s_own() {
         let mut settings = two_strategies();
-        let opus = ModelSettings {
-            base_url: "https://api.anthropic.com/v1".to_string(),
-            id: "claude-opus-5-5".to_string(),
-            ..ModelSettings::default()
+        settings.general_mut().appearance = Appearance::Dark;
+        assert_eq!(settings.general().appearance, Appearance::Dark);
+        let example = Provider {
+            name: "Example".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key_env: None,
         };
-        assert_eq!(
-            settings.add_model("gpt", opus.clone()),
-            Err("Another model already has that name.".to_string())
-        );
-        assert_eq!(
-            settings.add_model("", opus.clone()),
-            Err("Give it a name.".to_string())
-        );
-        assert_eq!(settings.add_model(" opus ", opus.clone()), Ok(()));
-        assert_eq!(settings.models["opus"], opus);
+        assert_eq!(settings.add_provider(example.clone()), Ok(()));
+        assert_eq!(settings.providers(), [example.clone()]);
+        assert_eq!(settings.providers_shown(&[]), [example]);
+        settings.remove_provider("https://api.example.com/v1");
+        assert!(settings.providers.is_empty());
     }
 
     #[test]
@@ -663,92 +587,6 @@ mod tests {
     }
 
     #[test]
-    fn a_provider_added_needs_a_name_and_a_whole_base_url_and_takes_its_models_when_removed() {
-        let mut settings = two_strategies();
-        let example = |name: &str, base_url: &str| Provider {
-            name: name.to_string(),
-            base_url: base_url.to_string(),
-            api_key_env: Some("EXAMPLE_API_KEY".to_string()),
-        };
-        let wanted = "Give it a name and a base URL ending in /v1.";
-        for (name, base_url) in [
-            (" ", "https://api.example.com/v1"),
-            ("Example", "api.example.com/v1"),
-            ("Example", "https://api.example.com"),
-        ] {
-            assert_eq!(
-                settings.add_provider(example(name, base_url)),
-                Err(wanted.to_string())
-            );
-        }
-        assert_eq!(
-            settings.add_provider(example(" Example ", " https://api.example.com/v1/ ")),
-            Ok(())
-        );
-        assert_eq!(
-            settings.providers,
-            [example("Example", "https://api.example.com/v1")]
-        );
-        settings.models.get_mut("gpt").unwrap().base_url =
-            "https://api.example.com/v1/".to_string();
-        settings.remove_provider("https://api.example.com/v1");
-        assert!(settings.providers.is_empty());
-        assert_eq!(settings.models.keys().collect::<Vec<_>>(), ["local"]);
-    }
-
-    #[test]
-    fn the_providers_shown_are_those_found_then_added_then_each_other_a_model_names() {
-        let openai = Provider {
-            name: "OpenAI".to_string(),
-            base_url: "https://api.openai.com/v1".to_string(),
-            api_key_env: Some("OPENAI_API_KEY".to_string()),
-        };
-        assert_eq!(
-            provider_at(std::slice::from_ref(&openai), " https://api.openai.com/v1/")
-                .map(|p| p.name.as_str()),
-            Some("OpenAI")
-        );
-        let added = Provider {
-            name: "Example".to_string(),
-            base_url: "https://api.example.com/v1".to_string(),
-            api_key_env: None,
-        };
-        let model = |base_url: &str, api_key_env: Option<&str>| ModelSettings {
-            base_url: base_url.to_string(),
-            api_key_env: api_key_env.map(String::from),
-            ..ModelSettings::default()
-        };
-        let settings = AppSettings {
-            providers: vec![added.clone(), openai.clone()],
-            models: BTreeMap::from([
-                ("a".to_string(), model("https://api.openai.com/v1/", None)),
-                ("b".to_string(), model("http://localhost:9999/v1", None)),
-                (
-                    "c".to_string(),
-                    model("https://other.example.org/v1/", Some("OTHER_KEY")),
-                ),
-                ("d".to_string(), model("", None)),
-                ("e".to_string(), model("https://api.example.com/v1", None)),
-            ]),
-            ..AppSettings::default()
-        };
-        assert_eq!(
-            settings.providers_shown(std::slice::from_ref(&openai)),
-            [
-                openai,
-                added,
-                Provider::local(9999),
-                Provider {
-                    name: "other.example.org".to_string(),
-                    base_url: "https://other.example.org/v1".to_string(),
-                    api_key_env: Some("OTHER_KEY".to_string()),
-                },
-            ]
-        );
-        assert_eq!(host("localhost"), "localhost");
-    }
-
-    #[test]
     fn a_game_s_first_error_is_titled_with_the_game() {
         let settings = two_strategies();
         let errors = [FieldError::new(&["models", "gpt", "id"], "no id")];
@@ -757,6 +595,36 @@ mod tests {
             Some(FieldError::new(&["models", "gpt", "id"], "Werewolf: no id"))
         );
         assert_eq!(settings.first_error(GameName::Avalon, &errors), None);
+    }
+
+    #[test]
+    fn each_game_has_its_own_strategies_and_prompt_parts() {
+        let mut settings = two_strategies();
+        assert_eq!(AppSettings::at(GameName::Avalon), ["avalon"]);
+        settings
+            .prompt_parts_mut(GameName::Werewolf)
+            .insert("rules".to_string(), "Play.".to_string());
+        settings
+            .strategies_mut(GameName::Werewolf)
+            .get_mut("smart")
+            .unwrap()
+            .system = "{{ rules }}".to_string();
+        settings
+            .strategies_mut(GameName::Avalon)
+            .insert("all".to_string(), prompted("gpt"));
+        assert_eq!(
+            settings
+                .strategies(GameName::Avalon)
+                .keys()
+                .collect::<Vec<_>>(),
+            ["all"]
+        );
+        assert_eq!(settings.prompt_parts(GameName::Werewolf)["rules"], "Play.");
+        assert!(settings.prompt_parts(GameName::Avalon).is_empty());
+        assert_eq!(
+            settings.part_users(GameName::Werewolf),
+            BTreeMap::from([("rules".to_string(), vec!["smart".to_string()])])
+        );
     }
 
     #[test]

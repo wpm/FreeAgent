@@ -1,22 +1,59 @@
 //! A game's page: its players, phase limits, strategies, who plays what,
 //! and prompt parts, each a section of grouped lists.
 
-use std::collections::BTreeMap;
-
-use leptos::html;
+use free_agent_gui::settings::strategies::{PromptParts, StrategyCard, path_of, refused_strategy};
+use free_agent_gui::settings::{
+    Adder, Choice, Editor, Named, Page, PageHead, Problem, Section, field_id,
+};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use social_deduction_gui_types::settings::{
-    Policy, RANDOM, RoleSettings, StrategySettings, game_key, game_title, is_part_name, label,
-    part_variable,
+    AppSettings, GameSettings, RANDOM, RoleSettings, game_title, label,
 };
 use social_deduction_gui_types::{GameName, Role, Side};
 
-use free_agent_gui::chrome::Cross;
-
-use super::{Choice, Editor, Named, PageHead, Problem, Section, Segments, Tab, field_id, path};
+use super::GamePage;
 use crate::screen::side_key;
 use crate::tauri;
+
+/// A game's settings in the window's [`Editor`].
+trait Games {
+    /// Change the settings of `game` with `change`.
+    fn edit_game(self, game: GameName, change: impl FnOnce(&mut GameSettings));
+
+    /// Change the role `role` of `game` with `change`.
+    fn edit_role(self, game: GameName, role: &str, change: impl FnOnce(&mut RoleSettings));
+
+    /// The settings of `game`, read with `read`, telling of a change only
+    /// when what is read changes.
+    fn game<T: Clone + PartialEq + Send + Sync + 'static>(
+        self,
+        game: GameName,
+        read: impl Fn(&GameSettings) -> T + Send + Sync + 'static,
+    ) -> Memo<T>;
+}
+
+impl Games for Editor<AppSettings> {
+    fn edit_game(self, game: GameName, change: impl FnOnce(&mut GameSettings)) {
+        self.edit(|settings| change(settings.game_mut(game)));
+    }
+
+    fn edit_role(self, game: GameName, role: &str, change: impl FnOnce(&mut RoleSettings)) {
+        self.edit_game(game, |settings| {
+            if let Some(found) = settings.roles.iter_mut().find(|r| r.key == role) {
+                change(found);
+            }
+        });
+    }
+
+    fn game<T: Clone + PartialEq + Send + Sync + 'static>(
+        self,
+        game: GameName,
+        read: impl Fn(&GameSettings) -> T + Send + Sync + 'static,
+    ) -> Memo<T> {
+        self.read(move |settings| read(settings.game(game)))
+    }
+}
 
 /// What a role does, as written under its name. Its square tells its
 /// side.
@@ -83,99 +120,15 @@ pub fn phase_title(phase: &str) -> String {
     label(phase.trim_end_matches("_limit"))
 }
 
-/// How many strategies use a prompt part, `users` of them: `unused`,
-/// `used by 1 strategy`, `used by 2 strategies`.
-pub fn uses_told(users: usize) -> String {
-    match users {
-        0 => "unused".to_string(),
-        1 => "used by 1 strategy".to_string(),
-        n => format!("used by {n} strategies"),
-    }
-}
-
-/// Why `name` can't name a new prompt part when `taken` says which
-/// variables the parts already have are pulled in with, if it can't.
-pub fn refused_part(name: &str, taken: impl Fn(&str) -> bool) -> Option<&'static str> {
-    if !is_part_name(name) {
-        Some("Use letters, digits, underscores and spaces, not starting with a digit.")
-    } else if taken(&part_variable(name)) {
-        Some("There is already a prompt part with that name.")
-    } else {
-        None
-    }
-}
-
-/// Why `name` can't name a new strategy when `taken` says which are
-/// taken, if it can't.
-pub fn refused_strategy(name: &str, taken: impl Fn(&str) -> bool) -> Option<&'static str> {
-    if name == RANDOM {
-        Some("random is built in.")
-    } else if taken(name) {
-        Some("There is already a strategy with that name.")
-    } else {
-        None
-    }
-}
-
 /// The path of the field `rest` of `game`'s settings.
 fn game_path(game: GameName, rest: &[&str]) -> Vec<String> {
-    path(&[&[game_key(game)], rest].concat())
-}
-
-/// A name field and a button that adds a thing of that name with `add`,
-/// unless `refuse` says why it can't, which shows beside them.
-#[component]
-fn Adder(
-    #[prop(into)] label: String,
-    #[prop(into)] placeholder: String,
-    #[prop(into)] tip: String,
-    #[prop(into)] button_tip: String,
-    add: Callback<String>,
-    refuse: Callback<String, Option<&'static str>>,
-    #[prop(into)] class: String,
-) -> impl IntoView {
-    let field = NodeRef::<html::Input>::new();
-    let refusal = RwSignal::new(None::<&'static str>);
-    let added = move || {
-        let Some(input) = field.get_untracked() else {
-            return;
-        };
-        let name = input.value().trim().to_string();
-        if name.is_empty() {
-            return;
-        }
-        refusal.set(refuse.run(name.clone()));
-        if refusal.get_untracked().is_none() {
-            input.set_value("");
-            add.run(name);
-        }
-    };
-    view! {
-        <div class=format!("sd-adder {class}")>
-            <input
-                type="text"
-                node_ref=field
-                spellcheck="false"
-                placeholder=placeholder.clone()
-                aria-label=placeholder
-                data-tip=tip
-                on:input=move |_| refusal.set(None)
-                on:keydown=move |event| {
-                    if event.key() == "Enter" {
-                        added();
-                    }
-                }
-            />
-            <button on:click=move |_| added() data-tip=button_tip>{label}</button>
-            {move || refusal.get().map(|refusal| view! { <span class="fa-field-error">{refusal}</span> })}
-        </div>
-    }
+    path_of::<AppSettings>(game, rest)
 }
 
 /// A game's page: its players, phase limits, strategies, who plays what,
 /// and prompt parts, with **Restore defaults…**.
 #[component]
-pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
+pub(super) fn GameTab(editor: Editor<AppSettings>, game: GameName) -> impl IntoView {
     let title = game_title(game);
     let confirming = RwSignal::new(false);
     let restore = move |_| {
@@ -240,17 +193,17 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
     });
     let everyone = editor.game(game, |s| s.strategy.clone());
     let table = view! {
-        <span class="sd-note" id=field_id(&game_path(game, &["roles"])) data-tip="Everyone at the table, every role counted.">
+        <span class="fa-note" id=field_id(&game_path(game, &["roles"])) data-tip="Everyone at the table, every role counted.">
             {move || format!("{} at the table", players.get())}
         </span>
     };
     let pulled = view! {
-        <span class="sd-note" data-tip="Write {{ name }} in a system prompt, spaces as underscores, to pull a part in.">
+        <span class="fa-note" data-tip="Write {{ name }} in a system prompt, spaces as underscores, to pull a part in.">
             "pulled into a system prompt with {{ name }}"
         </span>
     };
     view! {
-        <PageHead title=title tip=Tab::Game(game).tip()>
+        <PageHead title=title tip=GamePage(game).tip()>
             <Show
                 when=move || confirming.get()
                 fallback=move || view! {
@@ -270,7 +223,7 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
             </Show>
         </PageHead>
         <Section title="Players" tip="How many players take each role. The total is the table's size." note=table.into_any()>
-            <div class="sd-list sd-roles">
+            <div class="fa-list sd-roles">
                 <For each=move || role_keys.get() key=Clone::clone let:role>
                     <RoleCount editor=editor game=game role=role />
                 </For>
@@ -278,7 +231,7 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
             <Problem error=table_error />
         </Section>
         <Section title="Phase limits" tip="The longest each phase can run. Write a duration, like 45s or 2m.">
-            <div class="sd-list sd-limits">
+            <div class="fa-list sd-limits">
                 <For each=move || phase_keys.get() key=Clone::clone let:phase>
                     <PhaseLimit editor=editor game=game phase=phase />
                 </For>
@@ -286,7 +239,15 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
         </Section>
         <Section title="Strategies" tip="How players decide what to do. A prompted strategy asks a model, told its system prompt. A random one chooses at random.">
             <For each=move || strategy_names.get() key=Clone::clone let:name>
-                <StrategyCard editor=editor game=game name=name models=model_options />
+                <StrategyCard
+                    editor=editor
+                    of=game
+                    name=name
+                    models=model_options
+                    name_tip="The name roles are given this strategy by."
+                    remove_tip="Remove this strategy. A role that plays it needs another."
+                    system_tip="What the model is told before the game. It can pull in prompt parts with {{ name }}, and use {{ name }}, {{ role }} and {% if %} for the player it is playing."
+                />
             </For>
             <Adder
                 label="Add strategy"
@@ -295,20 +256,20 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
                 button_tip="Add a prompted strategy with this name."
                 add=add_strategy
                 refuse=refuse_strategy
-                class="sd-adder-strategy"
+                class="fa-adder-strategy"
             />
         </Section>
         <Section title="Who plays what" tip="Which strategy plays each role. A role left the same as everyone plays the strategy chosen for everyone.">
-            <div class="sd-list sd-assign">
-                <div class="sd-item">
+            <div class="fa-list sd-assign">
+                <div class="fa-item">
                     <Named name="Everyone" note="Every role plays this unless it is given its own." />
                     <Choice
                         tip="The strategy every role plays unless it is given its own. random chooses at random and needs no model."
                         value=everyone.into()
                         options=strategy_options.into()
                         set=Callback::new(move |name: String| editor.edit_game(game, |s| s.strategy = name))
-                        editor=editor
-                        at=game_path(game, &["strategy"])
+                        id=field_id(&game_path(game, &["strategy"]))
+                        error=editor.error(game_path(game, &["strategy"]))
                     />
                 </div>
                 <For each=move || assigned_keys.get() key=Clone::clone let:role>
@@ -317,7 +278,7 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
             </div>
         </Section>
         <Section title="Prompt parts" tip="Named pieces of text that system prompts pull in with {{ name }}, like the rules, so several strategies can share them." note=pulled.into_any()>
-            <PromptParts editor=editor game=game />
+            <PromptParts editor=editor of=game />
         </Section>
     }
 }
@@ -325,7 +286,7 @@ pub(super) fn GameTab(editor: Editor, game: GameName) -> impl IntoView {
 /// The role `role` of `game` in `editor`, read with `read`, as it
 /// changes.
 fn role_memo<T: Clone + PartialEq + Send + Sync + 'static>(
-    editor: Editor,
+    editor: Editor<AppSettings>,
     game: GameName,
     role: String,
     read: impl Fn(&RoleSettings) -> T + Send + Sync + 'static,
@@ -352,7 +313,7 @@ fn Square(role: String) -> impl IntoView {
 /// A role's row: its square, its name and what it does, and its count as
 /// a stepper.
 #[component]
-fn RoleCount(editor: Editor, game: GameName, role: String) -> impl IntoView {
+fn RoleCount(editor: Editor<AppSettings>, game: GameName, role: String) -> impl IntoView {
     let count = role_memo(editor, game, role.clone(), |r| r.count);
     let at = game_path(game, &["roles", &role, "count"]);
     let title = label(&role);
@@ -374,7 +335,7 @@ fn RoleCount(editor: Editor, game: GameName, role: String) -> impl IntoView {
     };
     let down = step.clone();
     view! {
-        <div class="sd-item sd-role">
+        <div class="fa-item sd-role">
             <Square role=role.clone() />
             <Named name=title.clone() note=role_note(&role) />
             <div class="fa-stepper">
@@ -406,7 +367,7 @@ fn RoleCount(editor: Editor, game: GameName, role: String) -> impl IntoView {
 
 /// A phase's row: its name, what its limit ends, and a short field.
 #[component]
-fn PhaseLimit(editor: Editor, game: GameName, phase: String) -> impl IntoView {
+fn PhaseLimit(editor: Editor<AppSettings>, game: GameName, phase: String) -> impl IntoView {
     let read = phase.clone();
     let value = editor.game(game, move |s| {
         s.phases
@@ -428,7 +389,7 @@ fn PhaseLimit(editor: Editor, game: GameName, phase: String) -> impl IntoView {
     let id = field_id(&at);
     let error = editor.error(at);
     view! {
-        <div class="sd-item sd-limit">
+        <div class="fa-item sd-limit">
             <Named name=phase_title(&phase) note=phase_note(&phase) field=id.clone() />
             <input
                 type="text"
@@ -451,7 +412,7 @@ fn PhaseLimit(editor: Editor, game: GameName, phase: String) -> impl IntoView {
 /// play each of the others.
 #[component]
 fn RoleStrategy(
-    editor: Editor,
+    editor: Editor<AppSettings>,
     game: GameName,
     role: String,
     strategies: Signal<Vec<(String, String)>>,
@@ -511,9 +472,9 @@ fn RoleStrategy(
         }
     };
     view! {
-        <div class="sd-item sd-assigned">
+        <div class="fa-item sd-assigned">
             <Square role=role.clone() />
-            <span class="sd-item-name">{title.clone()}</span>
+            <span class="fa-item-name">{title.clone()}</span>
             <button
                 class="fa-link"
                 aria-expanded=move || split.get().to_string()
@@ -527,233 +488,12 @@ fn RoleStrategy(
                 value=value
                 options=options
                 set=set
-                editor=editor
-                at=at
+                id=field_id(&at)
+                error=editor.error(at)
             />
             <Show when=move || split.get()>
                 <div class="sd-split">{seats.clone()}</div>
             </Show>
-        </div>
-    }
-}
-
-/// A strategy's grouped list: its name, **Prompted | Random**, its model
-/// and its remove button, and under them, for a prompted one, its system
-/// prompt.
-#[component]
-fn StrategyCard(
-    editor: Editor,
-    game: GameName,
-    name: String,
-    models: Memo<Vec<(String, String)>>,
-) -> impl IntoView {
-    let read = |pick: fn(&StrategySettings) -> String| {
-        let name = name.clone();
-        editor.game(game, move |s| {
-            s.strategies.get(&name).map(pick).unwrap_or_default()
-        })
-    };
-    let policy = {
-        let name = name.clone();
-        editor.game(game, move |s| {
-            s.strategies
-                .get(&name)
-                .map(|s| s.policy)
-                .unwrap_or_default()
-        })
-    };
-    let prompted = move || policy.get() == Policy::Prompted;
-    let model = read(|s| s.model.clone());
-    let system = read(|s| s.system.clone());
-    let key = StoredValue::new(name.clone());
-    let change = move |change: &dyn Fn(&mut StrategySettings)| {
-        editor.edit_strategy(game, &key.read_value(), change);
-    };
-    let set_model = Callback::new(move |model: String| change(&|s| s.model.clone_from(&model)));
-    let at = |rest: &[&str]| game_path(game, &[&["strategies", name.as_str()], rest].concat());
-    let (system_at, model_at, policy_at, name_at) =
-        (at(&["system"]), at(&["model"]), at(&["policy"]), at(&[]));
-    let system_error = editor.error(system_at.clone());
-    let removed = name.clone();
-    let remove = move |_| {
-        let removed = removed.clone();
-        editor.edit_game(game, |s| {
-            s.strategies.remove(&removed);
-        });
-    };
-    view! {
-        <div class="sd-list sd-strategy" id=field_id(&name_at)>
-            <div class="sd-item">
-                <h3 class="sd-item-name" data-tip="The name roles are given this strategy by.">{name.clone()}</h3>
-                <Segments
-                    label="Policy"
-                    options=vec![
-                        (Policy::Prompted, "Prompted", "A model decides, told the system prompt."),
-                        (Policy::Random, "Random", "Every choice is made at random, and nothing is said."),
-                    ]
-                    value=policy.into()
-                    set=Callback::new(move |choice| change(&|s| s.policy = choice))
-                    id=field_id(&policy_at)
-                />
-                <Show when=prompted>
-                    <Choice
-                        tip="The model this strategy asks. The models are those on the Models page."
-                        value=model.into()
-                        options=models.into()
-                        set=set_model
-                        editor=editor
-                        at=model_at.clone()
-                    />
-                </Show>
-                <button class="fa-remove" aria-label=format!("Remove {name}") data-tip="Remove this strategy. A role that plays it needs another." on:click=remove>
-                    <Cross />
-                </button>
-                <Problem error=editor.error(policy_at.clone()) />
-                <Problem error=editor.error(name_at.clone()) />
-                <Show
-                    when=prompted
-                    fallback=|| view! { <p class="sd-note">"A random strategy needs no model or prompt."</p> }
-                >
-                    <textarea
-                        class="sd-mono"
-                        id=field_id(&system_at)
-                        spellcheck="false"
-                        aria-label="System prompt"
-                        data-tip="What the model is told before the game. It can pull in prompt parts with {{ name }}, and use {{ name }}, {{ role }} and {% if %} for the player it is playing."
-                        class:fa-invalid=move || system_error.with(Option::is_some)
-                        prop:value=move || system.get()
-                        on:input=move |event| {
-                            let text = event_target_value(&event);
-                            change(&|s| s.system.clone_from(&text));
-                        }
-                    ></textarea>
-                    <Problem error=system_error />
-                </Show>
-            </div>
-        </div>
-    }
-}
-
-/// The prompt parts, a grouped list each, and a field to add another.
-#[component]
-fn PromptParts(editor: Editor, game: GameName) -> impl IntoView {
-    let names = editor.game(game, |s| s.prompt_parts.keys().cloned().collect::<Vec<_>>());
-    let users = editor.game(game, |s| {
-        s.part_users()
-            .into_iter()
-            .map(|(part, users)| {
-                (
-                    part.to_string(),
-                    users.into_iter().map(String::from).collect(),
-                )
-            })
-            .collect::<BTreeMap<String, Vec<String>>>()
-    });
-    let add = Callback::new(move |name: String| {
-        editor.edit_game(game, |s| {
-            s.prompt_parts.entry(name.clone()).or_default();
-        });
-        let id = field_id(&game_path(game, &["prompt_parts", &name]));
-        // Once its text is drawn, it is ready to type in.
-        request_animation_frame(move || {
-            if let Some(element) = document().get_element_by_id(&id)
-                && let Ok(element) = wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlElement>(element)
-            {
-                let _ = element.focus();
-            }
-        });
-    });
-    let refuse = Callback::new(move |name: String| {
-        editor.settings.with_untracked(|s| {
-            refused_part(&name, |variable| {
-                s.game(game)
-                    .prompt_parts
-                    .keys()
-                    .any(|part| part_variable(part) == variable)
-            })
-        })
-    });
-    view! {
-        <For each=move || names.get() key=Clone::clone let:name>
-            <PartEditor editor=editor game=game name=name users=users />
-        </For>
-        <Adder
-            label="Add prompt part"
-            placeholder="New prompt part"
-            tip="Letters, digits, underscores and spaces, like rules or Seer only. A system prompt pulls it in with {{ name }}, spaces written as underscores."
-            button_tip="Add an empty prompt part with this name."
-            add=add
-            refuse=refuse
-            class="sd-adder-part"
-        />
-    }
-}
-
-/// A prompt part's grouped list: the `{{ name }}` that pulls it in, how
-/// many strategies use it, and **Remove**, and under them its text.
-#[component]
-fn PartEditor(
-    editor: Editor,
-    game: GameName,
-    name: String,
-    users: Memo<BTreeMap<String, Vec<String>>>,
-) -> impl IntoView {
-    let read = name.clone();
-    let value = editor.game(game, move |s| {
-        s.prompt_parts.get(&read).cloned().unwrap_or_default()
-    });
-    let read = name.clone();
-    let users =
-        Memo::new(move |_| users.with(|users| users.get(&read).cloned().unwrap_or_default()));
-    let at = game_path(game, &["prompt_parts", &name]);
-    let error = editor.error(at.clone());
-    let (written, removed) = (name.clone(), name.clone());
-    let pulled = format!("{{{{ {} }}}}", part_variable(&name));
-    let uses_tip = {
-        let pulled = pulled.clone();
-        move || {
-            users.with(|users| {
-                if users.is_empty() {
-                    format!("No strategy pulls this in yet. Add {pulled} to a system prompt.")
-                } else {
-                    format!("Pulled in by {}.", users.join(", "))
-                }
-            })
-        }
-    };
-    view! {
-        <div class="sd-list sd-part">
-            <div class="sd-item">
-                <code class="sd-item-name" data-tip="Write this in a system prompt to pull in this part.">{pulled.clone()}</code>
-                <span class="sd-note sd-uses" data-tip=uses_tip>{move || uses_told(users.with(Vec::len))}</span>
-                <button
-                    class="fa-link"
-                    data-tip="Remove this prompt part. A system prompt that pulls it in shows an error."
-                    on:click=move |_| {
-                        editor.edit_game(game, |s| {
-                            s.prompt_parts.remove(&removed);
-                        });
-                    }
-                >
-                    "Remove"
-                </button>
-                <textarea
-                    class="sd-mono"
-                    id=field_id(&at)
-                    spellcheck="false"
-                    aria-label=format!("Text of {name}")
-                    data-tip=format!("The text that replaces {pulled} wherever a system prompt uses it.")
-                    class:fa-invalid=move || error.with(Option::is_some)
-                    prop:value=move || value.get()
-                    on:input=move |event| {
-                        let text = event_target_value(&event);
-                        editor.edit_game(game, |s| {
-                            s.prompt_parts.insert(written.clone(), text);
-                        });
-                    }
-                ></textarea>
-                <Problem error=error />
-            </div>
         </div>
     }
 }
@@ -802,43 +542,5 @@ mod tests {
     fn a_phase_is_titled_without_its_limit() {
         assert_eq!(phase_title("day_limit"), "Day");
         assert_eq!(phase_title("assassinate_limit"), "Assassinate");
-    }
-
-    #[test]
-    fn a_prompt_part_s_uses_are_counted() {
-        assert_eq!(uses_told(0), "unused");
-        assert_eq!(uses_told(1), "used by 1 strategy");
-        assert_eq!(uses_told(3), "used by 3 strategies");
-    }
-
-    #[test]
-    fn a_new_prompt_part_needs_a_name_of_its_own_that_a_template_can_use() {
-        let taken = |name: &str| name == "rules";
-        assert_eq!(refused_part("tone", taken), None);
-        assert_eq!(
-            refused_part("rules", taken),
-            Some("There is already a prompt part with that name.")
-        );
-        assert_eq!(refused_part("the tone", taken), None);
-        assert_eq!(
-            refused_part("the-tone", taken),
-            Some("Use letters, digits, underscores and spaces, not starting with a digit.")
-        );
-        let taken = |variable: &str| variable == "Seer_only";
-        assert_eq!(
-            refused_part("Seer only", taken),
-            Some("There is already a prompt part with that name.")
-        );
-    }
-
-    #[test]
-    fn a_new_strategy_needs_a_name_of_its_own() {
-        let taken = |name: &str| name == "everyone";
-        assert_eq!(refused_strategy("bold", taken), None);
-        assert_eq!(
-            refused_strategy("everyone", taken),
-            Some("There is already a strategy with that name.")
-        );
-        assert_eq!(refused_strategy(RANDOM, taken), Some("random is built in."));
     }
 }

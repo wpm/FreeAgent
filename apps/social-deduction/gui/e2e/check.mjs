@@ -872,13 +872,13 @@ async function sideColored(page) {
  * to the Werewolf tab. */
 async function models(settings) {
   await settings.click('#tab-models');
-  await settings.waitForSelector('.sd-offered');
-  const providers = await settings.$$eval('.sd-provider h2', (names) => names.map((name) => name.textContent.trim()));
+  await settings.waitForSelector('.fa-offered');
+  const providers = await settings.$$eval('.fa-provider h2', (names) => names.map((name) => name.textContent.trim()));
   check(
     JSON.stringify(providers) === JSON.stringify(['OpenAI', 'Anthropic', 'Local (localhost:1234)', 'Local (localhost:11434)', 'Broke', 'Mute']),
     `desktop: each provider is shown by its name (${providers.join(', ')})`,
   );
-  const card = (name) => `.sd-provider[aria-label="${name}"]`;
+  const card = (name) => `.fa-provider[aria-label="${name}"]`;
   const text = (selector) => settings.$eval(selector, (element) => element.textContent.trim());
   const ids = (selector) => settings.$$eval(selector, (found) => found.map((id) => id.textContent.trim()));
   check(
@@ -891,13 +891,13 @@ async function models(settings) {
     (await text(`${card('Broke')} .fa-warning`)) ===
       "Broke's account has no credits left. Add credits at billing.broke.example, then reopen Settings." &&
       (await tip(`${card('Broke')} .fa-warning`)).startsWith('You have no credits remaining.') &&
-      (await settings.$$(`${card('Broke')} .sd-note`)).length === 0 &&
-      (await text('.sd-status')) === "Some models couldn't be checked. Their providers say why.",
+      (await settings.$$(`${card('Broke')} .fa-note`)).length === 0 &&
+      (await text('.fa-status')) === "Some models couldn't be checked. Their providers say why.",
     "desktop: a provider whose models couldn't be checked says why, and the provider's words are its help",
   );
   check(
-    (await text(`${card('Mute')} .sd-note`)) === 'None of its models plays both games. Most often: no tools.' &&
-      (await tip(`${card('Mute')} .sd-note`)) === 'mute-1: no tools\nmute-2: no tools',
+    (await text(`${card('Mute')} .fa-note`)) === 'None of its models plays both games. Most often: no tools.' &&
+      (await tip(`${card('Mute')} .fa-note`)) === 'mute-1: no tools\nmute-2: no tools',
     "desktop: a provider none of whose models play gives the most common reason, and each model's in its help",
   );
   check(
@@ -906,17 +906,17 @@ async function models(settings) {
       (await text(`${card('Local (localhost:1234)')} .fa-chip`)) === 'No key needed',
     'desktop: each provider says where its key comes from',
   );
-  const offered = await ids(`${card('Anthropic')} .sd-offered .sd-id`);
+  const offered = await ids(`${card('Anthropic')} .fa-offered .fa-model-id`);
   check(
     JSON.stringify(offered) === JSON.stringify(['claude-opus-5-5', 'claude-sonnet-5-5']),
     `desktop: only models that play are available, in the listing's order (${offered.join(', ')})`,
   );
-  const local = await ids(`${card('Local (localhost:1234)')} .sd-id`);
+  const local = await ids(`${card('Local (localhost:1234)')} .fa-model-id`);
   check(
     JSON.stringify(local) === JSON.stringify(['qwen2.5-7b-instruct-1m', 'llama-3.2-3b-instruct']),
     `desktop: a model added is under its provider and not available again (${local.join(', ')})`,
   );
-  const untipped = await settings.$$eval('.sd-settings button, .sd-settings input', (all) =>
+  const untipped = await settings.$$eval('.fa-settings button, .fa-settings input', (all) =>
     all.filter((element) => !element.closest('[data-tip]')).map((element) => element.outerHTML.slice(0, 80)),
   );
   check(untipped.length === 0, `desktop: everything on the Models tab has help (${untipped.join(' ')})`);
@@ -925,11 +925,11 @@ async function models(settings) {
     chip.height === 26 && chip.radius === '13px' && chip.background === 'rgb(240, 240, 240)' && chip.weight === '600',
     `desktop: where a key comes from is a gray chip (${JSON.stringify(chip)})`,
   );
-  const [add] = await shapes(settings, `${card('Anthropic')} .sd-offered button`);
+  const [add] = await shapes(settings, `${card('Anthropic')} .fa-offered button`);
   check(add.height === 32 && add.radius === '8px', `desktop: a model's Add is a small secondary button (${JSON.stringify(add)})`);
   const sided = await sideColored(settings);
   check(sided.length === 0, `desktop: no control on the Models tab is red or blue (${sided.join(' ')})`);
-  const flags = await settings.$$eval('.sd-provider .fa-warning', (warnings) =>
+  const flags = await settings.$$eval('.fa-provider .fa-warning', (warnings) =>
     warnings.map((warning) => getComputedStyle(warning, '::before').backgroundColor),
   );
   check(
@@ -945,8 +945,8 @@ async function models(settings) {
   await settings.emulateMedia({ colorScheme: 'light' });
   await settings.setViewportSize({ width: 760, height: 560 });
   // Adding a model asks for its name, filled in with its id.
-  await settings.click(`${card('Anthropic')} .sd-offered button`);
-  const name = `${card('Anthropic')} .sd-adding input`;
+  await settings.click(`${card('Anthropic')} .fa-offered button`);
+  const name = `${card('Anthropic')} .fa-adding input`;
   await settings.waitForSelector(name);
   check((await settings.$eval(name, (input) => input.value)) === 'claude-opus-5-5', 'desktop: a model added is first named for its id');
   await settings.fill(name, 'qwen');
@@ -958,24 +958,24 @@ async function models(settings) {
   );
   await settings.fill(name, 'opus');
   await settings.press(name, 'Enter');
-  await settings.waitForSelector(`${card('Anthropic')} input.sd-name`);
-  check((await settings.$eval(`${card('Anthropic')} input.sd-name`, (input) => input.value)) === 'opus', 'desktop: the model is added under the name given');
+  await settings.waitForSelector(`${card('Anthropic')} input.fa-model-name`);
+  check((await settings.$eval(`${card('Anthropic')} input.fa-model-name`, (input) => input.value)) === 'opus', 'desktop: the model is added under the name given');
   // A name emptied is refused, and the old one is put back.
-  const qwen = `${card('Local (localhost:1234)')} input.sd-name`;
+  const qwen = `${card('Local (localhost:1234)')} input.fa-model-name`;
   await settings.fill(qwen, '');
   await settings.press(qwen, 'Tab');
   check((await settings.$eval(qwen, (input) => input.value)) === 'qwen', 'desktop: an empty name is refused');
   // The context window is the provider's until a number is typed, and
   // Reset puts it back.
-  const window = `${card('Local (localhost:1234)')} .sd-window input`;
+  const window = `${card('Local (localhost:1234)')} .fa-context-window input`;
   const shown = () => settings.$eval(window, (input) => [input.value, input.placeholder]);
   check(JSON.stringify(await shown()) === JSON.stringify(['', '1,010,000']), "desktop: an empty context window shows the provider's figure");
   await settings.fill(window, '32768');
   await settings.press(window, 'Tab');
-  await settings.waitForSelector(`${card('Local (localhost:1234)')} .sd-window button`);
+  await settings.waitForSelector(`${card('Local (localhost:1234)')} .fa-context-window button`);
   check((await shown())[0] === '32,768', 'desktop: a context window typed overrides it');
   await settings.screenshot({ path: join(shots, 'settings-models-added.png'), fullPage: true });
-  await settings.click(`${card('Local (localhost:1234)')} .sd-window button`);
+  await settings.click(`${card('Local (localhost:1234)')} .fa-context-window button`);
   check((await shown())[0] === '', 'desktop: Reset goes back to the provider\'s figure');
   await settings.click('#tab-werewolf');
   await settings.waitForSelector('.fa-stepper input');
@@ -1063,10 +1063,10 @@ await section('desktop', async () => {
   const settings = watch(await app.newPage());
   await settings.setViewportSize({ width: 760, height: 560 });
   await settings.goto(`${origin}#settings`);
-  await settings.waitForSelector('.sd-sidebar [role="tab"]');
-  await tablist(settings, 'desktop', '.sd-sidebar', ['General', 'Models', 'Werewolf', 'Avalon']);
+  await settings.waitForSelector('.fa-sidebar [role="tab"]');
+  await tablist(settings, 'desktop', '.fa-sidebar', ['General', 'Models', 'Werewolf', 'Avalon']);
   await settings.screenshot({ path: join(shots, 'settings-general.png'), fullPage: true });
-  const headings = await settings.$$eval('.sd-settings h2', (elements) => elements.map((element) => element.textContent.trim()));
+  const headings = await settings.$$eval('.fa-settings h2', (elements) => elements.map((element) => element.textContent.trim()));
   check(
     JSON.stringify(headings) === JSON.stringify(['Appearance']),
     `desktop: General has the look alone (${headings.join(', ')})`,
@@ -1080,7 +1080,7 @@ await section('desktop', async () => {
     shot: join(shots, 'settings-tip.png'),
   });
   await settings.click('#tab-werewolf');
-  await settings.waitForSelector('.sd-page-head h1');
+  await settings.waitForSelector('.fa-page-head h1');
   await settings.screenshot({ path: join(shots, 'settings-werewolf.png'), fullPage: true });
   const sideSaid = await settings.$$eval('.sd-square', (squares) =>
     squares.map((square) => [square.getAttribute('role'), square.getAttribute('aria-label'), getComputedStyle(square).backgroundColor]),
@@ -1102,8 +1102,8 @@ await section('desktop', async () => {
   check(JSON.stringify(players) === JSON.stringify(['2', '3', '1', '1']), `desktop: the Werewolf tab shows each role's count (${players.join(', ')})`);
   const notes = await settings.$$eval('.sd-role, .sd-limit', (rows) =>
     rows.map((row) => {
-      const note = row.querySelector('.sd-note');
-      return `${row.querySelector('.sd-item-name').textContent}: ${note.checkVisibility() ? note.textContent : ''}`;
+      const note = row.querySelector('.fa-note');
+      return `${row.querySelector('.fa-item-name').textContent}: ${note.checkVisibility() ? note.textContent : ''}`;
     }),
   );
   check(
@@ -1112,7 +1112,7 @@ await section('desktop', async () => {
       notes.every((note) => !note.endsWith(': ')),
     `desktop: what each role and phase does is written under its name (${notes.join('; ')})`,
   );
-  const [restore] = await shapes(settings, '.sd-page-head > button');
+  const [restore] = await shapes(settings, '.fa-page-head > button');
   check(
     restore.text === 'Restore defaults…' && restore.height === 40 && restore.radius === '10px' && restore.border === '1px rgb(196, 196, 196)' &&
       restore.background === 'rgb(255, 255, 255)' && restore.shadow !== 'none',
@@ -1129,9 +1129,9 @@ await section('desktop', async () => {
     select.appearance === 'none' && select.icon && select.height === 36 && select.radius === '8px',
     `desktop: a select is a field with a chevron drawn beside it (${JSON.stringify(select)})`,
   );
-  const [field] = await shapes(settings, '.sd-adder-strategy input');
+  const [field] = await shapes(settings, '.fa-adder-strategy input');
   check(field.height === 36 && field.radius === '8px' && field.shadow.includes('inset'), `desktop: a text field is sunk into the page (${JSON.stringify(field)})`);
-  const [prompt] = await shapes(settings, '.sd-strategy textarea');
+  const [prompt] = await shapes(settings, '.fa-strategy textarea');
   check(prompt.font.includes('monospace'), `desktop: a prompt is monospace (${prompt.font})`);
   const [remove] = await shapes(settings, '.fa-remove');
   check(
@@ -1149,25 +1149,25 @@ await section('desktop', async () => {
   check(unringed.length === 0, `desktop: every control on the Werewolf tab shows a focus ring (${unringed.join(' ')})`);
   // Each section is grouped lists, rows on hairlines, with no box inside
   // a list but its controls.
-  await settings.fill('.sd-adder-strategy input', 'bold');
-  await settings.click('.sd-adder-strategy button');
-  await settings.waitForSelector('.sd-strategy >> nth=1');
+  await settings.fill('.fa-adder-strategy input', 'bold');
+  await settings.click('.fa-adder-strategy button');
+  await settings.waitForSelector('.fa-strategy >> nth=1');
   const page = await settings.evaluate(() => {
     const controls = 'button, input, select, textarea, .fa-stepper, .fa-segments, .fa-select-box';
     const boxed = (element) => {
       const style = getComputedStyle(element);
       return ['Top', 'Right', 'Bottom', 'Left'].every((side) => style[`border${side}Width`] !== '0px' && style[`border${side}Style`] !== 'none');
     };
-    const lists = [...document.querySelectorAll('.sd-list')];
+    const lists = [...document.querySelectorAll('.fa-list')];
     return {
-      sidebar: document.querySelector('.sd-sidebar').getBoundingClientRect().width,
+      sidebar: document.querySelector('.fa-sidebar').getBoundingClientRect().width,
       lists: lists.length,
       nested: lists.flatMap((list) =>
         [...list.querySelectorAll('*')].filter((inner) => !inner.closest(controls) && boxed(inner)).map((inner) => inner.outerHTML.slice(0, 60)),
       ),
       limit: document.querySelector('.sd-limit input').getBoundingClientRect().width,
-      uses: [...document.querySelectorAll('.sd-part .sd-uses')].map((uses) => uses.textContent),
-      pulled: document.querySelector('.sd-part code').textContent,
+      uses: [...document.querySelectorAll('.fa-part .fa-uses')].map((uses) => uses.textContent),
+      pulled: document.querySelector('.fa-part code').textContent,
     };
   });
   check(page.sidebar === 220 && page.lists >= 6, `desktop: the Werewolf page is a sidebar beside grouped lists (${JSON.stringify(page)})`);
@@ -1175,9 +1175,9 @@ await section('desktop', async () => {
   check(page.limit === 80, `desktop: a phase limit's field is short (${page.limit}px)`);
   check(JSON.stringify(page.uses) === JSON.stringify(['used by 1 strategy']), `desktop: a prompt part shows its uses (${page.uses})`);
   check(page.pulled === '{{ rules }}', `desktop: a prompt part shows how to pull it in (${page.pulled})`);
-  await settings.fill('.sd-adder-part input', 'the-tone');
-  await settings.click('.sd-adder-part button');
-  const refused = await settings.$eval('.sd-adder-part', (adder) => adder.textContent);
+  await settings.fill('.fa-adder-part input', 'the-tone');
+  await settings.click('.fa-adder-part button');
+  const refused = await settings.$eval('.fa-adder-part', (adder) => adder.textContent);
   check(refused.includes('Use letters, digits, underscores and spaces'), `desktop: a prompt part's name is letters, digits, underscores and spaces (${refused})`);
   await settings.screenshot({ path: join(shots, 'settings-werewolf-wide.png'), fullPage: true });
   // Every control on the General, Werewolf and Avalon pages has help.
@@ -1186,7 +1186,7 @@ await section('desktop', async () => {
     await settings.click(`#tab-${tab}`);
     await settings.waitForTimeout(100);
     unhelped.push(
-      ...(await settings.$$eval('.sd-settings button, .sd-settings input, .sd-settings select, .sd-settings textarea, .sd-settings h2, .sd-settings h3', (elements) =>
+      ...(await settings.$$eval('.fa-settings button, .fa-settings input, .fa-settings select, .fa-settings textarea, .fa-settings h2, .fa-settings h3', (elements) =>
         elements.filter((element) => !element.closest('[data-tip]:not([data-tip=""])') && !element.querySelector('[data-tip]:not([data-tip=""])')).map((element) => element.outerHTML.slice(0, 80)),
       )),
     );
@@ -1201,8 +1201,8 @@ await section('desktop', async () => {
     const box = (selector) => document.querySelector(selector).getBoundingClientRect();
     const pane = document.scrollingElement;
     return {
-      stacked: box('.sd-page').top >= box('.sd-sidebar').bottom,
-      wide: Math.max(pane.scrollWidth, document.querySelector('.sd-settings').scrollWidth),
+      stacked: box('.fa-page').top >= box('.fa-sidebar').bottom,
+      wide: Math.max(pane.scrollWidth, document.querySelector('.fa-settings').scrollWidth),
       window: pane.clientWidth,
     };
   });
@@ -1212,8 +1212,8 @@ await section('desktop', async () => {
   await settings.setViewportSize({ width: 760, height: 560 });
   // Typing goes on into a new prompt part and a phase limit, each change
   // stored as it is made.
-  await settings.fill('.sd-adder-part input', 'tone');
-  await settings.click('.sd-adder-part button');
+  await settings.fill('.fa-adder-part input', 'tone');
+  await settings.click('.fa-adder-part button');
   const part = '[id="field-werewolf.prompt_parts.tone"]';
   await settings.click(part);
   await settings.keyboard.type('Speak briefly.', { delay: 30 });
