@@ -49,19 +49,14 @@ impl Widths {
     /// As in a window splitter, Home takes the pane to its narrowest and
     /// End to its widest.
     pub fn keyed(self, key: &str, edge: Edge, width: f64, main: f64) -> Option<f64> {
-        let wider = match edge {
-            Edge::Left => "ArrowRight",
-            Edge::Right => "ArrowLeft",
+        let toward = match (key, edge) {
+            ("ArrowRight", Edge::Left) | ("ArrowLeft", Edge::Right) => 1.0,
+            ("ArrowLeft" | "ArrowRight", _) => -1.0,
+            ("Home", _) => return Some(self.least),
+            ("End", _) => return Some(self.widest(main)),
+            _ => return None,
         };
-        match key {
-            "ArrowLeft" | "ArrowRight" if key == wider => {
-                Some(self.clamped(width + self.step, main))
-            }
-            "ArrowLeft" | "ArrowRight" => Some(self.clamped(width - self.step, main)),
-            "Home" => Some(self.least),
-            "End" => Some(self.widest(main)),
-            _ => None,
-        }
+        Some(self.clamped(width + toward * self.step, main))
     }
 }
 
