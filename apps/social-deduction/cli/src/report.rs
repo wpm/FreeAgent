@@ -3,10 +3,10 @@
 //! how long something took, the models in play, whether a message comes
 //! late, and how a player's story forgets talk to fit a budget.
 
-use crate::model::spec::Models;
-use crate::model::window::{ContextWindow, Source};
-use crate::model::{ToolChoice, tokens};
 use crate::seat::{PlayerId, PlayerName};
+use free_agent_model::spec::Models;
+use free_agent_model::window::{ContextWindow, Source};
+use free_agent_model::{ToolChoice, tokens};
 use humantime::format_duration;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
@@ -207,8 +207,8 @@ pub(crate) fn told_within<L>(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::model::estimate;
-    use crate::model::spec::ModelInPlay;
+    use free_agent_model::estimate;
+    use free_agent_model::spec::ModelInPlay;
 
     #[test]
     fn a_line_displays_as_the_console_prints_it() {

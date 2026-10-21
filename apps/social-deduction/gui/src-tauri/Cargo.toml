@@ -20,6 +20,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 anyhow.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+free-agent-model.workspace = true
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 secrecy.workspace = true
 social-deduction.workspace = true

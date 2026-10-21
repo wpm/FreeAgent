@@ -663,8 +663,8 @@ fn prompt_error<G: Tabled>(
 mod tests {
     use super::*;
     use crate::model::canned;
-    use crate::model::spec::Environment;
     use crate::run::prepare;
+    use free_agent_model::spec::Environment;
     use std::path::PathBuf;
 
     /// A directory of its own for the test `name`, empty and not yet made.

@@ -33,17 +33,25 @@ tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [workspace]
 # Each application is a folder under apps/ whose crates sit in fixed
-# subfolders: cli/, gui/, gui/src-tauri/ and gui-types/. The globs pick up
-# a new application's crates without a change here. Cargo fails on a glob
-# that matches nothing at all, so a glob for a subfolder is listed only
-# while some application has one; crates/* comes back with the first
-# crate shared between applications.
-members = ["apps/*/cli", "apps/*/gui", "apps/*/gui/src-tauri", "apps/*/gui-types"]
+# subfolders: cli/, gui/, gui/src-tauri/ and gui-types/. What the
+# applications share is a crate of its own under crates/. The globs pick
+# up a new application's crates, or a new shared crate, without a change
+# here. Cargo fails on a glob that matches nothing at all, so a glob for a
+# subfolder is listed only while some application has one.
+members = ["apps/*/cli", "apps/*/gui", "apps/*/gui/src-tauri", "apps/*/gui-types", "crates/*"]
 # Without this a bare cargo command at the root would skip the
 # applications. The web frontends are built for the browser, by Trunk,
 # and the desktop shells need the system's webview libraries, so both are
-# left out.
-default-members = [".", "apps/*/cli", "apps/*/gui-types"]
+# left out: the applications' by their subfolders, and the shared ones,
+# such as a crates/gui or crates/desktop, by naming each native shared
+# crate here.
+default-members = [
+    ".",
+    "apps/*/cli",
+    "apps/*/gui-types",
+    "crates/model",
+    "crates/gui-types",
+]
 resolver = "3"
 
 # Versions live here so the crates cannot drift apart on a shared dependency.
@@ -71,6 +79,8 @@ reqwest = { version = "0.13.5", default-features = false, features = ["rustls", 
 # Serde alone, so the viewer's crates build for wasm32-unknown-unknown.
 uuid = { version = "1.27.0", features = ["serde"] }
 free-agent = { path = "." }
+free-agent-gui-types = { path = "crates/gui-types" }
+free-agent-model = { path = "crates/model" }
 social-deduction = { path = "apps/social-deduction/cli" }
 social-deduction-gui-types = { path = "apps/social-deduction/gui-types" }
 

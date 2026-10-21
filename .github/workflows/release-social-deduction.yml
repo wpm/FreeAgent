@@ -138,7 +138,8 @@ jobs:
       # The frontend, which tauri build builds first with Trunk.
       - uses: taiki-e/install-action@v2
         with:
-          tool: trunk
+          # Pinned: the page breaks in the browser when built by trunk 0.22.0.
+          tool: trunk@0.21.14
       # The desktop shell's system libraries, as in ci.yml, plus what the
       # AppImage bundler uses and what opens the .rpm to check it. macOS
       # and Windows ship their webviews.

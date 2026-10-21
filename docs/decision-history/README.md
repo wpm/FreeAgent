@@ -43,3 +43,4 @@ are not part of this repository's history.
 | [0009](0009-only-a-change-of-decision-restarts-the-ratify-timer.md) | Only a change of decision restarts the ratify timer, and a vote may be retracted | Accepted |
 | [0010](0010-avalon-is-a-second-game-built-by-copying-werewolf.md) | Avalon is a second game, built by copying Werewolf | Accepted |
 | [0011](0011-speech-is-never-cut-off-at-a-phase-end.md) | Speech is never cut off at a phase end | Accepted |
+| [0012](0012-applications-share-crates-each-game-is-its-own.md) | Applications share crates; each game is its own | Accepted |

@@ -17,14 +17,14 @@
 
 use crate::config::{Configuration, Name};
 use crate::log::{Ended, Header};
-use crate::model::spec::Probed;
-use crate::model::{Model, ToolChoice};
 use crate::prompted::{self, Account};
 use crate::random;
 use crate::report::Line;
 use crate::seat::{Dealt, ENVIRONMENT, PlayerId, to_everyone_but, to_the_environment};
 use async_trait::async_trait;
 use free_agent::{ActorId, ActorInit, Behavior, Context, Episode, Logger};
+use free_agent_model::spec::Probed;
+use free_agent_model::{Model, ToolChoice};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

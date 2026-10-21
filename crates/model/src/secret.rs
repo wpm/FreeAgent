@@ -9,10 +9,10 @@
 //! fallback. Where a key is comes back as a [`KeyStatus`], which never
 //! holds the key.
 
-use crate::model::spec::{Environment, Keys};
+use crate::spec::{Environment, Keys};
+use free_agent_gui_types::settings::KeyStatus;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Serialize, Serializer};
-use social_deduction_gui_types::settings::KeyStatus;
 use std::fmt;
 
 /// What can go wrong with a credential store. Neither variant carries a
@@ -151,22 +151,25 @@ fn found(
     Ok(environment()?.filter(present))
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
+/// A store for tests. Nothing but tests uses this module.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod testing {
+    use super::{SecretError, Store};
+    use secrecy::{ExposeSecret, SecretString};
     use std::collections::HashMap;
     use std::sync::Mutex;
 
     /// A store in memory, which fails every call once it has an error.
     #[derive(Default)]
-    pub(crate) struct Fake {
+    pub struct Fake {
         keys: Mutex<HashMap<String, String>>,
         error: Mutex<Option<SecretError>>,
     }
 
     impl Fake {
         /// Fail every call from now on with `error`.
-        fn fail(&self, error: SecretError) {
+        pub fn fail(&self, error: SecretError) {
             *self.error.lock().unwrap() = Some(error);
         }
 
@@ -198,6 +201,13 @@ pub(crate) mod tests {
             Ok(())
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::Fake;
+    use super::*;
+    use std::sync::Mutex;
 
     /// `key` as a secret.
     fn secret(key: &str) -> SecretString {
@@ -283,7 +293,7 @@ pub(crate) mod tests {
         let path = std::env::var("PATH").unwrap();
         let key = keychain.key("PATH").unwrap().unwrap();
         assert_eq!(key.expose_secret(), path);
-        let unset = "SOCIAL_DEDUCTION_TEST_UNSET_KEY";
+        let unset = "FREE_AGENT_TEST_UNSET_KEY";
         assert!(keychain.key(unset).unwrap().is_none());
         keychain.store("PATH", &secret("stored")).unwrap();
         let key = keychain.key("PATH").unwrap().unwrap();
@@ -293,7 +303,7 @@ pub(crate) mod tests {
     #[test]
     fn a_key_is_stored_found_and_removed() {
         let keychain = Keychain(Fake::default());
-        let variable = "SOCIAL_DEDUCTION_TEST_UNSET_KEY";
+        let variable = "FREE_AGENT_TEST_UNSET_KEY";
         assert_eq!(keychain.status(variable), KeyStatus::Missing);
         keychain.store(variable, &secret("sk-test")).unwrap();
         assert_eq!(keychain.status(variable), KeyStatus::InKeychain);
@@ -326,7 +336,7 @@ pub(crate) mod tests {
     fn a_store_that_fails_is_unavailable_unless_the_environment_holds_the_key() {
         let keychain = Keychain(Fake::default());
         keychain.0.fail(unavailable());
-        let status = keychain.status("SOCIAL_DEDUCTION_TEST_UNSET_KEY");
+        let status = keychain.status("FREE_AGENT_TEST_UNSET_KEY");
         assert!(
             matches!(&status, KeyStatus::Unavailable(shown) if shown.contains("OPENAI_API_KEY")),
             "{status:?}"
@@ -369,7 +379,7 @@ pub(crate) mod tests {
     #[test]
     fn a_key_never_leaks_into_a_log_an_error_or_a_status() {
         let keychain = Keychain(Fake::default());
-        let variable = "SOCIAL_DEDUCTION_SENTINEL_KEY";
+        let variable = "FREE_AGENT_SENTINEL_KEY";
         let mut shown = Vec::new();
         let log = logged(|| {
             keychain.store(variable, &secret(SENTINEL)).unwrap();

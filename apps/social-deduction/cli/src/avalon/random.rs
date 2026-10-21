@@ -58,11 +58,11 @@ mod tests {
     };
     use crate::game::Narrate;
     use crate::game::game;
-    use crate::model::spec::Models;
     use crate::seat::id;
     use crate::seat::{ENVIRONMENT, to_the_environment};
     use crate::strategy::{RANDOM, RoleConfig};
     use free_agent::ActorId;
+    use free_agent_model::spec::Models;
     use std::collections::{HashMap, HashSet};
     use std::num::NonZero;
     use std::time::Duration;

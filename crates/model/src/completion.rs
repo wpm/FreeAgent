@@ -255,8 +255,8 @@ pub struct Call {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::canned::completion;
-    use crate::model::fake::selecting;
+    use crate::canned::completion;
+    use crate::tests::selecting;
     use serde_json::json;
 
     #[test]

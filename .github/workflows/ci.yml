@@ -52,7 +52,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build
       - run: cargo test
-      # Social Deduction's frontend builds its gui-types for the browser.
+      # The frontends build their gui-types, and the shared ones, for the
+      # browser.
+      - run: cargo check -p free-agent-gui-types --target wasm32-unknown-unknown
       - run: cargo check -p social-deduction-gui-types --target wasm32-unknown-unknown
 
   docs:
@@ -84,7 +86,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: trunk
+          # Pinned: the page breaks in the browser when built by trunk 0.22.0.
+          tool: trunk@0.21.14
       - run: cargo clippy -p social-deduction-gui --all-targets -- -D warnings
       - run: cargo test -p social-deduction-gui
       - run: cargo check -p social-deduction-gui --target wasm32-unknown-unknown
@@ -194,10 +197,11 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
-      # Without --workspace the tests of the applications still run, but the
-      # report leaves their source files out. The viewer's frontend is the
-      # browser's, and the Viewer job tests it. The desktop shell is wiring:
-      # Tauri commands around social_deduction's live, editing and secret
+      # Without --workspace the tests of the applications and the shared
+      # crates still run, but the report leaves their source files out. The
+      # viewer's frontend is the browser's, and the Viewer job tests it. The
+      # desktop shell is wiring: Tauri commands around social_deduction's
+      # live and editing modules and free_agent_model's catalog and secret
       # modules, which are measured here, the keyring store and the macOS
       # dev bundle. It needs a webview to build, so the Desktop jobs test it.
       - run: cargo llvm-cov --workspace --exclude social-deduction-gui --exclude social-deduction-desktop --lcov --output-path lcov.info

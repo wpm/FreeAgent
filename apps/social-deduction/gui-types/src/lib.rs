@@ -14,7 +14,7 @@
 
 #![warn(missing_docs)]
 
-pub mod go;
+pub use free_agent_gui_types::go;
 pub mod settings;
 
 use std::fmt;

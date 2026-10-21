@@ -31,12 +31,12 @@ pub mod random;
 pub mod report;
 
 use crate::game::{Game, Tagged};
-use crate::model::spec::Probed;
-use crate::model::{Model, ToolChoice};
 use crate::report::in_order;
 use crate::seat::{PlayerId, to_the_environment, to_the_players_but};
 use anyhow::ensure;
 use free_agent::{ActorId, ActorInit};
+use free_agent_model::spec::Probed;
+use free_agent_model::{Model, ToolChoice};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;

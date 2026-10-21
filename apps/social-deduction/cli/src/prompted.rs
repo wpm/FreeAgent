@@ -1,9 +1,10 @@
 //! The prompted policy, of any game: a player whose decisions a language
 //! model makes. Every game's prompted player shares the shape of a
 //! request, the `speak` and `wait` tools every request offers and how
-//! their calls are read, how the probe settles the tool choice a model is
-//! asked under, and the [`Player`] itself, all but what it does when it is
-//! woken, which is its game's [`play`](Game::play).
+//! their calls are read, the probe's prompt, and the [`Player`] itself,
+//! all but what it does when it is woken, which is its game's
+//! [`play`](Game::play). How the probe settles the tool choice a model is
+//! asked under is [`free_agent_model::check`]'s.
 //!
 //! A player remembers what it is shown, what it hears and what it does, as
 //! a [`Memory`] of each message stamped when it was received or sent, and
@@ -50,12 +51,11 @@
 //! to call one, and an answer in prose is a failure like any other.
 
 use crate::game::{Actor, Ending, Entry, Game, Message, Seat, act, close, observe};
-use crate::model::spec::Probed;
-use crate::model::{self, Request, Response, Tool, ToolChoice};
 use crate::seat::PlayerId;
-use anyhow::{Context as _, anyhow, bail};
+use anyhow::{Context as _, bail};
 use async_trait::async_trait;
 use free_agent::{ActorId, Behavior, Builder, Context, Event, Think, ThinkBuilder};
+use free_agent_model::{Request, Response, Tool, ToolChoice};
 use humantime::format_duration;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -94,7 +94,10 @@ pub(crate) fn request(
     asked.push_str(ANSWER);
     Request::offering(
         model_id,
-        vec![model::Message::system(prompt), model::Message::user(asked)],
+        vec![
+            free_agent_model::Message::system(prompt),
+            free_agent_model::Message::user(asked),
+        ],
         tools,
         tool_choice,
     )
@@ -145,7 +148,7 @@ struct Waiting {
 
 /// What `call`, a call to [`speak`], says. Arguments that do not parse,
 /// or text that is empty once trimmed, is an error.
-pub(crate) fn said(call: &model::Call) -> anyhow::Result<String> {
+pub(crate) fn said(call: &free_agent_model::Call) -> anyhow::Result<String> {
     let Speech { text } = arguments(call)?;
     if text.trim().is_empty() {
         bail!("the model's {SPEAK} call says nothing");
@@ -156,7 +159,7 @@ pub(crate) fn said(call: &model::Call) -> anyhow::Result<String> {
 /// How long `call`, a call to [`wait`] in a phase that lasts `limit`,
 /// waits. Arguments that do not parse, or seconds not between 1 and
 /// `limit` in whole seconds, is an error.
-pub(crate) fn waited(call: &model::Call, limit: Duration) -> anyhow::Result<Duration> {
+pub(crate) fn waited(call: &free_agent_model::Call, limit: Duration) -> anyhow::Result<Duration> {
     let Waiting { seconds } = arguments(call)?;
     if !(1..=limit.as_secs()).contains(&seconds) {
         bail!(
@@ -170,7 +173,7 @@ pub(crate) fn waited(call: &model::Call, limit: Duration) -> anyhow::Result<Dura
 /// The arguments of `call`, parsed. A provider may send no arguments as no
 /// text at all, which parses as `{}`. Arguments that do not parse are an
 /// error naming the tool and showing them.
-pub(crate) fn arguments<T: DeserializeOwned>(call: &model::Call) -> anyhow::Result<T> {
+pub(crate) fn arguments<T: DeserializeOwned>(call: &free_agent_model::Call) -> anyhow::Result<T> {
     let text = match call.arguments.trim() {
         "" => "{}",
         _ => &call.arguments,
@@ -181,51 +184,6 @@ pub(crate) fn arguments<T: DeserializeOwned>(call: &model::Call) -> anyhow::Resu
             call.name, call.arguments
         )
     })
-}
-
-/// The tool choice the probe's first request, which `ask` makes under the
-/// tool choice it is given, is answered under, and how `ask` came out.
-/// The request is first asked under `from`. If that requires a tool call
-/// and the provider refuses it as bad, it is asked again allowing one, and
-/// both refusals are given if that is refused too.
-pub(crate) async fn first_answered(
-    from: ToolChoice,
-    ask: impl AsyncFn(ToolChoice) -> anyhow::Result<()>,
-) -> (ToolChoice, anyhow::Result<()>) {
-    match ask(from).await {
-        Err(required) if from == ToolChoice::Required && model::refused(&required) => {
-            let answered = ask(ToolChoice::Auto).await.map_err(|auto| {
-                if model::concerns_the_model(&auto) {
-                    anyhow!("made to call a tool: {required:#}\nasked to call one: {auto:#}")
-                } else {
-                    auto
-                }
-            });
-            (ToolChoice::Auto, answered)
-        }
-        answered => (from, answered),
-    }
-}
-
-/// What the probe of `model_id` for `G` found, its requests asked under
-/// `tool_choice`: that the model played, if none `failed`; that it did not
-/// play `G`, naming the request it did not answer, as `what` the game words
-/// it, if the failure concerns the model; and otherwise an error saying the
-/// model could not be asked, with the cause beneath it.
-pub(crate) fn probed<G: Game>(
-    model_id: &str,
-    tool_choice: ToolChoice,
-    failed: Option<(String, anyhow::Error)>,
-) -> anyhow::Result<Probed> {
-    match failed {
-        None => Ok(Probed::Played(tool_choice)),
-        Some((what, error)) if model::concerns_the_model(&error) => Ok(Probed::DidNotPlay(
-            error
-                .context(format!("did not answer {what}"))
-                .context(format!("{model_id} did not play {}", G::NAME)),
-        )),
-        Some((_, error)) => Err(error.context(format!("{model_id} could not be asked to play"))),
-    }
 }
 
 /// What a player remembers: a message it received from another actor in
@@ -302,7 +260,7 @@ pub(crate) struct Mind<G: Game> {
     /// The model's context window, in tokens, which each request fits.
     context_window: u64,
     /// The model asked each time the player is woken.
-    model: Arc<dyn model::Model>,
+    model: Arc<dyn free_agent_model::Model>,
     /// How long each phase of its game waits.
     pub(crate) limits: G::Limits,
 }
@@ -360,7 +318,7 @@ impl<G: Game> Mind<G> {
         model_id: String,
         tool_choice: ToolChoice,
         context_window: u64,
-        model: Arc<dyn model::Model>,
+        model: Arc<dyn free_agent_model::Model>,
         limits: G::Limits,
     ) -> Self {
         Self {
@@ -544,7 +502,7 @@ impl<G: Game> Player<G> {
         model_id: String,
         tool_choice: ToolChoice,
         context_window: u64,
-        model: Arc<dyn model::Model>,
+        model: Arc<dyn free_agent_model::Model>,
         limits: G::Limits,
     ) -> Seat<G> {
         let mind = Arc::new(Mind::new(
@@ -594,7 +552,7 @@ impl<G: Game> Player<G> {
         let asking = |asked: String, tools| {
             request(&mind.model_id, mind.tool_choice, &mind.prompt, asked, tools)
         };
-        let taken = model::estimated(&asking(situation.clone(), tools.clone()));
+        let taken = free_agent_model::estimated(&asking(situation.clone(), tools.clone()));
         let (story, shown) = mind.story(mind.context_window.saturating_sub(taken));
         (asking(story + &situation, tools), shown)
     }
@@ -801,9 +759,9 @@ pub(crate) mod tests {
     use super::*;
     use crate::game::Narrate;
     use crate::game::tests::logged;
-    use crate::model::Response;
     use crate::model::fake::FakeModel;
     use crate::seat::ENVIRONMENT;
+    use free_agent_model::Response;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -822,7 +780,7 @@ pub(crate) mod tests {
     /// What the player `name` asked `model`, in order: the user message of
     /// each request carrying its prompt.
     pub(crate) fn asked_of(model: &FakeModel, name: &str) -> Vec<String> {
-        let prompt = model::Message::system(told(name));
+        let prompt = free_agent_model::Message::system(told(name));
         model
             .requests()
             .iter()
@@ -1138,7 +1096,7 @@ pub(crate) mod tests {
 
     #[test]
     fn arguments_sent_as_no_text_are_no_arguments() {
-        let call = |arguments: &str| model::Call {
+        let call = |arguments: &str| free_agent_model::Call {
             name: SPEAK.to_string(),
             arguments: arguments.to_string(),
         };

@@ -10,10 +10,10 @@ use crate::avalon::Avalon;
 use crate::config::{self, Configuration, Name, Settings, Settled, SystemPrompt};
 use crate::game::{self, Actor, Entry, Game};
 use crate::log::Secrets;
-use crate::model::spec::{Handles, Keys, Models};
 use crate::seat::{Dealt, PlayerId};
 use crate::werewolf::Werewolf;
 use free_agent::{Episode, Logger};
+use free_agent_model::spec::{Handles, Keys, Models};
 use secrecy::SecretString;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -152,11 +152,11 @@ mod tests {
     use crate::model::canned::{
         CANARY, CANARY_VARIABLE, assert_redacted, leaking, leaking_werewolf, playing,
     };
-    use crate::model::spec::Environment;
-    use crate::secret::Keychain;
-    use crate::secret::tests::Fake;
     use crate::{avalon, werewolf};
     use free_agent::Event;
+    use free_agent_model::secret::Keychain;
+    use free_agent_model::secret::testing::Fake;
+    use free_agent_model::spec::Environment;
     use secrecy::SecretString;
     use std::collections::HashSet;
     use std::path::Path;

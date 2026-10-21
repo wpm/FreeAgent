@@ -34,11 +34,11 @@ pub mod random;
 pub mod report;
 
 use crate::game::{Game, Tagged};
-use crate::model::spec::Probed;
-use crate::model::{Model, ToolChoice};
 use crate::report::{in_prose, seat_order};
 use crate::seat::{ENVIRONMENT, PlayerId, to_everyone_but, to_the_environment, to_the_players_but};
 use free_agent::{ActorId, ActorInit};
+use free_agent_model::spec::Probed;
+use free_agent_model::{Model, ToolChoice};
 use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
