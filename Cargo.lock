@@ -1442,6 +1442,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "free-agent-desktop"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "free-agent-gui-types",
+ "free-agent-model",
+ "futures-util",
+ "keyring",
+ "secrecy",
+ "serde",
+ "tauri",
+ "tauri-plugin-dialog",
+ "tauri-plugin-updater",
+ "tracing",
+]
+
+[[package]]
 name = "free-agent-game"
 version = "0.0.0"
 dependencies = [
@@ -4663,8 +4680,9 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "free-agent-desktop",
  "free-agent-model",
- "keyring",
+ "futures-util",
  "secrecy",
  "serde",
  "serde_json",

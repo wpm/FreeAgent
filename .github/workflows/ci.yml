@@ -116,9 +116,10 @@ jobs:
           name: viewer-screenshots
           path: apps/social-deduction/gui/e2e/screenshots
 
-  # The desktop shell needs each platform's webview, so the jobs above
-  # leave it out. One leg per platform, since the shell has code only one
-  # of them compiles: the macOS dev app bundle, and the Windows subsystem
+  # The desktop shells, the shared one and the app's, need each platform's
+  # webview, so the jobs above leave them out. One leg per platform, since
+  # the shells have code only one of them compiles: the macOS menus,
+  # command-line tool and dev app bundle, and the Windows subsystem
   # attribute.
   desktop:
     name: Desktop (${{ matrix.name }})
@@ -149,8 +150,8 @@ jobs:
       # tests build.
       - run: .github/scripts/sidecar.sh --debug
         shell: bash
-      - run: cargo clippy -p social-deduction-desktop --all-targets -- -D warnings
-      - run: cargo test -p social-deduction-desktop
+      - run: cargo clippy -p free-agent-desktop -p social-deduction-desktop --all-targets -- -D warnings
+      - run: cargo test -p free-agent-desktop -p social-deduction-desktop
 
   # The workflows and the release scripts, which otherwise run only at a
   # release.
@@ -201,12 +202,13 @@ jobs:
       # Without --workspace the tests of the applications and the shared
       # crates still run, but the report leaves their source files out. The
       # viewer's frontend and the shared look are the browser's, and the
-      # Viewer job tests them. The
-      # desktop shell is wiring: Tauri commands around social_deduction's
-      # live and editing modules and free_agent_model's catalog and secret
+      # Viewer job tests them. The desktop shells are wiring: Tauri
+      # commands, windows, menus and dialogs around social_deduction's live
+      # and editing modules and free_agent_model's catalog and secret
       # modules, which are measured here, the keyring store and the macOS
-      # dev bundle. It needs a webview to build, so the Desktop jobs test it.
-      - run: cargo llvm-cov --workspace --exclude free-agent-gui --exclude social-deduction-gui --exclude social-deduction-desktop --lcov --output-path lcov.info
+      # dev bundle. They need a webview to build, so the Desktop jobs test
+      # them.
+      - run: cargo llvm-cov --workspace --exclude free-agent-gui --exclude social-deduction-gui --exclude free-agent-desktop --exclude social-deduction-desktop --lcov --output-path lcov.info
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v7
         with:

@@ -3,8 +3,9 @@
 
 use crate::review::FILTER;
 use crate::secret::keychain;
-use crate::settings::{Store, save_as};
+use crate::settings::{Store, snapshot};
 use chrono::{DateTime, TimeZone};
+use free_agent_desktop::settings::save_as;
 use social_deduction::config::Name;
 use social_deduction::live::Session;
 use social_deduction::run::prepare;
@@ -24,7 +25,7 @@ pub async fn play(
     game: GameName,
     cues: Channel<Cue>,
 ) -> Result<(), String> {
-    let snapshot = store.snapshot();
+    let snapshot = snapshot(store.settings());
     if let Some(error) = snapshot.settings.first_error(game, &snapshot.errors) {
         return Err(error.message);
     }
