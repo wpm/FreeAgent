@@ -277,6 +277,14 @@ done
 stamp mathdoku-v1.0.0 > /dev/null 2>&1 || true
 check "a failed stamp changes nothing" test "$(versions)" = \
   "free-agent 0.0.0 other 0.0.0 social-deduction 0.0.0 social-deduction-desktop 0.0.0 social-deduction-gui 0.0.0 social-deduction-gui-types 0.0.0 "
+# jq on Windows ends its lines with a carriage return.
+mkdir -p "$scratch/windows-jq"
+printf '#!/usr/bin/env bash\n%q "$@" | sed $'"'"'s/$/\\r/'"'"'\n' "$(command -v jq)" > "$scratch/windows-jq/jq"
+chmod +x "$scratch/windows-jq/jq"
+status=0; PATH="$scratch/windows-jq:$PATH" stamp social-deduction-v0.2.0 > /dev/null 2>&1 || status=$?
+check "stamping works with jq's Windows line endings" test "$status" -eq 0
+check "stamping with jq's Windows line endings sets the crates" test "$(versions)" = \
+  "free-agent 0.0.0 other 0.0.0 social-deduction 0.2.0 social-deduction-desktop 0.2.0 social-deduction-gui 0.2.0 social-deduction-gui-types 0.2.0 "
 
 # cli-archive.sh packs the command line with the example configurations,
 # the README and the licenses.
