@@ -7,6 +7,8 @@ port = 1420
 open = false
 
 [watch]
+# The page and the shared look it is built on.
+watch = [".", "../../../crates/gui"]
 # The desktop shell writes under src-tauri as it builds; that is not a
 # reason to rebuild the page.
 ignore = ["src-tauri"]

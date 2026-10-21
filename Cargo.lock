@@ -1456,6 +1456,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "free-agent-gui"
+version = "0.0.0"
+dependencies = [
+ "free-agent-gui-types",
+ "js-sys",
+ "leptos",
+ "leptos-rich-chat",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "free-agent-gui-types"
 version = "0.0.0"
 dependencies = [
@@ -4667,6 +4683,7 @@ name = "social-deduction-gui"
 version = "0.0.0"
 dependencies = [
  "console_error_panic_hook",
+ "free-agent-gui",
  "free-agent-model",
  "js-sys",
  "leptos",

@@ -1,0 +1,702 @@
+/* The look every Free Agent app shares, the Free Agent site's: black ink
+   on white paper, Georgia for what is read and Helvetica Neue for
+   controls. Marigold flags a problem, and nothing else has a color unless
+   an app gives one a meaning. FreeAgentStyle puts these rules in the
+   free-agent cascade layer, after Rich-Chat's, so they win over Rich
+   Chat's and an app's own unlayered rules win over them. */
+
+:root {
+  --fa-ink: #0a0a0a;
+  --fa-paper: #ffffff;
+  --fa-muted: #5c5c5c;
+  --fa-rule: #e2e2e2;
+  --fa-line: #cfcfcf;
+  --fa-warn: #f2b300;
+
+  /* Controls: a white face on a hairline, sunk into a gray track, or
+     filled with ink. */
+  --fa-control: #ffffff;
+  --fa-control-line: #c4c4c4;
+  --fa-raised: #ffffff;
+  --fa-sunken: #ececec;
+  --fa-tint: #f0f0f0;
+  --fa-off: #7a7a7a;
+  --fa-primary: #111111;
+  --fa-on-primary: #ffffff;
+
+  /* Settings: a gray sidebar, and grouped lists on hairlines. */
+  --fa-sidebar: #f6f6f6;
+  --fa-sidebar-on: #e6e6e6;
+  --fa-list-line: #dedede;
+  --fa-list-rule: #ececec;
+  --fa-well: #f5f5f5;
+
+  --fa-serif: Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  --fa-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --fa-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --tip-bg: var(--fa-ink);
+  --tip-ink: var(--fa-paper);
+
+  --rc-bg: var(--fa-paper);
+  --rc-chat-bg: var(--fa-paper);
+  --rc-fg: var(--fa-ink);
+  --rc-muted: var(--fa-muted);
+  --rc-border: var(--fa-line);
+  --rc-accent: var(--fa-ink);
+  --rc-accent-fg: var(--fa-paper);
+  --rc-surface: var(--fa-paper);
+  --rc-error: var(--fa-ink);
+  --rc-selection: color-mix(in srgb, var(--fa-ink) 18%, transparent);
+  --rc-font: var(--fa-serif);
+  --rc-font-size: 17px;
+  --rc-line-height: 1.5;
+  --rc-radius: 16px;
+  --rc-tail: 3px;
+  --rc-bubble-max-width: 64%;
+
+  accent-color: var(--fa-ink);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --fa-ink: #f2f2f2;
+    --fa-paper: #0a0a0a;
+    --fa-muted: #a3a3a3;
+    --fa-rule: #333333;
+    --fa-line: #3d3d3d;
+    --fa-control: #1c1c1c;
+    --fa-control-line: #4a4a4a;
+    --fa-raised: #3a3a3a;
+    --fa-sunken: #262626;
+    --fa-tint: #262626;
+    --fa-off: #8a8a8a;
+    --fa-primary: #f2f2f2;
+    --fa-on-primary: #0a0a0a;
+    --fa-sidebar: #141414;
+    --fa-sidebar-on: #262626;
+    --fa-list-line: #333333;
+    --fa-list-rule: #262626;
+    --fa-well: #1c1c1c;
+  }
+}
+
+:root[data-theme="dark"] {
+  --fa-ink: #f2f2f2;
+  --fa-paper: #0a0a0a;
+  --fa-muted: #a3a3a3;
+  --fa-rule: #333333;
+  --fa-line: #3d3d3d;
+  --fa-control: #1c1c1c;
+  --fa-control-line: #4a4a4a;
+  --fa-raised: #3a3a3a;
+  --fa-sunken: #262626;
+  --fa-tint: #262626;
+  --fa-off: #8a8a8a;
+  --fa-primary: #f2f2f2;
+  --fa-on-primary: #0a0a0a;
+  --fa-sidebar: #141414;
+  --fa-sidebar-on: #262626;
+  --fa-list-line: #333333;
+  --fa-list-rule: #262626;
+  --fa-well: #1c1c1c;
+}
+
+/* The page, which stays put when a scroll runs past its ends */
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overscroll-behavior: none;
+}
+
+body {
+  background: var(--rc-bg);
+  color: var(--rc-fg);
+  font-family: var(--fa-sans);
+}
+
+:focus-visible {
+  outline: 2px solid var(--fa-ink);
+  outline-offset: 3px;
+}
+
+/* A change of theme fades over 600 ms. */
+
+body,
+.rc-chat,
+.rc-bubble {
+  transition:
+    background-color 600ms ease,
+    color 600ms ease,
+    border-color 600ms ease;
+}
+
+/* The main window: the header, what the app shows, and the footer. */
+
+.fa-app {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100vh;
+}
+
+.fa-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.5rem;
+  padding: 1rem 2rem;
+  border-bottom: 3px solid var(--fa-ink);
+}
+
+/* Titles are the serif, bold and set tight. */
+
+.fa-header h1 {
+  margin: 0;
+  font-family: var(--fa-serif);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  font-size: 32px;
+  line-height: 1.1;
+}
+
+/* A clock: a divider, then a countdown and the time left. */
+
+.fa-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 1rem;
+  padding-left: 1rem;
+  border-left: 1px solid var(--fa-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.fa-clock .fa-countdown {
+  width: 160px;
+}
+
+/* A countdown: a 3px bar, ink on the rule's gray. */
+
+.fa-countdown {
+  display: block;
+  height: 3px;
+  background: var(--fa-rule);
+  overflow: hidden;
+}
+
+.fa-countdown-left {
+  display: block;
+  height: 100%;
+  background: var(--fa-ink);
+  transition: width 100ms linear;
+}
+
+/* The handle on the line beside a pane is a 10px strip on the pane's
+   side, clear of the other side's scrollbar. Its grip sits on the line,
+   an outlined bar that fills with ink under the pointer. */
+
+.fa-splitter {
+  position: relative;
+  z-index: 1;
+  width: 10px;
+  margin-right: -10px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.fa-splitter-left {
+  margin-right: 0;
+  margin-left: -10px;
+}
+
+.fa-grip {
+  position: absolute;
+  top: 50%;
+  left: -3px;
+  width: 4px;
+  height: 2.5rem;
+  border: 1px solid var(--fa-ink);
+  border-radius: 3px;
+  background: var(--fa-paper);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.fa-splitter-left .fa-grip {
+  left: auto;
+  right: -3px;
+}
+
+.fa-splitter:hover .fa-grip,
+.fa-splitter:active .fa-grip {
+  background: var(--fa-ink);
+}
+
+.fa-splitter:focus-visible {
+  outline: none;
+}
+
+.fa-splitter:focus-visible .fa-grip {
+  outline: 2px solid var(--fa-ink);
+  outline-offset: 3px;
+}
+
+/* While the handle is dragged, the pointer selects no text. */
+
+.fa-dragging {
+  user-select: none;
+}
+
+.fa-footer {
+  padding: 0.25rem 1rem;
+  border-top: 1px solid var(--rc-border);
+  color: var(--rc-muted);
+  font-size: 0.8rem;
+}
+
+.fa-footer a {
+  color: inherit;
+}
+
+/* Review: the file's name, the game with its list, and where the
+   cursor is, in the header. */
+
+.fa-review-name {
+  font-weight: 600;
+}
+
+.fa-review-games {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fa-review-position {
+  color: var(--rc-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.fa-review-warning {
+  padding: 0.75rem 1rem 0;
+}
+
+/* A problem: ink beside a marigold square holding a black "!". A bad
+   API key isn't anyone's fault, so it is never red. */
+
+.fa-error,
+.fa-field-error,
+.fa-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  color: var(--fa-ink);
+}
+
+.fa-error::before,
+.fa-field-error::before,
+.fa-warning::before,
+.fa-chip-bad::before {
+  content: "!";
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--fa-warn);
+  color: #000000;
+  font: 700 12px/1 var(--fa-sans);
+}
+
+.fa-error {
+  padding: 1rem;
+}
+
+.fa-warning {
+  margin: 0;
+  font-size: 15px;
+}
+
+.fa-field-error {
+  margin: 0;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+
+/* The chat */
+
+.rc-thinking {
+  color: var(--fa-muted);
+}
+
+/* The desktop app's start state: the header stays put and what is under
+   it scrolls. */
+
+.fa-start {
+  height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  background: var(--rc-bg);
+  color: var(--rc-fg);
+}
+
+.fa-start-head,
+.fa-start-body {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: calc(920px + 4rem);
+  margin: 0 auto;
+  padding: 0 2rem;
+}
+
+.fa-start-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 36px;
+  padding-bottom: 24px;
+}
+
+.fa-logo {
+  display: flex;
+}
+
+.fa-logo svg {
+  width: 44px;
+  height: 32px;
+}
+
+.fa-start-head h1 {
+  margin: 0;
+  font: 700 22px/1.2 var(--fa-serif);
+}
+
+.fa-start .fa-open-settings {
+  margin-left: auto;
+  font: 500 13px/1 var(--fa-sans);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-underline-offset: 3px;
+}
+
+.fa-start-body {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 3rem;
+}
+
+.fa-tagline {
+  margin: 0 0 28px;
+  color: var(--fa-muted);
+  font: italic 20px/1.4 var(--fa-serif);
+}
+
+.fa-start .fa-error {
+  margin: 0 0 1.5rem;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 600px) {
+  .fa-start-head,
+  .fa-start-body {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .fa-start-head {
+    padding-top: 20px;
+  }
+}
+
+/* Controls, all ink, inside .fa-chrome. Every button is a secondary one,
+   white on a hairline, unless it is primary, quiet, an icon, or part of a
+   segmented control or a stepper. The chat's own buttons are Rich
+   Chat's. */
+
+:where(.fa-chrome) button {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fa-ink);
+  font: 500 15px/1 var(--fa-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+:where(.fa-chrome) button:where(:not(.fa-link, .fa-remove, .fa-segments *, .fa-stepper *)) {
+  height: 40px;
+  padding: 0 18px;
+  border: 1px solid var(--fa-control-line);
+  border-radius: 10px;
+  background: var(--fa-control);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.fa-primary {
+  border-color: var(--fa-primary);
+  background: var(--fa-primary);
+  color: var(--fa-on-primary);
+  font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.fa-large {
+  height: 48px;
+  padding: 0 24px;
+  border-radius: 12px;
+  font-size: 16px;
+}
+
+.fa-small {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+:where(.fa-chrome) button:disabled {
+  color: var(--fa-off);
+  cursor: default;
+}
+
+:where(.fa-chrome) button:disabled:where(:not(.fa-link, .fa-remove, .fa-segments *, .fa-stepper *)) {
+  border-color: var(--fa-sunken);
+  background: var(--fa-sunken);
+  box-shadow: none;
+}
+
+/* Quiet: underlined ink, with no box. */
+
+.fa-link {
+  font: 14px/1.3 var(--fa-sans);
+  text-align: inherit;
+  text-decoration: underline;
+  white-space: normal;
+}
+
+/* An icon button: a muted × in a square that shows on hover. */
+
+.fa-remove {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--fa-muted);
+}
+
+.fa-remove:hover {
+  background: var(--fa-sunken);
+  color: var(--fa-ink);
+}
+
+/* Segmented: the choice is raised out of a sunken track. */
+
+.fa-segments {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--fa-sunken);
+}
+
+.fa-segments button {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 8px;
+  color: var(--fa-muted);
+}
+
+.fa-segments .fa-segment-on {
+  background: var(--fa-raised);
+  color: var(--fa-ink);
+  font-weight: 600;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.15),
+    0 1px 6px rgba(0, 0, 0, 0.06);
+}
+
+/* Stepper: − and + either side of the number, joined in one piece. */
+
+.fa-stepper {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: none;
+  height: 36px;
+  border: 1px solid var(--fa-control-line);
+  border-radius: 10px;
+  background: var(--fa-control);
+}
+
+.fa-stepper button {
+  width: 36px;
+  height: 100%;
+  font-size: 16px;
+}
+
+.fa-stepper button:first-child {
+  border-radius: 9px 0 0 9px;
+}
+
+.fa-stepper button:last-child {
+  border-radius: 0 9px 9px 0;
+}
+
+.fa-stepper input {
+  box-sizing: border-box;
+  width: 40px;
+  height: 100%;
+  padding: 0;
+  border: none;
+  border-inline: 1px solid var(--fa-control-line);
+  background: transparent;
+  color: var(--fa-ink);
+  font: 14px var(--fa-sans);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.fa-stepper input::-webkit-inner-spin-button,
+.fa-stepper input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Fields and selects are sunk slightly into the page. */
+
+:where(.fa-chrome) :is(input, select, textarea):where(:not(.fa-stepper input)) {
+  box-sizing: border-box;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--fa-control-line);
+  border-radius: 8px;
+  background: var(--fa-control);
+  color: var(--fa-ink);
+  font: 14px var(--fa-sans);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+:where(.fa-chrome) textarea {
+  height: auto;
+  padding: 8px 10px;
+  line-height: 1.5;
+}
+
+.fa-chrome .fa-invalid {
+  border-color: var(--fa-warn);
+  box-shadow: 0 0 0 1px var(--fa-warn);
+}
+
+.fa-select-box {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.fa-select {
+  width: 100%;
+  padding-right: 30px;
+  appearance: none;
+  cursor: pointer;
+}
+
+.fa-chevron {
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  translate: 0 -50%;
+  color: var(--fa-ink);
+  pointer-events: none;
+}
+
+/* Chip: a status, in a gray lozenge. */
+
+.fa-chip {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 13px;
+  background: var(--fa-tint);
+  color: var(--fa-ink);
+  font: 600 12px/1 var(--fa-sans);
+  white-space: nowrap;
+}
+
+.fa-chip code {
+  font-family: var(--fa-mono);
+}
+
+/* A chip for something in place, with a small check, and one for a
+   problem, the marigold mark with no lozenge. */
+
+.fa-chip-good::before {
+  content: "✓";
+  font-weight: 700;
+}
+
+.fa-chip-bad {
+  padding-left: 0;
+  background: none;
+}
+
+.fa-spinner {
+  width: 0.9em;
+  height: 0.9em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: fa-spin 0.8s linear infinite;
+}
+
+@keyframes fa-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Hover and focus help */
+
+.fa-tip {
+  position: fixed;
+  z-index: 10;
+  max-width: 300px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--tip-bg);
+  color: var(--tip-ink);
+  font-size: 12.5px;
+  line-height: 1.4;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+}
+
+.fa-tip[hidden] {
+  display: none;
+}
+
+/* Help takes the help cursor, and an element's own cursor, such as a
+   handle's, wins over it. */
+
+:where(span, div, p, h2, h3, h4, label):where([data-tip]) {
+  cursor: help;
+}

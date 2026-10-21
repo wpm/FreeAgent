@@ -52,6 +52,8 @@
 // last bubble, the keys and a click move the cursor, and Play, then Play
 // again, leaves review until every cue is shown. The console stays clean
 // throughout.
+// What any app's chrome must pass comes from free-agent-gui's
+// crates/gui/e2e/chrome.mjs.
 // Screenshots land in ./screenshots for a human to look at.
 //
 //   npm test                 # against ../dist, from this directory
@@ -60,7 +62,7 @@
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { serve } from './serve.mjs';
+import { backend, check, finish, ringed, section, serve, shapes, tablist, tips, watch } from '../../../../crates/gui/e2e/chrome.mjs';
 
 const dist = resolve(process.argv[2] ?? '../dist');
 const shots = resolve('screenshots');
@@ -69,12 +71,6 @@ await mkdir(shots, { recursive: true });
 // build-page.sh builds for the site's /FreeAgent/viewer/, so the server
 // serves `dist` there.
 const { server, origin } = await serve(dist, '/FreeAgent/viewer/');
-
-let failures = 0;
-function check(condition, label) {
-  console.log(`${condition ? 'ok  ' : 'FAIL'} ${label}`);
-  if (!condition) failures += 1;
-}
 
 /** The evil roles, as labels name them; every other role is good. */
 const evil = new Set(['Werewolf', 'Assassin', 'Morgana', 'Mordred', 'Oberon', 'Minion']);
@@ -96,11 +92,11 @@ const cursor = (page) =>
   page.evaluate(() => {
     const messages = [...document.querySelectorAll('.rc-message')];
     return {
-      position: document.querySelector('.sd-review-position')?.textContent ?? null,
+      position: document.querySelector('.fa-review-position')?.textContent ?? null,
       selected: messages.findIndex((message) => message.classList.contains('rc-selected')),
       count: messages.length,
       later: messages.filter((message) => message.classList.contains('rc-later')).length,
-      name: document.querySelector('.sd-review-name')?.textContent ?? null,
+      name: document.querySelector('.fa-review-name')?.textContent ?? null,
       outcome: document.querySelector('.sd-outcome')?.textContent ?? null,
     };
   });
@@ -232,7 +228,7 @@ async function senderLines(page, label) {
         probe.style.color = `var(${name})`;
         return getComputedStyle(probe).color;
       };
-      const muted = color('--sd-muted');
+      const muted = color('--fa-muted');
       const sides = Object.fromEntries(
         ['good', 'evil'].map((side) => [side, { text: color(`--sd-${side}-text`), fill: color(`--sd-${side}`) }]),
       );
@@ -287,21 +283,7 @@ async function screenshots(page, hash) {
 
 const browser = await chromium.launch();
 const context = await browser.newContext({ colorScheme: 'light', viewport: { width: 1280, height: 900 } });
-const page = await context.newPage();
-const errors = [];
-page.on('console', (message) => {
-  if (message.type() === 'error') errors.push(message.text());
-});
-page.on('pageerror', (error) => errors.push(error.message));
-
-/** Runs the checks `checks` of `name`, failing them all on a throw, such as a wait that times out. */
-async function section(name, checks) {
-  try {
-    await checks();
-  } catch (error) {
-    check(false, `${name}: ${error.message.split('\n')[0]}`);
-  }
-}
+const page = watch(await context.newPage());
 
 await section('avalon', async () => {
   await open(page, 'avalon');
@@ -441,7 +423,7 @@ await section('werewolf-prompted', async () => {
     const washed = getComputedStyle(probe);
     const snapshot = () => {
       const phase = document.querySelector('.sd-phase');
-      const clock = phase?.querySelector('.sd-clock')?.textContent ?? '';
+      const clock = phase?.querySelector('.fa-clock')?.textContent ?? '';
       const closing = phase?.querySelector('.sd-closing')?.textContent ?? '';
       const messages = [...document.querySelectorAll('.rc-message')];
       window.timeline.push({
@@ -473,18 +455,18 @@ await section('werewolf-prompted', async () => {
       attributeFilter: ['data-theme'],
     });
   });
-  const play = () => page.$eval('.sd-header button.sd-primary', (button) => button.textContent);
+  const play = () => page.$eval('.fa-header button.fa-primary', (button) => button.textContent);
   const label = await play();
   check(label === 'Play', `werewolf-prompted: a game at rest offers Play (${label})`);
-  await page.click('.sd-header button.sd-primary');
+  await page.click('.fa-header button.fa-primary');
   const again = await play();
   check(
-    again === 'Play again' && (await page.$('.sd-review-position')) === null,
+    again === 'Play again' && (await page.$('.fa-review-position')) === null,
     `werewolf-prompted: Play leaves review and becomes Play again (${again})`,
   );
   await page.waitForSelector('.rc-thinking');
   await page.screenshot({ path: join(shots, 'werewolf-prompted-thinking.png'), fullPage: true });
-  await page.waitForSelector('.sd-review-position', { timeout: 60_000 });
+  await page.waitForSelector('.fa-review-position', { timeout: 60_000 });
   await page.waitForTimeout(SETTLE);
   const played = await cursor(page);
   check(
@@ -569,14 +551,14 @@ await section('splitter', async () => {
       board: document.querySelector('.sd-board').getBoundingClientRect().width,
     }));
   const value = () =>
-    page.$eval('.sd-splitter', (element) => ({
+    page.$eval('.fa-splitter', (element) => ({
       now: Number(element.getAttribute('aria-valuenow')),
       min: Number(element.getAttribute('aria-valuemin')),
       max: Number(element.getAttribute('aria-valuemax')),
     }));
   /** Drags the handle `by` pixels sideways, from the middle of its strip. */
   const drag = async (by) => {
-    const handle = await page.$eval('.sd-splitter', (element) => {
+    const handle = await page.$eval('.fa-splitter', (element) => {
       const box = element.getBoundingClientRect();
       return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
     });
@@ -588,16 +570,16 @@ await section('splitter', async () => {
   };
   /** Presses `key` on the handle. */
   const press = async (key) => {
-    await page.focus('.sd-splitter');
+    await page.focus('.fa-splitter');
     await page.keyboard.press(key);
   };
   for (const game of ['avalon', 'werewolf']) {
     await open(page, game);
-    const separator = await page.$eval('.sd-splitter', (element) => {
+    const separator = await page.$eval('.fa-splitter', (element) => {
       const chat = document.querySelector('.sd-chat').getBoundingClientRect();
       const board = document.querySelector('.sd-board').getBoundingClientRect();
       const box = element.getBoundingClientRect();
-      const grip = element.querySelector('.sd-grip').getBoundingClientRect();
+      const grip = element.querySelector('.fa-grip').getBoundingClientRect();
       return {
         role: element.getAttribute('role'),
         orientation: element.getAttribute('aria-orientation'),
@@ -637,7 +619,7 @@ await section('splitter', async () => {
     check((await widths()).board === 240, `${game}: the board narrows no further than 240 px`);
     await drag(-2000);
     check((await widths()).chat === 320, `${game}: the chat narrows no further than 320 px`);
-    await page.dblclick('.sd-splitter');
+    await page.dblclick('.fa-splitter');
     check((await widths()).board === before.board, `${game}: a double click puts the board back`);
     await press('ArrowLeft');
     const stepped = (await widths()).board;
@@ -669,7 +651,7 @@ await section('splitter', async () => {
     );
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.waitForTimeout(SETTLE);
-    await page.dblclick('.sd-splitter');
+    await page.dblclick('.fa-splitter');
   }
   await page.screenshot({ path: join(shots, 'werewolf-splitter.png'), fullPage: true });
 });
@@ -694,7 +676,7 @@ await section('edges', async () => {
       ),
     }));
     check(
-      JSON.stringify(edges.resizers) === JSON.stringify(['sd-splitter']),
+      JSON.stringify(edges.resizers) === JSON.stringify(['fa-splitter']),
       `${game}: the handle is the one draggable edge (${edges.resizers.join(', ')})`,
     );
     check(
@@ -724,7 +706,7 @@ await section('narrow', async () => {
   await page.waitForTimeout(SETTLE);
   const narrow = await layout();
   check(narrow.under, 'narrow: the board stacks under the chat');
-  check(!(await page.isVisible('.sd-splitter')), 'narrow: the handle is hidden');
+  check(!(await page.isVisible('.fa-splitter')), 'narrow: the handle is hidden');
   check(narrow.wide <= narrow.window, `narrow: nothing scrolls sideways (${narrow.wide} in ${narrow.window})`);
   await page.screenshot({ path: join(shots, 'avalon-narrow.png'), fullPage: true });
 });
@@ -781,28 +763,38 @@ const desktop = {
   errors: [],
 };
 
-/** The stand-in backend, set on the page before it loads. */
-function backend(snapshot) {
-  // This window's label, as the desktop app names its windows.
-  const label = location.hash.startsWith('#settings') ? 'settings' : 'main';
-  // As in Tauri, a listener for any window hears every event, and one for
-  // this window hears those sent to it or to every window.
-  const listeners = [];
-  const emit = (event, payload, to) =>
-    listeners
-      .filter((listener) => listener.event === event && (listener.target === null || to === null || listener.target === to))
-      .forEach((listener) => listener.handler({ event, payload }));
-  const listen = (target) => async (event, handler) => {
-    listeners.push({ event, handler, target });
-    return () => {};
+/** Social Deduction's answers to the stand-in backend, run on the page:
+ * the providers and what each lists, where each key is, the menus the
+ * main window enables, and the logs saved. The native menu's Go
+ * shortcuts take their keys before the page sees them. */
+function answers(standIn) {
+  // The menus as the main window last enabled them, and how many logs
+  // were saved.
+  standIn.menus = null;
+  standIn.saved = 0;
+  const shortcuts = {
+    'Meta+ArrowUp': 'first',
+    'Meta+ArrowDown': 'last',
+    'Alt+ArrowUp': 'previous_chapter',
+    'Alt+ArrowDown': 'next_chapter',
+    'Meta+[': 'previous_game',
+    'Meta+]': 'next_game',
   };
-  const answers = {
-    settings_get: snapshot,
-    // The backend tells the main window of each change.
-    settings_set: ({ settings }) => {
-      emit('settings', { ...snapshot, settings: structuredClone(settings) }, 'main');
-      return [];
+  window.addEventListener(
+    'keydown',
+    (event) => {
+      const pressed = `${event.metaKey ? 'Meta+' : ''}${event.altKey ? 'Alt+' : ''}${event.key}`;
+      const go = shortcuts[pressed];
+      const games = standIn.menus?.games ?? 0;
+      if (go && games > (go.endsWith('_game') ? 1 : 0)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        standIn.emit('go', go, 'main');
+      }
     },
+    true,
+  );
+  return {
     providers: [
       { name: 'OpenAI', base_url: 'https://api.openai.com/v1', api_key_env: 'OPENAI_API_KEY' },
       { name: 'Anthropic', base_url: 'https://api.anthropic.com/v1', api_key_env: 'ANTHROPIC_API_KEY' },
@@ -849,82 +841,15 @@ function backend(snapshot) {
       return null;
     },
     save_log: () => {
-      standIn.saved = (standIn.saved ?? 0) + 1;
+      standIn.saved += 1;
       return null;
     },
   };
-  // The menus as the main window last enabled them, how many logs were
-  // saved, and the native
-  // menu's Go shortcuts, which take their keys before the page sees them.
-  const standIn = { emit, menus: null, saved: 0 };
-  window.standIn = standIn;
-  const shortcuts = {
-    'Meta+ArrowUp': 'first',
-    'Meta+ArrowDown': 'last',
-    'Alt+ArrowUp': 'previous_chapter',
-    'Alt+ArrowDown': 'next_chapter',
-    'Meta+[': 'previous_game',
-    'Meta+]': 'next_game',
-  };
-  window.addEventListener(
-    'keydown',
-    (event) => {
-      const pressed = `${event.metaKey ? 'Meta+' : ''}${event.altKey ? 'Alt+' : ''}${event.key}`;
-      const go = shortcuts[pressed];
-      const games = standIn.menus?.games ?? 0;
-      if (go && games > (go.endsWith('_game') ? 1 : 0)) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        emit('go', go, 'main');
-      }
-    },
-    true,
-  );
-  window.__TAURI__ = {
-    core: {
-      invoke: async (command, args) => {
-        const answer = answers[command];
-        return typeof answer === 'function' ? answer(args) : (answer ?? null);
-      },
-      Channel: class {
-        set onmessage(handler) {
-          this.handler = handler;
-        }
-      },
-    },
-    event: { listen: listen(null) },
-    webviewWindow: { getCurrentWebviewWindow: () => ({ label, listen: listen(label) }) },
-  };
-}
-
-/** The shape of each element `selector` matches on `page`: its box and
- * the computed styles the controls are drawn with. */
-function shapes(page, selector) {
-  return page.$$eval(selector, (elements) =>
-    elements.map((element) => {
-      const style = getComputedStyle(element);
-      const { height, width } = element.getBoundingClientRect();
-      return {
-        text: element.textContent.trim(),
-        height,
-        width,
-        radius: style.borderTopLeftRadius,
-        border: `${style.borderTopWidth} ${style.borderTopColor}`,
-        background: style.backgroundColor,
-        color: style.color,
-        shadow: style.boxShadow,
-        weight: style.fontWeight,
-        font: style.fontFamily,
-        appearance: style.appearance,
-        icon: element.querySelector('svg') !== null || element.parentElement.querySelector(':scope > svg') !== null,
-      };
-    }),
-  );
 }
 
 /** The sides' colors, which no control on `page` uses. */
 async function sideColored(page) {
-  return page.$$eval('button, input, select, textarea, .sd-chip', (controls) => {
+  return page.$$eval('button, input, select, textarea, .fa-chip', (controls) => {
     const sides = ['--sd-good', '--sd-good-text', '--sd-evil', '--sd-evil-text'].map((name) => {
       const probe = document.createElement('span');
       probe.style.color = `var(${name})`;
@@ -943,25 +868,6 @@ async function sideColored(page) {
   });
 }
 
-/** What has the focus on `page` after each of `count` presses of Tab,
- * and whether it shows the ink focus ring. */
-async function ringed(page, count) {
-  const unringed = [];
-  for (let press = 0; press < count; press += 1) {
-    await page.keyboard.press('Tab');
-    const focused = await page.evaluate(() => {
-      const element = document.activeElement;
-      const style = getComputedStyle(element);
-      return {
-        html: element.outerHTML.slice(0, 60),
-        ring: style.outlineStyle === 'solid' && style.outlineWidth === '2px' && style.outlineOffset === '3px',
-      };
-    });
-    if (!focused.ring) unringed.push(focused.html);
-  }
-  return unringed;
-}
-
 /** Check the Models tab of the Settings window `settings`, then go back
  * to the Werewolf tab. */
 async function models(settings) {
@@ -976,15 +882,15 @@ async function models(settings) {
   const text = (selector) => settings.$eval(selector, (element) => element.textContent.trim());
   const ids = (selector) => settings.$$eval(selector, (found) => found.map((id) => id.textContent.trim()));
   check(
-    (await text(`${card('Local (localhost:11434)')} .sd-warning`)) === 'The server is running, but no model is loaded.',
+    (await text(`${card('Local (localhost:11434)')} .fa-warning`)) === 'The server is running, but no model is loaded.',
     'desktop: a local server with no model loaded says so',
   );
-  check((await text(`${card('OpenAI')} .sd-warning`)).includes('401'), 'desktop: a provider that cannot list its models says why');
+  check((await text(`${card('OpenAI')} .fa-warning`)).includes('401'), 'desktop: a provider that cannot list its models says why');
   const tip = (selector) => settings.$eval(selector, (element) => element.dataset.tip);
   check(
-    (await text(`${card('Broke')} .sd-warning`)) ===
+    (await text(`${card('Broke')} .fa-warning`)) ===
       "Broke's account has no credits left. Add credits at billing.broke.example, then reopen Settings." &&
-      (await tip(`${card('Broke')} .sd-warning`)).startsWith('You have no credits remaining.') &&
+      (await tip(`${card('Broke')} .fa-warning`)).startsWith('You have no credits remaining.') &&
       (await settings.$$(`${card('Broke')} .sd-note`)).length === 0 &&
       (await text('.sd-status')) === "Some models couldn't be checked. Their providers say why.",
     "desktop: a provider whose models couldn't be checked says why, and the provider's words are its help",
@@ -995,9 +901,9 @@ async function models(settings) {
     "desktop: a provider none of whose models play gives the most common reason, and each model's in its help",
   );
   check(
-    (await text(`${card('OpenAI')} .sd-chip`)) === 'OPENAI_API_KEY from the environment' &&
-      (await text(`${card('Anthropic')} .sd-chip`)) === 'ANTHROPIC_API_KEY in the keychain' &&
-      (await text(`${card('Local (localhost:1234)')} .sd-chip`)) === 'No key needed',
+    (await text(`${card('OpenAI')} .fa-chip`)) === 'OPENAI_API_KEY from the environment' &&
+      (await text(`${card('Anthropic')} .fa-chip`)) === 'ANTHROPIC_API_KEY in the keychain' &&
+      (await text(`${card('Local (localhost:1234)')} .fa-chip`)) === 'No key needed',
     'desktop: each provider says where its key comes from',
   );
   const offered = await ids(`${card('Anthropic')} .sd-offered .sd-id`);
@@ -1014,7 +920,7 @@ async function models(settings) {
     all.filter((element) => !element.closest('[data-tip]')).map((element) => element.outerHTML.slice(0, 80)),
   );
   check(untipped.length === 0, `desktop: everything on the Models tab has help (${untipped.join(' ')})`);
-  const [chip] = await shapes(settings, `${card('OpenAI')} .sd-chip`);
+  const [chip] = await shapes(settings, `${card('OpenAI')} .fa-chip`);
   check(
     chip.height === 26 && chip.radius === '13px' && chip.background === 'rgb(240, 240, 240)' && chip.weight === '600',
     `desktop: where a key comes from is a gray chip (${JSON.stringify(chip)})`,
@@ -1023,7 +929,7 @@ async function models(settings) {
   check(add.height === 32 && add.radius === '8px', `desktop: a model's Add is a small secondary button (${JSON.stringify(add)})`);
   const sided = await sideColored(settings);
   check(sided.length === 0, `desktop: no control on the Models tab is red or blue (${sided.join(' ')})`);
-  const flags = await settings.$$eval('.sd-provider .sd-warning', (warnings) =>
+  const flags = await settings.$$eval('.sd-provider .fa-warning', (warnings) =>
     warnings.map((warning) => getComputedStyle(warning, '::before').backgroundColor),
   );
   check(
@@ -1045,9 +951,9 @@ async function models(settings) {
   check((await settings.$eval(name, (input) => input.value)) === 'claude-opus-5-5', 'desktop: a model added is first named for its id');
   await settings.fill(name, 'qwen');
   await settings.press(name, 'Enter');
-  await settings.waitForSelector(`${card('Anthropic')} .sd-field-error`);
+  await settings.waitForSelector(`${card('Anthropic')} .fa-field-error`);
   check(
-    (await text(`${card('Anthropic')} .sd-field-error`)) === 'Another model already has that name.',
+    (await text(`${card('Anthropic')} .fa-field-error`)) === 'Another model already has that name.',
     'desktop: a name another model has is refused',
   );
   await settings.fill(name, 'opus');
@@ -1072,24 +978,15 @@ async function models(settings) {
   await settings.click(`${card('Local (localhost:1234)')} .sd-window button`);
   check((await shown())[0] === '', 'desktop: Reset goes back to the provider\'s figure');
   await settings.click('#tab-werewolf');
-  await settings.waitForSelector('.sd-stepper input');
-}
-
-/** `opened`, its console errors and page errors recorded. */
-function watch(opened) {
-  opened.on('console', (message) => {
-    if (message.type() === 'error') errors.push(message.text());
-  });
-  opened.on('pageerror', (error) => errors.push(error.message));
-  return opened;
+  await settings.waitForSelector('.fa-stepper input');
 }
 
 await section('desktop', async () => {
   const app = await browser.newContext({ colorScheme: 'light', viewport: { width: 1100, height: 760 } });
-  await app.addInitScript(backend, desktop);
+  await app.addInitScript(backend(desktop, answers));
   const main = watch(await app.newPage());
   await main.goto(origin);
-  await main.waitForSelector('.sd-start .sd-game-summary:not(:empty)');
+  await main.waitForSelector('.fa-start .sd-game-summary:not(:empty)');
   const games = await main.$$eval('.sd-game-list > .sd-game', (rows) =>
     rows.map((row) => ({
       name: row.querySelector('h2').textContent,
@@ -1099,7 +996,7 @@ await section('desktop', async () => {
       summary: row.querySelector('.sd-game-summary').textContent,
       play: row.querySelector('.sd-play').textContent.trim(),
       enabled: !row.querySelector('.sd-play').disabled,
-      warned: row.querySelector('.sd-warning') !== null,
+      warned: row.querySelector('.fa-warning') !== null,
     })),
   );
   check(
@@ -1119,14 +1016,14 @@ await section('desktop', async () => {
       ]),
     `desktop: the start state lists each game with what it is, its seats, its summary and its own Play (${JSON.stringify(games)})`,
   );
-  check((await main.$$('.sd-start .sd-segments')).length === 0, 'desktop: the start state has no game chooser');
+  check((await main.$$('.fa-start .fa-segments')).length === 0, 'desktop: the start state has no game chooser');
   const look = await main.evaluate(() => {
     const style = (selector) => getComputedStyle(document.querySelector(selector));
     return {
-      title: [style('.sd-start-head h1').fontSize, style('.sd-start-head h1').fontWeight],
-      tagline: style('.sd-tagline').fontStyle,
+      title: [style('.fa-start-head h1').fontSize, style('.fa-start-head h1').fontWeight],
+      tagline: style('.fa-tagline').fontStyle,
       name: style('.sd-game h2').fontSize,
-      settings: document.querySelector('.sd-open-settings').textContent,
+      settings: document.querySelector('.fa-open-settings').textContent,
     };
   });
   check(
@@ -1140,7 +1037,7 @@ await section('desktop', async () => {
     squares.every((square) => square.width === 14 && square.height === 14) && colors.size === 2 && colors.has('rgb(210, 0, 31)') && colors.has('rgb(36, 56, 232)'),
     `desktop: each seat is a 14px square, red or blue by side (${JSON.stringify([...colors])})`,
   );
-  const logo = await main.$eval('.sd-logo svg', (svg) => ({
+  const logo = await main.$eval('.fa-logo svg', (svg) => ({
     tiles: svg.querySelectorAll('rect:not(mask rect)').length,
     evil: getComputedStyle(svg.querySelector(':scope > path')).fill,
     good: getComputedStyle(svg.querySelector(':scope > use')).fill,
@@ -1151,7 +1048,7 @@ await section('desktop', async () => {
     `desktop: the start state shows the red and blue balloons, a gap cut between them (${JSON.stringify(logo)})`,
   );
   await main.screenshot({ path: join(shots, 'desktop-start.png'), fullPage: true });
-  const [big] = await shapes(main, '.sd-start .sd-play');
+  const [big] = await shapes(main, '.fa-start .sd-play');
   check(
     big.height === 48 && big.radius === '12px' && big.background === 'rgb(17, 17, 17)' && big.color === 'rgb(255, 255, 255)' && big.shadow.includes('inset'),
     `desktop: Play is a large primary button, filled with ink and lifted (${JSON.stringify(big)})`,
@@ -1161,34 +1058,13 @@ await section('desktop', async () => {
   const startUnringed = await ringed(main, 3);
   check(startUnringed.length === 0, `desktop: every control on the start state shows a focus ring (${startUnringed.join(' ')})`);
   await main.hover('.sd-play');
-  const played = await main.$eval('.sd-tip', (element) => !element.hidden && element.textContent);
+  const played = await main.$eval('.fa-tip', (element) => !element.hidden && element.textContent);
   check(typeof played === 'string' && played.startsWith('Start a game of Werewolf'), `desktop: Play has help (${played})`);
   const settings = watch(await app.newPage());
   await settings.setViewportSize({ width: 760, height: 560 });
   await settings.goto(`${origin}#settings`);
   await settings.waitForSelector('.sd-sidebar [role="tab"]');
-  const tabs = await settings.$$eval('.sd-sidebar[role="tablist"][aria-orientation="vertical"] [role="tab"]', (buttons) =>
-    buttons.map((button) => button.textContent.trim()),
-  );
-  check(
-    JSON.stringify(tabs) === JSON.stringify(['General', 'Models', 'Werewolf', 'Avalon']),
-    `desktop: #settings renders the four pages as a vertical tablist (${tabs.join(', ')})`,
-  );
-  // The arrows move between the pages, and the focus goes with them.
-  const current = () =>
-    settings.evaluate(() => ({
-      selected: document.querySelector('[role="tab"][aria-selected="true"]').textContent,
-      focused: document.activeElement.textContent,
-    }));
-  await settings.focus('#tab-general');
-  await settings.keyboard.press('ArrowDown');
-  const down = await current();
-  await settings.keyboard.press('ArrowUp');
-  const up = await current();
-  check(
-    down.selected === 'Models' && down.focused === 'Models' && up.selected === 'General' && up.focused === 'General',
-    `desktop: the arrow keys move between the pages (${JSON.stringify([down, up])})`,
-  );
+  await tablist(settings, 'desktop', '.sd-sidebar', ['General', 'Models', 'Werewolf', 'Avalon']);
   await settings.screenshot({ path: join(shots, 'settings-general.png'), fullPage: true });
   const headings = await settings.$$eval('.sd-settings h2', (elements) => elements.map((element) => element.textContent.trim()));
   check(
@@ -1197,42 +1073,12 @@ await section('desktop', async () => {
   );
   // Help shows under what the pointer is over, and under what has the
   // keyboard's focus.
-  const tip = () =>
-    settings.$eval('.sd-tip', (element) => ({ text: element.textContent, shown: !element.hidden, top: element.getBoundingClientRect().top }));
-  await settings.hover('.sd-segments button:has-text("Light")');
-  const hovered = await tip();
-  check(hovered.shown && hovered.text.startsWith('Light, whatever'), `desktop: hovering shows help (${JSON.stringify(hovered)})`);
-  await settings.mouse.move(0, 0);
-  await settings.focus('.sd-segments button:has-text("Dark")');
-  const focused = await tip();
-  check(focused.shown && focused.text.startsWith('Dark, whatever'), `desktop: focus shows help (${JSON.stringify(focused)})`);
-  await settings.screenshot({ path: join(shots, 'settings-tip.png') });
-  await settings.keyboard.press('Escape');
-  check(!(await tip()).shown, 'desktop: Escape hides help');
-  await settings.hover('#tab-general');
-  await settings.mouse.down();
-  const pressed = await tip();
-  await settings.mouse.up();
-  check(!pressed.shown, `desktop: pressing hides help (${JSON.stringify(pressed)})`);
-  // An element whose help is placed by a part of it, as the board's
-  // handle's is by its grip, shows its help under the part.
-  await settings.evaluate(() => {
-    const whole = document.createElement('div');
-    whole.id = 'whole';
-    whole.dataset.tip = 'The part help';
-    whole.dataset.tipAt = 'span';
-    whole.style.cssText = 'position: fixed; left: 0; top: 0; width: 40px; height: 400px';
-    whole.innerHTML = '<span style="position: absolute; top: 200px; width: 40px; height: 10px"></span>';
-    document.body.append(whole);
+  await tips(settings, 'desktop', {
+    hover: { selector: '.fa-segments button:has-text("Light")', text: 'Light, whatever' },
+    focus: { selector: '.fa-segments button:has-text("Dark")', text: 'Dark, whatever' },
+    press: '#tab-general',
+    shot: join(shots, 'settings-tip.png'),
   });
-  await settings.hover('#whole', { position: { x: 20, y: 20 } });
-  const onPart = await tip();
-  await settings.mouse.move(600, 600);
-  await settings.evaluate(() => document.getElementById('whole').remove());
-  check(
-    onPart.shown && onPart.text === 'The part help' && Math.abs(onPart.top - 218) <= 1,
-    `desktop: help on a part of an element shows under the part (${JSON.stringify(onPart)})`,
-  );
   await settings.click('#tab-werewolf');
   await settings.waitForSelector('.sd-page-head h1');
   await settings.screenshot({ path: join(shots, 'settings-werewolf.png'), fullPage: true });
@@ -1246,13 +1092,13 @@ await section('desktop', async () => {
   );
   const policy = watch(await app.newPage());
   await policy.goto(`${origin}#settings=werewolf/strategies/everyone/policy`);
-  await policy.waitForSelector('.sd-segments');
+  await policy.waitForSelector('.fa-segments');
   await policy.waitForFunction(() => document.activeElement !== document.body);
-  const policyFocus = await policy.evaluate(() => document.activeElement.closest('.sd-segments')?.getAttribute('aria-label') ?? document.activeElement.outerHTML.slice(0, 60));
+  const policyFocus = await policy.evaluate(() => document.activeElement.closest('.fa-segments')?.getAttribute('aria-label') ?? document.activeElement.outerHTML.slice(0, 60));
   check(policyFocus === 'Policy', `desktop: Settings opened at a policy error focuses the policy (${policyFocus})`);
   await policy.close();
   await models(settings);
-  const players = await settings.$$eval('.sd-stepper input', (inputs) => inputs.map((input) => input.value));
+  const players = await settings.$$eval('.fa-stepper input', (inputs) => inputs.map((input) => input.value));
   check(JSON.stringify(players) === JSON.stringify(['2', '3', '1', '1']), `desktop: the Werewolf tab shows each role's count (${players.join(', ')})`);
   const notes = await settings.$$eval('.sd-role, .sd-limit', (rows) =>
     rows.map((row) => {
@@ -1272,13 +1118,13 @@ await section('desktop', async () => {
       restore.background === 'rgb(255, 255, 255)' && restore.shadow !== 'none',
     `desktop: Restore defaults… is a secondary button, white with a hairline (${JSON.stringify(restore)})`,
   );
-  const [stepper] = await shapes(settings, '.sd-stepper');
-  const [fewer, count] = await shapes(settings, '.sd-stepper > *');
+  const [stepper] = await shapes(settings, '.fa-stepper');
+  const [fewer, count] = await shapes(settings, '.fa-stepper > *');
   check(
     stepper.height === 36 && stepper.radius === '10px' && stepper.border === '1px rgb(196, 196, 196)' && fewer.width === 36 && count.width === 40,
     `desktop: a stepper is one joined control (${JSON.stringify([stepper, fewer, count])})`,
   );
-  const [select] = await shapes(settings, '.sd-select');
+  const [select] = await shapes(settings, '.fa-select');
   check(
     select.appearance === 'none' && select.icon && select.height === 36 && select.radius === '8px',
     `desktop: a select is a field with a chevron drawn beside it (${JSON.stringify(select)})`,
@@ -1287,12 +1133,12 @@ await section('desktop', async () => {
   check(field.height === 36 && field.radius === '8px' && field.shadow.includes('inset'), `desktop: a text field is sunk into the page (${JSON.stringify(field)})`);
   const [prompt] = await shapes(settings, '.sd-strategy textarea');
   check(prompt.font.includes('monospace'), `desktop: a prompt is monospace (${prompt.font})`);
-  const [remove] = await shapes(settings, '.sd-remove');
+  const [remove] = await shapes(settings, '.fa-remove');
   check(
     remove.width === 32 && remove.height === 32 && remove.radius === '8px' && remove.icon && remove.shadow === 'none',
     `desktop: a remove button is a square drawn with an icon (${JSON.stringify(remove)})`,
   );
-  const [quiet] = await shapes(settings, '.sd-assigned .sd-link');
+  const [quiet] = await shapes(settings, '.sd-assigned .fa-link');
   check(
     quiet.background === 'rgba(0, 0, 0, 0)' && quiet.shadow === 'none' && quiet.border.startsWith('0px'),
     `desktop: Split seats… is a quiet button, with no box (${JSON.stringify(quiet)})`,
@@ -1307,7 +1153,7 @@ await section('desktop', async () => {
   await settings.click('.sd-adder-strategy button');
   await settings.waitForSelector('.sd-strategy >> nth=1');
   const page = await settings.evaluate(() => {
-    const controls = 'button, input, select, textarea, .sd-stepper, .sd-segments, .sd-select-box';
+    const controls = 'button, input, select, textarea, .fa-stepper, .fa-segments, .fa-select-box';
     const boxed = (element) => {
       const style = getComputedStyle(element);
       return ['Top', 'Right', 'Bottom', 'Left'].every((side) => style[`border${side}Width`] !== '0px' && style[`border${side}Style`] !== 'none');
@@ -1386,10 +1232,10 @@ await section('desktop', async () => {
 // Werewolf then Avalon, as Open Game Log… would.
 await section('desktop review', async () => {
   const app = await browser.newContext({ colorScheme: 'light', viewport: { width: 1100, height: 760 } });
-  await app.addInitScript(backend, desktop);
+  await app.addInitScript(backend(desktop, answers));
   const main = watch(await app.newPage());
   await main.goto(origin);
-  await main.waitForSelector('.sd-start .sd-game-summary:not(:empty)');
+  await main.waitForSelector('.fa-start .sd-game-summary:not(:empty)');
   check(
     JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true, save: false }),
     'desktop review: Open Game Log… is enabled on the start screen, and Go and Save Game Log… are not',
@@ -1402,7 +1248,7 @@ await section('desktop review', async () => {
     ];
     window.standIn.emit('review', { name: 'two.jsonl', recordings: { games, problems: [] } }, 'main');
   });
-  await main.waitForSelector('.sd-review-position');
+  await main.waitForSelector('.fa-review-position');
   await main.waitForTimeout(SETTLE);
   /** Where the cursor is: the position shown, the selected bubble, the
    * dimmed ones, the game, and the board and outcome shown. */
@@ -1411,16 +1257,16 @@ await section('desktop review', async () => {
       const messages = [...document.querySelectorAll('.rc-message')];
       const later = messages.filter((message) => message.classList.contains('rc-later'));
       return {
-        position: document.querySelector('.sd-review-position').textContent,
+        position: document.querySelector('.fa-review-position').textContent,
         selected: messages.findIndex((message) => message.classList.contains('rc-selected')),
         current: messages.filter((message) => message.getAttribute('aria-current') === 'true').length,
         count: messages.length,
         later: later.length,
         laterFirst: messages.indexOf(later[0]),
         dimmed: later.length > 0 && Number(getComputedStyle(later[0]).opacity) < 1,
-        game: document.querySelector('.sd-header h1').textContent,
-        name: document.querySelector('.sd-review-name').textContent,
-        of: document.querySelector('.sd-review-game')?.textContent ?? null,
+        game: document.querySelector('.fa-header h1').textContent,
+        name: document.querySelector('.fa-review-name').textContent,
+        of: document.querySelector('.fa-review-game')?.textContent ?? null,
         outcome: document.querySelector('.sd-outcome')?.textContent ?? null,
         board: document.querySelector('.sd-board').innerText,
         theme: document.documentElement.dataset.theme ?? null,
@@ -1442,7 +1288,7 @@ await section('desktop review', async () => {
     `desktop review: the first bubble is selected and every later one is dimmed (${JSON.stringify({ ...first, board: undefined })})`,
   );
   check(first.outcome === null, `desktop review: the first bubble shows no outcome (${first.outcome})`);
-  const arrows = await main.$$eval('.sd-review-games button', (buttons) => buttons.map((button) => [button.textContent, button.disabled]));
+  const arrows = await main.$$eval('.fa-review-games button', (buttons) => buttons.map((button) => [button.textContent, button.disabled]));
   check(
     JSON.stringify(arrows) === JSON.stringify([['‹', true], ['›', false]]),
     `desktop review: ‹ and › step between games, ‹ off on the first (${JSON.stringify(arrows)})`,
@@ -1492,11 +1338,11 @@ await section('desktop review', async () => {
     second.game === 'Avalon' && second.of === 'Game 2 of 2' && second.selected === 0 && second.position === `1 / ${second.count}`,
     `desktop review: ⌘] opens the next game on its first bubble (${JSON.stringify({ ...second, board: undefined })})`,
   );
-  await main.selectOption('.sd-review-games select', '0');
+  await main.selectOption('.fa-review-games select', '0');
   await main.waitForTimeout(100);
   check((await where()).game === 'Werewolf', 'desktop review: the list of games opens the one chosen');
-  await main.click('.sd-header button:text("Close")');
-  await main.waitForSelector('.sd-start');
+  await main.click('.fa-header button:text("Close")');
+  await main.waitForSelector('.fa-start');
   check(
     JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true, save: false }),
     'desktop review: Close goes back to the start screen, and Go is disabled again',
@@ -1508,10 +1354,10 @@ await section('desktop review', async () => {
 // in review once it is over.
 await section('desktop review of a game just played', async () => {
   const app = await browser.newContext({ colorScheme: 'light', viewport: { width: 1100, height: 760 } });
-  await app.addInitScript(backend, desktop);
+  await app.addInitScript(backend(desktop, answers));
   const main = watch(await app.newPage());
   await main.goto(origin);
-  await main.waitForSelector('.sd-start .sd-game-summary:not(:empty)');
+  await main.waitForSelector('.fa-start .sd-game-summary:not(:empty)');
   await main.evaluate(() => {
     const invoke = window.__TAURI__.core.invoke;
     window.__TAURI__.core.invoke = async (command, args) => {
@@ -1535,15 +1381,15 @@ await section('desktop review of a game just played', async () => {
   await main.evaluate(() => {
     for (const cue of window.cues.slice(1)) window.playing.handler(cue);
   });
-  await main.waitForSelector('.sd-review-position');
+  await main.waitForSelector('.fa-review-position');
   await main.waitForTimeout(SETTLE);
-  const buttons = await main.$$eval('.sd-header button', (buttons) => buttons.map((button) => button.textContent));
+  const buttons = await main.$$eval('.fa-header button', (buttons) => buttons.map((button) => button.textContent));
   check(
     JSON.stringify(buttons) === JSON.stringify(['Save Log…', 'New game']),
     `desktop review: the game just played offers Save Log… beside New game (${JSON.stringify(buttons)})`,
   );
   const last = await cursor(main);
-  const game = await main.$eval('.sd-header h1', (heading) => heading.textContent);
+  const game = await main.$eval('.fa-header h1', (heading) => heading.textContent);
   check(
     last.count > 0 && last.selected === last.count - 1 && last.later === 0 && last.position === `${last.count} / ${last.count}` && last.outcome !== null,
     `desktop review: a game over goes into review on its last bubble, where it left off, with nothing dimmed (${JSON.stringify(last)})`,
@@ -1553,7 +1399,7 @@ await section('desktop review of a game just played', async () => {
     JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 1, open: true, save: true }),
     'desktop review: Open Game Log…, Save Game Log… and Go are enabled in the review of a game just played',
   );
-  await main.click('.sd-header button:text("Save Log…")');
+  await main.click('.fa-header button:text("Save Log…")');
   await main.waitForTimeout(100);
   check((await main.evaluate(() => window.standIn.saved)) === 1, 'desktop review: Save Log… saves the game\'s log');
   await main.screenshot({ path: join(shots, 'desktop-review-played.png') });
@@ -1568,14 +1414,14 @@ await section('desktop review of a game just played', async () => {
     const games = [{ episode: '00000000-0000-0000-0000-000000000001', game: 'Werewolf', cues: window.cues }];
     window.standIn.emit('review', { name: 'one.jsonl', recordings: { games, problems: [] } }, 'main');
   });
-  await main.waitForSelector('.sd-review-name');
-  const logged = await main.$$eval('.sd-header button', (buttons) => buttons.map((button) => button.textContent));
+  await main.waitForSelector('.fa-review-name');
+  const logged = await main.$$eval('.fa-header button', (buttons) => buttons.map((button) => button.textContent));
   check(
     JSON.stringify(logged) === JSON.stringify(['Close']),
     `desktop review: a log opened from the review of a game just played offers Close (${JSON.stringify(logged)})`,
   );
   await main.evaluate(() => window.standIn.emit('new-game', null, 'main'));
-  await main.waitForSelector('.sd-start');
+  await main.waitForSelector('.fa-start');
   check(
     JSON.stringify(await main.evaluate(() => window.standIn.menus)) === JSON.stringify({ games: 0, open: true, save: false }),
     'desktop review: New Game goes from the review to the start screen, and Save Game Log… is disabled',
@@ -1585,14 +1431,14 @@ await section('desktop review of a game just played', async () => {
 
 await section('desktop with an error', async () => {
   const app = await browser.newContext({ colorScheme: 'light', viewport: { width: 1100, height: 760 } });
-  await app.addInitScript(backend, { ...desktop, errors: [{ path: ['avalon', 'phases', 'vote_limit'], message: 'Give a duration, as 1m or 30s.' }] });
+  await app.addInitScript(backend({ ...desktop, errors: [{ path: ['avalon', 'phases', 'vote_limit'], message: 'Give a duration, as 1m or 30s.' }] }, answers));
   const main = watch(await app.newPage());
   await main.goto(origin);
-  await main.waitForSelector('.sd-start .sd-game-summary:not(:empty)');
+  await main.waitForSelector('.fa-start .sd-game-summary:not(:empty)');
   const rows = await main.$$eval('.sd-game-list > .sd-game', (games) =>
     games.map((game) => ({
       enabled: !game.querySelector('.sd-play').disabled,
-      warning: game.querySelector('.sd-warning')?.textContent.trim() ?? null,
+      warning: game.querySelector('.fa-warning')?.textContent.trim() ?? null,
     })),
   );
   check(
@@ -1606,7 +1452,7 @@ await section('desktop with an error', async () => {
       asked.push([command, args]);
       return invoke(command, args);
     };
-    document.querySelector('.sd-warning .sd-link').click();
+    document.querySelector('.fa-warning .fa-link').click();
     return asked;
   });
   check(
@@ -1624,19 +1470,13 @@ await section('desktop with an error', async () => {
   await main.waitForSelector('.sd-game-failed');
   const failed = await main.$$eval('.sd-game-list > .sd-game', (games) => games.map((game) => game.querySelector('.sd-game-failed')?.textContent.trim() ?? null));
   check(
-    JSON.stringify(failed) === JSON.stringify(['qwen did not answer', null]) && (await main.$$('.sd-start-body > .sd-error')).length === 0,
+    JSON.stringify(failed) === JSON.stringify(['qwen did not answer', null]) && (await main.$$('.fa-start-body > .fa-error')).length === 0,
     `desktop: why a game failed to start shows in its own row (${JSON.stringify(failed)})`,
   );
   await main.screenshot({ path: join(shots, 'desktop-start-error.png'), fullPage: true });
   await app.close();
 });
 
-check(errors.length === 0, `the console stays clean${errors.length ? `: ${errors.join('; ')}` : ''}`);
-
 await browser.close();
 server.close();
-if (failures > 0) {
-  console.log(`${failures} failed`);
-  process.exit(1);
-}
-console.log('all passed');
+finish();

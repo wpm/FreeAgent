@@ -5,10 +5,17 @@
 
 use std::time::Duration;
 
+use free_agent_gui::chrome::Footer;
+use free_agent_gui::clock::{Countdown, CountdownClock};
+use free_agent_gui::review::ReviewHeader;
+use free_agent_gui::splitter::{Edge, Split, Splitter, Widths};
+use free_agent_gui::style::FreeAgentStyle;
+use free_agent_gui::tauri::in_tauri;
+use free_agent_gui::theme::set_theme;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_rich_chat::{Message, RenderOptions, RichChatStyle, Transcript};
+use leptos_rich_chat::{Message, RenderOptions, Transcript};
 use social_deduction_gui_types::go::Go;
 use social_deduction_gui_types::settings::label;
 use social_deduction_gui_types::{
@@ -18,15 +25,13 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
 use crate::address::{Address, GAMES};
-use crate::desktop::{Desktop, set_theme};
-use crate::review::{self, Review};
+use crate::desktop::Desktop;
+use crate::review::Review;
 use crate::screen::{
-    self, Board, Body, Landed, NARRATOR, Post, Screen, SeatMark, THINKING_DELAY, Thinker, Timer,
-    dots_due, entry, side_key,
+    self, Board, Body, Landed, NARRATOR, Post, Screen, SeatMark, THINKING_DELAY, Thinker, dots_due,
+    entry, side_key,
 };
 use crate::settings::SettingsWindow;
-use crate::splitter::{Split, Splitter};
-use crate::tauri;
 
 /// How often **Play** shows the next cue.
 const STEP: Duration = Duration::from_millis(250);
@@ -37,17 +42,22 @@ const FLASH: Duration = Duration::from_millis(900);
 /// How often the clocks redraw.
 const TICK: Duration = Duration::from_millis(100);
 
-/// The commit the page was built from, when the build names one.
-const COMMIT: Option<&str> = option_env!("GITHUB_SHA");
+/// How wide the board gets beside the chat.
+const BOARD: Widths = Widths {
+    start: 360.0,
+    least: 240.0,
+    rest: 320.0,
+    step: 16.0,
+};
 
 /// The viewer: the desktop app's inside the desktop app, its Settings
 /// window at `#settings`, and the web page's in a browser.
 #[component]
 pub fn App() -> impl IntoView {
     let hash = window().location().hash().unwrap_or_default();
-    if tauri::in_tauri() && hash.starts_with("#settings") {
+    if in_tauri() && hash.starts_with("#settings") {
         view! { <SettingsWindow /> }.into_any()
-    } else if tauri::in_tauri() {
+    } else if in_tauri() {
         view! { <Desktop /> }.into_any()
     } else {
         view! { <Web /> }.into_any()
@@ -148,7 +158,7 @@ fn Web() -> impl IntoView {
                     })
                     .collect_view()}
             </nav>
-            <button class="sd-primary" on:click=play>
+            <button class="fa-primary" on:click=play>
                 {move || if played.get() { "Play again" } else { "Play" }}
             </button>
         }
@@ -329,23 +339,6 @@ pub(crate) fn Reviewer(
     children: Children,
 ) -> impl IntoView {
     let review = reviewing.review;
-    let keys = window_event_listener(ev::keydown, move |event| {
-        let modified = event.alt_key() || event.ctrl_key() || event.meta_key() || event.shift_key();
-        let typing = event
-            .target()
-            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-            .is_some_and(|element| {
-                matches!(element.tag_name().as_str(), "INPUT" | "SELECT" | "TEXTAREA")
-            });
-        if event.default_prevented() || typing {
-            return;
-        }
-        if let Some(go) = review::keyed(&event.key(), modified) {
-            event.prevent_default();
-            reviewing.go(go);
-        }
-    });
-    on_cleanup(move || keys.remove());
     // Memos, so that moving the cursor redraws none of what names the log.
     let warning = Memo::new(move |_| {
         review.with(|review| {
@@ -358,43 +351,25 @@ pub(crate) fn Reviewer(
         Memo::new(move |_| review.with(|review| review.as_ref()?.name().map(str::to_string)));
     let games = Memo::new(move |_| review.with(|review| review.as_ref().map_or(0, Review::games)));
     let game = Memo::new(move |_| review.with(|review| review.as_ref().map_or(0, Review::game)));
-    let position = move || review.with(|review| review.as_ref().map(Review::position));
+    let titles = Memo::new(move |_| {
+        review.with(|review| review.as_ref().map(Review::titles).unwrap_or_default())
+    });
+    let position =
+        Signal::derive(move || review.with(|review| review.as_ref().map(Review::position)));
     let on_select = Callback::new(move |id: String| reviewing.select(&id));
-    let chosen = move |event: ev::Event| {
-        if let Ok(game) = event_target_value(&event).parse() {
-            reviewing.choose(game);
-        }
-    };
-    let games_shown = move || {
-        (games.get() > 1).then(|| {
-            let titles = review.with(|review| review.as_ref().map(Review::titles).unwrap_or_default());
-            view! {
-                <span class="sd-review-games">
-                    <button class="sd-small" on:click=move |_| reviewing.go(Go::PreviousGame) disabled=move || game.get() == 0 aria-label="Previous game" data-tip="The game before, from its first bubble.">"‹"</button>
-                    <span class="sd-review-game">{move || format!("Game {} of {}", game.get() + 1, games.get())}</span>
-                    <button class="sd-small" on:click=move |_| reviewing.go(Go::NextGame) disabled=move || { game.get() + 1 >= games.get() } aria-label="Next game" data-tip="The game after, from its first bubble.">"›"</button>
-                    <span class="sd-select-box">
-                        <select class="sd-select" on:change=chosen prop:value=move || game.get().to_string() aria-label="Game" data-tip="Each game in the log, by its name and how it ended.">
-                            {titles
-                                .into_iter()
-                                .enumerate()
-                                .map(|(index, title)| view! { <option value=index.to_string()>{title}</option> })
-                                .collect_view()}
-                        </select>
-                        <svg class="sd-chevron" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
-                            <path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                        </svg>
-                    </span>
-                </span>
-            }
-        })
-    };
     view! {
         <Viewer live=reviewing.live warning=warning on_link=on_link on_select=on_select appearance=appearance>
-            {move || name.get().map(|name| view! { <span class="sd-review-name">{name}</span> })}
-            {games_shown}
-            <span class="sd-review-position" data-tip="The bubble you're on. Step with the arrow keys, jump to either end with Home and End, or click a bubble. The Go menu moves by chapter and by game too.">{position}</span>
-            {children()}
+            <ReviewHeader
+                name=name
+                games=games
+                game=game
+                titles=titles
+                position=position
+                on_go=Callback::new(move |go| reviewing.go(go))
+                on_choose=Callback::new(move |game| reviewing.choose(game))
+            >
+                {children()}
+            </ReviewHeader>
         </Viewer>
     }
 }
@@ -463,7 +438,7 @@ pub(crate) fn Viewer(
             Some(post.id.clone())
         })
     });
-    let split = Split::default();
+    let split = Split::new(BOARD);
     let messages = Signal::derive(move || {
         let mut messages = posts.with(|posts| messages(posts));
         thinkers.with(|thinkers| {
@@ -473,15 +448,15 @@ pub(crate) fn Viewer(
     });
 
     view! {
-        <RichChatStyle highlight=false fonts=false names=names />
-        <div class="sd-app">
-            <header class="sd-header">
+        <FreeAgentStyle names=names narrator=NARRATOR />
+        <div class="fa-app">
+            <header class="fa-header fa-chrome">
                 <h1>{move || screen.with(|screen| game_name(screen.game))}</h1>
                 <p class="sd-phase">
                     <span class="sd-phase-name">
                         {move || screen.with(|screen| screen.heading.clone())}
                     </span>
-                    {move || timer.get().map(|timer| view! { <PhaseClock timer=timer now=now /> })}
+                    {move || timer.get().map(|timer| view! { <CountdownClock timer=timer now=now /> })}
                     {move || {
                         closing
                             .get()
@@ -502,8 +477,8 @@ pub(crate) fn Viewer(
                 style=move || format!("--sd-board-width: {}px", split.width())
             >
                 <div class="sd-chat">
-                    {move || failure.get().map(|error| view! { <p class="sd-error">{error}</p> })}
-                    {move || warning.get().map(|warning| view! { <p class="sd-warning sd-review-warning"><span>{warning}</span></p> })}
+                    {move || failure.get().map(|error| view! { <p class="fa-error">{error}</p> })}
+                    {move || warning.get().map(|warning| view! { <p class="fa-warning fa-review-warning"><span>{warning}</span></p> })}
                     <Transcript
                         messages=messages
                         show_names=true
@@ -514,7 +489,12 @@ pub(crate) fn Viewer(
                         on_select=on_select
                     />
                 </div>
-                <Splitter split=split />
+                <Splitter
+                    split=split
+                    edge=Edge::Right
+                    label="Board width"
+                    tip="Drag to make the board wider or narrower, or use the arrow keys, Home and End. Double-click to put it back."
+                />
                 <aside class="sd-board">
                     {move || board.get().map(|board| view! { <AvalonBoard board=board /> })}
                     {move || {
@@ -522,7 +502,7 @@ pub(crate) fn Viewer(
                     }}
                 </aside>
             </main>
-            <footer class="sd-footer">{footer()}</footer>
+            <Footer />
         </div>
     }
 }
@@ -556,34 +536,6 @@ async fn fetched(name: &str) -> Result<Vec<Cue>, String> {
         .map_err(failed)?;
     serde_json::from_str(&text.as_string().unwrap_or_default())
         .map_err(|error| format!("{file}: {error}"))
-}
-
-/// A bar draining over `timer` as log time runs on.
-#[component]
-fn Countdown(timer: Timer, now: Signal<f64>) -> impl IntoView {
-    let width = move || format!("width: {:.2}%", timer.share(now.get()) * 100.0);
-    view! {
-        <span class="sd-countdown">
-            <span class="sd-countdown-left" style=width></span>
-        </span>
-    }
-}
-
-/// The whole seconds `timer` has left as log time runs on, which change
-/// once a second.
-fn seconds(timer: Timer, now: Signal<f64>) -> Memo<u64> {
-    Memo::new(move |_| timer.seconds(now.get()))
-}
-
-/// The phase's clock: a draining bar and the seconds left.
-#[component]
-fn PhaseClock(timer: Timer, now: Signal<f64>) -> impl IntoView {
-    view! {
-        <span class="sd-clock">
-            <Countdown timer=timer now=now />
-            <span>{move || screen::clock(seconds(timer, now).get())}</span>
-        </span>
-    }
 }
 
 /// `posts`, as Rich-Chat messages.
@@ -630,19 +582,6 @@ fn outcome(outcome: Outcome) -> impl IntoView {
         ),
     };
     view! { <p class=class>{text}</p> }
-}
-
-/// The commit the page was built from, linked, or that it was built
-/// locally.
-fn footer() -> impl IntoView {
-    match COMMIT {
-        Some(commit) => {
-            let href = format!("https://github.com/wpm/FreeAgent/commit/{commit}");
-            let short: String = commit.chars().take(7).collect();
-            view! { "Built from commit " <a href=href>{short}</a> }.into_any()
-        }
-        None => view! { "Built locally" }.into_any(),
-    }
 }
 
 /// A seat square: the seat number on its side's color, faded and struck

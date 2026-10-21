@@ -5,7 +5,8 @@
 //! far; [`view`] draws it, for the game the URL's [`address`] names, and
 //! [`review`] steps through a game log bubble by bubble. In
 //! the desktop app, [`tauri`] reaches the backend that plays a game live,
-//! and [`settings`] edits its configuration, with a [`tip`] for help.
+//! and [`settings`] edits its configuration. The look and the chrome are
+//! Free Agent's, from [`free_agent_gui`].
 
 #![warn(missing_docs)]
 
@@ -15,7 +16,5 @@ mod mode;
 pub mod review;
 pub mod screen;
 pub mod settings;
-pub mod splitter;
 pub mod tauri;
-pub mod tip;
 pub mod view;

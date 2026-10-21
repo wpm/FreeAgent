@@ -8,9 +8,13 @@
 //! `settings` event, and a `focus` event, or the hash it opens at, names a
 //! field to show.
 
+use free_agent_gui::chrome::SelectBox;
+use free_agent_gui::style::FreeAgentStyle;
+use free_agent_gui::tauri::listen;
+use free_agent_gui::theme::set_theme;
+use free_agent_gui::tip::Tips;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_rich_chat::RichChatStyle;
 use social_deduction_gui_types::GameName;
 use social_deduction_gui_types::settings::{
     AppSettings, Appearance, FieldError, GameSettings, ModelSettings, RoleSettings, Snapshot,
@@ -18,9 +22,7 @@ use social_deduction_gui_types::settings::{
 };
 use wasm_bindgen::JsCast;
 
-use crate::desktop::set_theme;
 use crate::tauri;
-use crate::tip::Tips;
 
 mod game;
 mod models;
@@ -242,8 +244,8 @@ pub fn SettingsWindow() -> impl IntoView {
             Err(failure) => web_sys::console::error_1(&failure.into()),
         }
     });
-    tauri::listen("settings", take);
-    tauri::listen("focus", move |at: Vec<String>| {
+    listen("settings", take);
+    listen("focus", move |at: Vec<String>| {
         tab.set(Tab::of(&at));
         focus.set(Some(at));
     });
@@ -306,7 +308,7 @@ pub fn SettingsWindow() -> impl IntoView {
     };
 
     view! {
-        <RichChatStyle highlight=false fonts=false />
+        <FreeAgentStyle />
         <Tips />
         <div class="sd-settings-window">
             <nav class="sd-sidebar" role="tablist" aria-orientation="vertical" aria-label="Settings" on:keydown=step>
@@ -315,7 +317,7 @@ pub fn SettingsWindow() -> impl IntoView {
                 <div class="sd-sidebar-label" role="presentation">"Games"</div>
                 {GameName::ALL.into_iter().map(|game| button(Tab::Game(game))).collect_view()}
             </nav>
-            <main class="sd-settings">
+            <main class="sd-settings fa-chrome">
                 <div class="sd-page">
                     // Nothing is changed before the settings have come, so
                     // that no change overwrites them.
@@ -337,7 +339,7 @@ fn Problem(error: Signal<Option<String>>) -> impl IntoView {
     move || {
         error
             .get()
-            .map(|error| view! { <p class="sd-field-error">{error}</p> })
+            .map(|error| view! { <p class="fa-field-error">{error}</p> })
     }
 }
 
@@ -404,7 +406,7 @@ fn Segments<T: Copy + PartialEq + Send + Sync + 'static>(
     #[prop(optional, into)] id: Option<String>,
 ) -> impl IntoView {
     view! {
-        <div class="sd-segments" role="group" aria-label=label tabindex=id.as_ref().map(|_| "-1") id=id>
+        <div class="fa-segments" role="group" aria-label=label tabindex=id.as_ref().map(|_| "-1") id=id>
             {options
                 .into_iter()
                 .map(|(choice, title, tip)| {
@@ -412,7 +414,7 @@ fn Segments<T: Copy + PartialEq + Send + Sync + 'static>(
                     view! {
                         <button
                             data-tip=tip
-                            class:sd-segment-on=chosen
+                            class:fa-segment-on=chosen
                             aria-pressed=move || chosen().to_string()
                             on:click=move |_| set.run(choice)
                         >
@@ -452,17 +454,6 @@ fn General(editor: Editor) -> impl IntoView {
     }
 }
 
-/// The × of a remove button, a muted stroke the button's `aria-label`
-/// names.
-#[component]
-fn Cross() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
-            <path d="M3 3l8 8M11 3l-8 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-        </svg>
-    }
-}
-
 /// A select among `options`, each a value and its label, over `value`,
 /// which `set` changes, with the error at `at` beneath it. The select is
 /// named by its `tip`.
@@ -492,22 +483,19 @@ fn Choice(
             .collect_view()
     };
     view! {
-        <span class="sd-select-box">
+        <SelectBox>
             <select
-                class="sd-select"
+                class="fa-select"
                 id=field_id(&at)
                 aria-label=tip.clone()
                 data-tip=tip
-                class:sd-invalid=move || error.with(Option::is_some)
+                class:fa-invalid=move || error.with(Option::is_some)
                 prop:value=move || value.get()
                 on:change=move |event| set.run(event_target_value(&event))
             >
                 {choices}
             </select>
-            <svg class="sd-chevron" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
-                <path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-        </span>
+        </SelectBox>
         <Problem error=error />
     }
 }
