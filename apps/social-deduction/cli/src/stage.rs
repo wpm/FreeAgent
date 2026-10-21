@@ -678,8 +678,24 @@ mod tests {
 
     #[tokio::test]
     async fn the_last_avalon_board_agrees_with_the_narrator() {
-        let roles = avalon::tests::five();
-        let events = random_game::<Avalon>(roles, avalon::Rules::default()).await;
+        // A game whose first five proposals are all rejected has no quest,
+        // so games are played until one has.
+        let (events, quested) = loop {
+            let events =
+                random_game::<Avalon>(avalon::tests::five(), avalon::Rules::default()).await;
+            let quested: Vec<(usize, bool)> = events
+                .iter()
+                .filter_map(|event| match &event.payload {
+                    Entry::Event(avalon::Outcome::Quested { result, .. }) => {
+                        Some((result.sabotages, result.succeeded))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !quested.is_empty() {
+                break (events, quested);
+            }
+        };
         let cues = folded(&events);
         let boards: Vec<&AvalonPanel> = cues
             .iter()
@@ -690,15 +706,6 @@ mod tests {
             .collect();
         let last = boards.last().unwrap();
         let logged: Vec<_> = events.iter().map(|event| event.payload.clone()).collect();
-        let quested: Vec<(usize, bool)> = logged
-            .iter()
-            .filter_map(|entry| match entry {
-                Entry::Event(avalon::Outcome::Quested { result, .. }) => {
-                    Some((result.sabotages, result.succeeded))
-                }
-                _ => None,
-            })
-            .collect();
         let tokens: Vec<(usize, bool)> = last
             .quests
             .iter()
