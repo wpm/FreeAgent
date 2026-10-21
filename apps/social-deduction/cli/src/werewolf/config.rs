@@ -11,10 +11,10 @@
 //! A model is in play when a prompted strategy that names it is allotted a
 //! seat. [`Settings::set_up`] sets up each model in play before any actor
 //! is built: it reads the key, settles the
-//! [`ContextWindow`](crate::model::window::ContextWindow) and asks the
+//! [`ContextWindow`](free_agent_model::window::ContextWindow) and asks the
 //! model to play. The API key never appears in the file. The file names
 //! the environment variable that holds it, and
-//! [`Spec::api_key`](crate::model::spec::Spec::api_key) reads that
+//! [`Spec::api_key`](free_agent_model::spec::Spec::api_key) reads that
 //! variable into a [`SecretString`](secrecy::SecretString), which is
 //! redacted wherever it is shown.
 //!
@@ -155,9 +155,6 @@ mod tests {
     use crate::game::game;
     use crate::model::canned::{self, playing};
     use crate::model::fake::{FakeModel, choosing_first};
-    use crate::model::spec::{Environment, Handles, ModelInPlay, Models};
-    use crate::model::window::{ContextWindow, Source};
-    use crate::model::{self, CONTEXT_WINDOW, REQUEST_TIMEOUT, ToolChoice};
     use crate::report::Line;
     use crate::seat::PlayerId;
     use crate::strategy::Strategy;
@@ -166,6 +163,9 @@ mod tests {
     use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{between_the_deal_and_the_end, logged, run};
     use crate::werewolf::{Entry, Message, Move, Outcome};
+    use free_agent_model::spec::{Environment, Handles, ModelInPlay, Models};
+    use free_agent_model::window::{ContextWindow, Source};
+    use free_agent_model::{CONTEXT_WINDOW, REQUEST_TIMEOUT, ToolChoice};
     use serde_json::json;
     use std::collections::HashSet;
     use std::collections::{BTreeMap, HashMap};
@@ -985,7 +985,12 @@ count = 0
         ];
         let handles: Handles = fakes
             .iter()
-            .map(|(name, fake)| (name.to_string(), Arc::clone(fake) as Arc<dyn model::Model>))
+            .map(|(name, fake)| {
+                (
+                    name.to_string(),
+                    Arc::clone(fake) as Arc<dyn free_agent_model::Model>,
+                )
+            })
             .collect();
         let players = players(&configuration, &deal, &handles);
         let (winner, won) = oneshot::channel();
@@ -1015,7 +1020,7 @@ count = 0
                 assert_eq!(request.model, model.id, "{name}");
                 assert_eq!(request.tool_choice, model.tool_choice, "{name}");
                 assert!(
-                    model::estimated(&request) <= model.context_window.tokens,
+                    free_agent_model::estimated(&request) <= model.context_window.tokens,
                     "{name}"
                 );
                 let system = &request.messages[0].content;
@@ -1054,7 +1059,7 @@ count = 0
         let configuration = settings.configuration(&deal, &prompts, models).unwrap();
         let handles = Handles::from([(
             "qwen".to_string(),
-            Arc::new(FakeModel::answering(choosing_first)) as Arc<dyn model::Model>,
+            Arc::new(FakeModel::answering(choosing_first)) as Arc<dyn free_agent_model::Model>,
         )]);
         let players = players(&configuration, &deal, &handles);
         let (winner, won) = oneshot::channel();

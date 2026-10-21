@@ -18,14 +18,14 @@
 
 use crate::avalon::{self, Avalon};
 use crate::game::{self, Game};
-use crate::model::spec::{self, Handles, Keys, Models, Probed, Spec};
-use crate::model::window::{self, ContextWindow};
-use crate::model::{Model, Provider, ToolChoice};
 use crate::seat::{Dealt, PlayerId, seats};
 use crate::strategy::{RANDOM, Random, RoleConfig, Strategy};
 use crate::werewolf::{self, Werewolf};
 use crate::{prompted, random};
 use anyhow::{Context as _, anyhow, bail};
+use free_agent_model::spec::{self, Handles, Keys, Models, Probed, Spec};
+use free_agent_model::window::{self, ContextWindow};
+use free_agent_model::{Model, Provider, ToolChoice};
 use minijinja::value::merge_maps;
 use minijinja::{Environment, UndefinedBehavior, Value, context};
 use rand::seq::SliceRandom;

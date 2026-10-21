@@ -103,7 +103,7 @@ provider's own words in its help. When the account is the reason, such as
 no credits left, the provider's other models wait for the next try too. A
 provider none of whose models play says why most of them didn't, and its
 help gives each model's reason. A provider's models are
-ranked by the families in `src/models.toml`, newer first within a family,
+ranked by the families in `crates/model/src/models.toml`, newer first within a family,
 then by the parameter count in the id, then newest first.
 
 **File ▸ Import Configuration…** reads a configuration file. Its game's

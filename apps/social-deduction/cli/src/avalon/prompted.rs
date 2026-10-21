@@ -23,15 +23,14 @@ use super::{
     Avalon, Ballot, Choice, Deed, Message, PROPOSALS, Phase, Role, Rules, Team, View, awaited,
     candidates, team_size,
 };
-use crate::model::spec::Probed;
-use crate::model::{self, Response, Tool, ToolChoice};
-use crate::prompted::{
-    PROBE_PROMPT, SPEAK, WAIT, arguments, first_answered, probed, request, said, speak, wait,
-    waited,
-};
+use crate::game::Game;
+use crate::prompted::{PROBE_PROMPT, SPEAK, WAIT, arguments, request, said, speak, wait, waited};
 use crate::report::in_prose;
 use crate::seat::{PlayerId, seats};
 use anyhow::bail;
+use free_agent_model::check::{first_answered, probed};
+use free_agent_model::spec::Probed;
+use free_agent_model::{Response, Tool, ToolChoice};
 use humantime::format_duration;
 use serde::Deserialize;
 use serde_json::json;
@@ -240,7 +239,7 @@ pub(crate) fn unstoried(
         let asked = format!("\n\n{}", situation(&view, limit, Some(duty)));
         let tools = tools(Some(duty), limit);
         let request = request(model_id, ToolChoice::Required, prompt, asked, tools);
-        most = most.max(model::estimated(&request));
+        most = most.max(free_agent_model::estimated(&request));
     }
     most
 }
@@ -318,7 +317,7 @@ fn probe_asked(duty: &Duty) -> String {
 /// was not reached or answered with anything but the model's answer, is
 /// an error naming the model, with the cause beneath it.
 pub async fn check_plays(
-    model: &dyn model::Model,
+    model: &dyn free_agent_model::Model,
     model_id: &str,
     from: ToolChoice,
 ) -> anyhow::Result<Probed> {
@@ -346,8 +345,9 @@ pub async fn check_plays(
             .err()
             .map(|error| (*who, error));
     }
-    probed::<Avalon>(
+    probed(
         model_id,
+        Avalon::NAME,
         tool_choice,
         failed.map(|(who, error)| (format!("as {who}"), error)),
     )
@@ -473,7 +473,7 @@ impl Asked {
     /// it.
     fn take(
         &mut self,
-        call: &model::Call,
+        call: &free_agent_model::Call,
         duty: Option<&Duty>,
         limit: Duration,
     ) -> anyhow::Result<()> {
@@ -590,10 +590,8 @@ pub(crate) mod tests {
     use crate::avalon::{Entry, Move, Outcome, Rules, Seat, Tally, Victory};
     use crate::game::game;
     use crate::game::tests::{Started, drained};
-    use crate::model::Request;
     use crate::model::canned;
     use crate::model::fake::{FakeModel, SAID, canned_calls, choosing_first};
-    use crate::model::{CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT};
     use crate::prompted::tests::{
         MODEL_ID, Made, PROMPTED, a_call_cut_off_logs_no_thought, a_failed_call_logs_its_error,
         a_failure_logs_its_usage_first, answering, asked_of, every_call_logs_its_usage,
@@ -606,6 +604,8 @@ pub(crate) mod tests {
     use crate::seat::{ENVIRONMENT, to_the_environment, to_the_players_but};
     use free_agent::ActorId;
     use free_agent::Event;
+    use free_agent_model::Request;
+    use free_agent_model::{CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT};
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -658,7 +658,7 @@ pub(crate) mod tests {
         let configuration = configured(&roles, &rules);
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
-        let model: Arc<dyn model::Model> = model;
+        let model: Arc<dyn free_agent_model::Model> = model;
         let limits = rules.clone();
         let player = |id: &PlayerId| {
             puppets.remove(id.as_str()).unwrap_or_else(|| {
@@ -791,8 +791,8 @@ pub(crate) mod tests {
             Request::offering(
                 MODEL_ID,
                 vec![
-                    model::Message::system("You are Player 1."),
-                    model::Message::user(
+                    free_agent_model::Message::system("You are Player 1."),
+                    free_agent_model::Message::user(
                         "You are Player 1, Merlin, on the good side. You see that Player 2 and Player 5 are evil.\n\
                          \n\
                          Quest 1, proposal 1 of 5. You lead and need a team of 2.\n\
@@ -1709,7 +1709,10 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(winner, Team::Evil);
         for request in model.requests() {
-            assert!(model::estimated(&request) <= window, "{request:?}");
+            assert!(
+                free_agent_model::estimated(&request) <= window,
+                "{request:?}"
+            );
         }
         let asked = asked_of(&model, "Player 2");
         assert!(!asked[0].contains(FORGOTTEN), "{asked:?}");
@@ -1804,7 +1807,10 @@ pub(crate) mod tests {
         for (request, (_, duty)) in requests.iter().zip(probes()) {
             assert_eq!(request.model, MODEL_ID);
             assert_eq!(request.tool_choice, ToolChoice::Required);
-            assert_eq!(request.messages[0], model::Message::system(PROBE_PROMPT));
+            assert_eq!(
+                request.messages[0],
+                free_agent_model::Message::system(PROBE_PROMPT)
+            );
             assert_eq!(
                 request.messages[1].content,
                 format!("{} {ANSWER}", probe_asked(&duty))
@@ -1924,7 +1930,7 @@ pub(crate) mod tests {
             situation(&view, limit, None),
             tools(None, limit),
         );
-        assert!(needed > model::estimated(&proposing));
+        assert!(needed > free_agent_model::estimated(&proposing));
         // A longer prompt takes as much more.
         let longer = unstoried(
             MODEL_ID,

@@ -20,14 +20,13 @@
 //! launch, in the provider's words.
 
 use super::{Message, Move, Phase, Role, View, Werewolf, awake, candidates};
-use crate::model::spec::Probed;
-use crate::model::{self, Response, Tool, ToolChoice};
-use crate::prompted::{
-    PROBE_PROMPT, SPEAK, WAIT, arguments, first_answered, probed, request, said, speak, wait,
-    waited,
-};
+use crate::game::Game;
+use crate::prompted::{PROBE_PROMPT, SPEAK, WAIT, arguments, request, said, speak, wait, waited};
 use crate::seat::{PlayerId, seats};
 use anyhow::{anyhow, bail};
+use free_agent_model::check::{first_answered, probed};
+use free_agent_model::spec::Probed;
+use free_agent_model::{Response, Tool, ToolChoice};
 use humantime::format_duration;
 use serde::Deserialize;
 use serde_json::json;
@@ -174,7 +173,7 @@ pub(crate) fn unstoried(
     let tools = day_tools(&candidates(me, &view), day_limit, voting);
     let asked = format!("\n\n{}", situation(me, &view, day_limit, voting)?);
     let request = request(model_id, ToolChoice::Required, prompt, asked, tools);
-    Ok(model::estimated(&request))
+    Ok(free_agent_model::estimated(&request))
 }
 
 /// The tools a player is offered by night: [`select`] over `candidates`.
@@ -258,7 +257,7 @@ const PROBE_DAY: Duration = Duration::from_secs(60);
 /// but the model's answer, is an error naming the model, with the cause
 /// beneath it.
 pub async fn check_plays(
-    model: &dyn model::Model,
+    model: &dyn free_agent_model::Model,
     model_id: &str,
     from: ToolChoice,
 ) -> anyhow::Result<Probed> {
@@ -295,8 +294,9 @@ pub async fn check_plays(
         Err(error) => Some(("night", error)),
         Ok(()) => by_day(tool_choice).await.err().map(|error| ("day", error)),
     };
-    probed::<Werewolf>(
+    probed(
         model_id,
+        Werewolf::NAME,
         tool_choice,
         failed.map(|(phase, error)| (format!("a {phase}'s request"), error)),
     )
@@ -384,7 +384,7 @@ impl Asked {
     /// is well formed, as [`asked`] judges it.
     fn take(
         &mut self,
-        call: &model::Call,
+        call: &free_agent_model::Call,
         candidates: &[PlayerId],
         limit: Duration,
         voting: Voting,
@@ -484,7 +484,7 @@ fn asked(
 
 /// Whom `call`, a call to [`select`], selects from `candidates`. Arguments
 /// that do not parse, or a target who is not a candidate, is an error.
-fn target(call: &model::Call, candidates: &[PlayerId]) -> anyhow::Result<PlayerId> {
+fn target(call: &free_agent_model::Call, candidates: &[PlayerId]) -> anyhow::Result<PlayerId> {
     let Selection { target } = arguments(call)?;
     if !candidates.contains(&target) {
         bail!("the model selected {target}, who is not a candidate");
@@ -496,12 +496,8 @@ fn target(call: &model::Call, candidates: &[PlayerId]) -> anyhow::Result<PlayerI
 mod tests {
     use super::*;
     use crate::game::{Game, game};
-    use crate::model::Request;
     use crate::model::canned;
     use crate::model::fake::{FakeModel, SAID, acted_in_this_phase, canned_calls, choosing_first};
-    use crate::model::spec::{Handles, ModelInPlay};
-    use crate::model::window::{ContextWindow, Source};
-    use crate::model::{CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT};
     use crate::prompted::tests::{
         MODEL_ID, Made, PROMPTED, a_failed_call_logs_its_error, a_failure_logs_its_usage_first,
         answering, asked_of, closes, every_call_logs_its_usage,
@@ -525,6 +521,10 @@ mod tests {
         to_the_players_but,
     };
     use free_agent::ActorId;
+    use free_agent_model::Request;
+    use free_agent_model::spec::{Handles, ModelInPlay};
+    use free_agent_model::window::{ContextWindow, Source};
+    use free_agent_model::{CONTEXT_WINDOW, Provider, REQUEST_TIMEOUT};
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -611,7 +611,7 @@ mod tests {
         let (logger, log) = unbounded_channel();
         let deal = dealt(&roles, PROMPTED);
         let handles: Handles =
-            BTreeMap::from([(MODEL.to_string(), model as Arc<dyn model::Model>)]);
+            BTreeMap::from([(MODEL.to_string(), model as Arc<dyn free_agent_model::Model>)]);
         let players = players(&configuration, &deal, &handles);
         let episode = game(deal, rules, configuration, winner, players, logger);
         run(episode, won, log).await
@@ -629,7 +629,7 @@ mod tests {
         let configuration = configuration(&roles);
         let (winner, won) = oneshot::channel();
         let (logger, log) = unbounded_channel();
-        let model: Arc<dyn model::Model> = model;
+        let model: Arc<dyn free_agent_model::Model> = model;
         let limits = Werewolf::limits(&rules);
         let player = |id: &PlayerId| {
             puppets.remove(id.as_str()).unwrap_or_else(|| {
@@ -840,8 +840,8 @@ mod tests {
             [Request::offering(
                 MODEL_ID,
                 vec![
-                    model::Message::system("You are wolf."),
-                    model::Message::user(
+                    free_agent_model::Message::system("You are wolf."),
+                    free_agent_model::Message::user(
                         "You are wolf, the only werewolf.\n\nNight 1.\n\n\
                          It is night 1, which lasts 1m. Choose whom the werewolves should kill. \
                          Answer by calling one of the tools."
@@ -972,7 +972,10 @@ mod tests {
         // tokenizer is at hand to check it against; a real overflow is
         // checked by hand against a real provider.
         for request in model.requests() {
-            assert!(model::estimated(&request) <= window, "{request:?}");
+            assert!(
+                free_agent_model::estimated(&request) <= window,
+                "{request:?}"
+            );
         }
         // The doctor tells its whole story at first, and by the end of the
         // second day forgets the oldest talk, saying so.
@@ -1302,7 +1305,7 @@ mod tests {
     fn only_bob_speaks_by_day_1() -> (HashMap<PlayerId, Role>, Arc<FakeModel>) {
         let roles = one_wolf_against(&["ann", "bob", "cat", "dan"]);
         let model = Arc::new(by_day(|request| {
-            let bob = request.messages[0] == model::Message::system(told("bob"));
+            let bob = request.messages[0] == free_agent_model::Message::system(told("bob"));
             let calls = if bob && !acted_in_this_phase(&request.messages[1].content) {
                 vec![speaking("Vote cat."), voting("cat")]
             } else {
@@ -1418,7 +1421,7 @@ mod tests {
         // werewolf wins on the third night.
         let roles = one_wolf_against(&["ann", "bob", "cat", "dan"]);
         let model = Arc::new(by_day(|request| {
-            let bob = request.messages[0] == model::Message::system(told("bob"));
+            let bob = request.messages[0] == free_agent_model::Message::system(told("bob"));
             let calls = if bob && !acted_in_this_phase(&request.messages[1].content) {
                 vec![voting("cat"), retracting()]
             } else {
@@ -1472,7 +1475,7 @@ mod tests {
         // that response is sent.
         let roles = one_wolf_against(&["ann", "bob", "cat", "dan"]);
         let model = Arc::new(by_day(|request| {
-            let bob = request.messages[0] == model::Message::system(told("bob"));
+            let bob = request.messages[0] == free_agent_model::Message::system(told("bob"));
             let target = match acted_in_this_phase(&request.messages[1].content) {
                 false => "cat",
                 true => "dan",
@@ -1503,7 +1506,7 @@ mod tests {
         let bob: Vec<Request> = model
             .requests()
             .into_iter()
-            .filter(|request| request.messages[0] == model::Message::system(told("bob")))
+            .filter(|request| request.messages[0] == free_agent_model::Message::system(told("bob")))
             .filter(is_day)
             .collect();
         let again = &bob[1];
@@ -1694,8 +1697,8 @@ mod tests {
             assert_eq!(request.tool_choice, ToolChoice::Required);
             assert!(request.messages[1].content.ends_with(ANSWER));
             assert_eq!(request.messages.len(), 2);
-            assert_eq!(request.messages[0].role, model::Role::System);
-            assert_eq!(request.messages[1].role, model::Role::User);
+            assert_eq!(request.messages[0].role, free_agent_model::Role::System);
+            assert_eq!(request.messages[1].role, free_agent_model::Role::User);
         }
         // The night's request offers a player's one tool by night, and the
         // day's a player's four by day, over the same candidates and a day
@@ -2024,8 +2027,8 @@ mod tests {
             Request::offering(
                 MODEL_ID,
                 vec![
-                    model::Message::system("You are pat."),
-                    model::Message::user(
+                    free_agent_model::Message::system("You are pat."),
+                    free_agent_model::Message::user(
                         "You are pat, a villager.\n\nNight 1.\nYou sleep.\nann dies.\n\nDay 1.\n\n\
                          It is day 1, which lasts 10s. You may speak, vote, retract your vote, or wait. \
                          Answer by calling one of the tools."
@@ -2421,7 +2424,7 @@ mod tests {
 
     #[test]
     fn arguments_sent_as_no_text_or_only_whitespace_are_no_arguments() {
-        let call = |arguments: &str| model::Call {
+        let call = |arguments: &str| free_agent_model::Call {
             name: RETRACT.to_string(),
             arguments: arguments.to_string(),
         };

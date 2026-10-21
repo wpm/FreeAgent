@@ -87,7 +87,7 @@ pub fn settle(
 mod tests {
     use super::*;
 
-    use crate::model::spec::tests::{LOCAL, OPENAI, qwen};
+    use crate::spec::testing::{LOCAL, OPENAI, qwen};
 
     #[test]
     fn the_context_window_falls_back_from_the_file_to_the_listing_to_the_provider_to_the_code() {

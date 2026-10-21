@@ -318,12 +318,12 @@ mod tests {
     use crate::model::canned::{
         CANARY, CANARY_VARIABLE, assert_redacted, leaking, leaking_werewolf,
     };
-    use crate::model::spec::Environment;
     use crate::run::prepare;
-    use crate::secret::Keychain;
-    use crate::secret::tests::Fake;
     use crate::stage::recordings;
     use free_agent::Episode;
+    use free_agent_model::secret::Keychain;
+    use free_agent_model::secret::testing::Fake;
+    use free_agent_model::spec::Environment;
     use secrecy::SecretString;
     use social_deduction_gui_types::Outcome;
     use std::collections::HashMap;

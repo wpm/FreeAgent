@@ -185,27 +185,47 @@ pub async fn set_up(
     Ok((models, handles))
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use crate::model::CONTEXT_WINDOW;
-    use crate::model::canned::{answering, listing, playing, playing_within, serving};
-    use crate::model::window::Source;
-    use anyhow::anyhow;
-    use secrecy::ExposeSecret;
-    use std::sync::Mutex;
+/// Model tables for tests. Nothing but tests uses this module.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod testing {
+    use super::Spec;
 
     /// The `[models.qwen]` table at `base_url`, with `rest` after its id.
-    pub(crate) fn qwen(base_url: &str, rest: &str) -> Spec {
+    pub fn qwen(base_url: &str, rest: &str) -> Spec {
         let table = format!("base_url = \"{base_url}\"\nid = \"qwen2.5-7b-instruct\"\n{rest}");
         toml::from_str(&table).unwrap()
     }
 
     /// A local server's root.
-    pub(crate) const LOCAL: &str = "http://localhost:1234/v1";
+    pub const LOCAL: &str = "http://localhost:1234/v1";
 
     /// A provider `src/models.toml` knows.
-    pub(crate) const OPENAI: &str = "https://api.openai.com/v1";
+    pub const OPENAI: &str = "https://api.openai.com/v1";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::{LOCAL, OPENAI, qwen};
+    use super::*;
+    use crate::CONTEXT_WINDOW;
+    use crate::canned::{answering, listing, serving};
+    use crate::tests::first_choice;
+    use crate::window::Source;
+    use anyhow::anyhow;
+    use secrecy::ExposeSecret;
+    use std::sync::Mutex;
+
+    /// A provider that plays as the crate's canned player does.
+    fn playing(ids: &[&str]) -> String {
+        crate::canned::playing(first_choice, ids)
+    }
+
+    /// A provider that plays as [`playing`] does, its listing reporting a
+    /// context window of `tokens`.
+    fn playing_within(ids: &[&str], tokens: u64) -> String {
+        crate::canned::playing_within(first_choice, ids, tokens)
+    }
 
     #[test]
     fn the_request_timeout_comes_from_the_table_or_the_code() {
@@ -230,9 +250,9 @@ pub(crate) mod tests {
 
     #[test]
     fn a_key_variable_that_is_not_set_is_an_error_naming_it() {
-        let error = required(&Environment, "SOCIAL_DEDUCTION_NO_SUCH_KEY").unwrap_err();
+        let error = required(&Environment, "FREE_AGENT_NO_SUCH_KEY").unwrap_err();
         let shown = format!("{error:#}");
-        assert!(shown.contains("SOCIAL_DEDUCTION_NO_SUCH_KEY"), "{shown}");
+        assert!(shown.contains("FREE_AGENT_NO_SUCH_KEY"), "{shown}");
         assert!(shown.contains("not set"), "{shown}");
     }
 
@@ -250,9 +270,9 @@ pub(crate) mod tests {
     #[test]
     fn a_key_variable_whose_value_is_not_utf_8_is_an_error_naming_it() {
         use std::os::unix::ffi::OsStringExt;
-        let error = key("SOCIAL_DEDUCTION_KEY", Some(OsString::from_vec(vec![0xff]))).unwrap_err();
+        let error = key("FREE_AGENT_KEY", Some(OsString::from_vec(vec![0xff]))).unwrap_err();
         let shown = format!("{error:#}");
-        assert!(shown.contains("SOCIAL_DEDUCTION_KEY"), "{shown}");
+        assert!(shown.contains("FREE_AGENT_KEY"), "{shown}");
         assert!(!shown.contains("not set"), "{shown}");
     }
 
@@ -408,10 +428,10 @@ pub(crate) mod tests {
         let error = shown(&spec, Some(0)).await;
         assert!(error.starts_with("setting up the model qwen: "), "{error}");
         // Its key not set.
-        let spec = qwen(LOCAL, "api_key_env = \"SOCIAL_DEDUCTION_NO_SUCH_KEY\"");
+        let spec = qwen(LOCAL, "api_key_env = \"FREE_AGENT_NO_SUCH_KEY\"");
         let error = shown(&spec, Some(0)).await;
         assert!(error.starts_with("setting up the model qwen: "), "{error}");
-        assert!(error.contains("SOCIAL_DEDUCTION_NO_SUCH_KEY"), "{error}");
+        assert!(error.contains("FREE_AGENT_NO_SUCH_KEY"), "{error}");
         // Not playing.
         let spec = qwen(&playing(&["qwen2.5-7b-instruct"]), "");
         let error = shown(&spec, Some(0)).await;

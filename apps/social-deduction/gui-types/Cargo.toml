@@ -10,9 +10,10 @@ homepage.workspace = true
 # Social Deduction's own types, shared by its native code and its frontend.
 publish = false
 
-# Serde, minijinja to read templates, and the episode IDs a log's games
+# The shared types, serde, minijinja to read templates, and the episode IDs a log's games
 # are told apart by, so the crate builds for wasm32-unknown-unknown.
 [dependencies]
+free-agent-gui-types.workspace = true
 minijinja.workspace = true
 serde.workspace = true
 uuid.workspace = true

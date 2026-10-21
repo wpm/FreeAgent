@@ -824,11 +824,11 @@ pub(crate) fn won(winner: Team, days: u8) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ToolChoice;
     use crate::report::FORGOTTEN;
     use crate::report::tests::estimated;
     use crate::report::tests::in_play;
     use crate::seat::id;
+    use free_agent_model::ToolChoice;
 
     use crate::prompted::tests::received;
     use crate::seat::to_the_environment;

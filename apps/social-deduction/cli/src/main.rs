@@ -7,14 +7,15 @@
 
 use clap::{Args, Parser};
 use free_agent::{Behavior, Episode, Event, Logger};
+use free_agent_model::check::{Mark, checked};
+use free_agent_model::spec::{Environment, required};
+use free_agent_model::{
+    Provider, REQUEST_TIMEOUT, ToolChoice, key_variable, known_providers, served,
+};
 use social_deduction::game::{Entry, Game, Narrate};
 use social_deduction::live::PATIENCE;
 use social_deduction::log::{Ended, Secrets, Writer};
-use social_deduction::model::check::{Mark, checked};
-use social_deduction::model::spec::{Environment, required};
-use social_deduction::model::{
-    Provider, REQUEST_TIMEOUT, ToolChoice, key_variable, known_providers, served,
-};
+use social_deduction::model::plays;
 use social_deduction::report::Line;
 use social_deduction::run::{Prepared, Ready};
 use social_deduction::{config, examples};
@@ -124,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
                     for id in &check {
                         served(&base_url, &listed, id)?;
                     }
-                    checked(&provider, ids, &check, &mut io::stderr()).await?
+                    checked(&provider, ids, &check, &mut io::stderr(), plays).await?
                 }
             };
             print!("{}", listing(&models));

@@ -1,0 +1,17 @@
+[package]
+name = "free-agent-gui-types"
+version = "0.0.0"
+edition.workspace = true
+description = "The types every Free Agent app's native code shares with its WASM frontend"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Shared by the apps, which ship as binaries, never published on its own.
+publish = false
+
+# Serde alone, so the crate builds for wasm32-unknown-unknown.
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -12,17 +12,21 @@ homepage.workspace = true
 # goes to crates.io. Drop this line to publish the application there too.
 publish = false
 
+[features]
+# Social Deduction's canned player and the canned providers that play it,
+# for its own integration tests, which turn it on below.
+test-support = ["free-agent-model/test-support"]
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-futures-util.workspace = true
 clap.workspace = true
 free-agent.workspace = true
+free-agent-model.workspace = true
 humantime.workspace = true
 humantime-serde.workspace = true
 minijinja.workspace = true
 rand.workspace = true
-reqwest.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -30,10 +34,12 @@ social-deduction-gui-types.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 toml.workspace = true
 tokio-util.workspace = true
-tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# The fake model and the canned providers, and Social Deduction's own
+# canned player, which its integration tests reach through this crate.
+free-agent-model = { workspace = true, features = ["test-support"] }
+social-deduction = { workspace = true, features = ["test-support"] }
 # A paused clock lets a test wait out a day's time limit without waiting.
 tokio = { workspace = true, features = ["test-util"] }
-tracing-subscriber.workspace = true

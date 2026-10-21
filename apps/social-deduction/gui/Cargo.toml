@@ -27,6 +27,7 @@ web-sys = { version = "0.3", features = ["console", "CssStyleDeclaration", "Docu
 [dev-dependencies]
 # The timeline's tests play random games and fold the recorded ones, on a
 # paused clock.
+free-agent-model.workspace = true
 social-deduction.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 uuid.workspace = true

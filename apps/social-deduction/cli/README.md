@@ -372,9 +372,9 @@ prompted player asks its strategy's model with them.
 A model's context window, in tokens, is settled before the game begins:
 from `context_window` in its `[models.<name>]` table if given, otherwise
 from the provider's listing of the model, otherwise
-from the provider's default in `src/models.toml`, otherwise 4096 tokens, a
+from the provider's default in `crates/model/src/models.toml`, otherwise 4096 tokens, a
 size most models can run in. The listing gives it when the model's entry
-carries one of the fields named in `src/models.toml`, such as vLLM's
+carries one of the fields named in `crates/model/src/models.toml`, such as vLLM's
 `max_model_len` or OpenRouter's `context_length`, holding a positive whole
 number. The provider's default covers a listing that carries none, as
 OpenAI's and Anthropic's do: 128000 tokens for OpenAI and 200000 for

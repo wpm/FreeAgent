@@ -1874,7 +1874,7 @@ mod tests {
     async fn random(config: &str) -> Vec<Cue> {
         let path = format!("{}/../cli/configs/{config}", env!("CARGO_MANIFEST_DIR"));
         let text = std::fs::read_to_string(&path).unwrap();
-        let environment = social_deduction::model::spec::Environment;
+        let environment = free_agent_model::spec::Environment;
         let prepared = social_deduction::run::prepare(&text, &environment)
             .await
             .unwrap();

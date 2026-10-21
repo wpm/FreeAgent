@@ -12,9 +12,9 @@
 //! [`key_status`], which never answers with the key. A key from the
 //! window is a [`SecretString`] from the first statement that holds it.
 
+use free_agent_model::secret::{Keychain, SecretError, Store};
 use keyring::Entry;
 use secrecy::{ExposeSecret, SecretString};
-use social_deduction::secret::{Keychain, SecretError, Store};
 use social_deduction_gui_types::settings::KeyStatus;
 
 /// The service every key's entry is stored under: the app's identifier.
@@ -93,7 +93,7 @@ pub fn key_status(variable: String) -> KeyStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use social_deduction::model::spec::Keys;
+    use free_agent_model::spec::Keys;
 
     /// Point `keyring` at its mock store, in which each entry starts
     /// empty, so no test touches the real one.

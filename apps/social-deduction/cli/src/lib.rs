@@ -5,7 +5,6 @@
 
 pub mod announced;
 pub mod avalon;
-pub mod catalog;
 pub mod config;
 pub mod examples;
 pub mod game;
@@ -17,7 +16,6 @@ pub mod random;
 pub mod report;
 pub mod run;
 pub mod seat;
-pub mod secret;
 pub mod settings;
 pub mod stage;
 pub mod strategy;

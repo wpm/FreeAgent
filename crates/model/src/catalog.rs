@@ -10,9 +10,12 @@
 //! back while a game plays. [`probe_each`] runs a provider's probes either
 //! way.
 
-use crate::model::check;
-use crate::model::{self, Provider as Client, REQUEST_TIMEOUT};
-use crate::settings::{Check, Listed, Listing, Provider, Trouble, Unchecked, is_remote};
+use crate::check;
+use crate::spec::Probed;
+use crate::{Model, Provider as Client, REQUEST_TIMEOUT};
+use free_agent_gui_types::settings::{
+    Check, Listed, Listing, Provider, Trouble, Unchecked, is_remote,
+};
 use futures_util::StreamExt;
 use reqwest::StatusCode;
 use secrecy::SecretString;
@@ -34,7 +37,7 @@ pub const KNOCK: Duration = Duration::from_millis(300);
 /// The providers `src/models.toml` knows, then a local server on each of
 /// `ports`, in order.
 pub fn providers(ports: &[u16]) -> Vec<Provider> {
-    let known = model::known_providers()
+    let known = crate::known_providers()
         .into_iter()
         .map(|(name, base_url, api_key_env)| Provider {
             name: name.to_string(),
@@ -80,7 +83,7 @@ pub async fn list(base_url: &str, key: Option<SecretString>) -> Listing {
                 models: models
                     .into_iter()
                     .map(|model| Listed {
-                        hidden: model::hidden(&model.id),
+                        hidden: crate::hidden(&model.id),
                         context_window: window(base_url, model.context_window),
                         id: model.id,
                     })
@@ -96,10 +99,10 @@ pub async fn list(base_url: &str, key: Option<SecretString>) -> Listing {
 }
 
 /// The context window, in tokens, a game gives a model of the provider at
-/// `base_url` whose configuration sets none, as [`model::window::unset`] gives
+/// `base_url` whose configuration sets none, as [`crate::window::unset`] gives
 /// it, from `reported`, the one its listing reports.
 pub fn window(base_url: &str, reported: Option<u64>) -> u64 {
-    model::window::unset(base_url, reported).tokens
+    crate::window::unset(base_url, reported).tokens
 }
 
 /// Where a model stands among its provider's models, which sort most
@@ -119,7 +122,7 @@ enum Standing {
 /// `src/models.toml` lists, in its order and newest first within each;
 /// then those whose id gives a parameter count, the most first; then the
 /// rest, newest first.
-pub fn rank(models: &mut [model::Listed]) {
+pub fn rank(models: &mut [crate::Listed]) {
     models.sort_by_cached_key(|model| {
         let (id, made) = (model.id.clone(), Reverse(model.created));
         match (family(&model.id), parameters(&model.id)) {
@@ -135,7 +138,7 @@ pub fn rank(models: &mut [model::Listed]) {
 /// whatever its case.
 fn family(id: &str) -> Option<usize> {
     let id = id.to_lowercase();
-    model::families().iter().position(|family| {
+    crate::families().iter().position(|family| {
         id.strip_prefix(family.as_str()).is_some_and(|rest| {
             rest.is_empty()
                 || rest
@@ -168,7 +171,7 @@ fn unlisted(base_url: &str, error: &anyhow::Error) -> String {
     let unreached = error
         .chain()
         .any(|cause| cause.downcast_ref::<reqwest::Error>().is_some());
-    match model::rejected_with(error) {
+    match crate::rejected_with(error) {
         Some(StatusCode::UNAUTHORIZED) => {
             "Couldn't list models: 401, check the API key".to_string()
         }
@@ -178,22 +181,28 @@ fn unlisted(base_url: &str, error: &anyhow::Error) -> String {
 }
 
 /// What probing the model `id` of the provider at `base_url`, asked with
-/// `key`, finds, as `social-deduction models --check` probes it.
+/// `key`, finds, as the app's `models --check` probes it with its probe,
+/// `plays`.
 ///
 /// # Errors
 ///
 /// When the model could not be asked, which says nothing about it.
-pub async fn probe(base_url: &str, id: &str, key: Option<SecretString>) -> anyhow::Result<Check> {
+pub async fn probe(
+    base_url: &str,
+    id: &str,
+    key: Option<SecretString>,
+    plays: impl AsyncFn(&dyn Model, &str) -> anyhow::Result<Probed>,
+) -> anyhow::Result<Check> {
     let client = Client::new(base_url, key, REQUEST_TIMEOUT)?;
-    check::probe(&client, id).await
+    check::probe(&client, id, plays).await
 }
 
 /// Why a model could not be asked to play, from `error`, its probe's:
 /// with what the provider said, or the error when it said nothing.
 pub fn unchecked(error: &anyhow::Error) -> Unchecked {
-    let rejection = model::rejection(error);
+    let rejection = crate::rejection(error);
     let trouble = match rejection {
-        Some(rejection) if rejection.said.is(model::NO_CREDITS) => Trouble::NoCredits,
+        Some(rejection) if rejection.said.is(crate::NO_CREDITS) => Trouble::NoCredits,
         Some(rejection) if rejection.status == StatusCode::UNAUTHORIZED => Trouble::KeyRefused,
         Some(rejection) if rejection.status == StatusCode::FORBIDDEN => Trouble::KeyForbidden,
         _ => Trouble::Failed,
@@ -254,25 +263,23 @@ pub struct Probes {
     probes: BTreeMap<String, BTreeMap<String, Check>>,
 }
 
-impl Default for Probes {
-    /// None, found by this version.
-    fn default() -> Self {
+impl Probes {
+    /// None, found by the app at `version`.
+    pub fn new(version: &str) -> Self {
         Self {
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: version.to_string(),
             probes: BTreeMap::new(),
         }
     }
-}
 
-impl Probes {
-    /// The probes kept at `path`, if this version kept them there, or
-    /// none.
-    pub fn load(path: &Path) -> Self {
+    /// The probes kept at `path`, if the app at `version` kept them there,
+    /// or none.
+    pub fn load(path: &Path, version: &str) -> Self {
         std::fs::read_to_string(path)
             .ok()
             .and_then(|text| serde_json::from_str::<Probes>(&text).ok())
-            .filter(|probes| probes.version == Probes::default().version)
-            .unwrap_or_default()
+            .filter(|probes| probes.version == version)
+            .unwrap_or_else(|| Probes::new(version))
     }
 
     /// Keep the probes at `path`, making its directory first.
@@ -322,10 +329,14 @@ impl Probes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::canned;
+    use crate::canned;
+    use crate::tests::{first_choice, plays};
     use std::net::TcpListener;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// The version of the app the tests' probes are found by.
+    const VERSION: &str = "0.2.0";
 
     /// A file of its own for the test `name`, not yet made.
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -378,7 +389,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_listing_marks_the_ids_hidden_and_ranks_them_with_each_context_window() {
-        let base_url = canned::playing_within(&["text-embedding-3-small", "gpt-4.1"], 32768);
+        let base_url =
+            canned::playing_within(first_choice, &["text-embedding-3-small", "gpt-4.1"], 32768);
         let listing = list(&base_url, None).await;
         assert_eq!(
             listing.models,
@@ -397,8 +409,8 @@ mod tests {
         );
         assert_eq!(listing.error, None);
         // A listing that reports no window gives the code's default.
-        let listing = list(&canned::playing(&["llama"]), None).await;
-        assert_eq!(listing.models[0].context_window, model::CONTEXT_WINDOW);
+        let listing = list(&canned::playing(first_choice, &["llama"]), None).await;
+        assert_eq!(listing.models[0].context_window, crate::CONTEXT_WINDOW);
     }
 
     #[test]
@@ -407,13 +419,13 @@ mod tests {
         assert_eq!(window("https://api.anthropic.com/v1", Some(8192)), 8192);
         assert_eq!(
             window("http://localhost:1234/v1", None),
-            model::CONTEXT_WINDOW
+            crate::CONTEXT_WINDOW
         );
     }
 
     /// A model the provider at lists as `id`, made at `created`.
-    fn made(id: &str, created: Option<u64>) -> model::Listed {
-        model::Listed {
+    fn made(id: &str, created: Option<u64>) -> crate::Listed {
+        crate::Listed {
             id: id.to_string(),
             context_window: None,
             created,
@@ -461,7 +473,7 @@ mod tests {
 
     #[test]
     fn a_family_is_the_whole_id_or_its_start_before_a_version_or_date() {
-        let family = |id| family(id).map(|place| model::families()[place].as_str());
+        let family = |id| family(id).map(|place| crate::families()[place].as_str());
         assert_eq!(family("claude-opus-5-5"), Some("claude-opus"));
         assert_eq!(family("Claude-Opus-5-5"), Some("claude-opus"));
         assert_eq!(family("gpt-4.1"), Some("gpt-4.1"));
@@ -503,14 +515,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_probe_says_whether_the_model_plays_or_could_not_be_run() {
-        let base_url = canned::playing(&["llama"]);
-        assert_eq!(probe(&base_url, "llama", None).await.unwrap(), Check::Plays);
-        let base_url = canned::refusing_required(&["llama"]);
+        let base_url = canned::playing(first_choice, &["llama"]);
         assert_eq!(
-            probe(&base_url, "llama", None).await.unwrap(),
+            probe(&base_url, "llama", None, plays).await.unwrap(),
+            Check::Plays
+        );
+        let base_url = canned::refusing_required(first_choice, &["llama"]);
+        assert_eq!(
+            probe(&base_url, "llama", None, plays).await.unwrap(),
             Check::PlaysUnforced
         );
-        assert!(probe(&canned::unreachable(), "llama", None).await.is_err());
+        assert!(
+            probe(&canned::unreachable(), "llama", None, plays)
+                .await
+                .is_err()
+        );
     }
 
     /// Probe `ids` `at_once` at a time with probes that each take a while,
@@ -564,7 +583,7 @@ mod tests {
     async fn a_model_that_could_not_be_asked_is_unchecked_for_what_the_provider_said() {
         let answered = async |status: &str, body: &str| {
             let (base_url, _served) = canned::answering(status, body);
-            unchecked(&probe(&base_url, "gpt", None).await.unwrap_err())
+            unchecked(&probe(&base_url, "gpt", None, plays).await.unwrap_err())
         };
         let trouble = |trouble, said: &str| Unchecked {
             trouble,
@@ -597,7 +616,7 @@ mod tests {
         assert_eq!(error.trouble, Trouble::Failed);
         assert!(error.said.contains("503"), "{error:?}");
         let base_url = canned::unreachable();
-        let error = unchecked(&probe(&base_url, "gpt", None).await.unwrap_err());
+        let error = unchecked(&probe(&base_url, "gpt", None, plays).await.unwrap_err());
         assert_eq!(error.trouble, Trouble::Failed);
         assert!(error.said.contains(&base_url), "{error:?}");
     }
@@ -607,14 +626,14 @@ mod tests {
     {
         let (broke, _served) = canned::answering("429 Too Many Requests", canned::NO_CREDITS);
         let down = canned::unreachable();
-        let playing = canned::playing(&["a", "b"]);
+        let playing = canned::playing(first_choice, &["a", "b"]);
         let asked = |id: String| {
             let base_url = match id.as_str() {
                 "broke" => broke.clone(),
                 "down" => down.clone(),
                 _ => playing.clone(),
             };
-            async move { probe(&base_url, &id, None).await }
+            async move { probe(&base_url, &id, None, plays).await }
         };
         let mut recorded = Vec::new();
         let ids = ["down", "a", "broke", "b"].map(String::from).to_vec();
@@ -651,7 +670,7 @@ mod tests {
                 .iter()
                 .map(|id| Listed {
                     id: id.to_string(),
-                    context_window: model::CONTEXT_WINDOW,
+                    context_window: crate::CONTEXT_WINDOW,
                     hidden: id.starts_with("text-embedding"),
                 })
                 .collect(),
@@ -664,15 +683,15 @@ mod tests {
         let path = scratch("persist");
         let openai = "https://api.openai.com/v1";
         let listed = listing(&["gpt-4.1", "gpt-4.1-mini", "text-embedding-3-small"]);
-        let mut probes = Probes::load(&path);
-        assert_eq!(probes, Probes::default());
+        let mut probes = Probes::load(&path, VERSION);
+        assert_eq!(probes, Probes::new(VERSION));
         assert_eq!(
             probes.unprobed(openai, &listed),
             ["gpt-4.1", "gpt-4.1-mini"]
         );
         probes.record(openai, "gpt-4.1", Check::Plays);
         probes.save(&path).unwrap();
-        let mut probes = Probes::load(&path);
+        let mut probes = Probes::load(&path, VERSION);
         assert_eq!(probes.unprobed(openai, &listed), ["gpt-4.1-mini"]);
         assert_eq!(
             probes.of(openai),
@@ -690,14 +709,11 @@ mod tests {
     #[test]
     fn probes_another_version_kept_are_run_again() {
         let path = scratch("version");
-        let mut probes = Probes {
-            version: format!("{}-earlier", env!("CARGO_PKG_VERSION")),
-            ..Probes::default()
-        };
+        let mut probes = Probes::new("0.1.0");
         probes.record("https://api.openai.com/v1", "gpt-4.1", Check::Plays);
         probes.save(&path).unwrap();
-        assert_eq!(Probes::load(&path), Probes::default());
-        assert!(Probes::default().save(Path::new("")).is_err());
+        assert_eq!(Probes::load(&path, VERSION), Probes::new(VERSION));
+        assert!(Probes::new(VERSION).save(Path::new("")).is_err());
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

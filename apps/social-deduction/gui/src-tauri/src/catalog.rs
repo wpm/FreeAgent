@@ -1,6 +1,6 @@
 //! The commands behind the Models tab: the providers, local servers
 //! among them, and each provider's listing, as
-//! [`social_deduction::catalog`] gives each, and checking its models.
+//! [`free_agent_model::catalog`] gives each, and checking its models.
 //!
 //! Models are checked in the background, never at the user's asking: each
 //! listing starts probing the models it holds that have not been probed,
@@ -17,11 +17,12 @@
 
 use crate::secret::keychain;
 use crate::settings::Store;
+use free_agent_model::catalog::{self, KNOCK, Probes};
+use free_agent_model::spec::Keys;
+use free_agent_model::{key_variable, local_ports};
 use secrecy::SecretString;
-use social_deduction::catalog::{self, KNOCK, Probes};
 use social_deduction::live::Session;
-use social_deduction::model::spec::Keys;
-use social_deduction::model::{key_variable, local_ports};
+use social_deduction::model::plays;
 use social_deduction::settings::{Check, Listing, Probe, Progress, Provider, Unchecked, is_remote};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -51,7 +52,7 @@ impl Catalog {
     pub fn open(app: &AppHandle) -> tauri::Result<Self> {
         let path = app.path().app_data_dir()?.join("probes.json");
         Ok(Self {
-            probes: Mutex::new(Probes::load(&path)),
+            probes: Mutex::new(Probes::load(&path, env!("CARGO_PKG_VERSION"))),
             path,
             probing: Mutex::default(),
             progress: Mutex::default(),
@@ -204,7 +205,7 @@ fn start(app: &AppHandle, listing: &Listing, base_url: String, key: Option<Secre
                     let busy = || app.state::<Session>().busy();
                     catalog::idle(busy, WHILE_PLAYING).await;
                 }
-                catalog::probe(&url, &id, key).await
+                catalog::probe(&url, &id, key, plays).await
             }
         };
         let record = |id: &str, probed: Result<Check, Unchecked>| {

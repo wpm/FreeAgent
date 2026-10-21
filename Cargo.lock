@@ -1442,6 +1442,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "free-agent-gui-types"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "free-agent-model"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "free-agent-gui-types",
+ "futures-util",
+ "humantime",
+ "humantime-serde",
+ "reqwest",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 1.1.8+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4582,21 +4610,19 @@ dependencies = [
  "async-trait",
  "clap",
  "free-agent",
- "futures-util",
+ "free-agent-model",
  "humantime",
  "humantime-serde",
  "minijinja",
  "rand",
- "reqwest",
  "secrecy",
  "serde",
  "serde_json",
+ "social-deduction",
  "social-deduction-gui-types",
  "tokio",
  "tokio-util",
  "toml 1.1.8+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -4606,6 +4632,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "free-agent-model",
  "keyring",
  "secrecy",
  "serde",
@@ -4625,6 +4652,7 @@ name = "social-deduction-gui"
 version = "0.0.0"
 dependencies = [
  "console_error_panic_hook",
+ "free-agent-model",
  "js-sys",
  "leptos",
  "leptos-rich-chat",
@@ -4644,6 +4672,7 @@ dependencies = [
 name = "social-deduction-gui-types"
 version = "0.0.0"
 dependencies = [
+ "free-agent-gui-types",
  "minijinja",
  "serde",
  "serde_json",
