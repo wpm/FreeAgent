@@ -32,7 +32,8 @@ application go in `crates/`.
 
 For games built on this, see [`social-deduction`](apps/social-deduction/cli), whose
 [Servers and CI](apps/social-deduction/cli/README.md#servers-and-ci) section
-installs its command line alone.
+installs its command line alone, and
+[`twenty-questions`](apps/twenty-questions/cli).
 
 ## Development
 
