@@ -88,8 +88,6 @@ impl fmt::Display for Name {
     }
 }
 
-pub use free_agent_game::config::CONFIG_FORMAT;
-
 /// Social Deduction, as a configuration file's format check names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SocialDeduction;
@@ -705,6 +703,7 @@ pub fn players<G: game::Game>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use free_agent_game::config::CONFIG_FORMAT;
     use serde_json::json;
     use std::collections::HashSet;
     use std::path::PathBuf;

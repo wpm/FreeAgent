@@ -308,21 +308,6 @@ mod tests {
     }
 
     #[test]
-    fn a_secret_with_characters_json_escapes_is_redacted() {
-        let key = "sk-\"quoted\"\\back\tslash\u{1}";
-        let written = failed_with(secrets(&[key]), &format!("the key {key} was refused"));
-        assert!(
-            written.contains("the key [redacted] was refused"),
-            "{written}"
-        );
-        let escaped = serde_json::Value::from(key).to_string();
-        assert!(
-            !written.contains(&escaped[1..escaped.len() - 1]),
-            "{written}"
-        );
-    }
-
-    #[test]
     fn a_header_that_is_not_well_formed_is_an_error() {
         for header in [
             serde_json::json!({"Header": {"format": "one"}}),

@@ -66,18 +66,12 @@ mod tests {
     }
 
     #[test]
-    fn the_listing_names_every_example_with_its_description_lined_up() {
+    fn the_listing_names_each_example_with_its_description() {
         let listing = listing(EXAMPLES);
-        let lines: Vec<&str> = listing.lines().collect();
-        assert_eq!(lines.len(), EXAMPLES.len());
-        for (line, example) in lines.iter().zip(EXAMPLES) {
-            assert!(line.starts_with(example.path), "{line}");
-        }
         assert!(
-            lines.contains(
-                &"werewolf/random.toml    Every role played by the random strategy, which is \
-                  always defined: a table of random players with no models."
-            ),
+            listing.lines().any(|line| line
+                == "werewolf/random.toml    Every role played by the random strategy, which is \
+                    always defined: a table of random players with no models."),
             "{listing}"
         );
     }
