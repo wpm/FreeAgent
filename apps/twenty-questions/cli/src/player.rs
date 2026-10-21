@@ -28,7 +28,8 @@ use crate::game::{Actor, Seated, act, everyone_but, observe};
 use crate::log::Entry;
 use crate::message::{HOST, Message, View};
 use crate::model::{
-    Asker, SPEAK, Shown, WAIT, arguments, calls, request, said, speak, text_parameter, wait, waited,
+    Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak, text_parameter,
+    wait, waited,
 };
 use crate::story::{Memory, Story};
 use anyhow::{Context as _, bail};
@@ -228,7 +229,7 @@ fn asked(response: &Response, may_guess: bool, limit: Duration) -> anyhow::Resul
                 asked.sends.push(Sending::Guess(question));
             }
             WAIT => asked.wait = Some(waited(call, limit)?),
-            other => bail!("the model called {other}, which is not a tool it was offered"),
+            other => return Err(not_offered(other)),
         }
     }
     Ok(asked)
@@ -259,13 +260,13 @@ pub(crate) struct Mind {
 }
 
 /// A player's history and the story that tells it, kept together so that
-/// the story is always the narration of exactly the history, how many
-/// guesses it has heard of, its own among them, and whether a player has
-/// spoken since the last answer.
+/// the story is always the narration of exactly the history, every guess
+/// it has heard of, its own among them, as [`folded`], and whether a player
+/// has spoken since the last answer.
 struct Remembered {
     history: Vec<Event<Memory>>,
     story: Story,
-    guessed: u64,
+    questions: Vec<String>,
     talked: bool,
 }
 
@@ -277,7 +278,7 @@ impl Mind {
             remembered: Mutex::new(Remembered {
                 history: Vec::new(),
                 story: Story::of(me.clone()),
-                guessed: 0,
+                questions: Vec::new(),
                 talked: false,
             }),
             n: AtomicU64::new(0),
@@ -296,7 +297,7 @@ impl Mind {
         remembered.story.recall(&event.payload);
         let (Memory::Observed { message } | Memory::Acted { message }) = &event.payload;
         match message {
-            Message::Guess { .. } => remembered.guessed += 1,
+            Message::Guess { text, .. } => remembered.questions.push(folded(text)),
             Message::Say { from, .. } if from != HOST => remembered.talked = true,
             Message::Answer { .. } => remembered.talked = false,
             _ => {}
@@ -321,7 +322,7 @@ impl Mind {
         let remembered = self.remembered.lock().unwrap();
         Guesses {
             of,
-            left: of.saturating_sub(remembered.guessed),
+            left: of.saturating_sub(remembered.questions.len() as u64),
             waiting: remembered
                 .story
                 .waiting()
@@ -333,20 +334,7 @@ impl Mind {
 
     /// Every guess put so far, by anyone, each trimmed and in lower case.
     fn questions(&self) -> Vec<String> {
-        let remembered = self.remembered.lock().unwrap();
-        remembered
-            .history
-            .iter()
-            .filter_map(|event| match &event.payload {
-                Memory::Observed {
-                    message: Message::Guess { text, .. },
-                }
-                | Memory::Acted {
-                    message: Message::Guess { text, .. },
-                } => Some(folded(text)),
-                _ => None,
-            })
-            .collect()
+        self.remembered.lock().unwrap().questions.clone()
     }
 
     /// The next number for a message to others: one up from the last.
@@ -470,6 +458,7 @@ impl Player {
             }
         }
         let me = &self.context.id;
+        let to = everyone_but(me, &view.players);
         for sending in sends {
             let sending = match sending {
                 Sending::Guess(question) if self.mind.questions().contains(&folded(&question)) => {
@@ -484,8 +473,7 @@ impl Player {
             self.remember(Memory::Acted {
                 message: message.clone(),
             });
-            let to = everyone_but(me, &view.players);
-            act(&self.context, message, to, Some(shown))?;
+            act(&self.context, message, to.clone(), Some(shown))?;
         }
         match wait {
             Some(after) => {

@@ -21,7 +21,7 @@ use free_agent_game::seat::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::io::{self, Write};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use uuid::Uuid;
 
 /// The shape of the log this version writes. It goes up whenever the
@@ -274,11 +274,7 @@ impl<W: Write> Writer<W> {
     ///
     /// Fails when writing to `sink` fails.
     pub fn end(mut self, ended: Ended) -> io::Result<W> {
-        self.write(&Event {
-            time: SystemTime::now(),
-            episode: self.episode,
-            payload: Entry::Ended(ended),
-        })?;
+        self.write(&Event::now(self.episode, Entry::Ended(ended)))?;
         self.sink.flush()?;
         Ok(self.sink)
     }
@@ -289,6 +285,7 @@ pub(crate) mod tests {
     use super::*;
     use secrecy::SecretString;
     use serde_json::json;
+    use std::time::SystemTime;
 
     /// `payload`, an entry or a memory, as an event logged or remembered
     /// when the game began, in no episode in particular.

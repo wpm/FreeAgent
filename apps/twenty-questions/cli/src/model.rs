@@ -165,10 +165,15 @@ pub(crate) fn calls(response: &Response) -> anyhow::Result<Vec<&free_agent_model
     Ok(made)
 }
 
+/// That the model called `tool`, which it was not offered.
+pub(crate) fn not_offered(tool: &str) -> anyhow::Error {
+    anyhow::anyhow!("the model called {tool}, which is not a tool it was offered")
+}
+
 /// What the model was shown for a call: how many memories the story was
 /// told from, and how many lines of talk it forgot to fit the context
 /// window, if any.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct Shown {
     pub(crate) seen: usize,
     pub(crate) forgot: Option<usize>,
@@ -263,30 +268,24 @@ pub async fn plays(model: &dyn Model, id: &str) -> anyhow::Result<Probed> {
         player::probed(&response)
     })
     .await;
-    let mut failed = answered.err().map(|error| ("as a player", error));
-    if failed.is_none() {
-        failed = async {
-            let response = model.complete(&host::probe_answer(id, tool_choice)).await?;
-            host::answered(&response).map(drop)
-        }
-        .await
-        .err()
-        .map(|error| ("as the host answering a guess", error));
-    }
-    if failed.is_none() {
-        failed = async {
-            let response = model.complete(&host::probe_pick(id, tool_choice)).await?;
-            host::chosen(&response).map(drop)
-        }
-        .await
-        .err()
-        .map(|error| ("as the host picking an object", error));
-    }
+    let asked = async {
+        answered.map_err(|error| ("as a player", error))?;
+        let response = model.complete(&host::probe_answer(id, tool_choice)).await;
+        let answering = "as the host answering a guess";
+        host::answered(&response.map_err(|error| (answering, error))?)
+            .map_err(|error| (answering, error))?;
+        let response = model.complete(&host::probe_pick(id, tool_choice)).await;
+        let picking = "as the host picking an object";
+        host::chosen(&response.map_err(|error| (picking, error))?)
+            .map_err(|error| (picking, error))?;
+        Ok(())
+    };
+    let failed = asked.await.err();
     probed(
         id,
         GAME,
         tool_choice,
-        failed.map(|(what, error)| (what.to_string(), error)),
+        failed.map(|(what, error): (&str, _)| (what.to_string(), error)),
     )
 }
 

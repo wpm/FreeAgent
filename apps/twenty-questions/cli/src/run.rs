@@ -102,9 +102,10 @@ impl Ready {
             temperature: settings.host.temperature,
             prompt: self.prompts.host.clone(),
             asker: self.asker(host),
+            configuration: configuration.clone(),
         };
         let (winner, won) = oneshot::channel();
-        let host = Host::init(brief, configuration.clone(), winner);
+        let host = Host::init(brief, winner);
         let player = |seat: &String| {
             let strategy = &deal[seat];
             let prompt = configuration.prompts[seat].clone();

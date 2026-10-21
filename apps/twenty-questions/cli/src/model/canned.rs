@@ -3,8 +3,7 @@
 //! it does. Nothing but tests uses this module.
 
 pub use free_agent_model::canned::{
-    CANARY, CANARY_VARIABLE, assert_redacted, refusal, refusing, reported, serving, unreachable,
-    wanting_a_key,
+    CANARY, CANARY_VARIABLE, assert_redacted, refusing, unreachable,
 };
 
 use crate::host::{ANSWER_TOOL, CHOOSE, NAMED};

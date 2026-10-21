@@ -84,19 +84,11 @@ pub fn game(
     mut player: impl FnMut(&PlayerId) -> Seated,
     logger: Logger<Entry>,
 ) -> Episode<Actor> {
-    let everyone: Vec<ActorId> = players.iter().cloned().chain([HOST.to_string()]).collect();
-    let others = |me: &str| -> HashSet<ActorId> {
-        everyone
-            .iter()
-            .filter(|actor| *actor != me)
-            .cloned()
-            .collect()
-    };
     let (behavior, think) = host;
     let host = ActorInit {
         behavior,
         think,
-        can_send_to: others(HOST),
+        can_send_to: everyone_but(HOST, players),
         can_shut_down: players.iter().cloned().collect(),
         has_logger: true,
     };
@@ -108,7 +100,7 @@ pub fn game(
             ActorInit {
                 behavior,
                 think,
-                can_send_to: others(id),
+                can_send_to: everyone_but(id, players),
                 can_shut_down: HashSet::new(),
                 has_logger: true,
             },
@@ -406,6 +398,7 @@ pub(crate) mod tests {
             picks: vec![(Some("an animal".to_string()), "Pick an animal.".to_string())],
             temperature: 1.2,
             asker: asking(model),
+            configuration: configuration(),
         }
     }
 
@@ -449,7 +442,7 @@ pub(crate) mod tests {
         mut player: impl FnMut(&[PlayerId], &PlayerId) -> Seated,
     ) -> Played {
         let (winner, won) = oneshot::channel();
-        let host = Host::init(brief(model, &rules), configuration(), winner);
+        let host = Host::init(brief(model, &rules), winner);
         let players = table();
         played(&players, host, won, |seat| player(&players, seat)).await
     }

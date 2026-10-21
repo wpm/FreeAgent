@@ -33,7 +33,8 @@ use crate::game::{Actor, Seated, act, everyone_but, observe};
 use crate::log::{Entry, Side, Victory};
 use crate::message::{HOST, Message, View};
 use crate::model::{
-    ANSWER, Asker, SPEAK, Shown, WAIT, arguments, calls, request, said, speak, text_parameter,
+    ANSWER, Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak,
+    text_parameter,
 };
 use crate::object::says;
 use anyhow::{anyhow, bail};
@@ -171,7 +172,7 @@ fn picking(model_id: &str, tool_choice: ToolChoice, pick: &str, temperature: f64
 pub(crate) fn unstoried(
     model_id: &str,
     prompt: &str,
-    picks: &[String],
+    picks: &[(Option<String>, String)],
     guesses: u64,
     limit: Duration,
 ) -> u64 {
@@ -193,7 +194,7 @@ pub(crate) fn unstoried(
     );
     let pick = picks
         .iter()
-        .map(|pick| free_agent_model::estimated(&picking(model_id, tool_choice, pick, 1.0)))
+        .map(|(_, pick)| free_agent_model::estimated(&picking(model_id, tool_choice, pick, 1.0)))
         .max()
         .unwrap_or_default();
     answer.max(talk).max(pick)
@@ -236,7 +237,7 @@ pub(crate) fn answered(response: &Response) -> anyhow::Result<(String, bool)> {
     match call.name.as_str() {
         ANSWER_TOOL => Ok((said(call)?, false)),
         NAMED => Ok((said(call)?, true)),
-        other => bail!("the model called {other}, which is not a tool it was offered"),
+        other => Err(not_offered(other)),
     }
 }
 
@@ -246,10 +247,7 @@ pub(crate) fn answered(response: &Response) -> anyhow::Result<(String, bool)> {
 pub(crate) fn chosen(response: &Response) -> anyhow::Result<String> {
     let call = calls(response)?[0];
     if call.name != CHOOSE {
-        bail!(
-            "the model called {}, which is not a tool it was offered",
-            call.name
-        );
+        return Err(not_offered(&call.name));
     }
     let Chosen { object } = arguments(call)?;
     match object.replace('_', " ").trim() {
@@ -267,7 +265,7 @@ fn spoken(response: &Response) -> anyhow::Result<Vec<String>> {
         match call.name.as_str() {
             SPEAK => spoken.push(said(call)?),
             WAIT => {}
-            other => bail!("the model called {other}, which is not a tool it was offered"),
+            other => return Err(not_offered(other)),
         }
     }
     Ok(spoken)
@@ -294,6 +292,9 @@ pub struct Brief {
     pub prompt: HostPrompt,
     /// How the host asks its model.
     pub asker: Asker,
+    /// The configuration the game runs under, which the host logs as it
+    /// starts.
+    pub configuration: Configuration,
 }
 
 /// A guess waiting for its answer.
@@ -345,8 +346,6 @@ struct Mind {
     /// Why the episode failed, once it has: the host's clean-up returns
     /// it, which fails the episode.
     failure: Mutex<Option<anyhow::Error>>,
-    /// The configuration, until the host logs it.
-    configuration: Mutex<Option<Configuration>>,
 }
 
 /// The host. Its perceive loop and its think loop are each a `Host` with
@@ -358,14 +357,9 @@ pub struct Host {
 
 impl Host {
     /// Builds the host's two loops once the episode has made their
-    /// contexts: the host `brief` describes, which logs `configuration` as
-    /// the game starts and sends the winning side on `winner` once the game
-    /// is won.
-    pub fn init(
-        brief: Brief,
-        configuration: Configuration,
-        winner: oneshot::Sender<Side>,
-    ) -> Seated {
+    /// contexts: the host `brief` describes, which sends the winning side
+    /// on `winner` once the game is won.
+    pub fn init(brief: Brief, winner: oneshot::Sender<Side>) -> Seated {
         let mind = Arc::new(Mind {
             state: Mutex::new(State {
                 object: brief.object.clone(),
@@ -377,7 +371,6 @@ impl Host {
             waking: AtomicBool::new(false),
             winner: Mutex::new(Some(winner)),
             failure: Mutex::new(None),
-            configuration: Mutex::new(Some(configuration)),
         });
         let shared = Arc::clone(&mind);
         (
@@ -437,8 +430,8 @@ impl Host {
 
     /// Whether the game's time is up.
     fn out_of_time(&self) -> bool {
-        let began = self.mind.state.lock().unwrap().began.is_some();
-        began && self.elapsed() >= self.mind.brief.time_limit
+        let began = self.mind.state.lock().unwrap().began;
+        began.is_some_and(|began| began.elapsed() >= self.mind.brief.time_limit)
     }
 
     /// Tell every player the game has begun, and set the time limit.
@@ -506,8 +499,8 @@ impl Host {
     }
 
     /// Woken, decide: take the wake-up, and pick the object if there is none
-    /// yet, answer the oldest guess waiting if there is one, and otherwise
-    /// talk. Nothing is decided once the game is over, since the host stops
+    /// yet, answer the oldest guess waiting if there is one, each as
+    /// persistently as [`Host::persist`] tries, and otherwise talk. Nothing is decided once the game is over, since the host stops
     /// as it ends the game, and the time limit, which comes before any
     /// wake-up waiting, ends a game whose host is not asking its model.
     async fn decide(&self) -> anyhow::Result<()> {
@@ -517,26 +510,29 @@ impl Host {
             (state.object.clone(), state.waiting.front().cloned())
         };
         match (object, waiting) {
-            (None, _) => self.pick().await,
-            (Some(object), Some(guess)) => self.answer(&object, &guess).await,
+            (None, _) => self.persist(|| self.try_pick()).await,
+            (Some(object), Some(guess)) => self.persist(|| self.try_answer(&object, &guess)).await,
             (Some(object), None) => self.talk(&object).await,
         }
     }
 
-    /// Pick the object, trying up to [`ATTEMPTS`] times, and begin the
-    /// game. After the last failure the episode fails.
-    async fn pick(&self) -> anyhow::Result<()> {
+    /// Make `attempt` up to [`ATTEMPTS`] times, logging each failure, until
+    /// one succeeds. After the last failure the episode fails.
+    async fn persist<F: Future<Output = anyhow::Result<()>>>(
+        &self,
+        attempt: impl Fn() -> F,
+    ) -> anyhow::Result<()> {
         let mut tries = 0;
-        let error = loop {
+        loop {
             tries += 1;
-            match self.try_pick().await {
-                Ok(()) => return Ok(()),
-                Err(error) if tries < ATTEMPTS => self.failed(&error),
-                Err(error) => break error,
+            let Err(error) = attempt().await else {
+                return Ok(());
+            };
+            self.failed(&error);
+            if tries == ATTEMPTS {
+                return self.fail(error);
             }
-        };
-        self.failed(&error);
-        self.fail(error)
+        }
     }
 
     /// Ask the model to pick the object for a category drawn at random,
@@ -565,22 +561,6 @@ impl Host {
         self.begin()
     }
 
-    /// Answer `guess`, about `object`, trying up to [`ATTEMPTS`] times.
-    /// After the last failure the episode fails.
-    async fn answer(&self, object: &str, guess: &Waiting) -> anyhow::Result<()> {
-        let mut tries = 0;
-        let error = loop {
-            tries += 1;
-            match self.try_answer(object, guess).await {
-                Ok(()) => return Ok(()),
-                Err(error) if tries < ATTEMPTS => self.failed(&error),
-                Err(error) => break error,
-            }
-        };
-        self.failed(&error);
-        self.fail(error)
-    }
-
     /// Ask the model to answer `guess`, about `object`, and send the
     /// answer, unless the time ran out while it was asked. The model is
     /// shown the guess alone, with no story: an answer is about the object
@@ -598,10 +578,7 @@ impl Host {
             answering(&guess.from, &guess.text, object),
             answer_tools(),
         );
-        let shown = Shown {
-            seen: 0,
-            forgot: None,
-        };
+        let shown = Shown::default();
         let response = asker.complete(&self.context, &request).await;
         if self.out_of_time() {
             return self.end(Victory::OutOfTime);
@@ -668,19 +645,15 @@ impl Host {
             Err(error) => error,
         };
         self.failed(&error);
-        let stumbles = {
-            let mut state = self.mind.state.lock().unwrap();
-            state.stumbles += 1;
-            state.stumbles
-        };
-        match stumbles < ATTEMPTS {
-            true => self.wake(),
-            false => {
-                self.mind.state.lock().unwrap().stumbles = 0;
-                self.mind.heard.lock().unwrap().clear();
-                Ok(())
-            }
+        let mut state = self.mind.state.lock().unwrap();
+        state.stumbles += 1;
+        if state.stumbles < ATTEMPTS {
+            drop(state);
+            return self.wake();
         }
+        state.stumbles = 0;
+        self.mind.heard.lock().unwrap().clear();
+        Ok(())
     }
 
     /// Ask the model whether to say anything about the speech heard since
@@ -743,10 +716,8 @@ impl Behavior for Host {
             guesses: brief.guesses,
             time_limit: brief.time_limit,
         });
-        if let Some(configuration) = self.mind.configuration.lock().unwrap().take() {
-            self.context
-                .log(Entry::Configuration(Box::new(configuration)));
-        }
+        let configuration = Box::new(brief.configuration.clone());
+        self.context.log(Entry::Configuration(configuration));
         let object = self.mind.state.lock().unwrap().object.clone();
         match object {
             Some(object) => {
@@ -768,32 +739,23 @@ impl Behavior for Host {
         };
         let from = message.sender();
         observe(&self.context, from.clone(), n);
-        let counted = match message {
-            Message::Guess { text, .. } => {
-                let mut state = self.mind.state.lock().unwrap();
-                if state.counted < self.mind.brief.guesses {
-                    state.counted += 1;
-                    let waiting = Waiting {
-                        number: state.counted,
-                        from: from.clone(),
-                        text: text.clone(),
-                    };
-                    state.waiting.push_back(waiting);
-                    true
-                } else {
-                    false
-                }
+        if let Message::Guess { text, .. } = message {
+            let mut state = self.mind.state.lock().unwrap();
+            if state.counted == self.mind.brief.guesses {
+                drop(state);
+                self.context.log(Entry::Uncounted { from, n });
+                return Ok(());
             }
-            Message::Say { text, .. } => {
-                let line = format!("{from}: \"{text}\"");
-                self.mind.heard.lock().unwrap().push((line, ()));
-                true
-            }
-            _ => true,
-        };
-        if !counted {
-            self.context.log(Entry::Uncounted { from, n });
-            return Ok(());
+            state.counted += 1;
+            let waiting = Waiting {
+                number: state.counted,
+                from,
+                text: text.clone(),
+            };
+            state.waiting.push_back(waiting);
+        } else if let Message::Say { text, .. } = message {
+            let line = format!("{from}: \"{text}\"");
+            self.mind.heard.lock().unwrap().push((line, ()));
         }
         match self.mind.state.lock().unwrap().over {
             true => Ok(()),
@@ -1474,7 +1436,7 @@ mod tests {
             20,
             Duration::from_secs(600),
         );
-        let picks = ["Pick something. ".repeat(500)];
+        let picks = [(None, "Pick something. ".repeat(500))];
         let large = unstoried(
             "qwen",
             "You are the host.",

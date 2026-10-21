@@ -409,16 +409,9 @@ impl HostPrompt {
     /// The host's prompt `template`, at a table of `players`, pulling in
     /// `parts`, each by the variable that pulls it in.
     pub fn new(template: &str, players: &[PlayerId], parts: &BTreeMap<String, String>) -> Self {
-        let parts: BTreeMap<String, String> = parts
-            .iter()
-            .map(|(name, text)| (part_variable(name), text.clone()))
-            .collect();
         HostPrompt {
             template: template.to_string(),
-            variables: merge_maps([
-                context! { players => in_prose(players) },
-                Value::from(parts),
-            ]),
+            variables: merge_maps([context! { players => in_prose(players) }, pulled(parts)]),
         }
     }
 
@@ -450,6 +443,15 @@ pub struct Prompts {
     pub(crate) picks: Vec<(Option<String>, String)>,
 }
 
+/// `parts`, each by the variable that pulls it in.
+fn pulled(parts: &BTreeMap<String, String>) -> Value {
+    let parts: BTreeMap<String, String> = parts
+        .iter()
+        .map(|(name, text)| (part_variable(name), text.clone()))
+        .collect();
+    Value::from(parts)
+}
+
 /// `template` rendered with `variables`, any undefined variable an error.
 fn render(template: &str, variables: Value) -> anyhow::Result<String> {
     let mut env = Environment::new();
@@ -465,20 +467,10 @@ impl Settings {
             .map(|name| (name, &self.strategies[name]))
     }
 
-    /// The prompt parts, each by the variable that pulls it in.
-    fn parts(&self) -> Value {
-        let parts: BTreeMap<String, String> = self
-            .prompt_parts
-            .iter()
-            .map(|(name, text)| (part_variable(name), text.clone()))
-            .collect();
-        Value::from(parts)
-    }
-
     /// Render every prompt a game could call for. A template that does not
     /// render is an error naming it, and a player's the seat too.
     pub fn prompts(&self) -> anyhow::Result<Prompts> {
-        let parts = self.parts();
+        let parts = pulled(&self.prompt_parts);
         let mut players = BTreeMap::new();
         for seat in &self.seats {
             let others: Vec<&PlayerId> = self.seats.iter().filter(|other| *other != seat).collect();
@@ -543,8 +535,7 @@ impl Settings {
         let host = (self.host.model.as_deref() == Some(name)).then(|| {
             let object = self.host.object.as_deref().unwrap_or(PLACEHOLDER);
             let prompt = prompts.host.render(object).unwrap_or_default();
-            let picks: Vec<String> = prompts.picks.iter().map(|(_, pick)| pick.clone()).collect();
-            host::unstoried(id, &prompt, &picks, self.guesses, self.time_limit)
+            host::unstoried(id, &prompt, &prompts.picks, self.guesses, self.time_limit)
         });
         players.chain(host).max().unwrap_or_default()
     }
