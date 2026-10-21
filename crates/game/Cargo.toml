@@ -1,0 +1,26 @@
+[package]
+name = "free-agent-game"
+version = "0.0.0"
+edition.workspace = true
+description = "What every Free Agent game shares: seats, strategies, example configurations, its log's redaction and its story's lines"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Shared by the apps, which ship as binaries, never published on its own.
+publish = false
+
+[features]
+# Helpers for an app's tests, which turn it on in their [dev-dependencies].
+test-support = []
+
+[dependencies]
+anyhow.workspace = true
+free-agent.workspace = true
+free-agent-model.workspace = true
+humantime.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+toml.workspace = true

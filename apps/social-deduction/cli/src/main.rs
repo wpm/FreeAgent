@@ -7,18 +7,21 @@
 
 use clap::{Args, Parser};
 use free_agent::{Behavior, Episode, Event, Logger};
+use free_agent_game::examples;
+use free_agent_game::log::{Ended, Secrets};
+use free_agent_game::report::Line;
 use free_agent_model::check::{Mark, checked};
 use free_agent_model::spec::{Environment, required};
 use free_agent_model::{
     Provider, REQUEST_TIMEOUT, ToolChoice, key_variable, known_providers, served,
 };
+use social_deduction::config;
+use social_deduction::examples::EXAMPLES;
 use social_deduction::game::{Entry, Game, Narrate};
 use social_deduction::live::PATIENCE;
-use social_deduction::log::{Ended, Secrets, Writer};
+use social_deduction::log::Writer;
 use social_deduction::model::plays;
-use social_deduction::report::Line;
 use social_deduction::run::{Prepared, Ready};
-use social_deduction::{config, examples};
 use std::fmt::Write as _;
 use std::io::{self, ErrorKind::NotFound, Write};
 use std::num::NonZeroUsize;
@@ -132,13 +135,13 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         CommandLine::Configs { write: None, .. } => {
-            print!("{}", examples::listing());
+            print!("{}", examples::listing(EXAMPLES));
             Ok(())
         }
         CommandLine::Configs {
             write: Some(dir),
             force,
-        } => examples::write(&dir, force),
+        } => examples::write(EXAMPLES, &dir, force),
     }
 }
 

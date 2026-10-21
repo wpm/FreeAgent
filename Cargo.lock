@@ -1442,6 +1442,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "free-agent-game"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "free-agent",
+ "free-agent-model",
+ "humantime",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "toml 1.1.8+spec-1.1.0",
+]
+
+[[package]]
 name = "free-agent-gui-types"
 version = "0.0.0"
 dependencies = [
@@ -4610,6 +4624,7 @@ dependencies = [
  "async-trait",
  "clap",
  "free-agent",
+ "free-agent-game",
  "free-agent-model",
  "humantime",
  "humantime-serde",

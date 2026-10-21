@@ -34,9 +34,11 @@ pub mod random;
 pub mod report;
 
 use crate::game::{Game, Tagged};
-use crate::report::{in_prose, seat_order};
-use crate::seat::{ENVIRONMENT, PlayerId, to_everyone_but, to_the_environment, to_the_players_but};
 use free_agent::{ActorId, ActorInit};
+use free_agent_game::report::{in_prose, seat_order};
+use free_agent_game::seat::{
+    ENVIRONMENT, PlayerId, to_everyone_but, to_the_environment, to_the_players_but,
+};
 use free_agent_model::spec::Probed;
 use free_agent_model::{Model, ToolChoice};
 use rand::seq::IndexedRandom;
@@ -65,7 +67,7 @@ pub type Actor = crate::game::Actor<Werewolf>;
 pub type Seat = crate::game::Seat<Werewolf>;
 
 /// What a seat is dealt: a role, and the strategy its player plays.
-pub type Dealt = crate::seat::Dealt<Role>;
+pub type Dealt = free_agent_game::seat::Dealt<Role>;
 
 impl Game for Werewolf {
     const NAME: &'static str = "Werewolf";
@@ -840,9 +842,9 @@ pub(crate) mod tests {
         announcement, dealt, logged, observed_by, run, sorted, utterance,
     };
     use crate::game::{act, observe};
-    use crate::strategy::{RANDOM, Random, Strategy};
     use async_trait::async_trait;
     use free_agent::{Behavior, Builder, Context, Think, ThinkBuilder};
+    use free_agent_game::strategy::{RANDOM, Random, Strategy};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 

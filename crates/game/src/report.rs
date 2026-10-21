@@ -53,7 +53,7 @@ impl fmt::Display for Line {
 }
 
 /// A line compares with the words the console prints for it.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl PartialEq<&str> for Line {
     fn eq(&self, other: &&str) -> bool {
         self.to_string().as_str() == *other
@@ -61,7 +61,7 @@ impl PartialEq<&str> for Line {
 }
 
 /// A line compares with the words the console prints for it.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl PartialEq<String> for Line {
     fn eq(&self, other: &String) -> bool {
         self == &other.as_str()
@@ -70,13 +70,13 @@ impl PartialEq<String> for Line {
 
 /// `elapsed` to the nearest whole second, as `humantime` writes it: `40s`,
 /// `1m 5s`.
-pub(crate) fn whole_seconds(elapsed: Duration) -> String {
+pub fn whole_seconds(elapsed: Duration) -> String {
     let seconds = elapsed.as_secs_f64().round() as u64;
     format_duration(Duration::from_secs(seconds)).to_string()
 }
 
 /// `players` in seat order.
-pub(crate) fn in_order<'a>(players: impl IntoIterator<Item = &'a PlayerId>) -> Vec<&'a PlayerId> {
+pub fn in_order<'a>(players: impl IntoIterator<Item = &'a PlayerId>) -> Vec<&'a PlayerId> {
     let mut players: Vec<&PlayerId> = players.into_iter().collect();
     players.sort_by_cached_key(|player| PlayerName::from(player.as_str()));
     players
@@ -91,16 +91,16 @@ pub fn seat_order(a: &PlayerId, b: &PlayerId) -> Ordering {
 /// A player as an account names it: `player (role)` when the role is
 /// known, the name alone when it is not.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Seat<'a, R> {
+pub struct Seat<'a, R> {
     /// The player.
-    pub(crate) player: &'a PlayerId,
+    pub player: &'a PlayerId,
     /// Its role, when the account knows it.
-    pub(crate) role: Option<R>,
+    pub role: Option<R>,
 }
 
 impl<'a, R: Copy> Seat<'a, R> {
     /// `player` as an account knowing `roles` names it.
-    pub(crate) fn named(player: &'a PlayerId, roles: &HashMap<PlayerId, R>) -> Self {
+    pub fn named(player: &'a PlayerId, roles: &HashMap<PlayerId, R>) -> Self {
         Seat {
             player,
             role: roles.get(player).copied(),
@@ -118,7 +118,7 @@ impl<R: fmt::Display> fmt::Display for Seat<'_, R> {
 }
 
 /// `named` as a list in prose: "a", "a and b", "a, b and c".
-pub(crate) fn in_prose(named: impl IntoIterator<Item = impl fmt::Display>) -> String {
+pub fn in_prose(named: impl IntoIterator<Item = impl fmt::Display>) -> String {
     let named: Vec<String> = named.into_iter().map(|name| name.to_string()).collect();
     match named.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
@@ -129,7 +129,7 @@ pub(crate) fn in_prose(named: impl IntoIterator<Item = impl fmt::Display>) -> St
 /// What a game's configuration tells of `models`, the models in play: each
 /// one's context window and where it came from, and, for a model that does
 /// not accept a required tool call, that its players are asked to call one.
-pub(crate) fn configured(models: &Models) -> Vec<Line> {
+pub fn configured(models: &Models) -> Vec<Line> {
     let mut lines = Vec::new();
     for (name, model) in models {
         lines.push(Line::Told(context_window(name, model.context_window)));
@@ -156,7 +156,7 @@ fn context_window(name: &str, ContextWindow { tokens, source }: ContextWindow) -
 
 /// Whether a later phase than the one numbered `seq` is among those
 /// `announced`, by number: a message for that phase comes late.
-pub(crate) fn late<V>(announced: &BTreeMap<u64, V>, seq: u64) -> bool {
+pub fn late<V>(announced: &BTreeMap<u64, V>, seq: u64) -> bool {
     announced.range(seq + 1..).next().is_some()
 }
 
@@ -168,7 +168,7 @@ pub const FORGOTTEN: &str = "You don't remember what was said before this.";
 /// the lines that are `talk`, were left out to fit. Talk is left out oldest
 /// first until the rest fits or none is left, and [`FORGOTTEN`] stands in
 /// place of the last line left out, counted with the rest.
-pub(crate) fn told_within<L>(
+pub fn told_within<L>(
     account: &[(String, L)],
     talk: impl Fn(&L) -> bool,
     budget: u64,
@@ -204,11 +204,47 @@ pub(crate) fn told_within<L>(
     (lines, forgot)
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
+/// What a test of a game's story is told with.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing {
+    use free_agent_model::ToolChoice;
     use free_agent_model::estimate;
-    use free_agent_model::spec::ModelInPlay;
+    use free_agent_model::spec::{ModelInPlay, Models};
+    use free_agent_model::window::{ContextWindow, Source};
+    use std::time::Duration;
+
+    /// The models `models`, each in play under its tool choice within the
+    /// default context window.
+    pub fn in_play(models: &[(&str, ToolChoice)]) -> Models {
+        models
+            .iter()
+            .map(|(name, tool_choice)| {
+                let model = ModelInPlay {
+                    base_url: "http://localhost:1234/v1".to_string(),
+                    id: format!("{name}-7b-instruct"),
+                    request_timeout: Duration::from_secs(10),
+                    api_key_env: None,
+                    tool_choice: *tool_choice,
+                    context_window: ContextWindow {
+                        tokens: 4096,
+                        source: Source::Default,
+                    },
+                };
+                (name.to_string(), model)
+            })
+            .collect()
+    }
+
+    /// The tokens `lines` take, joined by newlines, by estimate.
+    pub fn estimated(lines: &[&str]) -> u64 {
+        estimate(&lines.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::{estimated, in_play};
+    use super::*;
 
     #[test]
     fn a_line_displays_as_the_console_prints_it() {
@@ -228,6 +264,8 @@ pub(crate) mod tests {
             "ann (seer) says, \"Hello.\""
         );
         assert_eq!(shown(Line::Blank), "");
+        // A line compares with those words.
+        assert_eq!(Line::Told("bob dies.".to_string()), "bob dies.".to_string());
     }
 
     #[test]
@@ -237,6 +275,9 @@ pub(crate) mod tests {
             in_order(&players),
             ["ann", "Player 1", "Player 2", "Player 10"]
         );
+        let mut sorted = players.to_vec();
+        sorted.sort_by(seat_order);
+        assert_eq!(sorted, ["ann", "Player 1", "Player 2", "Player 10"]);
     }
 
     #[test]
@@ -261,28 +302,6 @@ pub(crate) mod tests {
         assert_eq!(listed(&["a", "b"]), "a and b");
         assert_eq!(listed(&["a", "b", "c"]), "a, b and c");
         assert_eq!(listed(&["a", "b", "c", "d"]), "a, b, c and d");
-    }
-
-    /// The models `models`, each in play under its tool choice within the
-    /// default context window.
-    pub(crate) fn in_play(models: &[(&str, ToolChoice)]) -> Models {
-        models
-            .iter()
-            .map(|(name, tool_choice)| {
-                let model = ModelInPlay {
-                    base_url: "http://localhost:1234/v1".to_string(),
-                    id: format!("{name}-7b-instruct"),
-                    request_timeout: Duration::from_secs(10),
-                    api_key_env: None,
-                    tool_choice: *tool_choice,
-                    context_window: ContextWindow {
-                        tokens: 4096,
-                        source: Source::Default,
-                    },
-                };
-                (name.to_string(), model)
-            })
-            .collect()
     }
 
     #[test]
@@ -348,11 +367,6 @@ pub(crate) mod tests {
     /// The lines of `account`, as a story within a budget gives them.
     fn lines(account: &[(String, bool)]) -> Vec<&str> {
         account.iter().map(|(line, _)| line.as_str()).collect()
-    }
-
-    /// The tokens `lines` take, joined by newlines, by estimate.
-    pub(crate) fn estimated(lines: &[&str]) -> u64 {
-        estimate(&lines.join("\n"))
     }
 
     /// `account` told within `budget`, its lines of talk marked as such.

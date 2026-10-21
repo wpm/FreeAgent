@@ -16,13 +16,14 @@
 //! naming the message by its sender and number.
 
 use crate::config::{Configuration, Name};
-use crate::log::{Ended, Header};
+use crate::log::Header;
 use crate::prompted::{self, Account};
 use crate::random;
-use crate::report::Line;
-use crate::seat::{Dealt, ENVIRONMENT, PlayerId, to_everyone_but, to_the_environment};
 use async_trait::async_trait;
 use free_agent::{ActorId, ActorInit, Behavior, Context, Episode, Logger};
+use free_agent_game::log::Ended;
+use free_agent_game::report::Line;
+use free_agent_game::seat::{Dealt, ENVIRONMENT, PlayerId, to_everyone_but, to_the_environment};
 use free_agent_model::spec::Probed;
 use free_agent_model::{Model, ToolChoice};
 use serde::de::DeserializeOwned;
@@ -468,7 +469,7 @@ impl<G: Game> Entry<G> {
 
 /// How a seat of game `G` is built: its player's behavior, and its think
 /// loop if it has one.
-pub type Seat<G> = crate::seat::Seat<Actor<G>>;
+pub type Seat<G> = free_agent_game::seat::Seat<Actor<G>>;
 
 /// An episode of a game of `deal` under `rules`: the environment, which
 /// may reach and stop every player, logs `configuration` right after the
@@ -610,8 +611,8 @@ pub fn observe<G: Game>(context: &Context<Message<G>, Entry<G>>, from: ActorId, 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::strategy::RANDOM;
     use free_agent::Event;
+    use free_agent_game::strategy::RANDOM;
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
     use tokio::time::Instant;
 

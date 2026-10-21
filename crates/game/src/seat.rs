@@ -40,13 +40,6 @@ pub struct PlayerName {
     name: String,
 }
 
-impl PlayerName {
-    /// The name Free Agent gives the seat numbered `number`: `Player 5`.
-    pub fn seat(number: usize) -> Self {
-        Self::from(format!("Player {number}").as_str())
-    }
-}
-
 impl From<&str> for PlayerName {
     /// `name` read as its word and the number it ends in, so that
     /// `Player 10` is the word `Player` and the number 10, and `ann` the
@@ -68,10 +61,16 @@ impl fmt::Display for PlayerName {
     }
 }
 
-/// The seats of a table of `players`, named `Player 1` onward. The names
-/// say nothing about the roles, since every player sees every name.
-pub fn seats(players: usize) -> impl Iterator<Item = PlayerId> {
-    (1..=players).map(|seat| PlayerName::seat(seat).to_string())
+/// The seats of a table of `players`, numbered from 1, each named as
+/// `named` names its number. The names say nothing about the roles, since
+/// every player sees every name.
+pub fn seats(players: usize, named: impl Fn(usize) -> PlayerId) -> impl Iterator<Item = PlayerId> {
+    (1..=players).map(named)
+}
+
+/// The seat numbered `number` named by its number: `Player 5`.
+pub fn numbered(number: usize) -> PlayerId {
+    format!("Player {number}")
 }
 
 /// The environment's name in the episode.
@@ -108,8 +107,8 @@ pub fn to_everyone_but<'a>(
 }
 
 /// The player named `name`, as a test names it.
-#[cfg(test)]
-pub(crate) fn id(name: &str) -> PlayerId {
+#[cfg(any(test, feature = "test-support"))]
+pub fn id(name: &str) -> PlayerId {
     name.to_string()
 }
 
@@ -118,25 +117,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_seat_is_named_player_a_space_and_its_number() {
-        assert_eq!(PlayerName::seat(5).to_string(), "Player 5");
-        assert_eq!(PlayerName::seat(10).to_string(), "Player 10");
+    fn a_seat_named_by_its_number_is_player_a_space_and_the_number() {
+        assert_eq!(numbered(5), "Player 5");
+        assert_eq!(numbered(10), "Player 10");
     }
 
     #[test]
     fn a_name_reads_as_its_word_and_the_number_it_ends_in() {
-        assert_eq!(PlayerName::from("Player 10"), PlayerName::seat(10));
+        let player_10 = PlayerName::from("Player 10");
+        assert_eq!(
+            (player_10.folded.as_str(), player_10.number),
+            ("player", Some(10))
+        );
         assert_eq!(PlayerName::from("ann").to_string(), "ann");
         // Names the word and number leave tied order as written.
         assert!(PlayerName::from("Player 2") < PlayerName::from("Player2"));
     }
 
     #[test]
-    fn a_table_is_seated_from_player_1() {
+    fn a_table_is_seated_from_seat_1_as_the_game_names_its_seats() {
         assert_eq!(
-            seats(3).collect::<Vec<_>>(),
+            seats(3, numbered).collect::<Vec<_>>(),
             ["Player 1", "Player 2", "Player 3"]
         );
+        let cast = |number: usize| ["Alice", "Bob"][number - 1].to_string();
+        assert_eq!(seats(2, cast).collect::<Vec<_>>(), ["Alice", "Bob"]);
     }
 
     #[test]
@@ -153,7 +158,7 @@ mod tests {
 
     #[test]
     fn everyone_but_me_is_the_environment_and_the_other_players() {
-        let players = ["ann".to_string(), "bob".to_string(), "cat".to_string()];
+        let players = [id("ann"), id("bob"), id("cat")];
         assert_eq!(
             to_everyone_but(&"bob".to_string(), &players),
             HashSet::from([

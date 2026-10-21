@@ -7,10 +7,10 @@ use super::{
     sabotages_needed, team_size,
 };
 use crate::game::Tagged;
-use crate::report::in_order;
-use crate::seat::PlayerId;
 use crate::stage::{self, millis, millis_of, set};
 use free_agent::Event;
+use free_agent_game::report::in_order;
+use free_agent_game::seat::PlayerId;
 use social_deduction_gui_types as cue;
 use social_deduction_gui_types::{AvalonPanel, AvalonSeat, Millis, Panel, ProposalRow, QuestToken};
 use std::collections::HashMap;
@@ -265,9 +265,9 @@ mod tests {
     use super::*;
     use crate::avalon::Tally;
     use crate::avalon::tests::{announcement, dealt, five, logged, logged_at, quick, seated};
-    use crate::seat::{ENVIRONMENT, id, to_the_environment};
     use crate::stage::Board as _;
-    use crate::strategy::RANDOM;
+    use free_agent_game::seat::{ENVIRONMENT, id, to_the_environment};
+    use free_agent_game::strategy::RANDOM;
     use std::collections::HashSet;
 
     /// The default table's names, in seat order.

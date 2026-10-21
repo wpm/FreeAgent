@@ -10,12 +10,13 @@
 use crate::avalon::{self, Avalon};
 use crate::config::Name;
 use crate::game::{Entry, Game, Narrate};
-use crate::log::{Ended, Header};
-use crate::report::{Line, in_order};
-use crate::seat::PlayerId;
+use crate::log::Header;
 use crate::werewolf::{self, Werewolf};
 use anyhow::Context;
 use free_agent::Event;
+use free_agent_game::log::Ended;
+use free_agent_game::report::{Line, in_order};
+use free_agent_game::seat::PlayerId;
 use serde::de::IgnoredAny;
 use social_deduction_gui_types::{Beat, Cue, GameName, Millis, Outcome, Panel, Role, Seat, Side};
 pub use social_deduction_gui_types::{Opened, Recording, Recordings};
@@ -438,8 +439,9 @@ mod tests {
     use super::*;
     use crate::game::Message;
     use crate::game::tests::{Fixture, drained, episode, logged, seated};
-    use crate::log::{Secrets, Writer};
-    use crate::strategy::RANDOM;
+    use crate::log::Writer;
+    use free_agent_game::log::Secrets;
+    use free_agent_game::strategy::RANDOM;
     use social_deduction_gui_types::{AvalonPanel, WerewolfPanel};
 
     /// The log of a game of `roles` under `rules`, every player random.

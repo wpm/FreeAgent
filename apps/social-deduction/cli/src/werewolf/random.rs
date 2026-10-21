@@ -17,7 +17,6 @@ mod tests {
     use crate::game::Game;
     use crate::game::Narrate;
     use crate::game::game;
-    use crate::strategy::RANDOM;
     use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{
         Script, announced_to, at_once, between_the_deal_and_the_end, closed_before_it_ended,
@@ -30,6 +29,7 @@ mod tests {
         View, candidates, to_everyone_but, to_the_environment,
     };
     use free_agent::ActorId;
+    use free_agent_game::strategy::RANDOM;
     use std::collections::{HashMap, HashSet};
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
