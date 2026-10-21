@@ -31,10 +31,10 @@ pub mod random;
 pub mod report;
 
 use crate::game::{Game, Tagged};
-use crate::report::in_order;
-use crate::seat::{PlayerId, to_the_environment, to_the_players_but};
 use anyhow::ensure;
 use free_agent::{ActorId, ActorInit};
+use free_agent_game::report::in_order;
+use free_agent_game::seat::{PlayerId, to_the_environment, to_the_players_but};
 use free_agent_model::spec::Probed;
 use free_agent_model::{Model, ToolChoice};
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,7 @@ pub type Actor = crate::game::Actor<Avalon>;
 pub type Seat = crate::game::Seat<Avalon>;
 
 /// What a seat is dealt: a role, and the strategy its player plays.
-pub type Dealt = crate::seat::Dealt<Role>;
+pub type Dealt = free_agent_game::seat::Dealt<Role>;
 
 impl Game for Avalon {
     const NAME: &'static str = "Avalon";
@@ -1102,11 +1102,11 @@ pub(crate) mod tests {
         announcement, dealt, logged, logged_at, observed_by, run, seated, sorted, utterance,
     };
     use crate::game::{act, observe};
-    use crate::seat::{ENVIRONMENT, id};
-    use crate::strategy::{RANDOM, Random, Strategy};
     use async_trait::async_trait;
     use config::Configuration;
     use free_agent::{Behavior, Builder, Context};
+    use free_agent_game::seat::{ENVIRONMENT, id};
+    use free_agent_game::strategy::{RANDOM, Random, Strategy};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 

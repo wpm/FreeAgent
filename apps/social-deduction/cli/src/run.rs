@@ -9,10 +9,10 @@
 use crate::avalon::Avalon;
 use crate::config::{self, Configuration, Name, Settings, Settled, SystemPrompt};
 use crate::game::{self, Actor, Entry, Game};
-use crate::log::Secrets;
-use crate::seat::{Dealt, PlayerId};
 use crate::werewolf::Werewolf;
 use free_agent::{Episode, Logger};
+use free_agent_game::log::Secrets;
+use free_agent_game::seat::{Dealt, PlayerId};
 use free_agent_model::spec::{Handles, Keys, Models};
 use secrecy::SecretString;
 use std::collections::HashMap;
@@ -148,12 +148,13 @@ impl Keys for Loading<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::log::{Ended, Writer};
+    use crate::log::Writer;
     use crate::model::canned::{
         CANARY, CANARY_VARIABLE, assert_redacted, leaking, leaking_werewolf, playing,
     };
     use crate::{avalon, werewolf};
     use free_agent::Event;
+    use free_agent_game::log::Ended;
     use free_agent_model::secret::Keychain;
     use free_agent_model::secret::testing::Fake;
     use free_agent_model::spec::Environment;

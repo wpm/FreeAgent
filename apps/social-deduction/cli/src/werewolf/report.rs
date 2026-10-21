@@ -15,11 +15,11 @@ use super::{
 };
 use crate::game::Narrate;
 use crate::prompted::Account;
-use crate::report::{
+use free_agent::{ActorId, Event};
+use free_agent_game::report::{
     Line, Seat, configured, in_order, in_prose, late, seat_order, told_within, whole_seconds,
 };
-use crate::seat::{ENVIRONMENT, PlayerId};
-use free_agent::{ActorId, Event};
+use free_agent_game::seat::{ENVIRONMENT, PlayerId};
 use humantime::format_duration;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -824,20 +824,20 @@ pub(crate) fn won(winner: Team, days: u8) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::report::FORGOTTEN;
-    use crate::report::tests::estimated;
-    use crate::report::tests::in_play;
-    use crate::seat::id;
+    use free_agent_game::report::FORGOTTEN;
+    use free_agent_game::report::testing::estimated;
+    use free_agent_game::report::testing::in_play;
+    use free_agent_game::seat::id;
     use free_agent_model::ToolChoice;
 
     use crate::prompted::tests::received;
-    use crate::seat::to_the_environment;
-    use crate::strategy::{RANDOM, Random, Strategy};
     use crate::werewolf::config::Configuration;
     use crate::werewolf::tests::{
         announcement, closed, closing, logged, retraction, selection, tentative, utterance,
     };
     use crate::werewolf::{Dealt, Rules};
+    use free_agent_game::seat::to_the_environment;
+    use free_agent_game::strategy::{RANDOM, Random, Strategy};
     use std::collections::BTreeMap;
     use std::time::{Duration, UNIX_EPOCH};
 

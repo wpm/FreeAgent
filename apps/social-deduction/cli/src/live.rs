@@ -7,11 +7,12 @@
 
 use crate::config::Name;
 use crate::game::{Actor, Entry};
-use crate::log::{Ended, Secrets, Writer};
+use crate::log::Writer;
 use crate::run::{Prepared, Ready};
 use crate::stage::{Stage, Staged, millis};
 use anyhow::anyhow;
 use free_agent::{Event, Stopper};
+use free_agent_game::log::{Ended, Secrets};
 use social_deduction_gui_types::{Beat, Cue};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};

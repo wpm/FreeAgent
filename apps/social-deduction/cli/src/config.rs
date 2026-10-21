@@ -18,11 +18,12 @@
 
 use crate::avalon::{self, Avalon};
 use crate::game::{self, Game};
-use crate::seat::{Dealt, PlayerId, seats};
-use crate::strategy::{RANDOM, Random, RoleConfig, Strategy};
 use crate::werewolf::{self, Werewolf};
 use crate::{prompted, random};
 use anyhow::{Context as _, anyhow, bail};
+use free_agent_game::config::Program;
+use free_agent_game::seat::{Dealt, PlayerId, numbered, seats};
+use free_agent_game::strategy::{RANDOM, Random, RoleConfig, Strategy};
 use free_agent_model::spec::{self, Handles, Keys, Models, Probed, Spec};
 use free_agent_model::window::{self, ContextWindow};
 use free_agent_model::{Model, Provider, ToolChoice};
@@ -87,40 +88,16 @@ impl fmt::Display for Name {
     }
 }
 
-/// The newest configuration format, which every configuration file the
-/// project writes is written in.
-pub const CONFIG_FORMAT: u32 = 1;
+/// Social Deduction, as a configuration file's format check names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SocialDeduction;
 
-/// A configuration file's `format` key: the format it is written in. A
-/// file without one is format 1. A format newer than [`CONFIG_FORMAT`]
-/// is refused as it is read, so that `toml` places the error at the key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct Format(u32);
-
-impl Format {
-    /// [`CONFIG_FORMAT`], the format the project writes.
-    pub const NEWEST: Format = Format(CONFIG_FORMAT);
+impl Program for SocialDeduction {
+    const NAME: &'static str = "social-deduction";
 }
 
-impl Default for Format {
-    fn default() -> Self {
-        Format(1)
-    }
-}
-
-impl<'de> Deserialize<'de> for Format {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::Error as _;
-        match u32::deserialize(deserializer)? {
-            0 => Err(D::Error::custom("configuration formats begin at 1")),
-            format if format > CONFIG_FORMAT => Err(D::Error::custom(format!(
-                "This file is configuration format {format}. \
-                 This version of social-deduction reads formats up to {CONFIG_FORMAT}."
-            ))),
-            format => Ok(Format(format)),
-        }
-    }
-}
+/// A configuration file's `format` key, as `social-deduction` reads it.
+pub type Format = free_agent_game::config::Format<SocialDeduction>;
 
 /// The keys [`load`] reads first, every other key ignored.
 #[derive(Deserialize)]
@@ -400,7 +377,10 @@ impl<R: Copy + Ord + Hash + fmt::Display> Lineup<R> {
     /// The seats at the table, `Player 1` onward, one for each seat
     /// allotted.
     pub fn seats(&self) -> impl Iterator<Item = PlayerId> + use<R> {
-        seats(self.allotments.values().flat_map(BTreeMap::values).sum())
+        seats(
+            self.allotments.values().flat_map(BTreeMap::values).sum(),
+            numbered,
+        )
     }
 
     /// How many seats of each role there are.
@@ -723,6 +703,7 @@ pub fn players<G: game::Game>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use free_agent_game::config::CONFIG_FORMAT;
     use serde_json::json;
     use std::collections::HashSet;
     use std::path::PathBuf;

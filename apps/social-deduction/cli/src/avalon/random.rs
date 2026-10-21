@@ -4,7 +4,7 @@
 //! speaks. Its choice goes to the environment alone.
 
 use super::{Avalon, Ballot, Choice, Deed, Phase, PlayerId, Team, View, candidates};
-use crate::report::seat_order;
+use free_agent_game::report::seat_order;
 use rand::seq::IndexedRandom;
 
 /// A player who chooses at random.
@@ -58,10 +58,10 @@ mod tests {
     };
     use crate::game::Narrate;
     use crate::game::game;
-    use crate::seat::id;
-    use crate::seat::{ENVIRONMENT, to_the_environment};
-    use crate::strategy::{RANDOM, RoleConfig};
     use free_agent::ActorId;
+    use free_agent_game::seat::id;
+    use free_agent_game::seat::{ENVIRONMENT, to_the_environment};
+    use free_agent_game::strategy::{RANDOM, RoleConfig};
     use free_agent_model::spec::Models;
     use std::collections::{HashMap, HashSet};
     use std::num::NonZero;

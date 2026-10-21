@@ -3,19 +3,20 @@
 //! them to standard error as JSON lines.
 
 use free_agent::Event;
+use free_agent_game::log::without_credentials;
+use free_agent_game::seat::PlayerId;
 use free_agent_model::ToolChoice;
 use free_agent_model::window::{ContextWindow, Source};
 use serde_json::Value;
 use social_deduction::avalon::{self, Avalon};
 use social_deduction::config::Configuration;
 use social_deduction::game::{self, Game};
-use social_deduction::log::{Header, without_credentials};
+use social_deduction::log::Header;
 use social_deduction::model::canned::{
     CANARY, CANARY_VARIABLE, assert_redacted, day_refusal, leaking, playing, playing_only,
     playing_within, recording, refusal, refusing, refusing_days, refusing_offers_of,
     refusing_required, reported, retracting, serving, unreachable, wanting_a_key,
 };
-use social_deduction::seat::PlayerId;
 use social_deduction::werewolf::{Ending, Entry, Limits, Message, Move, Outcome, Role, Werewolf};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
