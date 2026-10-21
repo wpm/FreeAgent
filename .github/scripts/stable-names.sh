@@ -15,10 +15,7 @@
 #   .rpm          social-deduction-x86_64.rpm, social-deduction-aarch64.rpm
 #
 # A Linux package's architecture comes from the end of tauri-action's
-# name for it, and its stable name spells it as its format does. The
-# x86_64 packages are also copied under the names they had before arm64
-# (Social-Deduction.AppImage, social-deduction.deb, social-deduction.rpm)
-# for one release, so that links to those keep working.
+# name for it, and its stable name spells it as its format does.
 #
 # Everything else, the .app bundle and the updater archives among them,
 # is left out. Prints each copy, and fails when no path is an installer
@@ -28,12 +25,12 @@ set -euo pipefail
 out=${1:?usage: stable-names.sh <directory> < artifact-paths.json}
 mkdir -p "$out"
 
-# A Linux package's architecture, x86_64 or aarch64, from the end of its
-# name, which tauri-action spells amd64 or arm64 in some formats.
-arch() { # <path>
+# A Linux package's architecture, read from the end of its name, which
+# tauri-action spells amd64 or arm64 in some formats, and written as given.
+arch() { # <path> <x86_64 spelling> <aarch64 spelling>
   case ${1%.*} in
-    *[_.]amd64 | *[_.]x86_64) echo x86_64 ;;
-    *[_.]arm64 | *[_.]aarch64) echo aarch64 ;;
+    *[_.]amd64 | *[_.]x86_64) echo "$2" ;;
+    *[_.]arm64 | *[_.]aarch64) echo "$3" ;;
     *) echo "no stable name for the architecture of $1" >&2; return 1 ;;
   esac
 }
@@ -42,26 +39,19 @@ copied=0
 while IFS= read -r path; do
   # jq on Windows ends its lines with a carriage return.
   path=${path%$'\r'}
-  a=
   case $path in
     *.dmg) name=Social-Deduction.dmg ;;
     *-setup.exe) name=Social-Deduction-setup.exe ;;
     *.msi) name=Social-Deduction.msi ;;
-    *.AppImage) a=$(arch "$path"); name=Social-Deduction-$a.AppImage ;;
-    *.deb)
-      a=$(arch "$path")
-      case $a in x86_64) name=social-deduction-amd64.deb ;; aarch64) name=social-deduction-arm64.deb ;; esac ;;
-    *.rpm) a=$(arch "$path"); name=social-deduction-$a.rpm ;;
+    *.AppImage) name=Social-Deduction-$(arch "$path" x86_64 aarch64).AppImage ;;
+    *.deb) name=social-deduction-$(arch "$path" amd64 arm64).deb ;;
+    *.rpm) name=social-deduction-$(arch "$path" x86_64 aarch64).rpm ;;
     *) continue ;;
   esac
-  # The x86_64 name without its architecture is the one before arm64.
-  if [ "$a" = x86_64 ]; then old=${name/-amd64/}; old=${old/-x86_64/}; else old=; fi
   # Windows runners hand over Windows paths, which Git Bash wants as Unix ones.
   if command -v cygpath > /dev/null; then path=$(cygpath -u "$path"); fi
-  for copy in "$name" ${old:+"$old"}; do
-    cp "$path" "$out/$copy"
-    echo "$path -> $out/$copy"
-  done
+  cp "$path" "$out/$name"
+  echo "$path -> $out/$name"
   copied=$((copied + 1))
 done < <(jq -r '.[]')
 
