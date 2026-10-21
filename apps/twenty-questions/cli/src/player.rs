@@ -432,9 +432,10 @@ impl Player {
     /// `began`, and carry out what it answers: each message in order, to
     /// everyone else, and then a reminder if it asked to wait. A guess put
     /// before the model was asked, whatever its case, or twice in the
-    /// answer, fails the answer, which is carried out not at all. While
-    /// the model was asked, the same guess may have been put, and then it is
-    /// not put again, or another, and then it is said as a proposal instead.
+    /// answer, fails the answer, which is carried out not at all. A guess
+    /// the player may no longer make by the time it is sent, since another
+    /// came in while the model was asked, is not put: one guess waits at a
+    /// time.
     async fn play(&self, view: &View, began: Instant) -> anyhow::Result<()> {
         let guesses = self.mind.guesses(view.guesses);
         let may_guess = guesses.may_guess();
@@ -460,15 +461,11 @@ impl Player {
         let me = &self.context.id;
         let to = everyone_but(me, &view.players);
         for sending in sends {
-            let sending = match sending {
-                Sending::Guess(question) if self.mind.questions().contains(&folded(&question)) => {
-                    continue;
-                }
-                Sending::Guess(question) if !self.mind.guesses(view.guesses).may_guess() => {
-                    Sending::Say(format!("I'd guess next: \"{question}\""))
-                }
-                sending => sending,
-            };
+            if let Sending::Guess(_) = sending
+                && !self.mind.guesses(view.guesses).may_guess()
+            {
+                continue;
+            }
             let message = sending.message(me, self.mind.number());
             self.remember(Memory::Acted {
                 message: message.clone(),
@@ -688,15 +685,9 @@ mod tests {
         )
     }
 
-    /// A host model answering as the canned host does, taking `delay` to
-    /// answer a guess and none to pick or wait.
+    /// A host model answering as the canned host does, taking `delay`.
     fn host_model(delay: u64) -> Arc<FakeModel> {
-        Arc::new(FakeModel::answering(canned).taking_by(move |request| {
-            match request.tools.iter().any(|tool| tool.name == "named") {
-                true => Duration::from_secs(delay),
-                false => Duration::ZERO,
-            }
-        }))
+        Arc::new(FakeModel::answering(canned).taking(Duration::from_secs(delay)))
     }
 
     /// Play a game under `rules` whose host asks `host`, Alice asking
@@ -830,34 +821,28 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_guess_made_while_another_came_in_is_said_as_a_proposal_unless_it_was_the_same() {
-        for (question, said) in [
-            ("Is it big?", Some("I'd guess next: \"Is it big?\"")),
-            ("is it ALIVE?", None),
-        ] {
-            let model = player_model(
-                move |_, offered| match offered.iter().any(|tool| tool == GUESS) {
-                    true => vec![guessing(question)],
-                    false => vec![waiting(60)],
-                },
-                Duration::from_secs(10),
-            );
-            let script = [
-                (1, Line::Say("Let's ask.")),
-                (15, Line::Guess("Is it alive?")),
-            ];
-            let played = with_alice(&host_model(20), &model, a_minute(), &script).await;
-            let expected: Vec<Message> = said
-                .into_iter()
-                .map(|text| Message::Say {
-                    from: "Alice".to_string(),
-                    n: 1,
-                    text: text.to_string(),
-                })
-                .collect();
-            assert_eq!(played.sent_by("Alice"), expected.iter().collect::<Vec<_>>());
-            assert!(played.failures("Alice").is_empty());
-        }
+    async fn a_guess_made_while_another_came_in_is_not_put() {
+        let model = player_model(
+            |_, offered| match offered.iter().any(|tool| tool == GUESS) {
+                true => vec![speaking("Agreed."), guessing("Is it big?")],
+                false => vec![waiting(60)],
+            },
+            Duration::from_secs(10),
+        );
+        let script = [
+            (1, Line::Say("Let's ask.")),
+            (15, Line::Guess("Is it alive?")),
+        ];
+        let played = with_alice(&host_model(20), &model, a_minute(), &script).await;
+        assert_eq!(
+            played.sent_by("Alice"),
+            [&Message::Say {
+                from: "Alice".to_string(),
+                n: 1,
+                text: "Agreed.".to_string(),
+            }]
+        );
+        assert!(played.failures("Alice").is_empty());
     }
 
     #[tokio::test(start_paused = true)]

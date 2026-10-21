@@ -116,6 +116,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_canned_host_waits_when_asked_to_talk() {
+        let request = json!({
+            "tools": [{"function": {"name": "speak"}}, {"function": {"name": "wait", "parameters": {}}}],
+            "messages": [],
+        });
+        assert_eq!(
+            canned_calls(&request).unwrap(),
+            [("wait".to_string(), json!({}))]
+        );
+    }
+
+    #[test]
     fn the_canned_player_has_no_answer_to_a_request_offering_none_of_its_tools() {
         let error = canned_calls(&json!({"tools": [], "messages": []})).unwrap_err();
         assert_eq!(

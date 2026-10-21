@@ -36,7 +36,7 @@ use crate::model::{
     ANSWER, Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak,
     text_parameter,
 };
-use crate::object::says;
+use crate::object::{gives_away, says};
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use free_agent::{Behavior, Context, Think};
@@ -120,18 +120,35 @@ fn talk_tools() -> Vec<Tool> {
 /// What opens the speech the host is told, when no guess waits.
 const HEARD: &str = "Since you last spoke or waited, the players said:";
 
+/// How long the players may go without a guess before the host may urge
+/// them to put one.
+pub const NUDGE: Duration = Duration::from_secs(120);
+
 /// What the host is asked when no guess waits, after the speech it heard:
 /// how many of the `guesses` the players have `used`, how much time is
-/// left, and that only guesses are answered.
-fn talking(used: u64, guesses: u64, time_left: Duration) -> String {
+/// left, how long it has been `quiet` since the last guess, and that only
+/// guesses are answered.
+fn talking(used: u64, guesses: u64, time_left: Duration, quiet: Duration) -> String {
     format!(
-        "Guesses used: {used} of {guesses}. Time left: {}. No guess is waiting for your \
-         answer. The players are talking among themselves, and proposing guesses to one \
-         another is not asking you anything. Only if a player spoke to you, the host, and \
-         asked you a yes-or-no question, ask whether that is their guess, as in \"Is that \
-         your guess, Bob?\", and do not answer it. Otherwise, wait.",
-        whole_seconds(time_left)
+        "Guesses used: {used} of {guesses}. Time left: {}. The last guess came {} ago, and \
+         no guess is waiting for your answer. Only guesses are answered. The players are \
+         talking among themselves, and proposing guesses to one another is not asking you \
+         anything. If a player spoke to you, the host, and asked you a yes-or-no question, \
+         do not answer it, but ask whether that is their guess, as in \"Is that your guess, \
+         Bob?\". If nobody has put a guess for {} or more, you may urge the players to put \
+         one. Otherwise, wait.",
+        whole_seconds(time_left),
+        whole_seconds(quiet),
+        whole_seconds(NUDGE)
     )
+}
+
+/// Whether `line`, a line of speech the host heard, speaks to the host by
+/// name.
+fn addressed(line: &str) -> bool {
+    line.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| word == "host")
 }
 
 /// The tool the host picks the object with: `choose`, taking the `object`.
@@ -189,7 +206,7 @@ pub(crate) fn unstoried(
     let guess = "Is it something you would find in a kitchen, or is it bigger than a breadbox?";
     let answer = estimated(answering("Alice", guess, "a teapot"), answer_tools());
     let talk = estimated(
-        format!("{HEARD}\n\n{}", talking(guesses, guesses, limit)),
+        format!("{HEARD}\n\n{}", talking(guesses, guesses, limit, limit)),
         talk_tools(),
     );
     let pick = picks
@@ -327,6 +344,10 @@ struct State {
     over: bool,
     /// How many words in conversation in a row failed.
     stumbles: u32,
+    /// When the last guess came, or the game began.
+    quiet_since: Option<Instant>,
+    /// Whether the host was asked to urge a guess since the last one came.
+    nudged: bool,
 }
 
 /// What the host's two loops share. Nothing in it is locked across an
@@ -442,7 +463,11 @@ impl Host {
             guesses: brief.guesses,
             time_limit: brief.time_limit,
         };
-        self.mind.state.lock().unwrap().began = Some(Instant::now());
+        {
+            let mut state = self.mind.state.lock().unwrap();
+            state.began = Some(Instant::now());
+            state.quiet_since = state.began;
+        }
         let begin = Message::Begin {
             n: self.number(),
             view,
@@ -585,8 +610,8 @@ impl Host {
         }
         let (text, named) = answered(&response?)?;
         let named = named || says(&guess.text, object);
-        if !named && says(&text, object) {
-            bail!("the host's answer says the secret object's name: {text}");
+        if !named && gives_away(&text, object, &guess.text) {
+            bail!("the host's answer gives the secret object away: {text}");
         }
         self.reply(guess, text, named, shown)
     }
@@ -633,13 +658,37 @@ impl Host {
         }
     }
 
-    /// Ask the model whether to say anything, about `object`, and say it.
-    /// A failure is asked again, by waking, until [`ATTEMPTS`] fail in a
-    /// row, and then the speech it was about is forgotten.
+    /// Ask the model whether to say anything, about `object`, and say it,
+    /// when a player spoke to the host by name or nobody has put a guess
+    /// for [`NUDGE`], once until the next guess; otherwise forget the
+    /// speech heard without asking. A failure is asked again, by waking,
+    /// until [`ATTEMPTS`] fail in a row, and then the speech it was about is
+    /// forgotten.
     async fn talk(&self, object: &str) -> anyhow::Result<()> {
+        let quiet = {
+            let state = self.mind.state.lock().unwrap();
+            let quiet = state
+                .quiet_since
+                .map(|since| since.elapsed())
+                .unwrap_or_default();
+            (quiet >= NUDGE && !state.nudged).then_some(quiet)
+        };
+        let spoken_to = self
+            .mind
+            .heard
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(line, _)| addressed(line));
+        if !spoken_to && quiet.is_none() {
+            self.mind.heard.lock().unwrap().clear();
+            return Ok(());
+        }
         let error = match self.try_talk(object).await {
             Ok(()) => {
-                self.mind.state.lock().unwrap().stumbles = 0;
+                let mut state = self.mind.state.lock().unwrap();
+                state.stumbles = 0;
+                state.nudged |= quiet.is_some();
                 return Ok(());
             }
             Err(error) => error,
@@ -662,9 +711,13 @@ impl Host {
     /// it says the object's name, which is an error. Once the model has
     /// answered, the speech it was told is forgotten.
     async fn try_talk(&self, object: &str) -> anyhow::Result<()> {
-        let (prompt, used) = {
+        let (prompt, used, quiet) = {
             let state = self.mind.state.lock().unwrap();
-            (state.prompt.clone(), state.counted)
+            let quiet = state
+                .quiet_since
+                .map(|since| since.elapsed())
+                .unwrap_or_default();
+            (state.prompt.clone(), state.counted, quiet)
         };
         let brief = &self.mind.brief;
         let time_left = brief.time_limit.saturating_sub(self.elapsed());
@@ -674,7 +727,7 @@ impl Host {
                 let (lines, shown) = self.heard(budget.saturating_sub(estimate(HEARD) + 1));
                 (format!("{HEARD}\n{lines}"), shown)
             },
-            &talking(used, brief.guesses, time_left),
+            &talking(used, brief.guesses, time_left, quiet),
             talk_tools(),
         );
         let response = brief.asker.complete(&self.context, &request).await;
@@ -682,8 +735,8 @@ impl Host {
             return self.end(Victory::OutOfTime);
         }
         let spoken = spoken(&response?)?;
-        if let Some(text) = spoken.iter().find(|text| says(text, object)) {
-            bail!("the host's words say the secret object's name: {text}");
+        if let Some(text) = spoken.iter().find(|text| gives_away(text, object, "")) {
+            bail!("the host's words give the secret object away: {text}");
         }
         self.mind.heard.lock().unwrap().drain(..shown.seen);
         for text in spoken {
@@ -747,6 +800,8 @@ impl Behavior for Host {
                 return Ok(());
             }
             state.counted += 1;
+            state.quiet_since = Some(Instant::now());
+            state.nudged = false;
             let waiting = Waiting {
                 number: state.counted,
                 from,
@@ -943,7 +998,7 @@ mod tests {
         assert_eq!(
             played.failures(HOST),
             [
-                "the host's answer says the secret object's name: Yes, a teapot is found in a kitchen."
+                "the host's answer gives the secret object away: Yes, a teapot is found in a kitchen."
             ]
         );
         assert_eq!(answers(&played), [(1, "Alice", "Yes.", false, 19)]);
@@ -1119,6 +1174,38 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn the_host_is_asked_to_speak_only_when_spoken_to_or_once_to_urge_a_quiet_table() {
+        let model = Arc::new(FakeModel::responding(speaking("Put a guess, please.")));
+        let script = [
+            (1, Line::Say("Let's ask whether it's alive.")),
+            (130, Line::Say("What now?")),
+            (140, Line::Say("Hmm.")),
+        ];
+        let played = hosted(
+            &model,
+            Rules {
+                time_limit: Duration::from_secs(200),
+                ..Rules::default()
+            },
+            &[("Alice", &script)],
+        )
+        .await;
+        let asked: Vec<String> = model
+            .requests()
+            .into_iter()
+            .map(|request| request.messages[1].content.clone())
+            .collect();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        let urged = &asked[0];
+        let heard = format!(
+            "{HEARD}\nAlice: \"What now?\"\n\nGuesses used: 0 of 20. Time left: 1m 10s. The \
+             last guess came 2m 10s ago"
+        );
+        assert!(urged.starts_with(&heard), "{urged}");
+        assert_eq!(played.sent_by(HOST).len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn speech_reaches_everyone_and_the_host_s_reaches_every_player() {
         let model = Arc::new(FakeModel::responding(speaking(
             "Is that your guess, Alice?",
@@ -1129,7 +1216,7 @@ mod tests {
                 time_limit: Duration::from_secs(30),
                 ..Rules::default()
             },
-            &[("Alice", &[(1, Line::Say("Is it big?"))])],
+            &[("Alice", &[(1, Line::Say("Host, is it big?"))])],
         )
         .await;
         let observed = |by: &str| -> Vec<(String, u64)> {
@@ -1297,16 +1384,16 @@ mod tests {
         let played = hosted(&leaking, rules(), &[("Alice", &script)]).await;
         assert_eq!(
             played.failures(HOST),
-            ["the host's words say the secret object's name: It's a teapot!"; ATTEMPTS as usize]
+            ["the host's words give the secret object away: It's a teapot!"; ATTEMPTS as usize]
         );
         assert_eq!(played.sent_by(HOST).len(), 1, "only the beginning");
         // A second word after giving up is asked of the new speech alone.
-        let script = [(1, Line::Say("Host?")), (30, Line::Say("Anyone?"))];
+        let script = [(1, Line::Say("Host?")), (30, Line::Say("Host, anyone?"))];
         let played = hosted(&leaking, rules(), &[("Alice", &script)]).await;
         let last = leaking.requests().pop().unwrap().messages[1]
             .content
             .clone();
-        let heard = format!("{HEARD}\nAlice: \"Anyone?\"\n\n");
+        let heard = format!("{HEARD}\nAlice: \"Host, anyone?\"\n\n");
         assert!(last.starts_with(&heard), "{last}");
         assert_eq!(played.failures(HOST).len(), 2 * ATTEMPTS as usize);
     }

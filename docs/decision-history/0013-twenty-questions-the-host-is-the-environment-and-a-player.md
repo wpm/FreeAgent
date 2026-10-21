@@ -57,12 +57,17 @@ everyone talks to everyone at once.**
   not name the object, and `named(text)` for one that does.
 - **A guess that says the object's name wins**, whichever tool the host
   calls: the guess, lowercased, holds the object's name, lowercased and
-  without a leading *a*, *an* or *the*, as words of their own or in the
-  plural. *Is it a category?* does not say *a cat*. A guess that names it in
-  other words wins when the host calls `named`.
+  without a leading *a*, *an* or *the* or a measure such as *pair of*, as
+  words of their own, singular or plural. *Scissors?* says *a pair of
+  scissors*; *Is it a category?* does not say *a cat*. A guess that names
+  it in other words wins when the host calls `named`.
 - **The host keeps its secret.** A line of the host's, an answer or a word,
-  that says the object's name before the game is won is not sent. It is
-  logged as `Failed`, and the host is asked again.
+  that gives the object away before the game is won is not sent: one that
+  says its name, or the name's last word, its head noun, unless the guess
+  it answers said that word already. *Scissors are made of metal* gives
+  away *a pair of scissors*; *Yes, it is a tower* answers *Is it a tower?*
+  about *the Eiffel Tower*. Such a line is logged as `Failed`, and the host
+  is asked again.
 - **The end.** A guess answered as naming the object wins for the players.
   The last guess answered without it, or the time limit (10 minutes unless
   configured), wins for the host. A guess still waiting when the game ends
@@ -104,9 +109,12 @@ Two loops over one mind, never locked across a model call
   speech wakes the think loop, debounced as a player's is.
 - **Thinking**, a guess waiting comes first: the host is asked to answer
   the oldest, shown the guess alone, offered `answer` and `named`. With none
-  waiting, it is shown the speech it heard since it last decided, offered
-  `speak` and a `wait` that says nothing, and asked to speak only when a
-  player spoke to it.
+  waiting, it is asked whether to speak only when a player spoke to it by
+  name, or, once until the next guess, when nobody has put a guess for two
+  minutes; otherwise the speech it heard is let go unasked. Asked, it is
+  shown that speech and how long since the last guess, offered `speak` and
+  a `wait` that says nothing, and told to ask "Is that your guess?" of a
+  question put to it in speech, or to urge a quiet table to guess.
 - **A failure is asked again.** An answer, or the pick, that fails or is not
   well formed is logged as `Failed` and asked again, up to three times in
   all; then the episode fails, with the last error, which the host's
@@ -132,7 +140,8 @@ player may do. It offers `speak`, `wait`, and `guess` when the player may
 guess: while guesses are left, none is waiting, and someone has spoken
 since the last answer, so that a guess is proposed before it is made. A
 guess the model makes that was put already fails the answer. A guess made
-while another came in during the call is said as a proposal instead.
+while another came in during the call is not put, so one guess waits at a
+time.
 
 ### The log
 
@@ -174,16 +183,21 @@ was built.
 - **Answers without a story.** Shown the story of earlier answers, the host
   repeated them ("No, it is not alive" to every guess). Shown the guess
   alone, it answers each on its own.
-- **The host talks about what it just heard.** Shown the whole story and
-  asked whether to speak, the host answered guesses in plain speech and
-  echoed the players. Shown only the speech since it last decided, and told
-  that players proposing guesses to one another are not asking it anything,
-  it mostly waits.
+- **The host speaks rarely.** Shown the whole story and asked whether to
+  speak after every line of talk, the host answered guesses in plain
+  speech, echoed the players, and asked "Is that your guess?" of players
+  proposing guesses to one another. It is now asked only when spoken to by
+  name or when the table has gone quiet, and shown only the speech since it
+  last decided.
+- **The secret is a head noun too.** Picking *a pair of scissors*, the host
+  said "Scissors are typically made of metal", which the whole name did not
+  match.
 - **Players propose before they guess.** Woken together, every player
   guessed at once and all twenty guesses went in under a minute. Offering
   `guess` only once someone has spoken since the last answer and none is
-  waiting, and saying a guess that crossed another as a proposal, turned
-  the bursts into proposals the others agree to.
+  waiting, and not putting a guess that crossed another, turned the bursts
+  into proposals. Saying a crossed guess as a proposal instead was tried,
+  and made three players parrot the same line.
 
 ## Alternatives considered
 

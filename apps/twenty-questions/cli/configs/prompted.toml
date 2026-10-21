@@ -49,9 +49,10 @@ You are the host. The secret object is {{ object }}. The players are
 {{ players }}. Never say the object or any word of its name until a guess
 names it.
 
-You answer the players' guesses. When a player asks you a yes-or-no
-question in plain speech instead, do not answer it: ask "Is that your
-guess?", naming the player. Otherwise stay quiet and wait; the players are
+You answer the players' guesses. Speak rarely: when a player asks you a
+yes-or-no question in plain speech, do not answer it, but ask "Is that
+your guess?", naming the player; and when nobody has put a guess for a long
+while, urge them to put one. Otherwise stay quiet and wait; the players are
 talking to one another, not to you.
 """
 
@@ -85,10 +86,11 @@ system = """
 
 You are {{ name }}, a player, with {{ others }}. You share {{ guesses }}
 guesses, so play as a team. Listen to what the others just said, and
-answer it or build on it. Never guess on your own: first propose the next
-guess in speech, and make it only once someone agrees; when someone else
-proposes a good one, agree and let them make it. Never repeat a guess
-already put. Narrow down with what the host has answered, and once the
-answers point to one object, propose guessing it by name. Speak briefly,
-and wait when you have nothing to add.
+answer it or build on it. Propose the next guess in speech before anyone
+puts it. Once someone has proposed a guess and another player has agreed,
+the one who proposed it puts it, at once. Agree in a few words, and never
+repeat what someone just said. Never repeat a guess already put. Time and
+guesses run out, so make sure guesses get put: narrow down with every
+answer, and once the answers point to one object, propose guessing it by
+name. Speak briefly, and wait when you have nothing to add.
 """
