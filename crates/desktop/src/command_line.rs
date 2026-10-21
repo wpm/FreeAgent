@@ -1,14 +1,17 @@
-//! **Install Command-Line Tool…** on macOS: a link at
-//! `/usr/local/bin/social-deduction` to the command line inside the app's
-//! bundle, so updating the app updates the command line.
+//! **Install Command-Line Tool…** on macOS: a link in `/usr/local/bin`,
+//! such as `/usr/local/bin/social-deduction`, to the command line inside
+//! the app's bundle, so updating the app updates the command line.
 //!
 //! The link is made, or removed, by a shell script run with administrator
 //! privileges through `osascript`, which asks for the password. An app run
 //! from its disk image, or translocated by macOS to a random read-only
 //! path, is asked to move to Applications first, since a link into it
 //! would dangle. After installing, the user's login shell is asked which
-//! `social-deduction` a terminal runs, and one that comes before the link,
-//! such as a copy `curl | sh` installed, is named.
+//! copy of the command a terminal runs, and one that comes before the
+//! link, such as a copy `curl | sh` installed, is named.
+//!
+//! The command's name is the app's, and so is the product's name, which
+//! the app's package info gives.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,14 +25,13 @@ use tauri_plugin_dialog::{
 /// The menu item's id.
 pub const ID: &str = "command_line";
 
-/// The command line's name, in the bundle and on the PATH.
-const NAME: &str = "social-deduction";
+/// The folder the link goes in, on macOS's default PATH.
+const FOLDER: &str = "/usr/local/bin";
 
-/// Where the link goes, a folder on macOS's default PATH.
-pub const LINK: &str = "/usr/local/bin/social-deduction";
-
-/// What an app that would leave a dangling link is told.
-const MOVE: &str = "Move Social Deduction to Applications first.";
+/// Where the link to the command line `name` goes.
+pub fn link(name: &str) -> PathBuf {
+    Path::new(FOLDER).join(name)
+}
 
 /// What is at the link's path.
 #[derive(Debug, PartialEq, Eq)]
@@ -73,9 +75,9 @@ pub fn bundle(exe: &Path) -> Option<&Path> {
         .then_some(bundle)
 }
 
-/// The command line inside `bundle`, which the link points to.
-pub fn target(bundle: &Path) -> PathBuf {
-    bundle.join("Contents/MacOS").join(NAME)
+/// The command line `name` inside `bundle`, which the link points to.
+pub fn target(bundle: &Path, name: &str) -> PathBuf {
+    bundle.join("Contents/MacOS").join(name)
 }
 
 /// Whether a link into the app at `bundle` would last: not when it is on
@@ -153,10 +155,15 @@ pub fn privileged(script: &str) -> Outcome {
     }
 }
 
-/// Link `link` to the command line in `bundle`, running the script with
-/// `run`.
-pub fn install(bundle: &Path, link: &Path, run: impl FnOnce(&str) -> Outcome) -> Outcome {
-    run(&install_script(&target(bundle), link))
+/// Link `link` to the command line `name` in `bundle`, running the script
+/// with `run`.
+pub fn install(
+    bundle: &Path,
+    name: &str,
+    link: &Path,
+    run: impl FnOnce(&str) -> Outcome,
+) -> Outcome {
+    run(&install_script(&target(bundle, name), link))
 }
 
 /// Remove `link`, running the script with `run`, if it points into
@@ -190,7 +197,7 @@ fn origin(path: &Path) -> Option<&'static str> {
     }
 }
 
-/// What to tell the user when the first `social-deduction` that `type -a`
+/// What to tell the user when the first copy of the command that `type -a`
 /// lists in `output` isn't `link`. Nothing when it is, or when none is
 /// listed.
 pub fn shadowing(output: &str, link: &Path) -> Option<String> {
@@ -208,22 +215,28 @@ pub fn shadowing(output: &str, link: &Path) -> Option<String> {
     ))
 }
 
-/// What the user's shell's `type -a` says of `social-deduction`. The
+/// What the user's shell's `type -a` says of the command `name`. The
 /// app's own PATH is launchd's, not the shell's, and a terminal's shell is
 /// a login shell that also reads `~/.zshrc` or `~/.bashrc`, where
 /// installers often add to the PATH.
-fn search() -> String {
+fn search(name: &str) -> String {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     Command::new(shell)
-        .args(["-ilc", &format!("type -a {NAME}")])
+        .args(["-ilc", &format!("type -a {name}")])
         .stdin(Stdio::null())
         .output()
         .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
         .unwrap_or_default()
 }
 
-/// The menu item, kept as the app's state for [`chosen`] to retitle.
-pub struct Item(pub MenuItem<Wry>);
+/// The menu item, kept as the app's state for [`chosen`] to retitle, and
+/// the command line it installs.
+pub struct Item {
+    /// The menu item.
+    pub item: MenuItem<Wry>,
+    /// The command line's name, in the bundle and on the PATH.
+    pub name: &'static str,
+}
 
 /// The bundle this app runs in, if it runs in one.
 fn here() -> Option<PathBuf> {
@@ -231,14 +244,16 @@ fn here() -> Option<PathBuf> {
     bundle(&exe).map(Path::to_path_buf)
 }
 
-/// The menu item, titled for the link's state.
+/// The menu item that installs the command line `name`, titled for the
+/// link's state.
 ///
 /// # Errors
 ///
 /// When the menu item cannot be made.
-pub fn item(app: &AppHandle) -> tauri::Result<MenuItem<Wry>> {
-    let state = here().map_or(Linked::Absent, |bundle| linked(Path::new(LINK), &bundle));
-    MenuItem::with_id(app, ID, title(&state), true, None::<&str>)
+pub fn item(app: &AppHandle, name: &'static str) -> tauri::Result<Item> {
+    let state = here().map_or(Linked::Absent, |bundle| linked(&link(name), &bundle));
+    let item = MenuItem::with_id(app, ID, title(&state), true, None::<&str>)?;
+    Ok(Item { item, name })
 }
 
 /// A dialog telling the user `message`.
@@ -267,24 +282,25 @@ fn confirmed(app: &AppHandle, message: &str, action: &str) -> bool {
 /// thread.
 pub fn chosen(app: &AppHandle, item: &Item) {
     let Some(bundle) = here().filter(|bundle| lasting(bundle)) else {
-        return tell(app, MessageDialogKind::Error, MOVE);
+        let product = &app.package_info().name;
+        let message = format!("Move {product} to Applications first.");
+        return tell(app, MessageDialogKind::Error, message);
     };
-    let link = Path::new(LINK);
+    let name = item.name;
+    let link = &link(name);
     let password = "You'll be asked for an administrator password.";
     let state = linked(link, &bundle);
     let (message, action) = match state {
         Linked::Here => (
-            format!("Removes the link to this app from /usr/local/bin. {password}"),
+            format!("Removes the link to this app from {FOLDER}. {password}"),
             "Uninstall",
         ),
         Linked::Other => (
-            format!(
-                "Links {NAME} in /usr/local/bin to this app, replacing the one there. {password}"
-            ),
+            format!("Links {name} in {FOLDER} to this app, replacing the one there. {password}"),
             "Install",
         ),
         Linked::Absent => (
-            format!("Links {NAME} in /usr/local/bin to this app. {password}"),
+            format!("Links {name} in {FOLDER} to this app. {password}"),
             "Install",
         ),
     };
@@ -293,20 +309,20 @@ pub fn chosen(app: &AppHandle, item: &Item) {
     }
     let installing = state != Linked::Here;
     let outcome = if installing {
-        install(&bundle, link, privileged)
+        install(&bundle, name, link, privileged)
     } else {
         uninstall(&bundle, link, privileged)
     };
     match outcome {
         Outcome::Done if installing => {
-            let message = shadowing(&search(), link)
-                .unwrap_or_else(|| format!("A new terminal runs {NAME}."));
+            let message = shadowing(&search(name), link)
+                .unwrap_or_else(|| format!("A new terminal runs {name}."));
             tell(app, MessageDialogKind::Info, message);
         }
         Outcome::Failed(failure) => tell(app, MessageDialogKind::Error, failure),
         Outcome::Done | Outcome::Cancelled => {}
     }
-    if let Err(error) = item.0.set_text(title(&linked(link, &bundle))) {
+    if let Err(error) = item.item.set_text(title(&linked(link, &bundle))) {
         tracing::warn!("the Command-Line Tool menu item could not be retitled: {error}");
     }
 }
@@ -315,6 +331,9 @@ pub fn chosen(app: &AppHandle, item: &Item) {
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+
+    /// The command line the tests install.
+    const NAME: &str = "social-deduction";
 
     /// A new, empty folder for the test `name`.
     fn folder(name: &str) -> PathBuf {
@@ -348,8 +367,9 @@ mod tests {
 
     #[test]
     fn the_link_points_to_the_command_line_in_the_bundle() {
+        assert_eq!(link(NAME), Path::new("/usr/local/bin/social-deduction"));
         assert_eq!(
-            target(Path::new("/Applications/Social Deduction.app")),
+            target(Path::new("/Applications/Social Deduction.app"), NAME),
             Path::new("/Applications/Social Deduction.app/Contents/MacOS/social-deduction")
         );
     }
@@ -377,7 +397,7 @@ mod tests {
         assert_eq!(linked(&link, &bundle), Linked::Absent);
         assert_eq!(title(&Linked::Absent), "Install Command-Line Tool…");
         fs::create_dir_all(link.parent().unwrap()).unwrap();
-        symlink(target(&bundle), &link).unwrap();
+        symlink(target(&bundle, NAME), &link).unwrap();
         assert_eq!(linked(&link, &bundle), Linked::Here);
         assert_eq!(title(&Linked::Here), "Uninstall Command-Line Tool…");
         let other = dir.join("Other.app");
@@ -394,11 +414,11 @@ mod tests {
         let dir = folder("install it's");
         let bundle = dir.join("Social Deduction.app");
         let link = dir.join("usr local/bin/social-deduction");
-        assert_eq!(install(&bundle, &link, sh), Outcome::Done);
-        assert_eq!(fs::read_link(&link).unwrap(), target(&bundle));
+        assert_eq!(install(&bundle, NAME, &link, sh), Outcome::Done);
+        assert_eq!(fs::read_link(&link).unwrap(), target(&bundle, NAME));
         let newer = dir.join("Newer.app");
-        assert_eq!(install(&newer, &link, sh), Outcome::Done);
-        assert_eq!(fs::read_link(&link).unwrap(), target(&newer));
+        assert_eq!(install(&newer, NAME, &link, sh), Outcome::Done);
+        assert_eq!(fs::read_link(&link).unwrap(), target(&newer, NAME));
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -409,11 +429,11 @@ mod tests {
         let link = dir.join("social-deduction");
         let refused = |_: &str| -> Outcome { panic!("nothing runs") };
         assert_eq!(uninstall(&bundle, &link, refused), Outcome::Done);
-        symlink(target(&dir.join("Other.app")), &link).unwrap();
+        symlink(target(&dir.join("Other.app"), NAME), &link).unwrap();
         assert_eq!(uninstall(&bundle, &link, refused), Outcome::Done);
         assert!(fs::symlink_metadata(&link).is_ok());
         fs::remove_file(&link).unwrap();
-        symlink(target(&bundle), &link).unwrap();
+        symlink(target(&bundle, NAME), &link).unwrap();
         assert_eq!(uninstall(&bundle, &link, sh), Outcome::Done);
         assert!(fs::symlink_metadata(&link).is_err());
         fs::remove_dir_all(dir).unwrap();
@@ -434,7 +454,7 @@ mod tests {
 
     #[test]
     fn the_first_copy_on_the_path_is_named_when_it_is_not_the_link() {
-        let link = Path::new(LINK);
+        let link = &link(NAME);
         let ours = "social-deduction is /usr/local/bin/social-deduction\n";
         assert_eq!(shadowing(ours, link), None);
         assert_eq!(shadowing("", link), None);
@@ -462,7 +482,7 @@ mod tests {
                       social-deduction is /usr/local/bin/social-deduction\n";
         assert_eq!(
             found(output),
-            [PathBuf::from("/a b/social-deduction"), PathBuf::from(LINK)]
+            [PathBuf::from("/a b/social-deduction"), link(NAME)]
         );
     }
 }

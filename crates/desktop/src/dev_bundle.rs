@@ -3,11 +3,12 @@
 //! `cargo tauri dev` runs the bare binary that Cargo built, not an app
 //! bundle. macOS names a bare process after its executable file, so the
 //! Dock tile, the application menu's title and its About, Hide and Quit
-//! items all said `social-deduction-desktop`. That file name is the Cargo package
-//! (or `[[bin]]`) name, and Cargo passes it to rustc as the crate name,
-//! which cannot contain a space, so no `Cargo.toml` setting can spell
-//! `Social Deduction`. Tauri's `mainBinaryName` only renames the binary for
-//! `tauri build`, and an Info.plist embedded in the binary's
+//! items all said the binary's name, as `social-deduction-desktop`. That
+//! file name is the Cargo package (or `[[bin]]`) name, and Cargo passes it
+//! to rustc as the crate name, which cannot contain a space, so no
+//! `Cargo.toml` setting can spell the product's, as `Social Deduction`.
+//! Tauri's `mainBinaryName` only renames the binary for `tauri build`, and
+//! an Info.plist embedded in the binary's
 //! `__info_plist` section is read by Foundation but not by the Launch
 //! Services database that names apps.
 //!
@@ -26,20 +27,33 @@ use std::{
     process::Command,
 };
 
-/// The bundle's icon, which the Dock and the About panel show.
-const ICON: &[u8] = include_bytes!("../icons/icon.icns");
-
-/// What the bundle's Info.plist says about the app.
-pub struct App<'a> {
-    pub name: &'a str,
-    pub version: &'a str,
-    pub identifier: &'a str,
+/// What the bundle's Info.plist says about the app, and its icon.
+struct App<'a> {
+    /// The product's name, which names the bundle and its executable.
+    name: &'a str,
+    /// The app's version.
+    version: &'a str,
+    /// The app's identifier, as `io.github.wpm.social-deduction`.
+    identifier: &'a str,
+    /// The bytes of the `.icns` icon the Dock and the About panel show.
+    icon: &'a [u8],
 }
 
 /// Re-executes the current binary from inside an app bundle named after
-/// the product, returning only when already inside one or when the bundle
-/// could not be made or started.
-pub fn relaunch_in_bundle(app: &App) {
+/// the product `context` names, with its version, identifier and the
+/// `.icns` `icon`, returning only when already inside one or when the
+/// bundle could not be made or started.
+pub fn relaunch_in_bundle<R: tauri::Runtime>(context: &tauri::Context<R>, icon: &[u8]) {
+    relaunch(&App {
+        name: &context.package_info().name,
+        version: &context.package_info().version.to_string(),
+        identifier: &context.config().identifier,
+        icon,
+    });
+}
+
+/// Re-executes the current binary from inside an app bundle for `app`.
+fn relaunch(app: &App) {
     let exe = match env::current_exe() {
         Ok(exe) => exe,
         Err(error) => {
@@ -85,7 +99,7 @@ fn write_bundle(exe: &Path, app: &App) -> io::Result<PathBuf> {
     fs::create_dir_all(&macos)?;
     fs::create_dir_all(&resources)?;
     fs::write(contents.join("Info.plist"), info_plist(app))?;
-    fs::write(resources.join("icon.icns"), ICON)?;
+    fs::write(resources.join("icon.icns"), app.icon)?;
 
     let bundled = macos.join(app.name);
     let source = fs::metadata(exe)?;

@@ -20,15 +20,16 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 anyhow.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+free-agent-desktop.workspace = true
 free-agent-model.workspace = true
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+futures-util.workspace = true
 secrecy.workspace = true
 social-deduction.workspace = true
 social-deduction-gui-types.workspace = true
-tauri = { version = "2", features = [] }
-tauri-plugin-dialog = "2"
+tauri.workspace = true
+tauri-plugin-dialog.workspace = true
 tauri-plugin-opener = "2"
-tauri-plugin-updater = "2"
+tauri-plugin-updater.workspace = true
 serde.workspace = true
 # tauri::generate_context! reads the updater plugin's config with it.
 serde_json.workspace = true

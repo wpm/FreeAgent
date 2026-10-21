@@ -6,84 +6,32 @@
 //! main window hears of it as a `settings` event carrying the
 //! [`Snapshot`]. A change made from the menus reaches both windows.
 
+use free_agent_desktop::dialog::{error, save_as};
+use free_agent_desktop::settings::File;
 use social_deduction::settings::{
     self, AppSettings, FieldError, GameSettings, Imported, Snapshot, game_title,
 };
 use social_deduction_gui_types::GameName;
-use std::path::PathBuf;
-use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_dialog::{
-    DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
-};
-
-/// The label of the Settings window.
-pub const WINDOW: &str = "settings";
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogResult};
 
 /// The settings, as stored in the app's config directory.
-pub struct Store {
-    dir: PathBuf,
-    settings: Mutex<AppSettings>,
-}
+pub type Store = free_agent_desktop::settings::Store<AppSettings>;
 
-impl Store {
-    /// The settings stored for `app`, as [`settings::load`] reads them,
-    /// stored at once the first time, so that the first launch's are kept.
-    /// Settings that cannot be read are the defaults, and a dialog says
-    /// why.
-    ///
-    /// # Errors
-    ///
-    /// When the app has no config directory.
-    pub fn open(app: &AppHandle) -> tauri::Result<Self> {
-        let dir = app.path().app_config_dir()?;
-        let file = dir.join(settings::FILE);
-        let first = !file.exists();
-        let loaded = settings::load(&dir).unwrap_or_else(|failure| {
-            tracing::warn!("{} could not be read: {failure:#}", file.display());
-            app.dialog()
-                .message(format!(
-                    "{} couldn't be read, so the settings are the defaults:\n\n{failure:#}",
-                    file.display()
-                ))
-                .title("Settings")
-                .kind(MessageDialogKind::Error)
-                .show(|_| {});
-            settings::defaults()
-        });
-        if first && let Err(error) = settings::save(&loaded, &dir) {
-            tracing::warn!("the settings could not be saved: {error}");
-        }
-        Ok(Self {
-            dir,
-            settings: Mutex::new(loaded),
-        })
-    }
-
-    /// The settings, and what is wrong with them.
-    pub fn snapshot(&self) -> Snapshot {
-        snapshot(self.settings())
-    }
-
-    /// The settings.
-    pub fn settings(&self) -> AppSettings {
-        self.settings.lock().unwrap().clone()
-    }
-
-    /// Change the settings with `change`, store them, and give back the
-    /// snapshot after.
-    pub fn change(&self, change: impl FnOnce(&mut AppSettings)) -> Snapshot {
-        let mut held = self.settings.lock().unwrap();
-        change(&mut held);
-        if let Err(error) = settings::save(&held, &self.dir) {
-            tracing::warn!("the settings could not be saved: {error}");
-        }
-        snapshot(held.clone())
+/// How the settings are kept: in [`settings::FILE`], read with
+/// [`settings::load`] and written with [`settings::save`], starting from
+/// [`settings::defaults`].
+pub fn file() -> File<AppSettings> {
+    File {
+        name: settings::FILE,
+        load: settings::load,
+        save: settings::save,
+        defaults: settings::defaults,
     }
 }
 
 /// `settings` with what is wrong with them.
-fn snapshot(settings: AppSettings) -> Snapshot {
+pub(crate) fn snapshot(settings: AppSettings) -> Snapshot {
     Snapshot {
         errors: settings::validate(&settings),
         settings,
@@ -105,7 +53,7 @@ fn announce(app: &AppHandle, to: Option<&str>, snapshot: &Snapshot) {
 /// The settings, and what is wrong with them.
 #[tauri::command]
 pub fn settings_get(store: State<'_, Store>) -> Snapshot {
-    store.snapshot()
+    snapshot(store.settings())
 }
 
 /// Make the settings `settings`, from the Settings window, and give back
@@ -116,7 +64,7 @@ pub fn settings_set(
     store: State<'_, Store>,
     settings: AppSettings,
 ) -> Vec<FieldError> {
-    let snapshot = store.change(|held| *held = settings);
+    let snapshot = snapshot(store.change(|held| *held = settings));
     announce(&app, Some("main"), &snapshot);
     snapshot.errors
 }
@@ -132,67 +80,11 @@ pub fn game_defaults(game: GameName) -> GameSettings {
 /// focus it if it is open.
 #[tauri::command]
 pub async fn settings_open(app: AppHandle, path: Option<Vec<String>>) -> Result<(), String> {
-    show(&app, path).map_err(|error| error.to_string())
-}
-
-/// Open the Settings window, or focus it if it is open, at the field
-/// `path` if one is given. Opening it tries again to check the models
-/// that could not be checked, as those of a provider whose account failed.
-///
-/// # Errors
-///
-/// When the window cannot be made or shown.
-pub fn show(app: &AppHandle, path: Option<Vec<String>>) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window(WINDOW) {
-        window.unminimize()?;
-        window.show()?;
-        window.set_focus()?;
-        if let Some(path) = path {
-            app.emit_to(WINDOW, "focus", path)?;
-        }
-        return Ok(());
-    }
-    let hash = match path {
-        Some(path) => format!("settings={}", encoded(&path.join("/"))),
-        None => "settings".to_string(),
-    };
-    WebviewWindowBuilder::new(
-        app,
-        WINDOW,
-        WebviewUrl::App(format!("index.html#{hash}").into()),
-    )
-    .title("Settings")
-    .inner_size(760.0, 560.0)
-    .min_inner_size(520.0, 400.0)
-    .resizable(true)
-    .build()?;
-    crate::catalog::check_unchecked(app);
-    Ok(())
-}
-
-/// `text` percent-encoded, as `encodeURIComponent` encodes it.
-fn encoded(text: &str) -> String {
-    text.bytes()
-        .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                char::from(byte).to_string()
-            }
-            byte => format!("%{byte:02X}"),
-        })
-        .collect()
+    free_agent_desktop::settings::show(&app, path).map_err(|error| error.to_string())
 }
 
 /// The configuration files the dialogs show.
 const FILTER: (&str, &[&str]) = ("Configuration", &["toml"]);
-
-/// Tell the user `message`, titled `title`, as an error.
-pub(crate) fn error(app: &AppHandle, title: &str, message: String) {
-    app.dialog()
-        .message(message)
-        .title(title)
-        .kind(MessageDialogKind::Error)
-        .blocking_show();
-}
 
 /// **Import Configuration…**: read a configuration file the user picks,
 /// and, once they confirm, make its game's settings those in the file and
@@ -235,9 +127,10 @@ pub fn import(app: &AppHandle) {
         ))
         .blocking_show();
     if confirmed {
-        let snapshot = app
-            .state::<Store>()
-            .change(|held| settings::import(held, imported));
+        let snapshot = snapshot(
+            app.state::<Store>()
+                .change(|held| settings::import(held, imported)),
+        );
         announce(app, None, &snapshot);
     }
 }
@@ -272,44 +165,4 @@ pub fn export(app: &AppHandle) {
         "Export Configuration",
         text.as_bytes(),
     );
-}
-
-/// Write `contents` where the user picks, among the files `filter` shows,
-/// named `name` by default. A write that fails is shown, with why, in a
-/// dialog titled `title`.
-pub(crate) fn save_as(
-    app: &AppHandle,
-    filter: (&str, &[&str]),
-    name: &str,
-    title: &str,
-    contents: &[u8],
-) {
-    let Some(path) = app
-        .dialog()
-        .file()
-        .add_filter(filter.0, filter.1)
-        .set_file_name(name)
-        .blocking_save_file()
-        .and_then(|path| path.into_path().ok())
-    else {
-        return;
-    };
-    if let Err(failure) = std::fs::write(&path, contents) {
-        let message = format!("{} couldn't be written: {failure}", path.display());
-        error(app, title, message);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_field_s_path_is_encoded_for_the_hash() {
-        assert_eq!(
-            encoded("werewolf/strategies/everyone"),
-            "werewolf/strategies/everyone"
-        );
-        assert_eq!(encoded("a b#é"), "a%20b%23%C3%A9");
-    }
 }
