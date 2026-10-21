@@ -175,6 +175,11 @@ struct Question {
     question: String,
 }
 
+/// `question` as guesses are told apart: trimmed and in lower case.
+fn folded(question: &str) -> String {
+    question.trim().to_lowercase()
+}
+
 /// What a call has the player send.
 #[derive(Debug, PartialEq)]
 enum Sending {
@@ -326,14 +331,22 @@ impl Mind {
         }
     }
 
-    /// Whether `question`, trimmed and in lower case, was put already, by
-    /// anyone, whatever its case.
-    fn put(&self, question: &str) -> bool {
+    /// Every guess put so far, by anyone, each trimmed and in lower case.
+    fn questions(&self) -> Vec<String> {
         let remembered = self.remembered.lock().unwrap();
-        remembered.history.iter().any(|event| {
-            let (Memory::Observed { message } | Memory::Acted { message }) = &event.payload;
-            matches!(message, Message::Guess { text, .. } if text.trim().to_lowercase() == question)
-        })
+        remembered
+            .history
+            .iter()
+            .filter_map(|event| match &event.payload {
+                Memory::Observed {
+                    message: Message::Guess { text, .. },
+                }
+                | Memory::Acted {
+                    message: Message::Guess { text, .. },
+                } => Some(folded(text)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The next number for a message to others: one up from the last.
@@ -430,13 +443,14 @@ impl Player {
     /// Ask the model what to do in the game `view` shows, begun at
     /// `began`, and carry out what it answers: each message in order, to
     /// everyone else, and then a reminder if it asked to wait. A guess put
-    /// already, whatever its case, or twice in the answer, fails the
-    /// answer, which is carried out not at all. A guess the player may no
-    /// longer make by the time it is sent, since another came while the
-    /// model was asked, is said as a proposal instead.
+    /// before the model was asked, whatever its case, or twice in the
+    /// answer, fails the answer, which is carried out not at all. While
+    /// the model was asked, the same guess may have been put, and then it is
+    /// not put again, or another, and then it is said as a proposal instead.
     async fn play(&self, view: &View, began: Instant) -> anyhow::Result<()> {
         let guesses = self.mind.guesses(view.guesses);
         let may_guess = guesses.may_guess();
+        let put = self.mind.questions();
         let time_left = view.time_limit.saturating_sub(began.elapsed());
         let (request, shown) = self.mind.asker.request(
             &self.mind.prompt,
@@ -446,19 +460,21 @@ impl Player {
         );
         let response = self.mind.asker.complete(&self.context, &request).await?;
         let Asked { sends, wait } = asked(&response, may_guess, view.time_limit)?;
-        let mut guessed = Vec::new();
+        let mut guessed = put;
         for sending in &sends {
             if let Sending::Guess(question) = sending {
-                let folded = question.trim().to_lowercase();
-                if self.mind.put(&folded) || guessed.contains(&folded) {
+                if guessed.contains(&folded(question)) {
                     bail!("the model guessed \"{question}\", which was put already");
                 }
-                guessed.push(folded);
+                guessed.push(folded(question));
             }
         }
         let me = &self.context.id;
         for sending in sends {
             let sending = match sending {
+                Sending::Guess(question) if self.mind.questions().contains(&folded(&question)) => {
+                    continue;
+                }
                 Sending::Guess(question) if !self.mind.guesses(view.guesses).may_guess() => {
                     Sending::Say(format!("I'd guess next: \"{question}\""))
                 }
@@ -826,27 +842,34 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_guess_made_while_another_came_in_is_said_as_a_proposal() {
-        let model = player_model(
-            |_, offered| match offered.iter().any(|tool| tool == GUESS) {
-                true => vec![guessing("Is it big?")],
-                false => vec![waiting(60)],
-            },
-            Duration::from_secs(10),
-        );
-        let script = [
-            (1, Line::Say("Let's ask.")),
-            (15, Line::Guess("Is it alive?")),
-        ];
-        let played = with_alice(&host_model(20), &model, a_minute(), &script).await;
-        assert_eq!(
-            played.sent_by("Alice"),
-            [&Message::Say {
-                from: "Alice".to_string(),
-                n: 1,
-                text: "I'd guess next: \"Is it big?\"".to_string(),
-            }]
-        );
+    async fn a_guess_made_while_another_came_in_is_said_as_a_proposal_unless_it_was_the_same() {
+        for (question, said) in [
+            ("Is it big?", Some("I'd guess next: \"Is it big?\"")),
+            ("is it ALIVE?", None),
+        ] {
+            let model = player_model(
+                move |_, offered| match offered.iter().any(|tool| tool == GUESS) {
+                    true => vec![guessing(question)],
+                    false => vec![waiting(60)],
+                },
+                Duration::from_secs(10),
+            );
+            let script = [
+                (1, Line::Say("Let's ask.")),
+                (15, Line::Guess("Is it alive?")),
+            ];
+            let played = with_alice(&host_model(20), &model, a_minute(), &script).await;
+            let expected: Vec<Message> = said
+                .into_iter()
+                .map(|text| Message::Say {
+                    from: "Alice".to_string(),
+                    n: 1,
+                    text: text.to_string(),
+                })
+                .collect();
+            assert_eq!(played.sent_by("Alice"), expected.iter().collect::<Vec<_>>());
+            assert!(played.failures("Alice").is_empty());
+        }
     }
 
     #[tokio::test(start_paused = true)]
