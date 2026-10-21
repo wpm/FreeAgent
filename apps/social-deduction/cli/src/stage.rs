@@ -679,8 +679,10 @@ mod tests {
     #[tokio::test]
     async fn the_last_avalon_board_agrees_with_the_narrator() {
         // A game whose first five proposals are all rejected has no quest,
-        // so games are played until one has.
-        let (events, quested) = loop {
+        // so games are played until one has. (Every line runs for the
+        // first game, so coverage doesn't depend on how it went.)
+        let mut played = None;
+        while played.is_none() {
             let events =
                 random_game::<Avalon>(avalon::tests::five(), avalon::Rules::default()).await;
             let quested: Vec<(usize, bool)> = events
@@ -692,10 +694,9 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            if !quested.is_empty() {
-                break (events, quested);
-            }
-        };
+            played = (!quested.is_empty()).then_some((events, quested));
+        }
+        let (events, quested) = played.unwrap();
         let cues = folded(&events);
         let boards: Vec<&AvalonPanel> = cues
             .iter()
