@@ -47,6 +47,8 @@ manifests=$(metadata | jq -r --arg names "$names" '
 
 # The first top-level version line in each manifest is its [package]'s.
 while IFS= read -r manifest; do
+  # jq on Windows ends its lines with a carriage return.
+  manifest=${manifest%$'\r'}
   awk -v version="$version" '
     !done && /^version = "[^"]*"/ { print "version = \"" version "\""; done = 1; next }
     { print }' "$manifest" > "$manifest.stamped"
@@ -57,6 +59,7 @@ cargo update --workspace --quiet
 stamped=$(metadata)
 for name in $names; do
   found=$(jq -r --arg name "$name" '.packages[] | select(.name == $name) | .version' <<< "$stamped")
+  found=${found%$'\r'}
   if [ "$found" != "$version" ]; then
     echo "$name is ${found:-not in the workspace}, not $version, after stamping $tag" >&2
     exit 1
