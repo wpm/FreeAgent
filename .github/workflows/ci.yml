@@ -86,7 +86,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: trunk
+          # Pinned: the page breaks in the browser when built by trunk 0.22.0.
+          tool: trunk@0.21.14
       - run: cargo clippy -p social-deduction-gui --all-targets -- -D warnings
       - run: cargo test -p social-deduction-gui
       - run: cargo check -p social-deduction-gui --target wasm32-unknown-unknown
