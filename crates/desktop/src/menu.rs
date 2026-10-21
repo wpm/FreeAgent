@@ -104,17 +104,29 @@ pub fn build(
             &PredefinedMenuItem::maximize(app, None)?,
         ],
     )?;
-    bar(app, &preferences, command, file, &edit, &go_menu, &window)
+    #[cfg(target_os = "macos")]
+    let command_line = crate::command_line::item(app, command)?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = command;
+    bar(
+        app,
+        &preferences,
+        #[cfg(target_os = "macos")]
+        command_line,
+        file,
+        &edit,
+        &go_menu,
+        &window,
+    )
 }
 
-/// The menu bar on macOS: an app menu holding `preferences` and an item
-/// that installs the command line `command`, then `file`, `edit`, `go` and
-/// `window`.
+/// The menu bar on macOS: an app menu holding `preferences` and
+/// `command_line`, then `file`, `edit`, `go` and `window`.
 #[cfg(target_os = "macos")]
 fn bar(
     app: &AppHandle,
     preferences: &MenuItem<Wry>,
-    command: &'static str,
+    command_line: crate::command_line::Item,
     file: &Submenu<Wry>,
     edit: &Submenu<Wry>,
     go: &Submenu<Wry>,
@@ -122,7 +134,6 @@ fn bar(
 ) -> tauri::Result<Menu<Wry>> {
     let separator = || PredefinedMenuItem::separator(app);
     let name = app.package_info().name.clone();
-    let command_line = crate::command_line::item(app, command)?;
     let app_menu = Submenu::with_items(
         app,
         &name,
@@ -147,12 +158,11 @@ fn bar(
 }
 
 /// The menu bar elsewhere: `file`, with Quit, `edit`, with `preferences`,
-/// `go` and `window`. No item installs the command line `_command`.
+/// `go` and `window`.
 #[cfg(not(target_os = "macos"))]
 fn bar(
     app: &AppHandle,
     preferences: &MenuItem<Wry>,
-    _command: &'static str,
     file: &Submenu<Wry>,
     edit: &Submenu<Wry>,
     go: &Submenu<Wry>,

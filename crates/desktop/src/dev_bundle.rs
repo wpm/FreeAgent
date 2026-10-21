@@ -28,21 +28,32 @@ use std::{
 };
 
 /// What the bundle's Info.plist says about the app, and its icon.
-pub struct App<'a> {
+struct App<'a> {
     /// The product's name, which names the bundle and its executable.
-    pub name: &'a str,
+    name: &'a str,
     /// The app's version.
-    pub version: &'a str,
+    version: &'a str,
     /// The app's identifier, as `io.github.wpm.social-deduction`.
-    pub identifier: &'a str,
+    identifier: &'a str,
     /// The bytes of the `.icns` icon the Dock and the About panel show.
-    pub icon: &'a [u8],
+    icon: &'a [u8],
 }
 
 /// Re-executes the current binary from inside an app bundle named after
-/// the product, returning only when already inside one or when the bundle
-/// could not be made or started.
-pub fn relaunch_in_bundle(app: &App) {
+/// the product `context` names, with its version, identifier and the
+/// `.icns` `icon`, returning only when already inside one or when the
+/// bundle could not be made or started.
+pub fn relaunch_in_bundle<R: tauri::Runtime>(context: &tauri::Context<R>, icon: &[u8]) {
+    relaunch(&App {
+        name: &context.package_info().name,
+        version: &context.package_info().version.to_string(),
+        identifier: &context.config().identifier,
+        icon,
+    });
+}
+
+/// Re-executes the current binary from inside an app bundle for `app`.
+fn relaunch(app: &App) {
     let exe = match env::current_exe() {
         Ok(exe) => exe,
         Err(error) => {

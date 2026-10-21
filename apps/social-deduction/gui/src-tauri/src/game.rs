@@ -5,7 +5,7 @@ use crate::review::FILTER;
 use crate::secret::keychain;
 use crate::settings::{Store, snapshot};
 use chrono::{DateTime, TimeZone};
-use free_agent_desktop::settings::save_as;
+use free_agent_desktop::dialog::save_as;
 use social_deduction::config::Name;
 use social_deduction::live::Session;
 use social_deduction::run::prepare;

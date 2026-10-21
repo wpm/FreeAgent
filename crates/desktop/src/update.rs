@@ -81,7 +81,7 @@ async fn install(app: AppHandle, update: Update, stop: fn(&AppHandle)) {
         let message = format!(
             "The update failed: {error}. The installer can be downloaded from the website."
         );
-        return crate::settings::error(&app, "Update Failed", message);
+        return crate::dialog::error(&app, "Update Failed", message);
     }
     stop(&app);
     app.restart();

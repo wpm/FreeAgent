@@ -6,7 +6,8 @@
 //! main window hears of it as a `settings` event carrying the
 //! [`Snapshot`]. A change made from the menus reaches both windows.
 
-use free_agent_desktop::settings::{File, error, save_as};
+use free_agent_desktop::dialog::{error, save_as};
+use free_agent_desktop::settings::File;
 use social_deduction::settings::{
     self, AppSettings, FieldError, GameSettings, Imported, Snapshot, game_title,
 };

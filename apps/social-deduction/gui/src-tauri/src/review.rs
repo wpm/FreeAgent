@@ -6,7 +6,7 @@ use social_deduction::stage;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
-use free_agent_desktop::settings::error;
+use free_agent_desktop::dialog::error;
 
 /// The game logs the dialogs show.
 pub(crate) const FILTER: (&str, &[&str]) = ("Game log", &["jsonl"]);

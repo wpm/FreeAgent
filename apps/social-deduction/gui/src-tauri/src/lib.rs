@@ -26,19 +26,22 @@ pub mod settings;
 
 use free_agent_desktop::catalog::Catalog;
 use social_deduction::live::Session;
-use tauri::{Manager, WindowEvent};
+use tauri::{AppHandle, Manager};
+
+/// Stop the game being prepared or playing, if there is one.
+fn stop(app: &AppHandle) {
+    app.state::<Session>().stop();
+}
 
 /// Open the window and run the app until it closes.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let context = tauri::generate_context!();
     #[cfg(all(target_os = "macos", debug_assertions))]
-    free_agent_desktop::dev_bundle::relaunch_in_bundle(&free_agent_desktop::dev_bundle::App {
-        name: &context.package_info().name,
-        version: &context.package_info().version.to_string(),
-        identifier: &context.config().identifier,
-        icon: include_bytes!("../icons/icon.icns"),
-    });
+    free_agent_desktop::dev_bundle::relaunch_in_bundle(
+        &context,
+        include_bytes!("../icons/icon.icns"),
+    );
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -50,9 +53,7 @@ pub fn run() {
             app.manage(Catalog::open(handle, catalog::prober())?);
             free_agent_desktop::catalog::check_in_background(handle);
             #[cfg(not(debug_assertions))]
-            free_agent_desktop::update::check_in_background(handle, |app| {
-                app.state::<Session>().stop();
-            });
+            free_agent_desktop::update::check_in_background(handle, stop);
             app.set_menu(menu::build(handle)?)?;
             Ok(())
         })
@@ -73,19 +74,7 @@ pub fn run() {
             secret::key_remove,
             secret::key_status
         ])
-        .on_window_event(|window, event| {
-            if window.label() == "main"
-                && let WindowEvent::CloseRequested { .. } = event
-            {
-                window.state::<Session>().stop();
-                if let Some(settings) = window
-                    .app_handle()
-                    .get_webview_window(free_agent_desktop::settings::WINDOW)
-                {
-                    let _ = settings.close();
-                }
-            }
-        })
+        .on_window_event(|window, event| free_agent_desktop::settings::closed(window, event, stop))
         .run(context)
         .expect("the Tauri application runs");
 }

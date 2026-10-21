@@ -1,6 +1,6 @@
 //! An app's settings: the [`Store`] that holds them in a file in the app's
-//! config directory, the Settings window, and the dialogs that tell the
-//! user of a failure and save a file where they pick.
+//! config directory, and the Settings window, which closes with the main
+//! window.
 //!
 //! The app says how its settings are kept with a [`File`]: the file's
 //! name, how it is read and written, and the settings to start from.
@@ -8,7 +8,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 /// The label of the Settings window.
@@ -132,6 +132,20 @@ pub fn show(app: &AppHandle, path: Option<Vec<String>>) -> tauri::Result<()> {
     Ok(())
 }
 
+/// When the main window of `window`'s `event` is closing, call `stop`, as
+/// to stop a game, and close the Settings window.
+pub fn closed(window: &Window, event: &WindowEvent, stop: fn(&AppHandle)) {
+    if window.label() == "main"
+        && let WindowEvent::CloseRequested { .. } = event
+    {
+        let app = window.app_handle();
+        stop(app);
+        if let Some(settings) = app.get_webview_window(WINDOW) {
+            let _ = settings.close();
+        }
+    }
+}
+
 /// `text` percent-encoded, as `encodeURIComponent` encodes it.
 fn encoded(text: &str) -> String {
     text.bytes()
@@ -142,36 +156,6 @@ fn encoded(text: &str) -> String {
             byte => format!("%{byte:02X}"),
         })
         .collect()
-}
-
-/// Tell the user `message`, titled `title`, as an error. It blocks, so it
-/// runs off the main thread.
-pub fn error(app: &AppHandle, title: &str, message: String) {
-    app.dialog()
-        .message(message)
-        .title(title)
-        .kind(MessageDialogKind::Error)
-        .blocking_show();
-}
-
-/// Write `contents` where the user picks, among the files `filter` shows,
-/// named `name` by default. A write that fails is shown, with why, in a
-/// dialog titled `title`. It blocks, so it runs off the main thread.
-pub fn save_as(app: &AppHandle, filter: (&str, &[&str]), name: &str, title: &str, contents: &[u8]) {
-    let Some(path) = app
-        .dialog()
-        .file()
-        .add_filter(filter.0, filter.1)
-        .set_file_name(name)
-        .blocking_save_file()
-        .and_then(|path| path.into_path().ok())
-    else {
-        return;
-    };
-    if let Err(failure) = std::fs::write(&path, contents) {
-        let message = format!("{} couldn't be written: {failure}", path.display());
-        error(app, title, message);
-    }
 }
 
 #[cfg(test)]
