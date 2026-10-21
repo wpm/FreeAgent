@@ -52,7 +52,7 @@
 // last bubble, the keys and a click move the cursor, and Play, then Play
 // again, leaves review until every cue is shown. The console stays clean
 // throughout.
-// What any app's chrome must pass comes from free-agent-gui's
+// What any app's chrome and Settings window must pass comes from free-agent-gui's
 // crates/gui/e2e/chrome.mjs.
 // Screenshots land in ./screenshots for a human to look at.
 //
@@ -62,7 +62,25 @@
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { backend, check, finish, ringed, section, serve, shapes, tablist, tips, watch } from '../../../../crates/gui/e2e/chrome.mjs';
+import {
+  backend,
+  check,
+  finish,
+  groupedLists,
+  helped,
+  models,
+  narrowSettings,
+  refusedPart,
+  ringed,
+  section,
+  serve,
+  settingsControls,
+  settingsWindow,
+  shapes,
+  standInModels,
+  typing,
+  watch,
+} from '../../../../crates/gui/e2e/chrome.mjs';
 
 const dist = resolve(process.argv[2] ?? '../dist');
 const shots = resolve('screenshots');
@@ -726,11 +744,7 @@ await section('favicon', async () => {
 const desktop = {
   settings: {
     general: { appearance: 'system' },
-    providers: [
-      { name: 'Broke', base_url: 'https://api.broke.example/v1', api_key_env: 'BROKE_API_KEY' },
-      { name: 'Mute', base_url: 'https://api.mute.example/v1', api_key_env: 'MUTE_API_KEY' },
-    ],
-    models: { qwen: { base_url: 'http://localhost:1234/v1', id: 'qwen2.5-7b-instruct-1m' } },
+    ...standInModels,
     werewolf: {
       strategy: 'everyone',
       roles: [
@@ -764,8 +778,7 @@ const desktop = {
 };
 
 /** Social Deduction's answers to the stand-in backend, run on the page:
- * the providers and what each lists, where each key is, the menus the
- * main window enables, and the logs saved. The native menu's Go
+ * the menus the main window enables, and the logs saved. The native menu's Go
  * shortcuts take their keys before the page sees them. */
 function answers(standIn) {
   // The menus as the main window last enabled them, and how many logs
@@ -795,47 +808,6 @@ function answers(standIn) {
     true,
   );
   return {
-    providers: [
-      { name: 'OpenAI', base_url: 'https://api.openai.com/v1', api_key_env: 'OPENAI_API_KEY' },
-      { name: 'Anthropic', base_url: 'https://api.anthropic.com/v1', api_key_env: 'ANTHROPIC_API_KEY' },
-      { name: 'Local (localhost:1234)', base_url: 'http://localhost:1234/v1', api_key_env: null },
-      { name: 'Local (localhost:11434)', base_url: 'http://localhost:11434/v1', api_key_env: null },
-    ],
-    checking: [
-      {
-        base_url: 'https://api.broke.example/v1',
-        checked: 1,
-        total: 1,
-        unchecked: { trouble: 'NoCredits', said: 'You have no credits remaining. Add credits at https://billing.broke.example/credits.' },
-      },
-    ],
-    listing: ({ baseUrl }) => {
-      const model = (id, context_window) => ({ id, context_window, hidden: false });
-      const listings = {
-        'https://api.openai.com/v1': { models: [], error: "Couldn't list models: 401, check the API key", checks: {} },
-        'https://api.anthropic.com/v1': {
-          models: [model('claude-opus-5-5', 200000), model('claude-sonnet-5-5', 200000), model('claude-mute-1', 200000)],
-          error: null,
-          checks: { 'claude-opus-5-5': 'Plays', 'claude-sonnet-5-5': 'PlaysUnforced', 'claude-mute-1': { DidNotPlay: 'no tools' } },
-        },
-        'https://api.broke.example/v1': { models: [model('broke-1', 8192)], error: null, checks: {} },
-        'https://api.mute.example/v1': {
-          models: [model('mute-1', 8192), model('mute-2', 8192)],
-          error: null,
-          checks: {
-            'mute-1': { DidNotPlay: 'mute-1 did not play Werewolf: did not answer a vote: no tools' },
-            'mute-2': { DidNotPlay: 'mute-2 did not play Avalon: did not answer as a voter: no tools' },
-          },
-        },
-        'http://localhost:1234/v1': {
-          models: [model('qwen2.5-7b-instruct-1m', 1010000), model('llama-3.2-3b-instruct', 131072)],
-          error: null,
-          checks: { 'qwen2.5-7b-instruct-1m': 'Plays', 'llama-3.2-3b-instruct': 'Plays' },
-        },
-      };
-      return listings[baseUrl] ?? { models: [], error: null, checks: {} };
-    },
-    key_status: ({ variable }) => (variable === 'OPENAI_API_KEY' ? 'InEnvironment' : 'InKeychain'),
     menus: (enabled) => {
       standIn.menus = enabled;
       return null;
@@ -866,119 +838,6 @@ async function sideColored(page) {
       })
       .map((control) => control.outerHTML.slice(0, 80));
   });
-}
-
-/** Check the Models tab of the Settings window `settings`, then go back
- * to the Werewolf tab. */
-async function models(settings) {
-  await settings.click('#tab-models');
-  await settings.waitForSelector('.sd-offered');
-  const providers = await settings.$$eval('.sd-provider h2', (names) => names.map((name) => name.textContent.trim()));
-  check(
-    JSON.stringify(providers) === JSON.stringify(['OpenAI', 'Anthropic', 'Local (localhost:1234)', 'Local (localhost:11434)', 'Broke', 'Mute']),
-    `desktop: each provider is shown by its name (${providers.join(', ')})`,
-  );
-  const card = (name) => `.sd-provider[aria-label="${name}"]`;
-  const text = (selector) => settings.$eval(selector, (element) => element.textContent.trim());
-  const ids = (selector) => settings.$$eval(selector, (found) => found.map((id) => id.textContent.trim()));
-  check(
-    (await text(`${card('Local (localhost:11434)')} .fa-warning`)) === 'The server is running, but no model is loaded.',
-    'desktop: a local server with no model loaded says so',
-  );
-  check((await text(`${card('OpenAI')} .fa-warning`)).includes('401'), 'desktop: a provider that cannot list its models says why');
-  const tip = (selector) => settings.$eval(selector, (element) => element.dataset.tip);
-  check(
-    (await text(`${card('Broke')} .fa-warning`)) ===
-      "Broke's account has no credits left. Add credits at billing.broke.example, then reopen Settings." &&
-      (await tip(`${card('Broke')} .fa-warning`)).startsWith('You have no credits remaining.') &&
-      (await settings.$$(`${card('Broke')} .sd-note`)).length === 0 &&
-      (await text('.sd-status')) === "Some models couldn't be checked. Their providers say why.",
-    "desktop: a provider whose models couldn't be checked says why, and the provider's words are its help",
-  );
-  check(
-    (await text(`${card('Mute')} .sd-note`)) === 'None of its models plays both games. Most often: no tools.' &&
-      (await tip(`${card('Mute')} .sd-note`)) === 'mute-1: no tools\nmute-2: no tools',
-    "desktop: a provider none of whose models play gives the most common reason, and each model's in its help",
-  );
-  check(
-    (await text(`${card('OpenAI')} .fa-chip`)) === 'OPENAI_API_KEY from the environment' &&
-      (await text(`${card('Anthropic')} .fa-chip`)) === 'ANTHROPIC_API_KEY in the keychain' &&
-      (await text(`${card('Local (localhost:1234)')} .fa-chip`)) === 'No key needed',
-    'desktop: each provider says where its key comes from',
-  );
-  const offered = await ids(`${card('Anthropic')} .sd-offered .sd-id`);
-  check(
-    JSON.stringify(offered) === JSON.stringify(['claude-opus-5-5', 'claude-sonnet-5-5']),
-    `desktop: only models that play are available, in the listing's order (${offered.join(', ')})`,
-  );
-  const local = await ids(`${card('Local (localhost:1234)')} .sd-id`);
-  check(
-    JSON.stringify(local) === JSON.stringify(['qwen2.5-7b-instruct-1m', 'llama-3.2-3b-instruct']),
-    `desktop: a model added is under its provider and not available again (${local.join(', ')})`,
-  );
-  const untipped = await settings.$$eval('.sd-settings button, .sd-settings input', (all) =>
-    all.filter((element) => !element.closest('[data-tip]')).map((element) => element.outerHTML.slice(0, 80)),
-  );
-  check(untipped.length === 0, `desktop: everything on the Models tab has help (${untipped.join(' ')})`);
-  const [chip] = await shapes(settings, `${card('OpenAI')} .fa-chip`);
-  check(
-    chip.height === 26 && chip.radius === '13px' && chip.background === 'rgb(240, 240, 240)' && chip.weight === '600',
-    `desktop: where a key comes from is a gray chip (${JSON.stringify(chip)})`,
-  );
-  const [add] = await shapes(settings, `${card('Anthropic')} .sd-offered button`);
-  check(add.height === 32 && add.radius === '8px', `desktop: a model's Add is a small secondary button (${JSON.stringify(add)})`);
-  const sided = await sideColored(settings);
-  check(sided.length === 0, `desktop: no control on the Models tab is red or blue (${sided.join(' ')})`);
-  const flags = await settings.$$eval('.sd-provider .fa-warning', (warnings) =>
-    warnings.map((warning) => getComputedStyle(warning, '::before').backgroundColor),
-  );
-  check(
-    flags.length >= 3 && flags.every((flag) => flag === 'rgb(242, 179, 0)'),
-    `desktop: every problem on the Models tab is a marigold warning (${flags.join(', ')})`,
-  );
-  // The pictures are at the size of the design's.
-  await settings.setViewportSize({ width: 1040, height: 1100 });
-  await settings.keyboard.press('Escape');
-  await settings.screenshot({ path: join(shots, 'settings-models.png') });
-  await settings.emulateMedia({ colorScheme: 'dark' });
-  await settings.screenshot({ path: join(shots, 'settings-models-dark.png') });
-  await settings.emulateMedia({ colorScheme: 'light' });
-  await settings.setViewportSize({ width: 760, height: 560 });
-  // Adding a model asks for its name, filled in with its id.
-  await settings.click(`${card('Anthropic')} .sd-offered button`);
-  const name = `${card('Anthropic')} .sd-adding input`;
-  await settings.waitForSelector(name);
-  check((await settings.$eval(name, (input) => input.value)) === 'claude-opus-5-5', 'desktop: a model added is first named for its id');
-  await settings.fill(name, 'qwen');
-  await settings.press(name, 'Enter');
-  await settings.waitForSelector(`${card('Anthropic')} .fa-field-error`);
-  check(
-    (await text(`${card('Anthropic')} .fa-field-error`)) === 'Another model already has that name.',
-    'desktop: a name another model has is refused',
-  );
-  await settings.fill(name, 'opus');
-  await settings.press(name, 'Enter');
-  await settings.waitForSelector(`${card('Anthropic')} input.sd-name`);
-  check((await settings.$eval(`${card('Anthropic')} input.sd-name`, (input) => input.value)) === 'opus', 'desktop: the model is added under the name given');
-  // A name emptied is refused, and the old one is put back.
-  const qwen = `${card('Local (localhost:1234)')} input.sd-name`;
-  await settings.fill(qwen, '');
-  await settings.press(qwen, 'Tab');
-  check((await settings.$eval(qwen, (input) => input.value)) === 'qwen', 'desktop: an empty name is refused');
-  // The context window is the provider's until a number is typed, and
-  // Reset puts it back.
-  const window = `${card('Local (localhost:1234)')} .sd-window input`;
-  const shown = () => settings.$eval(window, (input) => [input.value, input.placeholder]);
-  check(JSON.stringify(await shown()) === JSON.stringify(['', '1,010,000']), "desktop: an empty context window shows the provider's figure");
-  await settings.fill(window, '32768');
-  await settings.press(window, 'Tab');
-  await settings.waitForSelector(`${card('Local (localhost:1234)')} .sd-window button`);
-  check((await shown())[0] === '32,768', 'desktop: a context window typed overrides it');
-  await settings.screenshot({ path: join(shots, 'settings-models-added.png'), fullPage: true });
-  await settings.click(`${card('Local (localhost:1234)')} .sd-window button`);
-  check((await shown())[0] === '', 'desktop: Reset goes back to the provider\'s figure');
-  await settings.click('#tab-werewolf');
-  await settings.waitForSelector('.fa-stepper input');
 }
 
 await section('desktop', async () => {
@@ -1063,24 +922,9 @@ await section('desktop', async () => {
   const settings = watch(await app.newPage());
   await settings.setViewportSize({ width: 760, height: 560 });
   await settings.goto(`${origin}#settings`);
-  await settings.waitForSelector('.sd-sidebar [role="tab"]');
-  await tablist(settings, 'desktop', '.sd-sidebar', ['General', 'Models', 'Werewolf', 'Avalon']);
-  await settings.screenshot({ path: join(shots, 'settings-general.png'), fullPage: true });
-  const headings = await settings.$$eval('.sd-settings h2', (elements) => elements.map((element) => element.textContent.trim()));
-  check(
-    JSON.stringify(headings) === JSON.stringify(['Appearance']),
-    `desktop: General has the look alone (${headings.join(', ')})`,
-  );
-  // Help shows under what the pointer is over, and under what has the
-  // keyboard's focus.
-  await tips(settings, 'desktop', {
-    hover: { selector: '.fa-segments button:has-text("Light")', text: 'Light, whatever' },
-    focus: { selector: '.fa-segments button:has-text("Dark")', text: 'Dark, whatever' },
-    press: '#tab-general',
-    shot: join(shots, 'settings-tip.png'),
-  });
+  await settingsWindow(settings, 'desktop', { tabs: ['General', 'Models', 'Werewolf', 'Avalon'], shots });
   await settings.click('#tab-werewolf');
-  await settings.waitForSelector('.sd-page-head h1');
+  await settings.waitForSelector('.fa-page-head h1');
   await settings.screenshot({ path: join(shots, 'settings-werewolf.png'), fullPage: true });
   const sideSaid = await settings.$$eval('.sd-square', (squares) =>
     squares.map((square) => [square.getAttribute('role'), square.getAttribute('aria-label'), getComputedStyle(square).backgroundColor]),
@@ -1097,13 +941,17 @@ await section('desktop', async () => {
   const policyFocus = await policy.evaluate(() => document.activeElement.closest('.fa-segments')?.getAttribute('aria-label') ?? document.activeElement.outerHTML.slice(0, 60));
   check(policyFocus === 'Policy', `desktop: Settings opened at a policy error focuses the policy (${policyFocus})`);
   await policy.close();
-  await models(settings);
+  await models(settings, 'desktop', { plays: 'both games', shots });
+  const modelsSided = await sideColored(settings);
+  check(modelsSided.length === 0, `desktop: no control on the Models tab is red or blue (${modelsSided.join(' ')})`);
+  await settings.click('#tab-werewolf');
+  await settings.waitForSelector('.fa-stepper input');
   const players = await settings.$$eval('.fa-stepper input', (inputs) => inputs.map((input) => input.value));
   check(JSON.stringify(players) === JSON.stringify(['2', '3', '1', '1']), `desktop: the Werewolf tab shows each role's count (${players.join(', ')})`);
   const notes = await settings.$$eval('.sd-role, .sd-limit', (rows) =>
     rows.map((row) => {
-      const note = row.querySelector('.sd-note');
-      return `${row.querySelector('.sd-item-name').textContent}: ${note.checkVisibility() ? note.textContent : ''}`;
+      const note = row.querySelector('.fa-note');
+      return `${row.querySelector('.fa-item-name').textContent}: ${note.checkVisibility() ? note.textContent : ''}`;
     }),
   );
   check(
@@ -1112,7 +960,7 @@ await section('desktop', async () => {
       notes.every((note) => !note.endsWith(': ')),
     `desktop: what each role and phase does is written under its name (${notes.join('; ')})`,
   );
-  const [restore] = await shapes(settings, '.sd-page-head > button');
+  const [restore] = await shapes(settings, '.fa-page-head > button');
   check(
     restore.text === 'Restore defaults…' && restore.height === 40 && restore.radius === '10px' && restore.border === '1px rgb(196, 196, 196)' &&
       restore.background === 'rgb(255, 255, 255)' && restore.shadow !== 'none',
@@ -1124,20 +972,6 @@ await section('desktop', async () => {
     stepper.height === 36 && stepper.radius === '10px' && stepper.border === '1px rgb(196, 196, 196)' && fewer.width === 36 && count.width === 40,
     `desktop: a stepper is one joined control (${JSON.stringify([stepper, fewer, count])})`,
   );
-  const [select] = await shapes(settings, '.fa-select');
-  check(
-    select.appearance === 'none' && select.icon && select.height === 36 && select.radius === '8px',
-    `desktop: a select is a field with a chevron drawn beside it (${JSON.stringify(select)})`,
-  );
-  const [field] = await shapes(settings, '.sd-adder-strategy input');
-  check(field.height === 36 && field.radius === '8px' && field.shadow.includes('inset'), `desktop: a text field is sunk into the page (${JSON.stringify(field)})`);
-  const [prompt] = await shapes(settings, '.sd-strategy textarea');
-  check(prompt.font.includes('monospace'), `desktop: a prompt is monospace (${prompt.font})`);
-  const [remove] = await shapes(settings, '.fa-remove');
-  check(
-    remove.width === 32 && remove.height === 32 && remove.radius === '8px' && remove.icon && remove.shadow === 'none',
-    `desktop: a remove button is a square drawn with an icon (${JSON.stringify(remove)})`,
-  );
   const [quiet] = await shapes(settings, '.sd-assigned .fa-link');
   check(
     quiet.background === 'rgba(0, 0, 0, 0)' && quiet.shadow === 'none' && quiet.border.startsWith('0px'),
@@ -1145,86 +979,35 @@ await section('desktop', async () => {
   );
   const sided = await sideColored(settings);
   check(sided.length === 0, `desktop: no control on the Werewolf tab is red or blue (${sided.join(' ')})`);
-  const unringed = await ringed(settings, 30);
-  check(unringed.length === 0, `desktop: every control on the Werewolf tab shows a focus ring (${unringed.join(' ')})`);
+  await settingsControls(settings, 'desktop', { rings: 30 });
   // Each section is grouped lists, rows on hairlines, with no box inside
   // a list but its controls.
-  await settings.fill('.sd-adder-strategy input', 'bold');
-  await settings.click('.sd-adder-strategy button');
-  await settings.waitForSelector('.sd-strategy >> nth=1');
-  const page = await settings.evaluate(() => {
-    const controls = 'button, input, select, textarea, .fa-stepper, .fa-segments, .fa-select-box';
-    const boxed = (element) => {
-      const style = getComputedStyle(element);
-      return ['Top', 'Right', 'Bottom', 'Left'].every((side) => style[`border${side}Width`] !== '0px' && style[`border${side}Style`] !== 'none');
-    };
-    const lists = [...document.querySelectorAll('.sd-list')];
-    return {
-      sidebar: document.querySelector('.sd-sidebar').getBoundingClientRect().width,
-      lists: lists.length,
-      nested: lists.flatMap((list) =>
-        [...list.querySelectorAll('*')].filter((inner) => !inner.closest(controls) && boxed(inner)).map((inner) => inner.outerHTML.slice(0, 60)),
-      ),
-      limit: document.querySelector('.sd-limit input').getBoundingClientRect().width,
-      uses: [...document.querySelectorAll('.sd-part .sd-uses')].map((uses) => uses.textContent),
-      pulled: document.querySelector('.sd-part code').textContent,
-    };
-  });
-  check(page.sidebar === 220 && page.lists >= 6, `desktop: the Werewolf page is a sidebar beside grouped lists (${JSON.stringify(page)})`);
-  check(page.nested.length === 0, `desktop: no grouped list holds another box (${page.nested.join(' ')})`);
+  await settings.fill('.fa-adder-strategy input', 'bold');
+  await settings.click('.fa-adder-strategy button');
+  await settings.waitForSelector('.fa-strategy >> nth=1');
+  const page = await settings.evaluate(() => ({
+    limit: document.querySelector('.sd-limit input').getBoundingClientRect().width,
+    uses: [...document.querySelectorAll('.fa-part .fa-uses')].map((uses) => uses.textContent),
+    pulled: document.querySelector('.fa-part code').textContent,
+  }));
   check(page.limit === 80, `desktop: a phase limit's field is short (${page.limit}px)`);
   check(JSON.stringify(page.uses) === JSON.stringify(['used by 1 strategy']), `desktop: a prompt part shows its uses (${page.uses})`);
   check(page.pulled === '{{ rules }}', `desktop: a prompt part shows how to pull it in (${page.pulled})`);
-  await settings.fill('.sd-adder-part input', 'the-tone');
-  await settings.click('.sd-adder-part button');
-  const refused = await settings.$eval('.sd-adder-part', (adder) => adder.textContent);
-  check(refused.includes('Use letters, digits, underscores and spaces'), `desktop: a prompt part's name is letters, digits, underscores and spaces (${refused})`);
+  await groupedLists(settings, 'desktop', { lists: 6 });
+  await refusedPart(settings, 'desktop');
   await settings.screenshot({ path: join(shots, 'settings-werewolf-wide.png'), fullPage: true });
   // Every control on the General, Werewolf and Avalon pages has help.
-  const unhelped = [];
-  for (const tab of ['general', 'werewolf', 'avalon']) {
-    await settings.click(`#tab-${tab}`);
-    await settings.waitForTimeout(100);
-    unhelped.push(
-      ...(await settings.$$eval('.sd-settings button, .sd-settings input, .sd-settings select, .sd-settings textarea, .sd-settings h2, .sd-settings h3', (elements) =>
-        elements.filter((element) => !element.closest('[data-tip]:not([data-tip=""])') && !element.querySelector('[data-tip]:not([data-tip=""])')).map((element) => element.outerHTML.slice(0, 80)),
-      )),
-    );
-  }
-  check(unhelped.length === 0, `desktop: everything on General, Werewolf and Avalon has help${unhelped.map((element) => `; ${element}`).join('')}`);
+  await helped(settings, 'desktop', ['general', 'werewolf', 'avalon']);
   await settings.screenshot({ path: join(shots, 'settings-avalon.png'), fullPage: true });
   // On a narrow window the sidebar stacks above the page.
   await settings.click('#tab-werewolf');
-  await settings.setViewportSize({ width: 520, height: 700 });
-  await settings.waitForTimeout(100);
-  const narrowSettings = await settings.evaluate(() => {
-    const box = (selector) => document.querySelector(selector).getBoundingClientRect();
-    const pane = document.scrollingElement;
-    return {
-      stacked: box('.sd-page').top >= box('.sd-sidebar').bottom,
-      wide: Math.max(pane.scrollWidth, document.querySelector('.sd-settings').scrollWidth),
-      window: pane.clientWidth,
-    };
-  });
-  check(narrowSettings.stacked, 'desktop: a narrow Settings window stacks the sidebar above the page');
-  check(narrowSettings.wide <= narrowSettings.window, `desktop: a narrow Settings window scrolls only down (${narrowSettings.wide} in ${narrowSettings.window})`);
-  await settings.screenshot({ path: join(shots, 'settings-werewolf-narrow.png'), fullPage: true });
-  await settings.setViewportSize({ width: 760, height: 560 });
+  await narrowSettings(settings, 'desktop', join(shots, 'settings-werewolf-narrow.png'));
   // Typing goes on into a new prompt part and a phase limit, each change
   // stored as it is made.
-  await settings.fill('.sd-adder-part input', 'tone');
-  await settings.click('.sd-adder-part button');
-  const part = '[id="field-werewolf.prompt_parts.tone"]';
-  await settings.click(part);
-  await settings.keyboard.type('Speak briefly.', { delay: 30 });
-  const typed = await settings.$eval(part, (area) => ({ value: area.value, focused: document.activeElement === area }));
-  check(typed.value === 'Speak briefly.' && typed.focused, `desktop: typing goes on in a new prompt part (${JSON.stringify(typed)})`);
-  const limit = '[id="field-werewolf.phases.night_limit"]';
-  await settings.fill(limit, '');
-  await settings.click(limit);
-  await settings.keyboard.type('45s', { delay: 30 });
-  const limited = await settings.$eval(limit, (input) => ({ value: input.value, focused: document.activeElement === input }));
-  check(limited.value === '45s' && limited.focused, `desktop: typing goes on in a phase limit (${JSON.stringify(limited)})`);
+  await settings.fill('.fa-adder-part input', 'tone');
+  await settings.click('.fa-adder-part button');
+  await typing(settings, 'desktop', { selector: '[id="field-werewolf.prompt_parts.tone"]', text: 'Speak briefly.', what: 'a new prompt part' });
+  await typing(settings, 'desktop', { selector: '[id="field-werewolf.phases.night_limit"]', text: '45s', what: 'a phase limit', empty: true });
   await app.close();
 });
 

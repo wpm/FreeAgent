@@ -8,6 +8,7 @@
 //! ▸ New Game** comes back to the start state from anywhere.
 
 use free_agent_gui::chrome::{Spinner, StartHead};
+use free_agent_gui::settings::settings_get;
 use free_agent_gui::style::FreeAgentStyle;
 use free_agent_gui::tauri::{Channel, listen, open_url};
 use free_agent_gui::theme::set_theme;
@@ -48,7 +49,7 @@ pub fn Desktop() -> impl IntoView {
     let shown = StoredValue::new(Vec::<Cue>::new());
 
     spawn_local(async move {
-        match tauri::settings_get().await {
+        match settings_get().await {
             Ok(got) => snapshot.set(Some(got)),
             Err(failure) => error.set(Some(failure)),
         }

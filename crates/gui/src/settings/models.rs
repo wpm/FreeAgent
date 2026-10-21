@@ -7,18 +7,55 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
-use free_agent_gui::chrome::{Cross, Spinner};
-use free_agent_gui::tauri::listen;
+use free_agent_gui_types::settings::{
+    Check, FieldError, KeyStatus, Listed, Listing, ModelSettings, Probe, Progress, Provider,
+    Trouble, Unchecked, host, is_remote, provider_at,
+};
 use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use social_deduction_gui_types::settings::{
-    AppSettings, Check, FieldError, KeyStatus, Listed, Listing, ModelSettings, Probe, Progress,
-    Provider, Trouble, Unchecked, host, is_remote, provider_at,
-};
+use serde_json::json;
 
-use super::{Editor, PageHead, Problem, Tab, field_id, path};
-use crate::tauri;
+use super::{Edited, Editor, MODELS_TIP, PageHead, Problem, field_id, path};
+use crate::chrome::{Cross, Spinner};
+use crate::tauri::{call, listen};
+
+/// The providers, local servers that answer among them.
+async fn providers() -> Result<Vec<Provider>, String> {
+    call("providers", json!({})).await
+}
+
+/// The models the provider at `base_url` lists now, with what probing
+/// found of each, its probes forgotten first when `forget` says. Its
+/// models not yet probed are probed in the background.
+async fn listing(
+    base_url: String,
+    api_key_env: Option<String>,
+    forget: bool,
+) -> Result<Listing, String> {
+    let args = json!({ "baseUrl": base_url, "apiKeyEnv": api_key_env, "forget": forget });
+    call("listing", args).await
+}
+
+/// How far probing each provider has got.
+async fn checking() -> Result<Vec<Progress>, String> {
+    call("checking", json!({})).await
+}
+
+/// Store `key` in the keychain for `variable`.
+async fn key_store(variable: String, key: String) -> Result<(), String> {
+    call("key_store", json!({ "variable": variable, "key": key })).await
+}
+
+/// Remove the key stored for `variable`.
+async fn key_remove(variable: String) -> Result<(), String> {
+    call("key_remove", json!({ "variable": variable })).await
+}
+
+/// Where the key for `variable` is.
+async fn key_status(variable: String) -> Result<KeyStatus, String> {
+    call("key_status", json!({ "variable": variable })).await
+}
 
 /// What a provider is, which its name's help explains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,10 +181,11 @@ pub fn unchecked_line(name: &str, unchecked: &Unchecked) -> String {
     }
 }
 
-/// What a provider whose `listing` holds no model that plays says: a note
-/// giving the reason most of them did not play, the first of the most
-/// common in the listing's order, and a tip giving each model's reason.
-pub fn not_playing(listing: &Listing) -> (String, String) {
+/// What a provider whose `listing` holds no model that plays `plays` says:
+/// a note giving the reason most of them did not play, the first of the
+/// most common in the listing's order, and a tip giving each model's
+/// reason.
+pub fn not_playing(listing: &Listing, plays: &str) -> (String, String) {
     let reasons: Vec<(&str, &str)> = listing
         .models
         .iter()
@@ -167,7 +205,7 @@ pub fn not_playing(listing: &Listing) -> (String, String) {
         .max_by_key(|&(place, &(_, count))| (count, Reverse(place)))
         .map_or("", |(_, &(why, _))| why);
     let note = format!(
-        "None of its models plays both games. Most often: {}.",
+        "None of its models plays {plays}. Most often: {}.",
         most.trim_end_matches('.')
     );
     let tip = reasons
@@ -191,16 +229,20 @@ fn unchecked<'a>(
 }
 
 /// The line at the top of the tab once no models are being checked: that
-/// every model is, unless a provider of `shown` could not check some, as
-/// `progress` says.
-pub fn checked_line(progress: &BTreeMap<String, Progress>, shown: &[Provider]) -> &'static str {
+/// every model is, and only those that play `plays` are listed, unless a
+/// provider of `shown` could not check some, as `progress` says.
+pub fn checked_line(
+    progress: &BTreeMap<String, Progress>,
+    shown: &[Provider],
+    plays: &str,
+) -> String {
     if shown
         .iter()
         .any(|provider| unchecked(progress, &provider.base_url).is_some())
     {
-        "Some models couldn't be checked. Their providers say why."
+        "Some models couldn't be checked. Their providers say why.".to_string()
     } else {
-        "Every model is checked. Only those that play both games are listed."
+        format!("Every model is checked. Only those that play {plays} are listed.")
     }
 }
 
@@ -213,19 +255,6 @@ pub fn model_errors(errors: &[FieldError], name: &str) -> Vec<String> {
         )
         .map(|error| error.message.clone())
         .collect()
-}
-
-/// Change the settings with `change`, and send them to be stored, unless
-/// it fails.
-fn attempt(
-    editor: Editor,
-    change: impl FnOnce(&mut AppSettings) -> Result<(), String>,
-) -> Result<(), String> {
-    let mut changed = editor.settings.get_untracked();
-    change(&mut changed)?;
-    editor.settings.set(changed);
-    editor.send();
-    Ok(())
 }
 
 /// What the Models page knows of the providers.
@@ -250,7 +279,7 @@ impl Catalog {
             listings.entry(base_url.clone()).or_default();
         });
         spawn_local(async move {
-            let listing = tauri::listing(base_url.clone(), api_key_env, forget)
+            let listing = listing(base_url.clone(), api_key_env, forget)
                 .await
                 .unwrap_or_else(|failure| Listing {
                     error: Some(failure),
@@ -265,7 +294,7 @@ impl Catalog {
     /// Ask where the key `variable` names is.
     fn key_status(self, variable: String) {
         spawn_local(async move {
-            let status = tauri::key_status(variable.clone())
+            let status = key_status(variable.clone())
                 .await
                 .unwrap_or_else(KeyStatus::Unavailable);
             self.keys.update(|keys| {
@@ -302,9 +331,15 @@ impl Catalog {
 }
 
 /// The Models page: **Add provider…** by its title, the line saying what
-/// is being checked, and a section for each provider.
+/// is being checked, and a section for each provider, listing the models
+/// that play what `plays` names.
 #[component]
-pub(super) fn Models(editor: Editor) -> impl IntoView {
+pub fn Models<S: Edited>(
+    /// The settings.
+    editor: Editor<S>,
+    /// What a model that plays plays: `both games`.
+    plays: &'static str,
+) -> impl IntoView {
     let catalog = Catalog {
         found: RwSignal::new(Vec::new()),
         listings: RwSignal::new(BTreeMap::new()),
@@ -312,12 +347,12 @@ pub(super) fn Models(editor: Editor) -> impl IntoView {
         keys: RwSignal::new(BTreeMap::new()),
     };
     spawn_local(async move {
-        if let Ok(found) = tauri::providers().await {
+        if let Ok(found) = providers().await {
             catalog.found.set(found);
         }
     });
     spawn_local(async move {
-        if let Ok(all) = tauri::checking().await {
+        if let Ok(all) = checking().await {
             catalog.progress.update(|progress| {
                 for each in all {
                     progress.entry(each.base_url.clone()).or_insert(each);
@@ -360,13 +395,12 @@ pub(super) fn Models(editor: Editor) -> impl IntoView {
             None => (
                 catalog
                     .progress
-                    .with(|progress| shown.with(|shown| checked_line(progress, shown)))
-                    .to_string(),
+                    .with(|progress| shown.with(|shown| checked_line(progress, shown, plays))),
                 "Models are checked on first launch and after each update, and again when a provider lists a new model, a key changes, or Settings opens with some not yet checked.",
             ),
         };
         view! {
-            <p class="sd-status" data-tip=tip>
+            <p class="fa-status" data-tip=tip>
                 {checking.then(|| view! { <Spinner /> })}
                 {line}
             </p>
@@ -374,20 +408,20 @@ pub(super) fn Models(editor: Editor) -> impl IntoView {
     };
     let adding = RwSignal::new(false);
     view! {
-        <PageHead title="Models" tip=Tab::Models.tip()>
+        <PageHead title="Models" tip=MODELS_TIP>
             <button on:click=move |_| adding.set(true) disabled=move || adding.get() data-tip="Add another OpenAI-compatible provider by its address.">"Add provider…"</button>
         </PageHead>
         <Show when=move || adding.get()>
             <AddProvider editor=editor opened=adding />
         </Show>
-        <div class="sd-providers">
+        <div class="fa-providers">
             {status}
             <For
                 each=move || shown.get()
                 key=|provider| (provider.name.clone(), provider.base_url.clone(), provider.api_key_env.clone())
                 let:provider
             >
-                <ProviderSection editor=editor catalog=catalog provider=provider />
+                <ProviderSection editor=editor catalog=catalog provider=provider plays=plays />
             </For>
         </div>
     }
@@ -396,7 +430,12 @@ pub(super) fn Models(editor: Editor) -> impl IntoView {
 /// A provider's section: its name and base URL, its key, the models added
 /// from it, and those it offers that play and are not added.
 #[component]
-fn ProviderSection(editor: Editor, catalog: Catalog, provider: Provider) -> impl IntoView {
+fn ProviderSection<S: Edited>(
+    editor: Editor<S>,
+    catalog: Catalog,
+    provider: Provider,
+    plays: &'static str,
+) -> impl IntoView {
     let kind = catalog
         .found
         .with_untracked(|found| Kind::of(&provider, found));
@@ -415,7 +454,7 @@ fn ProviderSection(editor: Editor, catalog: Catalog, provider: Provider) -> impl
             view! { <KeyField catalog=catalog variable=variable changed=changed /> }.into_any()
         }
         None => view! {
-            <div class="sd-key">
+            <div class="fa-key">
                 <span class="fa-chip" data-tip="A model server on this computer. It doesn't need an API key.">"No key needed"</span>
             </div>
         }
@@ -432,7 +471,7 @@ fn ProviderSection(editor: Editor, catalog: Catalog, provider: Provider) -> impl
         let mine = [provider.clone()];
         Memo::new(move |_| {
             editor.settings.with(|s| {
-                s.models
+                s.models()
                     .iter()
                     .filter(|(_, model)| provider_at(&mine, &model.base_url).is_some())
                     .map(|(name, _)| name.clone())
@@ -441,26 +480,26 @@ fn ProviderSection(editor: Editor, catalog: Catalog, provider: Provider) -> impl
         })
     };
     view! {
-        <section class="sd-section sd-provider" aria-label=name.clone()>
-            <div class="sd-section-head">
+        <section class="fa-section fa-provider" aria-label=name.clone()>
+            <div class="fa-section-head">
                 <h2 data-tip=kind.tip()>{name.clone()}</h2>
-                <code class="sd-url" data-tip="The address this provider's models are reached at.">{base_url.clone()}</code>
+                <code class="fa-url" data-tip="The address this provider's models are reached at.">{base_url.clone()}</code>
                 {(kind == Kind::Added).then(|| view! {
                     <button class="fa-link" on:click=remove data-tip="Remove this provider and its models.">"Remove provider"</button>
                 })}
             </div>
             {key}
             <Show when=move || names.with(|names| !names.is_empty())>
-                <div class="sd-group">
-                    <h3 class="sd-label" data-tip="The models from this provider your strategies can use.">"Your models"</h3>
-                    <div class="sd-list">
+                <div class="fa-group">
+                    <h3 class="fa-label" data-tip="The models from this provider your strategies can use.">"Your models"</h3>
+                    <div class="fa-list">
                         <For each=move || names.get() key=Clone::clone let:name>
                             <ModelRow editor=editor fetched=fetched name=name />
                         </For>
                     </div>
                 </div>
             </Show>
-            <Available editor=editor catalog=catalog provider=provider.clone() fetched=fetched names=names />
+            <Available editor=editor catalog=catalog provider=provider.clone() fetched=fetched names=names plays=plays />
         </section>
     }
 }
@@ -469,12 +508,13 @@ fn ProviderSection(editor: Editor, catalog: Catalog, provider: Provider) -> impl
 /// **Add**, which asks for its name; or why there are none; and why some
 /// could not be checked, once checking ends.
 #[component]
-fn Available(
-    editor: Editor,
+fn Available<S: Edited>(
+    editor: Editor<S>,
     catalog: Catalog,
     provider: Provider,
     fetched: Memo<Option<Listing>>,
     names: Memo<Vec<String>>,
+    plays: &'static str,
 ) -> impl IntoView {
     let local = !is_remote(&provider.base_url);
     let added = Memo::new(move |_| {
@@ -482,7 +522,7 @@ fn Available(
             editor.settings.with(|s| {
                 names
                     .iter()
-                    .filter_map(|name| s.models.get(name).map(|m| m.id.clone()))
+                    .filter_map(|name| s.models().get(name).map(|m| m.id.clone()))
                     .collect::<BTreeSet<_>>()
             })
         })
@@ -520,12 +560,12 @@ fn Available(
         let listed = fetched.with(|listing| listing.as_ref().is_some_and(|l| l.error.is_none()));
         let count = pending.get().filter(|_| listed)?;
         Some(view! {
-            <p class="sd-note" data-tip="Checked in the background. Each appears here if it plays.">{format!("Checking {count} more…")}</p>
+            <p class="fa-note" data-tip="Checked in the background. Each appears here if it plays.">{format!("Checking {count} more…")}</p>
         })
     };
     // Why none are available, when none are.
     let none = move || {
-        let note = |text: &'static str| view! { <p class="sd-note">{text}</p> }.into_any();
+        let note = |text: &'static str| view! { <p class="fa-note">{text}</p> }.into_any();
         fetched.with(|listing| {
             let Some(listing) = listing else {
                 return Some(note("Listing its models…"));
@@ -563,8 +603,8 @@ fn Available(
                     "Every model this provider has that plays is already added.",
                 ));
             }
-            let (text, tip) = not_playing(listing);
-            Some(view! { <p class="sd-note" data-tip=tip>{text}</p> }.into_any())
+            let (text, tip) = not_playing(listing, plays);
+            Some(view! { <p class="fa-note" data-tip=tip>{text}</p> }.into_any())
         })
     };
     let troubled = {
@@ -583,9 +623,9 @@ fn Available(
         {troubled}
         {none}
         <Show when=move || rows.with(|rows| !rows.is_empty())>
-            <div class="sd-group">
-                <h3 class="sd-label" data-tip="Models from this provider that play both games and aren't added yet, most capable first.">"Available"</h3>
-                <div class="sd-list">
+            <div class="fa-group">
+                <h3 class="fa-label" data-tip=format!("Models from this provider that play {plays} and aren't added yet, most capable first.")>"Available"</h3>
+                <div class="fa-list">
                     <For each=move || rows.get() key=|model| model.id.clone() let:model>
                         <Offered editor=editor provider=provider.get_value() model=model adding=adding />
                     </For>
@@ -599,8 +639,8 @@ fn Available(
 /// A model a provider offers: its id, its context window and **Add**, or,
 /// once **Add** is pressed, a field for its name.
 #[component]
-fn Offered(
-    editor: Editor,
+fn Offered<S: Edited>(
+    editor: Editor<S>,
     provider: Provider,
     model: Listed,
     adding: RwSignal<Option<String>>,
@@ -622,7 +662,7 @@ fn Offered(
                 api_key_env: provider.api_key_env.clone(),
                 ..ModelSettings::default()
             };
-            match attempt(editor, |s| s.add_model(&input.value(), model)) {
+            match editor.attempt(|s| s.add_model(&input.value(), model)) {
                 Ok(()) => adding.set(None),
                 Err(why) => problem.set(Some(why)),
             }
@@ -652,15 +692,15 @@ fn Offered(
         <Show
             when=opened
             fallback=move || view! {
-                <div class="sd-item sd-offered">
-                    <code class="sd-id">{id.clone()}</code>
-                    <span class="sd-tokens" data-tip="The context window the provider reports.">{format!("{} tokens", grouped(context_window))}</span>
+                <div class="fa-item fa-offered">
+                    <code class="fa-model-id">{id.clone()}</code>
+                    <span class="fa-tokens" data-tip="The context window the provider reports.">{format!("{} tokens", grouped(context_window))}</span>
                     <button class="fa-small" on:click=open.clone() data-tip="Make this model available to strategies. You name it next.">"Add"</button>
                 </div>
             }
         >
-            <div class="sd-item sd-adding">
-                <code class="sd-id">{shown_id.clone()}</code>
+            <div class="fa-item fa-adding">
+                <code class="fa-model-id">{shown_id.clone()}</code>
                 <input
                     type="text"
                     node_ref=field
@@ -693,13 +733,17 @@ fn Offered(
 /// window, **×**, and, when it no longer plays, a warning row under it
 /// naming the strategies that ask it.
 #[component]
-fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> impl IntoView {
+fn ModelRow<S: Edited>(
+    editor: Editor<S>,
+    fetched: Memo<Option<Listing>>,
+    name: String,
+) -> impl IntoView {
     let model = {
         let name = name.clone();
         Memo::new(move |_| {
             editor
                 .settings
-                .with(|s| s.models.get(&name).cloned().unwrap_or_default())
+                .with(|s| s.models().get(&name).cloned().unwrap_or_default())
         })
     };
     let users = {
@@ -730,7 +774,7 @@ fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> imp
         move |event| {
             let input = event_target::<web_sys::HtmlInputElement>(&event);
             let wanted = input.value();
-            match attempt(editor, |s| s.rename_model(&name, &wanted)) {
+            match editor.attempt(|s| s.rename_model(&name, &wanted)) {
                 Ok(()) => problem.set(None),
                 Err(why) => {
                     input.set_value(&name);
@@ -778,10 +822,10 @@ fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> imp
         }
     };
     view! {
-        <div class="sd-item">
+        <div class="fa-item">
             <input
                 type="text"
-                class="sd-name"
+                class="fa-model-name"
                 id=field_id(&path(&["models", &name]))
                 spellcheck="false"
                 autocomplete="off"
@@ -795,10 +839,10 @@ fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> imp
                     }
                 }
             />
-            <code class="sd-id" id=field_id(&path(&["models", &name, "id"])) data-tip="The id the provider lists this model under.">
+            <code class="fa-model-id" id=field_id(&path(&["models", &name, "id"])) data-tip="The id the provider lists this model under.">
                 {move || model.with(|m| m.id.clone())}
             </code>
-            <span class="sd-window">
+            <span class="fa-context-window">
                 <input
                     type="text"
                     inputmode="numeric"
@@ -824,7 +868,7 @@ fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> imp
                 on:click=move |_| {
                     let removed = removed.clone();
                     editor.edit(move |s| {
-                        s.models.remove(&removed);
+                        s.models_mut().remove(&removed);
                     });
                 }
             >
@@ -837,7 +881,7 @@ fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> imp
             let users = users.get();
             let used = if users.is_empty() { String::new() } else { format!(" Used by {}.", users.join(", ")) };
             view! {
-                <div class="sd-item">
+                <div class="fa-item">
                     <p class="fa-warning" data-tip="It failed the check after the last app update, or the provider changed the model behind its id. Games using it will likely fail. Pick another model for its strategies, or remove it.">
                         {format!("No longer plays.{used}")}
                     </p>
@@ -888,7 +932,7 @@ fn KeyField(catalog: Catalog, variable: String, changed: Callback<()>) -> impl I
             }
             let (variable, answered) = (variable.clone(), answered.clone());
             spawn_local(async move {
-                let result = tauri::key_store(variable, key).await;
+                let result = key_store(variable, key).await;
                 input.set_value("");
                 answered(result);
             });
@@ -898,7 +942,7 @@ fn KeyField(catalog: Catalog, variable: String, changed: Callback<()>) -> impl I
         let variable = variable.clone();
         move |_| {
             let (variable, answered) = (variable.clone(), answered.clone());
-            spawn_local(async move { answered(tauri::key_remove(variable).await) });
+            spawn_local(async move { answered(key_remove(variable).await) });
         }
     };
     let chip = {
@@ -927,7 +971,7 @@ fn KeyField(catalog: Catalog, variable: String, changed: Callback<()>) -> impl I
     };
     let form_shown = move || opened.get() || status.get().is_some_and(|status| !status.is_set());
     view! {
-        <div class="sd-key">
+        <div class="fa-key">
             {chip}
             <Show when=move || status.get() == Some(KeyStatus::InKeychain)>
                 <button class="fa-link" on:click=remove.clone() data-tip="Delete the key from the keychain. The environment variable is used again, if it is set.">"Remove from keychain"</button>
@@ -937,7 +981,7 @@ fn KeyField(catalog: Catalog, variable: String, changed: Callback<()>) -> impl I
             </Show>
         </div>
         <Show when=form_shown>
-            <div class="sd-key-form">
+            <div class="fa-key-form">
                 <input type="password" node_ref=field autocomplete="off" placeholder="Paste an API key" aria-label="API key" data-tip="Saved to the system keychain, never to a file, and never shown again." />
                 <button class="fa-primary" on:click=save.clone() data-tip="Store this key in the keychain. The models are listed and checked again with it.">"Save to keychain"</button>
             </div>
@@ -950,7 +994,7 @@ fn KeyField(catalog: Catalog, variable: String, changed: Callback<()>) -> impl I
 /// provider's name, base URL and key variable, which close `opened` once
 /// it is added.
 #[component]
-fn AddProvider(editor: Editor, opened: RwSignal<bool>) -> impl IntoView {
+fn AddProvider<S: Edited>(editor: Editor<S>, opened: RwSignal<bool>) -> impl IntoView {
     let problem = RwSignal::new(None::<String>);
     let (name, base_url, variable) = (
         NodeRef::<html::Input>::new(),
@@ -970,7 +1014,7 @@ fn AddProvider(editor: Editor, opened: RwSignal<bool>) -> impl IntoView {
             base_url: value(base_url),
             api_key_env: (!variable.is_empty()).then_some(variable),
         };
-        match attempt(editor, |s| s.add_provider(provider)) {
+        match editor.attempt(|s| s.add_provider(provider)) {
             Ok(()) => opened.set(false),
             Err(why) => problem.set(Some(why)),
         }
@@ -980,20 +1024,20 @@ fn AddProvider(editor: Editor, opened: RwSignal<bool>) -> impl IntoView {
                  placeholder: &'static str,
                  tip: &'static str| {
         view! {
-            <label class="sd-item">
-                <span class="sd-item-name">{label}</span>
+            <label class="fa-item">
+                <span class="fa-item-name">{label}</span>
                 <input type="text" node_ref=node spellcheck="false" placeholder=placeholder data-tip=tip />
             </label>
         }
     };
     view! {
-        <div class="sd-add-provider">
-            <div class="sd-list">
+        <div class="fa-add-provider">
+            <div class="fa-list">
                 {field("Name", name, "Provider name", "What this provider is called in Settings.")}
                 {field("Base URL", base_url, "https://api.example.com/v1", "The root of an OpenAI-compatible API, ending in /v1.")}
                 {field("Key variable", variable, "EXAMPLE_API_KEY (optional)", "The environment variable the key is read from, and the name it is stored under in the keychain. Leave it empty if the server needs no key.")}
             </div>
-            <div class="sd-adder">
+            <div class="fa-adder">
                 <button class="fa-primary" on:click=confirm data-tip="Add this provider. Its models are listed and checked next.">"Add provider"</button>
                 <button on:click=move |_| opened.set(false) data-tip="Close these fields without adding a provider.">"Cancel"</button>
                 <Problem error=problem.into() />
@@ -1151,15 +1195,15 @@ mod tests {
             )])
         };
         let every = "Every model is checked. Only those that play both games are listed.";
-        assert_eq!(checked_line(&BTreeMap::new(), &shown), every);
-        assert_eq!(checked_line(&ended(None), &shown), every);
+        assert_eq!(checked_line(&BTreeMap::new(), &shown, "both games"), every);
+        assert_eq!(checked_line(&ended(None), &shown, "both games"), every);
         let broke = ended(Some(unchecked(Trouble::NoCredits, "")));
         assert_eq!(
-            checked_line(&broke, &shown),
+            checked_line(&broke, &shown, "both games"),
             "Some models couldn't be checked. Their providers say why."
         );
         // A provider not shown is not counted.
-        assert_eq!(checked_line(&broke, &[]), every);
+        assert_eq!(checked_line(&broke, &[], "both games"), every);
     }
 
     /// Why a model could not be checked: `trouble`, the provider having
@@ -1219,7 +1263,7 @@ mod tests {
                 ("d", no("it made no tool call")),
             ],
         );
-        let (note, tip) = not_playing(&listing);
+        let (note, tip) = not_playing(&listing, "both games");
         assert_eq!(
             note,
             "None of its models plays both games. Most often: it made no tool call."

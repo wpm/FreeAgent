@@ -60,7 +60,8 @@ and asks once for an administrator password. If another
 installed, the item reads **Uninstall Command-Line Tool…**.
 
 **Settings…** (⌘, on macOS, **Edit ▸ Preferences…** and Ctrl+, elsewhere)
-opens the Settings window. Every change is stored as it is made and
+opens the Settings window, Free Agent's, from `crates/gui`. Every change
+is stored as it is made and
 applies to the next game. Each field's error shows in marigold beneath it, and
 hovering over anything, or focusing it, shows what it is and what changing
 it does.
@@ -203,8 +204,8 @@ and `#werewolf-prompted` open them. CI's Viewer job builds the page with
 `build-page.sh` and drives it in headless Chromium with `e2e/check.mjs`,
 which checks what each game shows, opens the desktop app's start state,
 review and Settings window against a stand-in backend, and saves
-screenshots. What any Free Agent app's chrome must pass, it takes from
-`crates/gui/e2e/chrome.mjs`. To run it locally, from the root of a
+screenshots. What any Free Agent app's chrome and Settings window must
+pass, it takes from `crates/gui/e2e/chrome.mjs`. To run it locally, from the root of a
 checkout:
 
 ```sh
