@@ -9,7 +9,8 @@ once it has focus, Home takes it to its narrowest and End to its widest,
 and a double click puts it back. It is a
 [Leptos](https://leptos.dev) page built on
 [Rich-Chat](https://github.com/wpm/Rich-Chat), drawn from the cues a game's
-log folds into. Werewolf's window is dark by night and light by day. Every
+log folds into, in the look every Free Agent app shares, from
+`crates/gui`. Werewolf's window is dark by night and light by day. Every
 push to `main` deploys a freshly played random game of each,
 [Avalon](https://wpm.github.io/FreeAgent/viewer/#avalon) and
 [Werewolf](https://wpm.github.io/FreeAgent/viewer/#werewolf).
@@ -202,7 +203,9 @@ and `#werewolf-prompted` open them. CI's Viewer job builds the page with
 `build-page.sh` and drives it in headless Chromium with `e2e/check.mjs`,
 which checks what each game shows, opens the desktop app's start state,
 review and Settings window against a stand-in backend, and saves
-screenshots. To run it locally, from the root of a checkout:
+screenshots. What any Free Agent app's chrome must pass, it takes from
+`crates/gui/e2e/chrome.mjs`. To run it locally, from the root of a
+checkout:
 
 ```sh
 apps/social-deduction/gui/build-page.sh

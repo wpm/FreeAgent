@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use free_agent_gui::clock::{Clock, Timer};
 use leptos_rich_chat::{Look, Names, Position};
 use social_deduction_gui_types::{
     AvalonPanel, Beat, Cue, Death, GameName, Learned, Millis, NightDeed, NightOutcome, Outcome,
@@ -81,74 +82,6 @@ pub enum Landed {
     Ratify,
     /// A Werewolf player's death.
     Death(PlayerId),
-}
-
-/// Log time as the viewer reads it: the time of the latest cue, run on
-/// at the clock's rate for as long as the viewer has waited since.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Clock {
-    /// Log time when the latest cue arrived.
-    pub at: f64,
-    /// Log milliseconds per viewer millisecond.
-    pub rate: f64,
-    /// Whether the clock runs. A saved game shown at rest stops it at its
-    /// last cue.
-    pub running: bool,
-}
-
-impl Default for Clock {
-    fn default() -> Self {
-        Self {
-            at: 0.0,
-            rate: 1.0,
-            running: false,
-        }
-    }
-}
-
-impl Clock {
-    /// Log time `elapsed` viewer milliseconds after the latest cue arrived.
-    pub fn now(&self, elapsed: f64) -> f64 {
-        if self.running {
-            self.at + elapsed.max(0.0) * self.rate
-        } else {
-            self.at
-        }
-    }
-}
-
-/// A countdown: a phase's, or a tentative decision's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Timer {
-    /// When it started, in log time.
-    pub began: Millis,
-    /// How long it runs.
-    pub limit_ms: u64,
-    /// When it stopped, in log time, if it has: it keeps what it had left
-    /// then.
-    pub stopped: Option<Millis>,
-}
-
-impl Timer {
-    /// Milliseconds left at log time `now`, never below zero.
-    pub fn left(&self, now: f64) -> f64 {
-        let now = self.stopped.map_or(now, |stopped| now.min(stopped as f64));
-        (self.began as f64 + self.limit_ms as f64 - now).clamp(0.0, self.limit_ms as f64)
-    }
-
-    /// Whole seconds left at log time `now`, rounded up.
-    pub fn seconds(&self, now: f64) -> u64 {
-        (self.left(now) / 1_000.0).ceil() as u64
-    }
-
-    /// The share of the countdown left at log time `now`, from 1 to 0.
-    pub fn share(&self, now: f64) -> f64 {
-        if self.limit_ms == 0 {
-            0.0
-        } else {
-            self.left(now) / self.limit_ms as f64
-        }
-    }
 }
 
 /// Everything the screen shows.
@@ -728,11 +661,6 @@ pub fn night(night: &NightOutcome) -> String {
 /// `player`'s seat number: `3` for `Player 3`.
 pub fn seat_number(player: &str) -> &str {
     player.trim_start_matches("Player ")
-}
-
-/// Seconds as a clock shows them: `0:53`.
-pub fn clock(seconds: u64) -> String {
-    format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
 /// A heading's title, its first sentence, and the rest of it, told under
@@ -1353,39 +1281,6 @@ mod tests {
     }
 
     #[test]
-    fn a_timer_counts_down_its_limit_from_its_start() {
-        let timer = Timer {
-            began: 1_000,
-            limit_ms: 20_000,
-            stopped: None,
-        };
-        assert_eq!(timer.left(0.0), 20_000.0);
-        assert_eq!(timer.left(6_000.0), 15_000.0);
-        assert_eq!(timer.seconds(6_500.0), 15);
-        assert_eq!(timer.share(11_000.0), 0.5);
-        assert_eq!(timer.left(30_000.0), 0.0);
-        assert_eq!(timer.seconds(30_000.0), 0);
-        let none = Timer {
-            began: 0,
-            limit_ms: 0,
-            stopped: None,
-        };
-        assert_eq!(none.share(0.0), 0.0);
-    }
-
-    #[test]
-    fn a_stopped_timer_keeps_what_it_had_left_when_it_stopped() {
-        let timer = Timer {
-            began: 1_000,
-            limit_ms: 20_000,
-            stopped: Some(6_000),
-        };
-        assert_eq!(timer.left(3_000.0), 18_000.0);
-        assert_eq!(timer.left(30_000.0), 15_000.0);
-        assert_eq!(timer.seconds(30_000.0), 15);
-    }
-
-    #[test]
     fn the_phase_timer_is_the_latest_boards_of_either_game() {
         assert_eq!(Screen::default().phase_timer(), None);
         let avalon = shown(&[cast(), panel(&board())]);
@@ -1787,9 +1682,6 @@ mod tests {
             night: 1,
         };
         assert_eq!(super::learned(&learned), "Player 6 is a werewolf");
-        assert_eq!(clock(53), "0:53");
-        assert_eq!(clock(72), "1:12");
-        assert_eq!(clock(600), "10:00");
     }
 
     #[test]

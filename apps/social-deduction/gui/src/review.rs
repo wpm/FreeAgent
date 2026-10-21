@@ -9,22 +9,6 @@ use social_deduction_gui_types::{Cue, GameName, Opened, Outcome};
 
 use crate::screen::{Landed, Screen, Timeline, side_key};
 
-/// Where the key `key` takes the cursor, pressed with a modifier or not:
-/// an unmodified arrow to the bubble before or after, and Home or End to
-/// either end. A key pressed with a modifier is the menu's.
-pub fn keyed(key: &str, modified: bool) -> Option<Go> {
-    if modified {
-        return None;
-    }
-    match key {
-        "ArrowUp" | "ArrowLeft" => Some(Go::Previous),
-        "ArrowDown" | "ArrowRight" => Some(Go::Next),
-        "Home" => Some(Go::First),
-        "End" => Some(Go::Last),
-        _ => None,
-    }
-}
-
 /// One game of the log, folded.
 #[derive(Debug, Clone, PartialEq)]
 struct Game {
@@ -395,27 +379,6 @@ mod tests {
         review.go(Go::PreviousChapter);
         review.go(Go::PreviousChapter);
         assert_eq!(review.cursor(), 0);
-    }
-
-    #[test]
-    fn unmodified_arrows_and_home_and_end_move_the_cursor_and_modified_keys_are_the_menu_s() {
-        assert_eq!(keyed("ArrowUp", false), Some(Go::Previous));
-        assert_eq!(keyed("ArrowLeft", false), Some(Go::Previous));
-        assert_eq!(keyed("ArrowDown", false), Some(Go::Next));
-        assert_eq!(keyed("ArrowRight", false), Some(Go::Next));
-        assert_eq!(keyed("Home", false), Some(Go::First));
-        assert_eq!(keyed("End", false), Some(Go::Last));
-        assert_eq!(keyed("a", false), None);
-        for key in [
-            "ArrowUp",
-            "ArrowDown",
-            "ArrowLeft",
-            "ArrowRight",
-            "Home",
-            "End",
-        ] {
-            assert_eq!(keyed(key, true), None);
-        }
     }
 
     #[test]

@@ -14,7 +14,7 @@
 
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { serve } from './serve.mjs';
+import { serve } from '../../../../crates/gui/e2e/serve.mjs';
 
 const { server, origin: root } = await serve(resolve(process.argv[2] ?? '../../../../site'));
 const origin = new URL('social-deduction.html', root).href;

@@ -7,6 +7,8 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
+use free_agent_gui::chrome::{Cross, Spinner};
+use free_agent_gui::tauri::listen;
 use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -15,7 +17,7 @@ use social_deduction_gui_types::settings::{
     Provider, Trouble, Unchecked, host, is_remote, provider_at,
 };
 
-use super::{Cross, Editor, PageHead, Problem, Tab, field_id, path};
+use super::{Editor, PageHead, Problem, Tab, field_id, path};
 use crate::tauri;
 
 /// What a provider is, which its name's help explains.
@@ -323,8 +325,8 @@ pub(super) fn Models(editor: Editor) -> impl IntoView {
             });
         }
     });
-    tauri::listen("probe", move |probe: Probe| catalog.probed(probe));
-    tauri::listen("progress", move |progress: Progress| {
+    listen("probe", move |probe: Probe| catalog.probed(probe));
+    listen("progress", move |progress: Progress| {
         catalog.progress.update(|all| {
             all.insert(progress.base_url.clone(), progress);
         });
@@ -365,7 +367,7 @@ pub(super) fn Models(editor: Editor) -> impl IntoView {
         };
         view! {
             <p class="sd-status" data-tip=tip>
-                {checking.then(|| view! { <span class="sd-spinner"></span> })}
+                {checking.then(|| view! { <Spinner /> })}
                 {line}
             </p>
         }
@@ -414,7 +416,7 @@ fn ProviderSection(editor: Editor, catalog: Catalog, provider: Provider) -> impl
         }
         None => view! {
             <div class="sd-key">
-                <span class="sd-chip" data-tip="A model server on this computer. It doesn't need an API key.">"No key needed"</span>
+                <span class="fa-chip" data-tip="A model server on this computer. It doesn't need an API key.">"No key needed"</span>
             </div>
         }
         .into_any(),
@@ -444,7 +446,7 @@ fn ProviderSection(editor: Editor, catalog: Catalog, provider: Provider) -> impl
                 <h2 data-tip=kind.tip()>{name.clone()}</h2>
                 <code class="sd-url" data-tip="The address this provider's models are reached at.">{base_url.clone()}</code>
                 {(kind == Kind::Added).then(|| view! {
-                    <button class="sd-link" on:click=remove data-tip="Remove this provider and its models.">"Remove provider"</button>
+                    <button class="fa-link" on:click=remove data-tip="Remove this provider and its models.">"Remove provider"</button>
                 })}
             </div>
             {key}
@@ -529,12 +531,12 @@ fn Available(
                 return Some(note("Listing its models…"));
             };
             if let Some(error) = &listing.error {
-                return Some(view! { <p class="sd-warning">{error.clone()}</p> }.into_any());
+                return Some(view! { <p class="fa-warning">{error.clone()}</p> }.into_any());
             }
             if listing.models.iter().all(|model| model.hidden) {
                 return Some(if local {
                     view! {
-                        <p class="sd-warning" data-tip="The server answered at this address but has no model loaded. Load one and it will appear here once it has been checked.">
+                        <p class="fa-warning" data-tip="The server answered at this address but has no model loaded. Load one and it will appear here once it has been checked.">
                             "The server is running, but no model is loaded."
                         </p>
                     }
@@ -570,7 +572,7 @@ fn Available(
         move || {
             let unchecked = trouble.get()?;
             Some(view! {
-                <p class="sd-warning" data-tip=unchecked.said.clone()>
+                <p class="fa-warning" data-tip=unchecked.said.clone()>
                     {unchecked_line(&name, &unchecked)}
                 </p>
             })
@@ -653,7 +655,7 @@ fn Offered(
                 <div class="sd-item sd-offered">
                     <code class="sd-id">{id.clone()}</code>
                     <span class="sd-tokens" data-tip="The context window the provider reports.">{format!("{} tokens", grouped(context_window))}</span>
-                    <button class="sd-small" on:click=open.clone() data-tip="Make this model available to strategies. You name it next.">"Add"</button>
+                    <button class="fa-small" on:click=open.clone() data-tip="Make this model available to strategies. You name it next.">"Add"</button>
                 </div>
             }
         >
@@ -676,11 +678,11 @@ fn Offered(
                         }
                     }
                 />
-                <button class="sd-primary sd-small" on:click={
+                <button class="fa-primary fa-small" on:click={
                     let confirm = confirm.clone();
                     move |_| confirm()
                 }>"Add"</button>
-                <button class="sd-small" on:click=move |_| adding.set(None)>"Cancel"</button>
+                <button class="fa-small" on:click=move |_| adding.set(None)>"Cancel"</button>
                 <Problem error=problem.into() />
             </div>
         </Show>
@@ -809,14 +811,14 @@ fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> imp
                 />
                 <span>"tokens"</span>
                 <Show when=move || model.with(|m| m.context_window.is_some())>
-                    <button class="sd-link" data-tip="Go back to the provider's figure." on:click={
+                    <button class="fa-link" data-tip="Go back to the provider's figure." on:click={
                         let set_window = set_window.clone();
                         move |_| set_window(None)
                     }>"Reset"</button>
                 </Show>
             </span>
             <button
-                class="sd-remove"
+                class="fa-remove"
                 aria-label=format!("Remove {name}")
                 data-tip=remove_tip
                 on:click=move |_| {
@@ -829,14 +831,14 @@ fn ModelRow(editor: Editor, fetched: Memo<Option<Listing>>, name: String) -> imp
                 <Cross />
             </button>
             <Problem error=problem.into() />
-            {move || errors.get().into_iter().map(|error| view! { <p class="sd-field-error">{error}</p> }).collect_view()}
+            {move || errors.get().into_iter().map(|error| view! { <p class="fa-field-error">{error}</p> }).collect_view()}
         </div>
         {move || listed.get().is_some_and(|(_, stopped)| stopped).then(|| {
             let users = users.get();
             let used = if users.is_empty() { String::new() } else { format!(" Used by {}.", users.join(", ")) };
             view! {
                 <div class="sd-item">
-                    <p class="sd-warning" data-tip="It failed the check after the last app update, or the provider changed the model behind its id. Games using it will likely fail. Pick another model for its strategies, or remove it.">
+                    <p class="fa-warning" data-tip="It failed the check after the last app update, or the provider changed the model behind its id. Games using it will likely fail. Pick another model for its strategies, or remove it.">
                         {format!("No longer plays.{used}")}
                     </p>
                 </div>
@@ -916,7 +918,7 @@ fn KeyField(catalog: Catalog, variable: String, changed: Callback<()>) -> impl I
                 KeyStatus::Unavailable(_) => "The system keychain couldn't be asked.",
             };
             Some(view! {
-                <span class="sd-chip" class:sd-chip-good=status == KeyStatus::InKeychain class:sd-chip-bad=!status.is_set() data-tip=tip>
+                <span class="fa-chip" class:fa-chip-good=status == KeyStatus::InKeychain class:fa-chip-bad=!status.is_set() data-tip=tip>
                     <code>{variable.clone()}</code>
                     {format!(" {}", status.told())}
                 </span>
@@ -928,19 +930,19 @@ fn KeyField(catalog: Catalog, variable: String, changed: Callback<()>) -> impl I
         <div class="sd-key">
             {chip}
             <Show when=move || status.get() == Some(KeyStatus::InKeychain)>
-                <button class="sd-link" on:click=remove.clone() data-tip="Delete the key from the keychain. The environment variable is used again, if it is set.">"Remove from keychain"</button>
+                <button class="fa-link" on:click=remove.clone() data-tip="Delete the key from the keychain. The environment variable is used again, if it is set.">"Remove from keychain"</button>
             </Show>
             <Show when=move || status.get() == Some(KeyStatus::InEnvironment) && !opened.get()>
-                <button class="sd-link" on:click=move |_| opened.set(true) data-tip="Store a key in the system keychain instead. It takes priority over the environment variable.">"Store a key in the keychain…"</button>
+                <button class="fa-link" on:click=move |_| opened.set(true) data-tip="Store a key in the system keychain instead. It takes priority over the environment variable.">"Store a key in the keychain…"</button>
             </Show>
         </div>
         <Show when=form_shown>
             <div class="sd-key-form">
                 <input type="password" node_ref=field autocomplete="off" placeholder="Paste an API key" aria-label="API key" data-tip="Saved to the system keychain, never to a file, and never shown again." />
-                <button class="sd-primary" on:click=save.clone() data-tip="Store this key in the keychain. The models are listed and checked again with it.">"Save to keychain"</button>
+                <button class="fa-primary" on:click=save.clone() data-tip="Store this key in the keychain. The models are listed and checked again with it.">"Save to keychain"</button>
             </div>
         </Show>
-        {move || failure.get().map(|failure| view! { <p class="sd-field-error">{failure}</p> })}
+        {move || failure.get().map(|failure| view! { <p class="fa-field-error">{failure}</p> })}
     }
 }
 
@@ -992,7 +994,7 @@ fn AddProvider(editor: Editor, opened: RwSignal<bool>) -> impl IntoView {
                 {field("Key variable", variable, "EXAMPLE_API_KEY (optional)", "The environment variable the key is read from, and the name it is stored under in the keychain. Leave it empty if the server needs no key.")}
             </div>
             <div class="sd-adder">
-                <button class="sd-primary" on:click=confirm data-tip="Add this provider. Its models are listed and checked next.">"Add provider"</button>
+                <button class="fa-primary" on:click=confirm data-tip="Add this provider. Its models are listed and checked next.">"Add provider"</button>
                 <button on:click=move |_| opened.set(false) data-tip="Close these fields without adding a provider.">"Cancel"</button>
                 <Problem error=problem.into() />
             </div>

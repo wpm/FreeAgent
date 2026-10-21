@@ -69,8 +69,9 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-  # The viewer's frontend builds for the browser, so the jobs above leave it
-  # out. This one checks it natively and for wasm, builds the page the
+  # The viewer's frontend and the shared look it is built on build for the
+  # browser, so the jobs above leave them out. This one checks them
+  # natively and for wasm, builds the page the
   # Website workflow deploys, from freshly played games and the recorded
   # prompted ones, and drives the page in headless Chromium, along with the
   # website's download section as visitors on each platform see it.
@@ -88,9 +89,9 @@ jobs:
         with:
           # Pinned: the page breaks in the browser when built by trunk 0.22.0.
           tool: trunk@0.21.14
-      - run: cargo clippy -p social-deduction-gui --all-targets -- -D warnings
-      - run: cargo test -p social-deduction-gui
-      - run: cargo check -p social-deduction-gui --target wasm32-unknown-unknown
+      - run: cargo clippy -p free-agent-gui -p social-deduction-gui --all-targets -- -D warnings
+      - run: cargo test -p free-agent-gui -p social-deduction-gui
+      - run: cargo check -p free-agent-gui -p social-deduction-gui --target wasm32-unknown-unknown
       - run: apps/social-deduction/gui/build-page.sh
       - uses: actions/setup-node@v4
         with:
@@ -199,12 +200,13 @@ jobs:
           tool: cargo-llvm-cov
       # Without --workspace the tests of the applications and the shared
       # crates still run, but the report leaves their source files out. The
-      # viewer's frontend is the browser's, and the Viewer job tests it. The
+      # viewer's frontend and the shared look are the browser's, and the
+      # Viewer job tests them. The
       # desktop shell is wiring: Tauri commands around social_deduction's
       # live and editing modules and free_agent_model's catalog and secret
       # modules, which are measured here, the keyring store and the macOS
       # dev bundle. It needs a webview to build, so the Desktop jobs test it.
-      - run: cargo llvm-cov --workspace --exclude social-deduction-gui --exclude social-deduction-desktop --lcov --output-path lcov.info
+      - run: cargo llvm-cov --workspace --exclude free-agent-gui --exclude social-deduction-gui --exclude social-deduction-desktop --lcov --output-path lcov.info
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v7
         with:

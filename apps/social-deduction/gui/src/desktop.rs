@@ -7,9 +7,13 @@
 //! prepared or playing, and the **Go** menu moves through either. **File
 //! ▸ New Game** comes back to the start state from anywhere.
 
+use free_agent_gui::chrome::{Spinner, StartHead};
+use free_agent_gui::style::FreeAgentStyle;
+use free_agent_gui::tauri::{Channel, listen, open_url};
+use free_agent_gui::theme::set_theme;
+use free_agent_gui::tip::Tips;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_rich_chat::RichChatStyle;
 use serde::de::IgnoredAny;
 use social_deduction_gui_types::go::Go;
 use social_deduction_gui_types::settings::{Snapshot, game_title};
@@ -18,32 +22,11 @@ use social_deduction_gui_types::{Cue, GameName, Side};
 use crate::mode::Mode;
 use crate::review::Review;
 use crate::screen::side_key;
-use crate::tauri::{self, Cues};
-use crate::tip::Tips;
+use crate::tauri;
 use crate::view::{Live, Reviewer, Reviewing, Viewer};
 
 /// The app's mark: its two balloons, without the tile.
 const LOGO: &str = include_str!("../src-tauri/mark.svg");
-
-/// Hold the page to `theme`, or leave it to the system.
-pub(crate) fn set_theme(theme: Option<&str>) {
-    if let Some(root) = document().document_element() {
-        let _ = match theme {
-            Some(theme) => root.set_attribute("data-theme", theme),
-            None => root.remove_attribute("data-theme"),
-        };
-    }
-}
-
-/// The shortcut that opens Settings on the platform `platform` names, as
-/// `navigator.platform` gives it.
-fn settings_shortcut(platform: &str) -> &'static str {
-    if platform.starts_with("Mac") {
-        "⌘,"
-    } else {
-        "Ctrl+,"
-    }
-}
 
 /// The main window.
 #[component]
@@ -60,7 +43,7 @@ pub fn Desktop() -> impl IntoView {
     let reviewed = Memo::new(move |_| mode.get().reviewing());
     let pending = Memo::new(move |_| mode.get().preparing());
     // The channel of the game playing, kept for as long as it plays.
-    let cues = StoredValue::new_local(None::<Cues>);
+    let cues = StoredValue::new_local(None::<Channel<Cue>>);
     // Every cue the game has shown, to review it once it is over.
     let shown = StoredValue::new(Vec::<Cue>::new());
 
@@ -70,7 +53,7 @@ pub fn Desktop() -> impl IntoView {
             Err(failure) => error.set(Some(failure)),
         }
     });
-    tauri::listen("settings", move |got: Snapshot| snapshot.set(Some(got)));
+    listen("settings", move |got: Snapshot| snapshot.set(Some(got)));
 
     let appearance = Signal::derive(move || {
         snapshot.with(|got| {
@@ -89,7 +72,7 @@ pub fn Desktop() -> impl IntoView {
         mode.set(Mode::Preparing(game));
         live.reset();
         shown.set_value(Vec::new());
-        let channel = Cues::new(move |cue: Cue| {
+        let channel = Channel::new(move |cue: Cue| {
             let now = mode.get_untracked();
             if !now.busy() {
                 return;
@@ -136,15 +119,15 @@ pub fn Desktop() -> impl IntoView {
         reviewing.close();
         mode.set(Mode::Start);
     });
-    tauri::listen("new-game", move |_: IgnoredAny| new_game());
-    tauri::listen("review", move |opened| match Review::new(opened) {
+    listen("new-game", move |_: IgnoredAny| new_game());
+    listen("review", move |opened| match Review::new(opened) {
         Ok(review) => {
             reviewing.open(review);
             mode.set(Mode::ReviewingLog);
         }
         Err(failure) => error.set(Some(failure)),
     });
-    tauri::listen("go", move |go: Go| reviewing.go(go));
+    listen("go", move |go: Go| reviewing.go(go));
     // A memo, so that moving the cursor leaves the menus be.
     let menus = Memo::new(move |_| {
         let games = reviewing
@@ -160,7 +143,7 @@ pub fn Desktop() -> impl IntoView {
 
     // A link opens in the system browser, since the window must not
     // navigate away from the game.
-    let on_link = Callback::new(tauri::open_url);
+    let on_link = Callback::new(open_url);
 
     let start = move || view! { <Start snapshot=snapshot pending=pending error=error failed=failed run=run /> };
     let saveable = Memo::new(move |_| mode.get().saveable());
@@ -169,7 +152,7 @@ pub fn Desktop() -> impl IntoView {
             if saveable.get() {
                 view! {
                     <button on:click=|_| tauri::save_log() data-tip="Save the game's log, to open in review later.">"Save Log…"</button>
-                    <button class="sd-primary" on:click=move |_| new_game()>"New game"</button>
+                    <button class="fa-primary" on:click=move |_| new_game()>"New game"</button>
                 }
                 .into_any()
             } else {
@@ -211,20 +194,18 @@ fn Start(
     failed: RwSignal<Option<(GameName, String)>>,
     run: Callback<GameName>,
 ) -> impl IntoView {
-    let platform = window().navigator().platform().unwrap_or_default();
     view! {
-        <RichChatStyle highlight=false fonts=false />
-        <div class="sd-start">
-            <header class="sd-start-head">
-                <div class="sd-logo" inner_html=LOGO></div>
-                <h1>"Social Deduction"</h1>
-                <button class="sd-link sd-open-settings" on:click=|_| tauri::settings_open(None) data-tip="Open Settings, where the players, strategies and models of each game are chosen.">
-                    "Settings " {settings_shortcut(&platform)}
-                </button>
-            </header>
-            <div class="sd-start-body">
-                <p class="sd-tagline">"Language models play games of hidden loyalty. You see every card."</p>
-                {move || error.get().map(|error| view! { <pre class="sd-error">{error}</pre> })}
+        <FreeAgentStyle />
+        <div class="fa-start fa-chrome">
+            <StartHead
+                logo=LOGO
+                name="Social Deduction"
+                tip="Open Settings, where the players, strategies and models of each game are chosen."
+                open_settings=Callback::new(|()| tauri::settings_open(None))
+            />
+            <div class="fa-start-body">
+                <p class="fa-tagline">"Language models play games of hidden loyalty. You see every card."</p>
+                {move || error.get().map(|error| view! { <pre class="fa-error">{error}</pre> })}
                 <ul class="sd-game-list">
                     {GameName::ALL
                         .into_iter()
@@ -290,19 +271,19 @@ fn Game(
                 </div>
             </div>
             <div class="sd-run">
-                {move || starting().then(|| view! { <button class="sd-large" on:click=|_| tauri::stop() data-tip="Stop starting the game.">"Stop"</button> })}
-                <button class="sd-play sd-primary sd-large" on:click=move |_| run.run(game) disabled=blocked data-tip=format!("Start a game of {title} with these settings. It plays live here, and you can save its log when it ends.")>
-                    {move || starting().then(|| view! { <span class="sd-spinner"></span> })}
+                {move || starting().then(|| view! { <button class="fa-large" on:click=|_| tauri::stop() data-tip="Stop starting the game.">"Stop"</button> })}
+                <button class="sd-play fa-primary fa-large" on:click=move |_| run.run(game) disabled=blocked data-tip=format!("Start a game of {title} with these settings. It plays live here, and you can save its log when it ends.")>
+                    {move || starting().then(|| view! { <Spinner /> })}
                     "Play " {title}
                 </button>
             </div>
             {move || {
                 first_error.get().map(|(message, path)| {
                     view! {
-                        <p class="sd-warning sd-game-error">
+                        <p class="fa-warning sd-game-error">
                             <span>
                                 {message} " "
-                                <button class="sd-link" data-tip="What stops the game from starting. Open Settings at this field to fix it." on:click=move |_| tauri::settings_open(Some(path.clone()))>
+                                <button class="fa-link" data-tip="What stops the game from starting. Open Settings at this field to fix it." on:click=move |_| tauri::settings_open(Some(path.clone()))>
                                     "Fix it in Settings"
                                 </button>
                             </span>
@@ -311,7 +292,7 @@ fn Game(
                 })
             }}
             {move || {
-                failed.get().and_then(|(failed, why)| (failed == game).then(|| view! { <p class="sd-warning sd-game-error sd-game-failed"><span>{why}</span></p> }))
+                failed.get().and_then(|(failed, why)| (failed == game).then(|| view! { <p class="fa-warning sd-game-error sd-game-failed"><span>{why}</span></p> }))
             }}
         </li>
     }
@@ -334,12 +315,5 @@ mod tests {
             "1 evil, 2 good"
         );
         assert_eq!(said(&[]), "0 evil, 0 good");
-    }
-
-    #[test]
-    fn settings_opens_with_command_comma_on_a_mac_and_control_comma_elsewhere() {
-        assert_eq!(settings_shortcut("MacIntel"), "⌘,");
-        assert_eq!(settings_shortcut("Win32"), "Ctrl+,");
-        assert_eq!(settings_shortcut("Linux x86_64"), "Ctrl+,");
     }
 }

@@ -12,9 +12,9 @@ use social_deduction_gui_types::settings::{
 };
 use social_deduction_gui_types::{GameName, Role, Side};
 
-use super::{
-    Choice, Cross, Editor, Named, PageHead, Problem, Section, Segments, Tab, field_id, path,
-};
+use free_agent_gui::chrome::Cross;
+
+use super::{Choice, Editor, Named, PageHead, Problem, Section, Segments, Tab, field_id, path};
 use crate::screen::side_key;
 use crate::tauri;
 
@@ -167,7 +167,7 @@ fn Adder(
                 }
             />
             <button on:click=move |_| added() data-tip=button_tip>{label}</button>
-            {move || refusal.get().map(|refusal| view! { <span class="sd-field-error">{refusal}</span> })}
+            {move || refusal.get().map(|refusal| view! { <span class="fa-field-error">{refusal}</span> })}
         </div>
     }
 }
@@ -377,7 +377,7 @@ fn RoleCount(editor: Editor, game: GameName, role: String) -> impl IntoView {
         <div class="sd-item sd-role">
             <Square role=role.clone() />
             <Named name=title.clone() note=role_note(&role) />
-            <div class="sd-stepper">
+            <div class="fa-stepper">
                 <button
                     aria-label=format!("Fewer {title}s")
                     data-tip=format!("One fewer {title}.")
@@ -437,7 +437,7 @@ fn PhaseLimit(editor: Editor, game: GameName, phase: String) -> impl IntoView {
                 autocomplete="off"
                 placeholder="45s, 2m"
                 data-tip=phase_tip(&phase)
-                class:sd-invalid=move || error.with(Option::is_some)
+                class:fa-invalid=move || error.with(Option::is_some)
                 prop:value=move || value.get()
                 on:input=set
             />
@@ -515,7 +515,7 @@ fn RoleStrategy(
             <Square role=role.clone() />
             <span class="sd-item-name">{title.clone()}</span>
             <button
-                class="sd-link"
+                class="fa-link"
                 aria-expanded=move || split.get().to_string()
                 data-tip="Give some of this role's seats to other strategies. The seats left play the strategy chosen here."
                 on:click=move |_| split.update(|split| *split = !*split)
@@ -605,7 +605,7 @@ fn StrategyCard(
                         at=model_at.clone()
                     />
                 </Show>
-                <button class="sd-remove" aria-label=format!("Remove {name}") data-tip="Remove this strategy. A role that plays it needs another." on:click=remove>
+                <button class="fa-remove" aria-label=format!("Remove {name}") data-tip="Remove this strategy. A role that plays it needs another." on:click=remove>
                     <Cross />
                 </button>
                 <Problem error=editor.error(policy_at.clone()) />
@@ -620,7 +620,7 @@ fn StrategyCard(
                         spellcheck="false"
                         aria-label="System prompt"
                         data-tip="What the model is told before the game. It can pull in prompt parts with {{ name }}, and use {{ name }}, {{ role }} and {% if %} for the player it is playing."
-                        class:sd-invalid=move || system_error.with(Option::is_some)
+                        class:fa-invalid=move || system_error.with(Option::is_some)
                         prop:value=move || system.get()
                         on:input=move |event| {
                             let text = event_target_value(&event);
@@ -727,7 +727,7 @@ fn PartEditor(
                 <code class="sd-item-name" data-tip="Write this in a system prompt to pull in this part.">{pulled.clone()}</code>
                 <span class="sd-note sd-uses" data-tip=uses_tip>{move || uses_told(users.with(Vec::len))}</span>
                 <button
-                    class="sd-link"
+                    class="fa-link"
                     data-tip="Remove this prompt part. A system prompt that pulls it in shows an error."
                     on:click=move |_| {
                         editor.edit_game(game, |s| {
@@ -743,7 +743,7 @@ fn PartEditor(
                     spellcheck="false"
                     aria-label=format!("Text of {name}")
                     data-tip=format!("The text that replaces {pulled} wherever a system prompt uses it.")
-                    class:sd-invalid=move || error.with(Option::is_some)
+                    class:fa-invalid=move || error.with(Option::is_some)
                     prop:value=move || value.get()
                     on:input=move |event| {
                         let text = event_target_value(&event);

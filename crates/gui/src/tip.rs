@@ -135,7 +135,7 @@ pub fn Tips() -> impl IntoView {
         scrolled.unchecked_ref(),
         true,
     );
-    view! { <div class="sd-tip" role="tooltip" node_ref=shown hidden></div> }
+    view! { <div class="fa-tip" role="tooltip" node_ref=shown hidden></div> }
 }
 
 #[cfg(test)]
