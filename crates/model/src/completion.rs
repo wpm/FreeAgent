@@ -19,7 +19,8 @@ use serde_json::Value;
 /// `tool_choice`, `"required"`, which forces a call to one of them, or
 /// `"auto"`, which leaves the model free to answer in prose instead.
 /// Whether the model may call several at once is left to the provider's
-/// default, which allows it, and so is how long the reply may be.
+/// default, which allows it, and so is how long the reply may be. So is
+/// the temperature, unless the request sets one.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Request {
     /// The model's id, exactly as the provider lists it.
@@ -30,6 +31,9 @@ pub struct Request {
     pub tools: Vec<Tool>,
     /// Whether the model must call one of the tools.
     pub tool_choice: ToolChoice,
+    /// How freely the model samples its answer, sent only when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
 }
 
 impl Request {
@@ -46,6 +50,15 @@ impl Request {
             messages,
             tools,
             tool_choice,
+            temperature: None,
+        }
+    }
+
+    /// This request, asked at `temperature`.
+    pub fn at_temperature(self, temperature: f64) -> Self {
+        Self {
+            temperature: Some(temperature),
+            ..self
         }
     }
 }
@@ -316,6 +329,17 @@ mod tests {
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["tool_choice"], "auto");
         assert_eq!(json["tools"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_temperature_is_sent_only_when_one_is_set() {
+        let request = selecting(&["Player 2"]);
+        assert_eq!(request.temperature, None);
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("temperature").is_none(), "{json}");
+        let warm = request.at_temperature(1.2);
+        assert_eq!(warm.temperature, Some(1.2));
+        assert_eq!(serde_json::to_value(&warm).unwrap()["temperature"], 1.2);
     }
 
     #[test]
