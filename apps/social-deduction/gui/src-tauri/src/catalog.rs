@@ -11,7 +11,7 @@ use free_agent_model::spec::Probed;
 use futures_util::future::LocalBoxFuture;
 use social_deduction::live::Session;
 use social_deduction::model::plays;
-use social_deduction::settings::{Listing, Progress, Provider};
+use social_deduction::settings::{Listing, Progress, Provider, Settings};
 use tauri::{AppHandle, Manager};
 
 /// How Social Deduction's models are probed.

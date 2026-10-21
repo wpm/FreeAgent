@@ -1,5 +1,5 @@
 //! The desktop app's Settings window, Free Agent's: General, Models, and
-//! under Games a page for each game, built in [`game`].
+//! under Games a page for each game.
 
 use free_agent_gui::settings::{self as window, Page};
 use leptos::prelude::*;

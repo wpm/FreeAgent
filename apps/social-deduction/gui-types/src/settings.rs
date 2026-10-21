@@ -565,7 +565,7 @@ mod tests {
             api_key_env: None,
         };
         assert_eq!(settings.add_provider(example.clone()), Ok(()));
-        assert_eq!(settings.providers(), [example.clone()]);
+        assert_eq!(settings.providers(), std::slice::from_ref(&example));
         assert_eq!(settings.providers_shown(&[]), [example]);
         settings.remove_provider("https://api.example.com/v1");
         assert!(settings.providers.is_empty());
