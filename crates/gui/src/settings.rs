@@ -194,6 +194,16 @@ pub fn error_at(errors: &[FieldError], path: &[String]) -> Option<String> {
         .map(|error| error.message.clone())
 }
 
+/// Focus the element `id`, if there is one.
+pub fn focus_by_id(id: &str) {
+    if let Some(element) = document()
+        .get_element_by_id(id)
+        .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+    {
+        let _ = element.focus();
+    }
+}
+
 /// The settings as the window holds them, and what is wrong with them.
 pub struct Editor<S: 'static> {
     /// The settings.
@@ -335,10 +345,8 @@ pub fn SettingsWindow<S: Edited, P: Page>(
             move || {
                 if let Some(element) = document().get_element_by_id(&id) {
                     element.scroll_into_view();
-                    if let Ok(element) = element.dyn_into::<web_sys::HtmlElement>() {
-                        let _ = element.focus();
-                    }
                 }
+                focus_by_id(&id);
             },
             std::time::Duration::from_millis(50),
         );
@@ -359,12 +367,7 @@ pub fn SettingsWindow<S: Edited, P: Page>(
         };
         event.prevent_default();
         tab.set(to);
-        if let Some(button) = document()
-            .get_element_by_id(&to.id())
-            .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
-        {
-            let _ = button.focus();
-        }
+        focus_by_id(&to.id());
     };
 
     let button = move |each: Tab<P>| {

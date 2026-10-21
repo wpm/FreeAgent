@@ -70,6 +70,7 @@ import {
   helped,
   models,
   narrowSettings,
+  refusedPart,
   ringed,
   section,
   serve,
@@ -993,6 +994,7 @@ await section('desktop', async () => {
   check(JSON.stringify(page.uses) === JSON.stringify(['used by 1 strategy']), `desktop: a prompt part shows its uses (${page.uses})`);
   check(page.pulled === '{{ rules }}', `desktop: a prompt part shows how to pull it in (${page.pulled})`);
   await groupedLists(settings, 'desktop', { lists: 6 });
+  await refusedPart(settings, 'desktop');
   await settings.screenshot({ path: join(shots, 'settings-werewolf-wide.png'), fullPage: true });
   // Every control on the General, Werewolf and Avalon pages has help.
   await helped(settings, 'desktop', ['general', 'werewolf', 'avalon']);

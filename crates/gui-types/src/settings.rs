@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// The strategy that is always defined, with the random policy.
+/// The strategy, where a strategy may be random, that is always defined,
+/// with the random policy.
 pub const RANDOM: &str = "random";
 
 /// What every app's settings hold: the look, the models, by name, and the
@@ -37,13 +38,14 @@ pub trait Settings {
     /// The providers added, to change.
     fn providers_mut(&mut self) -> &mut Vec<Provider>;
 
-    /// Each strategy that asks a model, as the Models page names it, such
-    /// as `Werewolf “everyone”`, with the name of the model it asks, in
-    /// the order the app shows them.
-    fn strategies_asking(&self) -> Vec<(String, &str)>;
+    /// Each strategy, or anything else, that asks a model, as the Models
+    /// page names it, such as `Werewolf “everyone”`, with the name of the
+    /// model it asks, in the order the app shows them.
+    fn model_users(&self) -> Vec<(String, &str)>;
 
-    /// Make every strategy that names the model `old` name `new`.
-    fn rename_in_strategies(&mut self, old: &str, new: &str);
+    /// Make every strategy, or anything else, that names the model `old`
+    /// name `new`.
+    fn rename_model_users(&mut self, old: &str, new: &str);
 
     /// Add `model` as `name`, trimmed, unless that cannot name it.
     ///
@@ -70,14 +72,14 @@ pub trait Settings {
             return Ok(());
         };
         self.models_mut().insert(new.to_string(), model);
-        self.rename_in_strategies(old, new);
+        self.rename_model_users(old, new);
         Ok(())
     }
 
     /// The strategies that ask the model `name`, as the Models page names
     /// them.
     fn users_of_model(&self, name: &str) -> Vec<String> {
-        self.strategies_asking()
+        self.model_users()
             .into_iter()
             .filter(|(_, model)| *model == name)
             .map(|(strategy, _)| strategy)
@@ -150,7 +152,7 @@ pub trait Strategies: Settings {
     type Of: Copy + Send + Sync + 'static;
 
     /// Whether a strategy may choose at random instead of asking a model.
-    const RANDOM: bool;
+    const MAY_BE_RANDOM: bool;
 
     /// Where the fields of `of` are: the path their paths start with,
     /// such as `["werewolf"]`.
@@ -590,7 +592,7 @@ mod tests {
             &mut self.providers
         }
 
-        fn strategies_asking(&self) -> Vec<(String, &str)> {
+        fn model_users(&self) -> Vec<(String, &str)> {
             self.strategies
                 .iter()
                 .filter(|(_, strategy)| strategy.policy == Policy::Prompted)
@@ -598,7 +600,7 @@ mod tests {
                 .collect()
         }
 
-        fn rename_in_strategies(&mut self, old: &str, new: &str) {
+        fn rename_model_users(&mut self, old: &str, new: &str) {
             for strategy in self.strategies.values_mut() {
                 if strategy.model == old {
                     strategy.model = new.to_string();

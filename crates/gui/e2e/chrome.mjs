@@ -448,9 +448,7 @@ export async function settingsControls(settings, label, { rings }) {
 
 /** Checks the page the Settings window `settings` shows, as `label`: a
  * 220 px sidebar beside at least `lists` grouped lists, rows on
- * hairlines, with no box inside a list but its controls; and a prompt
- * part's name is refused unless it is letters, digits, underscores and
- * spaces. */
+ * hairlines, with no box inside a list but its controls. */
 export async function groupedLists(settings, label, { lists }) {
   const page = await settings.evaluate(() => {
     const controls = 'button, input, select, textarea, .fa-stepper, .fa-segments, .fa-select-box';
@@ -469,6 +467,12 @@ export async function groupedLists(settings, label, { lists }) {
   });
   check(page.sidebar === 220 && page.lists >= lists, `${label}: the page is a sidebar beside grouped lists (${JSON.stringify(page)})`);
   check(page.nested.length === 0, `${label}: no grouped list holds another box (${page.nested.join(' ')})`);
+}
+
+/** Checks, as `label`, that the page the Settings window `settings` shows
+ * refuses a prompt part's name unless it is letters, digits, underscores
+ * and spaces. */
+export async function refusedPart(settings, label) {
   await settings.fill('.fa-adder-part input', 'the-tone');
   await settings.click('.fa-adder-part button');
   const refused = await settings.$eval('.fa-adder-part', (adder) => adder.textContent);

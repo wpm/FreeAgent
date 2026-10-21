@@ -8,7 +8,7 @@ use free_agent_gui::settings::{
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use social_deduction_gui_types::settings::{
-    AppSettings, GameSettings, RANDOM, RoleSettings, game_title, label,
+    AppSettings, GameSettings, RANDOM, RoleSettings, Strategies, game_title, label,
 };
 use social_deduction_gui_types::{GameName, Role, Side};
 
@@ -188,7 +188,9 @@ pub(super) fn GameTab(editor: Editor<AppSettings>, game: GameName) -> impl IntoV
     });
     let refuse_strategy = Callback::new(move |name: String| {
         editor.settings.with_untracked(|s| {
-            refused_strategy(&name, |name| s.game(game).strategies.contains_key(name))
+            refused_strategy(&name, AppSettings::MAY_BE_RANDOM, |name| {
+                s.game(game).strategies.contains_key(name)
+            })
         })
     });
     let everyone = editor.game(game, |s| s.strategy.clone());

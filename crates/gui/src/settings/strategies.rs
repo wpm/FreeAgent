@@ -9,7 +9,7 @@ use free_agent_gui_types::settings::{
 };
 use leptos::prelude::*;
 
-use super::{Adder, Choice, Edited, Editor, Problem, Segments, field_id};
+use super::{Adder, Choice, Edited, Editor, Problem, Segments, field_id, focus_by_id};
 use crate::chrome::Cross;
 
 /// How many strategies use a prompt part, `users` of them: `unused`,
@@ -35,9 +35,14 @@ pub fn refused_part(name: &str, taken: impl Fn(&str) -> bool) -> Option<&'static
 }
 
 /// Why `name` can't name a new strategy when `taken` says which are
-/// taken, if it can't.
-pub fn refused_strategy(name: &str, taken: impl Fn(&str) -> bool) -> Option<&'static str> {
-    if name == RANDOM {
+/// taken, if it can't. Where a strategy `may_be_random`, [`RANDOM`] is
+/// built in.
+pub fn refused_strategy(
+    name: &str,
+    may_be_random: bool,
+    taken: impl Fn(&str) -> bool,
+) -> Option<&'static str> {
+    if may_be_random && name == RANDOM {
         Some("random is built in.")
     } else if taken(name) {
         Some("There is already a strategy with that name.")
@@ -52,16 +57,6 @@ pub fn path_of<S: Strategies>(of: S::Of, rest: &[&str]) -> Vec<String> {
     let mut path = S::at(of);
     path.extend(rest.iter().map(ToString::to_string));
     path
-}
-
-/// The strategies and prompt parts of `of`, read with `read`, telling of a
-/// change only when what is read changes.
-fn read<S: Strategies + Edited, T: Clone + PartialEq + Send + Sync + 'static>(
-    editor: Editor<S>,
-    of: S::Of,
-    read: impl Fn(&S, S::Of) -> T + Send + Sync + 'static,
-) -> Memo<T> {
-    editor.read(move |s| read(s, of))
 }
 
 /// A strategy's grouped list: its name, **Prompted | Random** where a
@@ -90,14 +85,12 @@ pub fn StrategyCard<S: Strategies + Edited>(
         let name = name.clone();
         move |pick: fn(&StrategySettings) -> String| {
             let name = name.clone();
-            read(editor, of, move |s, of| {
-                s.strategies(of).get(&name).map(pick).unwrap_or_default()
-            })
+            editor.read(move |s| s.strategies(of).get(&name).map(pick).unwrap_or_default())
         }
     };
     let policy = {
         let name = name.clone();
-        read(editor, of, move |s, of| {
+        editor.read(move |s| {
             s.strategies(of)
                 .get(&name)
                 .map(|s| s.policy)
@@ -131,7 +124,7 @@ pub fn StrategyCard<S: Strategies + Edited>(
             s.strategies_mut(of).remove(&removed);
         });
     };
-    let policies = S::RANDOM.then(|| {
+    let policies = S::MAY_BE_RANDOM.then(|| {
         view! {
             <Segments
                 label="Policy"
@@ -198,23 +191,15 @@ pub fn PromptParts<S: Strategies + Edited>(
     /// Whose prompt parts they are.
     of: S::Of,
 ) -> impl IntoView {
-    let names = read(editor, of, |s, of| {
-        s.prompt_parts(of).keys().cloned().collect::<Vec<_>>()
-    });
-    let users = read(editor, of, |s, of| s.part_users(of));
+    let names = editor.read(move |s| s.prompt_parts(of).keys().cloned().collect::<Vec<_>>());
+    let users = editor.read(move |s| s.part_users(of));
     let add = Callback::new(move |name: String| {
         editor.edit(|s| {
             s.prompt_parts_mut(of).entry(name.clone()).or_default();
         });
         let id = field_id(&path_of::<S>(of, &["prompt_parts", &name]));
         // Once its text is drawn, it is ready to type in.
-        request_animation_frame(move || {
-            if let Some(element) = document().get_element_by_id(&id)
-                && let Ok(element) = wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlElement>(element)
-            {
-                let _ = element.focus();
-            }
-        });
+        request_animation_frame(move || focus_by_id(&id));
     });
     let refuse = Callback::new(move |name: String| {
         editor.settings.with_untracked(|s| {
@@ -252,9 +237,7 @@ fn PartEditor<S: Strategies + Edited>(
 ) -> impl IntoView {
     let value = {
         let name = name.clone();
-        read(editor, of, move |s, of| {
-            s.prompt_parts(of).get(&name).cloned().unwrap_or_default()
-        })
+        editor.read(move |s| s.prompt_parts(of).get(&name).cloned().unwrap_or_default())
     };
     let read = name.clone();
     let users =
@@ -346,11 +329,15 @@ mod tests {
     #[test]
     fn a_new_strategy_needs_a_name_of_its_own() {
         let taken = |name: &str| name == "everyone";
-        assert_eq!(refused_strategy("bold", taken), None);
+        assert_eq!(refused_strategy("bold", true, taken), None);
         assert_eq!(
-            refused_strategy("everyone", taken),
+            refused_strategy("everyone", true, taken),
             Some("There is already a strategy with that name.")
         );
-        assert_eq!(refused_strategy(RANDOM, taken), Some("random is built in."));
+        assert_eq!(
+            refused_strategy(RANDOM, true, taken),
+            Some("random is built in.")
+        );
+        assert_eq!(refused_strategy(RANDOM, false, taken), None);
     }
 }

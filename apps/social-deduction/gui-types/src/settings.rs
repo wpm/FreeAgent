@@ -133,7 +133,7 @@ impl Settings for AppSettings {
 
     /// The prompted strategies of each game, each as its game and its
     /// name: `Werewolf “everyone”`.
-    fn strategies_asking(&self) -> Vec<(String, &str)> {
+    fn model_users(&self) -> Vec<(String, &str)> {
         GameName::ALL
             .into_iter()
             .flat_map(|game| {
@@ -146,9 +146,9 @@ impl Settings for AppSettings {
             .collect()
     }
 
-    fn rename_in_strategies(&mut self, old: &str, new: &str) {
-        for game in [&mut self.werewolf, &mut self.avalon] {
-            for strategy in game.strategies.values_mut() {
+    fn rename_model_users(&mut self, old: &str, new: &str) {
+        for game in GameName::ALL {
+            for strategy in self.game_mut(game).strategies.values_mut() {
                 if strategy.model == old {
                     strategy.model = new.to_string();
                 }
@@ -160,7 +160,7 @@ impl Settings for AppSettings {
 impl Strategies for AppSettings {
     type Of = GameName;
 
-    const RANDOM: bool = true;
+    const MAY_BE_RANDOM: bool = true;
 
     fn at(game: GameName) -> Vec<String> {
         vec![game_key(game).to_string()]

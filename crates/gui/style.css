@@ -867,15 +867,12 @@ body,
   font: 13px/1.5 var(--fa-mono);
 }
 
+/* Descriptions are the serif, in italic. */
+
 .fa-note {
   margin: 0;
   color: var(--fa-muted);
   font-size: 0.85rem;
-}
-
-/* Descriptions are the serif, in italic. */
-
-.fa-note {
   font-family: var(--fa-serif);
   font-style: italic;
 }
@@ -1038,9 +1035,6 @@ body,
 .fa-context-window input {
   width: 120px;
   text-align: right;
-}
-
-.fa-context-window input {
   font-variant-numeric: tabular-nums;
 }
 
