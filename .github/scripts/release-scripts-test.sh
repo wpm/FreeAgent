@@ -66,12 +66,11 @@ jq -n --arg dir "$scratch/built" '[$dir + "/" + ($ARGS.positional[])]' --args "S
 ./stable-names.sh "$scratch/stable" < "$scratch/paths.json" > /dev/null
 listing=$(find "$scratch/stable" -type f -exec basename {} \; | LC_ALL=C sort | tr '\n' ' ')
 check "installers get their stable names" test "$listing" = \
-  "Social-Deduction-aarch64.AppImage Social-Deduction-setup.exe Social-Deduction-x86_64.AppImage Social-Deduction.AppImage Social-Deduction.dmg Social-Deduction.msi social-deduction-aarch64.rpm social-deduction-amd64.deb social-deduction-arm64.deb social-deduction-x86_64.rpm social-deduction.deb social-deduction.rpm "
+  "Social-Deduction-aarch64.AppImage Social-Deduction-setup.exe Social-Deduction-x86_64.AppImage Social-Deduction.dmg Social-Deduction.msi social-deduction-aarch64.rpm social-deduction-amd64.deb social-deduction-arm64.deb social-deduction-x86_64.rpm "
 check "a copy is the installer it names" test "$(cat "$scratch/stable/Social-Deduction.dmg")" = "Social Deduction_1.2.3_universal.dmg"
 check "an arm64 package is the arm64 build" test "$(cat "$scratch/stable/social-deduction-arm64.deb")" = "Social Deduction_1.2.3_arm64.deb"
 check "an aarch64 AppImage is the aarch64 build" test "$(cat "$scratch/stable/Social-Deduction-aarch64.AppImage")" = "Social Deduction_1.2.3_aarch64.AppImage"
-# For one release, the x86_64 packages keep their old names as well.
-check "an old name is the x86_64 build" test "$(cat "$scratch/stable/social-deduction.rpm")" = "Social Deduction-1.2.3-1.x86_64.rpm"
+check "an x86_64 package is the x86_64 build" test "$(cat "$scratch/stable/social-deduction-x86_64.rpm")" = "Social Deduction-1.2.3-1.x86_64.rpm"
 check "an x86_64 AppImage spelled amd64 is the x86_64 build" test "$(cat "$scratch/stable/Social-Deduction-x86_64.AppImage")" = "Social Deduction_1.2.3_amd64.AppImage"
 
 # The website offers six of the installers: the .dmg, the setup.exe, and
