@@ -15,13 +15,14 @@
 
 use crate::config::Configuration;
 use crate::message::Message;
+use anyhow::Context as _;
 use free_agent::{ActorId, Event};
 use free_agent_game::log::{Ended, Secrets};
 use free_agent_game::seat::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::io::{self, Write};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 /// The shape of the log this version writes. It goes up whenever the
@@ -167,37 +168,8 @@ pub enum Ending {
     Failed(String),
 }
 
-/// A side of the game, one of which wins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Side {
-    /// The players, who win by naming the object.
-    Players,
-    /// The host, who wins by keeping it.
-    Host,
-}
-
-/// How a game is won.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Victory {
-    /// A guess named the object.
-    Named,
-    /// The last guess was answered without naming it.
-    OutOfGuesses,
-    /// The time limit came first.
-    OutOfTime,
-}
-
-impl Victory {
-    /// The side that wins this way.
-    pub fn winner(self) -> Side {
-        match self {
-            Victory::Named => Side::Players,
-            Victory::OutOfGuesses | Victory::OutOfTime => Side::Host,
-        }
-    }
-}
+/// The sides of the game and how it is won, as the screen shows them too.
+pub use twenty_questions_gui_types::{Side, Victory};
 
 /// The first line of every episode: what a reader needs to know before it
 /// reads the rest.
@@ -219,6 +191,43 @@ impl Header {
             version: env!("CARGO_PKG_VERSION").to_string(),
             game: GAME.to_string(),
         }
+    }
+
+    /// Check the header `line` holds, if it holds one: its game is this
+    /// one, and its format one this version reads. Only what every format
+    /// says is read, so a newer header of any shape is refused as newer.
+    ///
+    /// # Errors
+    ///
+    /// When the header is bad, is of another game, or is of a newer format
+    /// than this version reads.
+    pub fn check(line: &str) -> anyhow::Result<()> {
+        let Ok(event) = serde_json::from_str::<Event<serde_json::Value>>(line) else {
+            return Ok(());
+        };
+        let Some(header) = event.payload.get("Header") else {
+            return Ok(());
+        };
+        /// What every format's header says: its format, who wrote it, and
+        /// the game.
+        #[derive(Deserialize)]
+        struct Claimed {
+            format: u32,
+            version: String,
+            game: String,
+        }
+        let Claimed {
+            format,
+            version,
+            game,
+        } = Claimed::deserialize(header).context("the log's header is bad")?;
+        anyhow::ensure!(game == GAME, "This log is of {game}, not {GAME}.");
+        anyhow::ensure!(
+            format <= LOG_FORMAT,
+            "This log was written by {GAME} {version} in log format {format}. \
+             This version reads log formats up to {LOG_FORMAT}."
+        );
+        Ok(())
     }
 }
 
@@ -254,17 +263,19 @@ impl<W: Write> Writer<W> {
         Ok(writer)
     }
 
-    /// Write `event`, one of the episode's, without its secrets.
+    /// Write `event`, one of the episode's, without its secrets, and give
+    /// back the line written.
     ///
     /// # Errors
     ///
     /// Fails when writing to `sink` fails, or when the event cannot be
     /// serialized.
-    pub fn write(&mut self, event: &Event<Entry>) -> io::Result<()> {
+    pub fn write(&mut self, event: &Event<Entry>) -> io::Result<String> {
         let mut line = Vec::new();
         event.write(&mut line)?;
         let line = self.secrets.redacted(&String::from_utf8_lossy(&line));
-        self.sink.write_all(line.as_bytes())
+        self.sink.write_all(line.as_bytes())?;
+        Ok(line)
     }
 
     /// Write how the episode `ended`, its last line, and give back the
@@ -273,8 +284,22 @@ impl<W: Write> Writer<W> {
     /// # Errors
     ///
     /// Fails when writing to `sink` fails.
-    pub fn end(mut self, ended: Ended) -> io::Result<W> {
-        self.write(&Event::now(self.episode, Entry::Ended(ended)))?;
+    pub fn end(self, ended: Ended) -> io::Result<W> {
+        self.end_at(ended, SystemTime::now())
+    }
+
+    /// Write how the episode `ended`, stamped `time`, its last line, and
+    /// give back the sink, flushed.
+    ///
+    /// # Errors
+    ///
+    /// Fails when writing to `sink` fails.
+    pub fn end_at(mut self, ended: Ended, time: SystemTime) -> io::Result<W> {
+        self.write(&Event {
+            time,
+            episode: self.episode,
+            payload: Entry::Ended(ended),
+        })?;
         self.sink.flush()?;
         Ok(self.sink)
     }
@@ -285,7 +310,6 @@ pub(crate) mod tests {
     use super::*;
     use secrecy::SecretString;
     use serde_json::json;
-    use std::time::SystemTime;
 
     /// `payload`, an entry or a memory, as an event logged or remembered
     /// when the game began, in no episode in particular.
@@ -346,6 +370,44 @@ pub(crate) mod tests {
         );
     }
 
+    /// The header line of `payload`, as an event's.
+    fn header_line(payload: serde_json::Value) -> String {
+        serde_json::to_string(&logged(json!({ "Header": payload }))).unwrap()
+    }
+
+    #[test]
+    fn a_header_this_version_wrote_and_a_line_that_is_no_header_pass() {
+        let written = Writer::start(Vec::new(), episode(), Secrets::default()).unwrap();
+        let written = written.end(Ended::Won).unwrap();
+        let text = String::from_utf8(written).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        for line in [lines[0], lines[1], "not a line"] {
+            Header::check(line).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_header_of_another_game_a_newer_format_or_a_bad_shape_is_refused() {
+        let werewolf = header_line(json!({"format": 1, "version": "0.2.0", "game": "werewolf"}));
+        assert_eq!(
+            Header::check(&werewolf).unwrap_err().to_string(),
+            "This log is of werewolf, not twenty-questions."
+        );
+        let newer = header_line(json!({"format": 2, "version": "0.3.0", "game": GAME, "new": 1}));
+        assert_eq!(
+            Header::check(&newer).unwrap_err().to_string(),
+            "This log was written by twenty-questions 0.3.0 in log format 2. \
+             This version reads log formats up to 1."
+        );
+        for bad in [
+            json!({"format": 1}),
+            json!({"format": 1, "version": 1, "game": GAME}),
+        ] {
+            let error = Header::check(&header_line(bad)).unwrap_err();
+            assert_eq!(error.to_string(), "the log's header is bad");
+        }
+    }
+
     #[test]
     fn every_secret_is_written_redacted_and_the_log_still_reads() {
         let secrets: Secrets = ["sk-one", "sk-two"]
@@ -370,9 +432,6 @@ pub(crate) mod tests {
 
     #[test]
     fn the_end_says_who_won_and_how_and_round_trips() {
-        assert_eq!(Victory::Named.winner(), Side::Players);
-        assert_eq!(Victory::OutOfGuesses.winner(), Side::Host);
-        assert_eq!(Victory::OutOfTime.winner(), Side::Host);
         let end = Entry::End {
             winner: Side::Host,
             by: Victory::OutOfTime,

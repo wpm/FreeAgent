@@ -93,6 +93,21 @@ impl Narrator {
         }
     }
 
+    /// How many guesses the host has counted.
+    pub(crate) fn count(&self) -> u64 {
+        self.counted
+    }
+
+    /// The text of the guess `from` numbered `n`, once it is put.
+    pub(crate) fn asked(&self, from: &ActorId, n: u64) -> Option<&str> {
+        self.asked.get(&(from.clone(), n)).map(String::as_str)
+    }
+
+    /// Whether the game is over.
+    pub(crate) fn is_over(&self) -> bool {
+        self.over
+    }
+
     /// What sending `message` adds: the beginning sets the talk off, speech
     /// and answers are said, and a guess is kept to be told when the host
     /// counts it.

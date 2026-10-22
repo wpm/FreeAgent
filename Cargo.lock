@@ -5759,8 +5759,19 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
  "toml 1.1.8+spec-1.1.0",
  "twenty-questions",
+ "twenty-questions-gui-types",
+ "uuid",
+]
+
+[[package]]
+name = "twenty-questions-gui-types"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "uuid",
 ]
 
