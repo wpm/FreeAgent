@@ -13,6 +13,12 @@ use async_trait::async_trait;
 use free_agent::{ActorId, ActorInit, Behavior, Context, Episode, Logger};
 use free_agent_game::seat::{PlayerId, Seat};
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+
+/// How long an actor whose model call failed waits before it asks again.
+/// A busy local server can time out every actor at once, and answers
+/// again once its queue clears.
+pub const RETRY: Duration = Duration::from_secs(10);
 
 /// How a seat at the table is built: its actor's behavior, and its think
 /// loop.

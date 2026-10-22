@@ -20,6 +20,7 @@
 
 use crate::host;
 use crate::model::plays;
+use crate::object;
 use crate::player;
 use anyhow::{Context as _, bail};
 use free_agent_game::config::Program;
@@ -314,6 +315,7 @@ impl Config {
         if host.object.is_none() && host.pick.is_none() {
             bail!("[host] has neither an object nor a pick; the host needs one to know its object");
         }
+        host.object = host.object.as_deref().map(object::spoken);
         let allotments = allot(&players, &strategies)?;
         Ok(Settings {
             guesses,
@@ -737,25 +739,38 @@ system = "You are {{ name }}. Talk a lot."
     }
 
     #[test]
+    fn a_configured_object_named_bare_settles_with_a_or_an() {
+        let owl = edited(|table| {
+            at(table, "host").insert("object".to_string(), " owl ".into());
+        });
+        assert_eq!(settled(&owl).host.object.as_deref(), Some("an owl"));
+        assert_eq!(settled(SMALL).host.object.as_deref(), Some("a teapot"));
+    }
+
+    #[test]
     fn the_example_settles_with_the_defaults_and_renders_every_prompt() {
         let settings = settled(&example());
         assert_eq!(settings.guesses, GUESSES);
-        assert_eq!(settings.time_limit, TIME_LIMIT);
-        assert_eq!(settings.seats, ["Alice", "Bob", "Carol", "Dave"]);
+        assert_eq!(settings.time_limit, Duration::from_secs(900));
+        assert_eq!(settings.seats, ["Alice", "Bob", "Carol"]);
         assert_eq!(
             settings.allotments,
-            BTreeMap::from([("everyone".to_string(), 4)])
+            BTreeMap::from(["closer", "keeper", "scout"].map(|part| (part.to_string(), 1)))
         );
         assert_eq!(settings.host.model.as_deref(), Some("qwen"));
         assert_eq!(settings.host.object, None);
         assert_eq!(settings.host.temperature, TEMPERATURE);
         let prompts = settings.prompts().unwrap();
         assert_eq!(prompts.picks.len(), settings.host.categories.len());
-        assert_eq!(prompts.picks[0].0.as_deref(), Some("an animal"));
-        assert!(prompts.picks[0].1.contains("Twenty Questions: an animal."));
-        let alice = &prompts.players[&("Alice".to_string(), "everyone".to_string())];
+        assert_eq!(prompts.picks[0].0.as_deref(), Some("a farm animal"));
         assert!(
-            alice.contains("You are Alice, a player, with Bob, Carol and Dave."),
+            prompts.picks[0]
+                .1
+                .contains("Twenty Questions: a farm animal.")
+        );
+        let alice = &prompts.players[&("Alice".to_string(), "scout".to_string())];
+        assert!(
+            alice.contains("You are Alice, a player, with Bob and Carol."),
             "{alice}"
         );
         let host = prompts.host.render("a banjo").unwrap();
@@ -1145,7 +1160,7 @@ system = "You are {{ name }}. Talk a lot."
             env!("CARGO_MANIFEST_DIR"),
             "/configs/prompted.toml"
         ));
-        assert_eq!(load(path).unwrap().seats.len(), 4);
+        assert_eq!(load(path).unwrap().seats.len(), 3);
         assert_eq!(named(12), "Leo");
     }
 }

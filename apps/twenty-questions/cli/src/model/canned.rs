@@ -70,8 +70,8 @@ pub fn canned_calls(request: &Value) -> anyhow::Result<Vec<(String, Value)>> {
             .and_then(|(_, guess)| guess.split_once('"'))
             .map_or("", |(guess, _)| guess);
         let object = asked
-            .split_once("'s guess name ")
-            .and_then(|(_, rest)| rest.split_once(" itself?"))
+            .split_once("If the guess names ")
+            .and_then(|(_, rest)| rest.split_once(" itself,"))
             .map_or(OBJECT, |(object, _)| object);
         return Ok(match says(guess, object) {
             true => call(NAMED, json!({"text": YES})),

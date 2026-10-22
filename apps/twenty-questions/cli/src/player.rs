@@ -22,11 +22,11 @@
 //!
 //! A model that is not reached, or an answer that is not well formed, is a
 //! failure: the player logs it as [`Entry::Failed`], carries nothing out,
-//! and the game goes on.
+//! and tries again after [`RETRY`], and the game goes on.
 
-use crate::game::{Actor, Seated, act, everyone_but, observe};
+use crate::game::{Actor, RETRY, Seated, act, everyone_but, observe};
 use crate::log::Entry;
-use crate::message::{HOST, Message, View};
+use crate::message::{HOST, Message, View, folded};
 use crate::model::{
     Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak, text_parameter,
     wait, waited,
@@ -176,11 +176,6 @@ struct Question {
     question: String,
 }
 
-/// `question` as guesses are told apart: trimmed and in lower case.
-fn folded(question: &str) -> String {
-    question.trim().to_lowercase()
-}
-
 /// What a call has the player send.
 #[derive(Debug, PartialEq)]
 enum Sending {
@@ -253,6 +248,9 @@ pub(crate) struct Mind {
     /// How many reminders the player has set, which numbers them so that
     /// only the latest counts.
     reminders: AtomicU64,
+    /// A guess the model made that was put already, which the next
+    /// request tells it was not put. Never locked across an await.
+    refused: Mutex<Option<String>>,
     /// Its system prompt, rendered for its seat.
     prompt: String,
     /// How it asks its model.
@@ -285,19 +283,30 @@ impl Mind {
             begun: Mutex::new(None),
             waking: AtomicBool::new(false),
             reminders: AtomicU64::new(0),
+            refused: Mutex::new(None),
             prompt,
             asker,
         }
     }
 
     /// Add `event` to the end of the history, and what it adds to the
-    /// story to the end of the story, together.
+    /// story to the end of the story, together. A guess repeating one
+    /// heard already is not told, since the host counts only the first it
+    /// hears, which may be either.
     fn remember(&self, event: Event<Memory>) {
         let mut remembered = self.remembered.lock().unwrap();
-        remembered.story.recall(&event.payload);
         let (Memory::Observed { message } | Memory::Acted { message }) = &event.payload;
+        if let Message::Guess { from, text, .. } = message {
+            let question = folded(text);
+            if remembered.questions.contains(&question) {
+                remembered.story.repeat(from, text);
+                remembered.history.push(event);
+                return;
+            }
+            remembered.questions.push(question);
+        }
+        remembered.story.recall(&event.payload);
         match message {
-            Message::Guess { text, .. } => remembered.questions.push(folded(text)),
             Message::Say { from, .. } if from != HOST => remembered.talked = true,
             Message::Answer { .. } => remembered.talked = false,
             _ => {}
@@ -407,9 +416,9 @@ impl Player {
 
     /// Woken, decide: take the wake-up, ask the model where the game
     /// stands, and carry out what it answers. If that fails, log the
-    /// failure, which is all there is to do about it: the player has not
-    /// acted, and the game goes on. Being woken before the game began is
-    /// an error.
+    /// failure, and be reminded to try again after [`RETRY`], unless
+    /// something wakes it sooner: the player has not acted, and the game
+    /// goes on. Being woken before the game began is an error.
     async fn decide(&self) -> anyhow::Result<()> {
         self.mind.woken();
         let (view, began) = self
@@ -424,6 +433,8 @@ impl Player {
                 by: self.context.id.clone(),
                 error: format!("{error:#}"),
             });
+            let count = self.mind.remind();
+            self.context.think_after(RETRY, Message::Remind { count })?;
         }
         Ok(())
     }
@@ -432,7 +443,8 @@ impl Player {
     /// `began`, and carry out what it answers: each message in order, to
     /// everyone else, and then a reminder if it asked to wait. A guess put
     /// before the model was asked, whatever its case, or twice in the
-    /// answer, fails the answer, which is carried out not at all. A guess
+    /// answer, fails the answer, which is carried out not at all, and the
+    /// next request tells the model it was not put. A guess
     /// the player may no longer make by the time it is sent, since another
     /// came in while the model was asked, is not put: one guess waits at a
     /// time.
@@ -441,10 +453,17 @@ impl Player {
         let may_guess = guesses.may_guess();
         let put = self.mind.questions();
         let time_left = view.time_limit.saturating_sub(began.elapsed());
+        let mut situation = guesses.situation(time_left);
+        if let Some(question) = self.mind.refused.lock().unwrap().take() {
+            situation = format!(
+                "Your guess \"{question}\" was not put: it was put already. Never repeat a \
+                 guess. {situation}"
+            );
+        }
         let (request, shown) = self.mind.asker.request(
             &self.mind.prompt,
             |budget| self.mind.story(budget),
-            &guesses.situation(time_left),
+            &situation,
             tools(may_guess, view.time_limit),
         );
         let response = self.mind.asker.complete(&self.context, &request).await?;
@@ -453,6 +472,7 @@ impl Player {
         for sending in &sends {
             if let Sending::Guess(question) = sending {
                 if guessed.contains(&folded(question)) {
+                    *self.mind.refused.lock().unwrap() = Some(question.clone());
                     bail!("the model guessed \"{question}\", which was put already");
                 }
                 guessed.push(folded(question));
@@ -615,6 +635,59 @@ mod tests {
             error.starts_with("the arguments of the model's wait call"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn a_guess_repeating_one_heard_is_not_counted_and_answering_either_answers_both() {
+        let alice = "Alice".to_string();
+        let mind = Mind::new(&alice, String::new(), asking(&host_model(1)));
+        let guess = |from: &str, n, text: &str| Message::Guess {
+            from: from.to_string(),
+            n,
+            text: text.to_string(),
+        };
+        let episode = uuid::Uuid::nil();
+        let acted = Memory::Acted {
+            message: guess("Alice", 1, "Is it big?"),
+        };
+        mind.remember(Event::now(episode, acted));
+        let observed = Memory::Observed {
+            message: guess("Bob", 1, " is it BIG? "),
+        };
+        mind.remember(Event::now(episode, observed));
+        let guesses = mind.guesses(20);
+        assert_eq!(guesses.left, 19);
+        assert_eq!(
+            guesses.waiting,
+            [("Alice".to_string(), "Is it big?".to_string())]
+        );
+        // The host counted Bob's.
+        let answer = Message::Answer {
+            n: 2,
+            guess: 1,
+            asked_by: "Bob".to_string(),
+            text: "No.".to_string(),
+            named: false,
+            left: 19,
+        };
+        let observed = Memory::Observed { message: answer };
+        mind.remember(Event::now(episode, observed));
+        assert!(mind.guesses(20).waiting.is_empty());
+        let (story, _) = mind.story(10_000);
+        assert!(
+            story.ends_with(
+                "You guess: \"Is it big?\"\nThe host answers Bob's guess 1 \"Is it big?\": \"No.\" \
+                 19 guesses are left."
+            ),
+            "{story}"
+        );
+    }
+
+    #[test]
+    fn a_wait_may_give_its_seconds_as_digits_in_a_string() {
+        let calls = [(WAIT.to_string(), json!({"seconds": " 30 "}))];
+        let asked = asked_of(&calls, true).unwrap();
+        assert_eq!(asked.wait, Some(Duration::from_secs(30)));
     }
 
     #[test]
@@ -818,6 +891,19 @@ mod tests {
                 .contains(&"the model guessed \"IS IT ALIVE?\", which was put already")
         );
         assert!(played.sent_by("Alice").is_empty());
+        // Every request after a refused guess tells her so; she guesses
+        // it again each time.
+        let asked = questions(&model);
+        let told =
+            "Your guess \"IS IT ALIVE?\" was not put: it was put already. Never repeat a guess.";
+        let told_in: Vec<usize> = (0..asked.len())
+            .filter(|at| asked[*at].contains(told))
+            .collect();
+        let first = asked
+            .iter()
+            .position(|question| question.contains("put a guess to the host"))
+            .unwrap();
+        assert_eq!(told_in, (first + 1..asked.len()).collect::<Vec<_>>());
     }
 
     #[tokio::test(start_paused = true)]
@@ -856,10 +942,13 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_player_whose_model_fails_logs_the_failure_and_the_game_goes_on() {
+    async fn a_player_whose_model_fails_logs_the_failure_and_tries_again_later() {
         let model = Arc::new(FakeModel::failing("no model"));
         let played = with_alice(&host_model(1), &model, a_minute(), &[]).await;
-        assert_eq!(played.failures("Alice"), ["no model"]);
+        // Woken at the beginning, and again every 10s after each failure,
+        // in a game of a minute.
+        assert_eq!(RETRY, Duration::from_secs(10));
+        assert_eq!(played.failures("Alice"), ["no model"; 6]);
         played.ran.unwrap();
     }
 

@@ -1,0 +1,171 @@
+# Three players on a local model and a host on Claude Haiku, which answers
+# guesses more truly; the host picks its own secret object.
+# The rules and how the players work as a team live in prompt parts every
+# prompt pulls in, and each player has a part of its own to play.
+#
+#     twenty-questions play mixed.toml
+#
+# plays it.
+
+format = 1
+
+# How many guesses the players have among them.
+guesses = 20
+
+# How long the game lasts. Ten minutes ran out on three games in ten
+# against a shared LM Studio, with guesses left to put.
+time_limit = "15m"
+
+[players]
+# Three players and the host fill a local server's four parallel slots, so
+# no one waits for another's call to finish.
+count = 3
+# Every seat not allotted otherwise plays this strategy.
+strategy = "everyone"
+# How many seats play each other strategy. A player of each part talks
+# less like the others than players of one strategy do.
+strategies = { scout = 1, keeper = 1, closer = 1 }
+
+[host]
+# The model the host asks.
+model = "claude"
+# The secret object. Leave it out to have the host pick one.
+# object = "a teapot"
+# The temperature the host picks at, high so that it does not pick the
+# same few things every time, and at most 1, as Anthropic allows.
+temperature = 1.0
+# The pick is asked for one of these, drawn at random. Many narrow
+# categories make for more different objects than a few broad ones.
+categories = [
+    "a farm animal",
+    "a wild animal",
+    "a bird",
+    "a sea creature",
+    "an insect",
+    "a fruit",
+    "a vegetable",
+    "a dessert",
+    "a drink",
+    "something found in a kitchen",
+    "something found in a bathroom",
+    "something found in an office",
+    "something found in a garden",
+    "something found at the beach",
+    "something found in a classroom",
+    "a toy",
+    "a piece of clothing",
+    "a piece of sports equipment",
+    "a musical instrument",
+    "a vehicle",
+    "a tool",
+    "a piece of furniture",
+    "a household appliance",
+    "a famous landmark",
+]
+pick = """
+Pick a secret object for a game of Twenty Questions: {{ category }}. Pick
+one particular thing that everyone knows by its everyday name, though not
+the most obvious one. Name it in English as you would say it after "I'm
+thinking of", with its article if it takes one.
+"""
+# The host's prompt is short: a small model answers more truly told only
+# what it needs to answer.
+system = """
+{{ rules }}
+
+You are the host. The secret object is {{ object }}. Answer each guess
+truthfully about {{ object }}, and never say any word of its name until a
+guess names it.
+"""
+
+# A Qwen model on a local LM Studio server. The id and base URL will likely
+# need changing to whatever model and server you have running.
+[models.qwen]
+base_url = "http://localhost:1234/v1"
+id = "qwen2.5-7b-instruct-1m"
+# The model's context window in tokens, over what the provider reports.
+# LM Studio loads a model with 8192 tokens shared by 4 requests at once,
+# 2048 for each. A request is counted generously, a token for every 3
+# characters and 1024 kept for the reply, so 3072 keeps each one within
+# 2048. Load the model with a larger context to give the players a longer
+# memory, and raise this with it.
+context_window = 3072
+
+# Claude Haiku, reached with the key in ANTHROPIC_API_KEY. The host asks
+# it about once a guess, a small request each time.
+[models.claude]
+base_url = "https://api.anthropic.com/v1"
+id = "claude-haiku-5-5"
+
+[prompt_parts]
+rules = """
+Twenty Questions: a host holds a secret object, and the players try to
+name it. Everyone talks at once, with no turns, and everything said goes to
+everyone. A guess is a yes-or-no question put formally to the host, from
+"Is it alive?" to "Is it bigger than a breadbox?". The players share a few
+guesses, and the host answers them in order. A question in plain speech is
+not a guess. The players win when a guess names the object; the host wins
+when the guesses or the time run out.
+"""
+team = """
+Play as a team: talk over each guess before anyone puts it, and when a
+player proposes a guess and another agrees, the one who proposed it puts
+it. Ask about what it is like, what it is made of, how big it is, where it
+is found and what it is for, until only a few things fit every answer; only
+then guess things by name. Only the host answers guesses, so never say what
+an answer will be. The answers so far are in the record: reason from them,
+and never restate them. Listen to what the others just said and answer it
+with something new; never repeat what another player said, or a guess
+already put. Say a dozen words at most, and wait when you have nothing new
+to add.
+"""
+
+[strategies.everyone]
+model = "qwen"
+system = """
+{{ rules }}
+
+You are {{ name }}, a player, with {{ others }}. You share {{ guesses }}
+guesses. {{ team }}
+
+You weigh each proposal: agree in a few words, or say why another guess
+would split what is left better.
+"""
+
+[strategies.scout]
+model = "qwen"
+system = """
+{{ rules }}
+
+You are {{ name }}, a player, with {{ others }}. You share {{ guesses }}
+guesses. {{ team }}
+
+You propose the next guess: the yes-or-no question that splits what the
+answers so far leave possible in two, so that about half of it would get
+a yes.
+"""
+
+[strategies.keeper]
+model = "qwen"
+system = """
+{{ rules }}
+
+You are {{ name }}, a player, with {{ others }}. You share {{ guesses }}
+guesses. {{ team }}
+
+You keep track: after each answer, sum up in a few words what the answers
+so far tell you, as in "So: not alive, made by people, found in a
+kitchen."
+"""
+
+[strategies.closer]
+model = "qwen"
+system = """
+{{ rules }}
+
+You are {{ name }}, a player, with {{ others }}. You share {{ guesses }}
+guesses. {{ team }}
+
+You close in: once the answers leave only a few particular things, propose
+guessing the likeliest by name, and if that is wrong, the next.
+"""

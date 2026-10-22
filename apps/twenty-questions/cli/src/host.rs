@@ -4,7 +4,9 @@
 //! Like a player, the host has two loops sharing one mind, never locked
 //! across a model call. **Perceiving**, it numbers each guess as it
 //! arrives, counts it while guesses remain, and queues it to be answered;
-//! a guess that comes after the last is logged as [`Entry::Uncounted`].
+//! a guess that comes after the last is logged as [`Entry::Uncounted`],
+//! and one that repeats a guess counted already, as two players putting
+//! the same guess at once do, as [`Entry::Repeated`].
 //! It hears all speech. **Thinking**, it is woken like a player, by each
 //! guess and by everyone's speech, with at most one call in flight and one
 //! waiting, and a guess waiting to be answered comes first: while one
@@ -15,7 +17,8 @@
 //! A line of the host's that says the name before the game is won is not
 //! sent: it is a failure, logged as [`Entry::Failed`], and the host is
 //! asked again. A failed answer is asked again up to [`ATTEMPTS`] times,
-//! and so is the pick; after that the episode fails with the last error. A
+//! [`RETRY`] apart, and so is the pick; after that the episode fails with
+//! the last error. A
 //! failed word in conversation is asked again up to as many times, and then
 //! dropped.
 //!
@@ -29,14 +32,13 @@
 //! object.
 
 use crate::config::{Configuration, HostPrompt};
-use crate::game::{Actor, Seated, act, everyone_but, observe};
+use crate::game::{Actor, RETRY, Seated, act, everyone_but, observe};
 use crate::log::{Entry, Side, Victory};
-use crate::message::{HOST, Message, View};
+use crate::message::{HOST, Message, View, folded};
 use crate::model::{
-    ANSWER, Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak,
-    text_parameter,
+    Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak, text_parameter,
 };
-use crate::object::{gives_away, says};
+use crate::object::{about, gives_away, says, shares_a_word};
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use free_agent::{Behavior, Context, Think};
@@ -94,13 +96,14 @@ fn answer_tools() -> Vec<Tool> {
 }
 
 /// What the host is asked when `asker`'s guess `guess` waits for its
-/// answer, about `object`.
+/// answer, about `object`: the guess, and the guess put [`about`] the
+/// object itself.
 fn answering(asker: &str, guess: &str, object: &str) -> String {
     format!(
-        "{asker} guesses: \"{guess}\"\n\nDoes {asker}'s guess name {object} itself? If it \
-         does, call named. If it asks about a property, a category, or a different thing, \
-         call answer and answer truthfully about {object}, calling it 'it' and never by its \
-         name, since saying its name would give it away."
+        "{asker} guesses: \"{guess}\"\n\nAbout the secret object, that asks: \"{}\"\n\nIf \
+         the guess names {object} itself, call named. Otherwise call answer, and answer \
+         truthfully, calling it 'it' and never by its name.",
+        about(guess, object)
     )
 }
 
@@ -124,6 +127,20 @@ const HEARD: &str = "Since you last spoke or waited, the players said:";
 /// them to put one.
 pub const NUDGE: Duration = Duration::from_secs(120);
 
+/// `Yes.` or `No.`, when `text` begins with that word: what an answer that
+/// gives the object away after it is cut to.
+fn leading_yes_or_no(text: &str) -> Option<&'static str> {
+    let first = text
+        .split(|c: char| !c.is_alphabetic())
+        .find(|word| !word.is_empty())?
+        .to_lowercase();
+    match first.as_str() {
+        "yes" => Some("Yes."),
+        "no" => Some("No."),
+        _ => None,
+    }
+}
+
 /// What the host is asked when no guess waits, after the speech it heard:
 /// how many of the `guesses` the players have `used`, how much time is
 /// left, how long it has been `quiet` since the last guess, and that only
@@ -144,11 +161,18 @@ fn talking(used: u64, guesses: u64, time_left: Duration, quiet: Duration) -> Str
 }
 
 /// Whether `line`, a line of speech the host heard, speaks to the host by
-/// name.
+/// name: calls it *host*, and not *the host* or *the host's*, which talk
+/// about it. Players mention *the host's answers* all the time.
 fn addressed(line: &str) -> bool {
-    line.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .any(|word| word == "host")
+    const TALKING_ABOUT: [&str; 6] = ["the", "a", "an", "our", "this", "that"];
+    let lowered = line.to_lowercase();
+    let words = lowered
+        .split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '’'));
+    std::iter::once("")
+        .chain(words.clone())
+        .zip(words)
+        .any(|(before, word)| word == "host" && !TALKING_ABOUT.contains(&before))
 }
 
 /// The tool the host picks the object with: `choose`, taking the `object`.
@@ -161,7 +185,7 @@ fn choose() -> Tool {
             "properties": {"object": {
                 "type": "string",
                 "minLength": 1,
-                "description": "The secret object, as you would name it in a sentence: a teapot, the Eiffel Tower.",
+                "description": "The secret object, as you would say it after \"I'm thinking of\": a unicorn, an octopus, the Eiffel Tower, durian.",
             }},
             "required": ["object"],
             "additionalProperties": false,
@@ -169,15 +193,21 @@ fn choose() -> Tool {
     )
 }
 
+/// The system prompt the host picks the object under. Ollama reads no
+/// tool call from Qwen asked without a system prompt of its own.
+pub(crate) const PICKER: &str = "You are the host of a game of Twenty Questions.";
+
 /// The request that picks the object, of the model `model_id` under
-/// `tool_choice`: `pick` and then [`ANSWER`] as its one message, offering
+/// `tool_choice`: [`PICKER`], and `pick` and then
+/// [`ANSWER`](crate::model::ANSWER), offering
 /// [`choose`], at `temperature`.
 fn picking(model_id: &str, tool_choice: ToolChoice, pick: &str, temperature: f64) -> Request {
-    Request::offering(
+    request(
         model_id,
-        vec![free_agent_model::Message::user(format!("{pick} {ANSWER}"))],
-        vec![choose()],
         tool_choice,
+        PICKER,
+        pick.to_string(),
+        vec![choose()],
     )
     .at_temperature(temperature)
 }
@@ -338,6 +368,8 @@ struct State {
     answered: u64,
     /// The guesses counted and not yet answered, oldest first.
     waiting: VecDeque<Waiting>,
+    /// Every guess counted, [`folded`].
+    put: HashSet<String>,
     /// When the players were told the game began.
     began: Option<Instant>,
     /// Whether the game is over.
@@ -541,8 +573,9 @@ impl Host {
         }
     }
 
-    /// Make `attempt` up to [`ATTEMPTS`] times, logging each failure, until
-    /// one succeeds. After the last failure the episode fails.
+    /// Make `attempt` up to [`ATTEMPTS`] times, [`RETRY`] apart, logging
+    /// each failure, until one succeeds. After the last failure the
+    /// episode fails.
     async fn persist<F: Future<Output = anyhow::Result<()>>>(
         &self,
         attempt: impl Fn() -> F,
@@ -557,6 +590,7 @@ impl Host {
             if tries == ATTEMPTS {
                 return self.fail(error);
             }
+            tokio::time::sleep(RETRY).await;
         }
     }
 
@@ -592,7 +626,10 @@ impl Host {
     /// and the question, and a story of earlier answers only tempts a small
     /// model to repeat them. A guess that
     /// says the object's name is named whichever tool the model called, and
-    /// an answer that says it of a guess that does not is an error.
+    /// one the model calls named that shares no word with the name is
+    /// answered Yes and is not named. An
+    /// answer that says it of a guess that does not is cut to its first
+    /// word when that is Yes or No, and is otherwise an error.
     async fn try_answer(&self, object: &str, guess: &Waiting) -> anyhow::Result<()> {
         let prompt = self.mind.state.lock().unwrap().prompt.clone();
         let asker = &self.mind.brief.asker;
@@ -608,11 +645,18 @@ impl Host {
         if self.out_of_time() {
             return self.end(Victory::OutOfTime);
         }
-        let (text, named) = answered(&response?)?;
+        let (text, named) = match answered(&response?)? {
+            (_, true) if !shares_a_word(&guess.text, object) => ("Yes.".to_string(), false),
+            answer => answer,
+        };
         let named = named || says(&guess.text, object);
-        if !named && gives_away(&text, object, &guess.text) {
-            bail!("the host's answer gives the secret object away: {text}");
-        }
+        let text = match !named && gives_away(&text, object, &guess.text) {
+            true => match leading_yes_or_no(&text) {
+                Some(word) => word.to_string(),
+                None => bail!("the host's answer gives the secret object away: {text}"),
+            },
+            false => text,
+        };
         self.reply(guess, text, named, shown)
     }
 
@@ -784,7 +828,8 @@ impl Behavior for Host {
 
     /// Log a message from a player as observed and remember it. A guess is
     /// counted and queued while guesses remain, and logged as uncounted
-    /// after; a guess counted, or speech, wakes the think loop. Once the
+    /// after, or as repeated when it repeats one counted already; a guess
+    /// counted, or speech, wakes the think loop. Once the
     /// game is over, nothing wakes it.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
         let Some(n) = message.number() else {
@@ -794,9 +839,22 @@ impl Behavior for Host {
         observe(&self.context, from.clone(), n);
         if let Message::Guess { text, .. } = message {
             let mut state = self.mind.state.lock().unwrap();
-            if state.counted == self.mind.brief.guesses {
+            let refused = if state.counted == self.mind.brief.guesses {
+                Some(Entry::Uncounted {
+                    from: from.clone(),
+                    n,
+                })
+            } else if !state.put.insert(folded(text)) {
+                Some(Entry::Repeated {
+                    from: from.clone(),
+                    n,
+                })
+            } else {
+                None
+            };
+            if let Some(refused) = refused {
                 drop(state);
-                self.context.log(Entry::Uncounted { from, n });
+                self.context.log(refused);
                 return Ok(());
             }
             state.counted += 1;
@@ -846,6 +904,7 @@ impl Think for Host {
 mod tests {
     use super::*;
     use crate::game::tests::{Line, Played, Puppet, Rules, configuration, hosting, table};
+    use crate::model::ANSWER;
     use crate::model::canned::canned;
     use free_agent_model::fake::FakeModel;
     use std::sync::atomic::AtomicUsize;
@@ -952,24 +1011,30 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_guess_the_host_calls_named_wins_in_other_words() {
+    async fn a_guess_the_host_calls_named_wins_in_words_of_the_name() {
         let model = answering(
-            |guess| match guess {
-                "Is it a kettle for tea?" => {
-                    Ok(Response::tool_call(NAMED, &json!({"text": "Yes!"})))
-                }
-                _ => Ok(answer("No.")),
-            },
+            |_| Ok(Response::tool_call(NAMED, &json!({"text": "Yes!"}))),
             1,
         );
         let script = [
-            (1, Line::Guess("Is it alive?")),
-            (5, Line::Guess("Is it a kettle for tea?")),
+            (1, Line::Guess("Is it a kettle?")),
+            (5, Line::Guess("Is it a pot for tea?")),
         ];
-        let played = hosted(&model, Rules::default(), &[("Bob", &script)]).await;
+        let played = hosted(
+            &model,
+            Rules {
+                object: Some("a china tea pot"),
+                ..Rules::default()
+            },
+            &[("Bob", &script)],
+        )
+        .await;
+        // A guess that names no word of the object's name is only answered
+        // Yes, however the host judged it: the host called "Is it
+        // furniture?" a loveseat.
         assert_eq!(
             answers(&played),
-            [(1, "Bob", "No.", false, 19), (2, "Bob", "Yes!", true, 18)]
+            [(1, "Bob", "Yes.", false, 19), (2, "Bob", "Yes!", true, 18)]
         );
         assert_eq!(played.end().1, Victory::Named);
     }
@@ -980,7 +1045,7 @@ mod tests {
         let counted = Arc::clone(&calls);
         let model = answering(
             move |_| match counted.fetch_add(1, Ordering::Relaxed) {
-                0 => Ok(answer("Yes, a teapot is found in a kitchen.")),
+                0 => Ok(answer("A teapot is found in a kitchen.")),
                 _ => Ok(answer("Yes.")),
             },
             1,
@@ -997,12 +1062,44 @@ mod tests {
         .await;
         assert_eq!(
             played.failures(HOST),
-            [
-                "the host's answer gives the secret object away: Yes, a teapot is found in a kitchen."
-            ]
+            ["the host's answer gives the secret object away: A teapot is found in a kitchen."]
         );
         assert_eq!(answers(&played), [(1, "Alice", "Yes.", false, 19)]);
         assert_eq!(played.end().1, Victory::OutOfTime);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_saying_the_name_after_yes_or_no_is_cut_to_yes_or_no() {
+        let model = answering(
+            |guess| {
+                Ok(answer(match guess {
+                    "Is it found in a kitchen?" => "Yes, a teapot is found in a kitchen.",
+                    _ => "NO! Teapots are not alive.",
+                }))
+            },
+            1,
+        );
+        let script = [
+            (1, Line::Guess("Is it found in a kitchen?")),
+            (5, Line::Guess("Is it alive?")),
+        ];
+        let played = hosted(
+            &model,
+            Rules {
+                time_limit: Duration::from_secs(60),
+                ..Rules::default()
+            },
+            &[("Alice", &script)],
+        )
+        .await;
+        assert!(played.failures(HOST).is_empty());
+        assert_eq!(
+            answers(&played),
+            [
+                (1, "Alice", "Yes.", false, 19),
+                (2, "Alice", "No.", false, 18)
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1070,6 +1167,42 @@ mod tests {
             }]
         );
         assert_eq!(played.end().2, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_guess_repeating_one_put_already_is_neither_counted_nor_answered() {
+        let model = answering(|_| Ok(answer("No.")), 10);
+        let played = hosted(
+            &model,
+            Rules::default(),
+            &[
+                ("Alice", &[(1, Line::Guess("Is it big?"))]),
+                (
+                    "Bob",
+                    &[
+                        (2, Line::Guess(" is it BIG? ")),
+                        (30, Line::Guess("Is it red?")),
+                    ],
+                ),
+            ],
+        )
+        .await;
+        assert_eq!(
+            answers(&played),
+            [(1, "Alice", "No.", false, 19), (2, "Bob", "No.", false, 18)]
+        );
+        let repeated: Vec<&Entry> = played
+            .entries()
+            .into_iter()
+            .filter(|entry| matches!(entry, Entry::Repeated { .. }))
+            .collect();
+        assert_eq!(
+            repeated,
+            [&Entry::Repeated {
+                from: "Bob".to_string(),
+                n: 1
+            }]
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1263,6 +1396,28 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn the_host_waits_before_it_asks_again() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let at = Arc::clone(&asked);
+        let model = answering(
+            move |_| {
+                at.lock().unwrap().push(Instant::now());
+                Err(anyhow!("busy"))
+            },
+            0,
+        );
+        hosted(
+            &model,
+            Rules::default(),
+            &[("Alice", &[(1, Line::Guess("Is it alive?"))])],
+        )
+        .await;
+        let asked = asked.lock().unwrap();
+        let waits: Vec<Duration> = asked.windows(2).map(|at| at[1] - at[0]).collect();
+        assert_eq!(waits, [RETRY; ATTEMPTS as usize - 1]);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn an_answer_that_is_not_well_formed_fails() {
         let model = answering(|_| Ok(speaking("Hmm.")), 1);
         let played = hosted(
@@ -1294,9 +1449,10 @@ mod tests {
         assert_eq!(pick.temperature, Some(1.2));
         assert_eq!(
             pick.messages,
-            [free_agent_model::Message::user(format!(
-                "Pick an animal. {ANSWER}"
-            ))]
+            [
+                free_agent_model::Message::system(PICKER),
+                free_agent_model::Message::user(format!("Pick an animal. {ANSWER}"))
+            ]
         );
         assert_eq!(pick.tools, [choose()]);
         let entries = played.entries();
@@ -1343,6 +1499,41 @@ mod tests {
         assert_eq!(
             answering.messages[0].content,
             "You are the host. The secret object is a teapot."
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_picked_object_is_put_as_the_host_said_it() {
+        let model = Arc::new(FakeModel::answering(|request| {
+            match request.tools.iter().any(|tool| tool.name == CHOOSE) {
+                true => Ok(Response::tool_call(CHOOSE, &json!({"object": "durian"}))),
+                false => Ok(answer("Yes.")),
+            }
+        }));
+        hosted(
+            &model,
+            Rules {
+                object: None,
+                ..Rules::default()
+            },
+            &[("Alice", &[(1, Line::Guess("Is it a fruit?"))])],
+        )
+        .await;
+        let answering = model
+            .requests()
+            .into_iter()
+            .find(answering_a_guess)
+            .unwrap();
+        assert_eq!(
+            answering.messages[0].content,
+            "You are the host. The secret object is durian."
+        );
+        assert!(
+            answering.messages[1]
+                .content
+                .contains("\"Is durian a fruit?\""),
+            "{}",
+            answering.messages[1].content
         );
     }
 
@@ -1512,6 +1703,38 @@ mod tests {
             spoken(&answer("No.")).unwrap_err().to_string(),
             "the model called answer, which is not a tool it was offered"
         );
+    }
+
+    #[test]
+    fn a_player_speaks_to_the_host_by_calling_it_host_not_by_talking_about_it() {
+        for line in [
+            "Host, is it alive?",
+            "Is it alive, host?",
+            "Hey HOST! Is it red?",
+            "Bob: \"host: is it big?\"",
+        ] {
+            assert!(addressed(line), "{line}");
+        }
+        for line in [
+            "Considering the host's answers, it is not alive.",
+            "Let's ask the host whether it is alive.",
+            "The host said no.",
+            "Our host’s answer was yes.",
+            "A ghost story?",
+            "Bob: \"It is not alive.\"",
+        ] {
+            assert!(!addressed(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_guess_is_asked_of_the_host_about_the_object_itself() {
+        let asked = super::answering("Alice", "Is it alive?", "a unicycle");
+        assert!(
+            asked.starts_with("Alice guesses: \"Is it alive?\""),
+            "{asked}"
+        );
+        assert!(asked.contains("\"Is a unicycle alive?\""), "{asked}");
     }
 
     #[test]

@@ -45,13 +45,22 @@ everyone talks to everyone at once.**
 - **The secret object.** The configuration names it, or the host picks one
   as the game begins, asked with a pick prompt of its own at a high
   temperature (1.2 unless configured), for a category drawn at random from
-  the configuration's `categories`.
+  the configuration's `categories`, under a system prompt of its own.
 - **Everyone talks at once.** Whatever anyone says goes to everyone else,
   the host included.
 - **A guess** is the one move that counts: a `Guess` message, a yes-or-no
   question put formally to the host. The players share twenty, numbered in
   the order the host receives them. A guess after the last is logged as
   `Uncounted`, and neither counted nor answered.
+- **A repeated guess is not counted.** A guess whose question, trimmed and
+  in any case, repeats one counted already, as when two players put the
+  same guess at once, is logged as `Repeated`, and neither counted nor
+  answered, so it costs no guess. Each player tells only the first of the
+  two it hears, and takes the host's answer to either as the answer to
+  both. *Amended 2026-10-21 (#466):* two players often put the same guess
+  at the same moment, each before hearing the other's, and both were
+  counted and answered alike; in one game four of the twenty guesses went
+  to repeats.
 - **The host answers every guess**, one at a time in the order received, in
   its own words, with one of two tools: `answer(text)` for a guess that does
   not name the object, and `named(text)` for one that does.
@@ -59,15 +68,23 @@ everyone talks to everyone at once.**
   calls: the guess, lowercased, holds the object's name, lowercased and
   without a leading *a*, *an* or *the* or a measure such as *pair of*, as
   words of their own, singular or plural. *Scissors?* says *a pair of
-  scissors*; *Is it a category?* does not say *a cat*. A guess that names
-  it in other words wins when the host calls `named`.
+  scissors*; *Is it a category?* does not say *a cat*. A guess that holds
+  some word of the name, of three letters or more, wins when the host
+  calls `named`, as *Is it a cast iron pan?* for *a cast iron skillet*. A
+  guess the host calls `named` that holds no such word is answered *Yes.*
+  and does not win. *Amended 2026-10-21 (#466):* the host called *Is it
+  furniture?* a loveseat and *Is it a flower?* a tulip, and two of ten
+  games were won that way.
 - **The host keeps its secret.** A line of the host's, an answer or a word,
   that gives the object away before the game is won is not sent: one that
   says its name, or the name's last word, its head noun, unless the guess
   it answers said that word already. *Scissors are made of metal* gives
   away *a pair of scissors*; *Yes, it is a tower* answers *Is it a tower?*
-  about *the Eiffel Tower*. Such a line is logged as `Failed`, and the host
-  is asked again.
+  about *the Eiffel Tower*. An answer that gives it away after a leading
+  *Yes* or *No* is cut to that word; any other such line is logged as
+  `Failed`, and the host is asked again. *Amended 2026-10-21 (#466):* the
+  host kept saying *No, a rose bush is not …* and failed the episode on
+  the third try, when its *No* was right.
 - **The end.** A guess answered as naming the object wins for the players.
   The last guess answered without it, or the time limit (10 minutes unless
   configured), wins for the host. A guess still waiting when the game ends
@@ -108,7 +125,9 @@ Two loops over one mind, never locked across a model call
   it, and keeps each line of speech it hears. A counted guess or a line of
   speech wakes the think loop, debounced as a player's is.
 - **Thinking**, a guess waiting comes first: the host is asked to answer
-  the oldest, shown the guess alone, offered `answer` and `named`. With none
+  the oldest, shown the guess alone and the guess put about the object
+  itself, its *it* replaced by the object (*Is a unicycle alive?*),
+  offered `answer` and `named`. With none
   waiting, it is asked whether to speak only when a player spoke to it by
   name, or, once until the next guess, when nobody has put a guess for two
   minutes; otherwise the speech it heard is let go unasked. Asked, it is
@@ -116,8 +135,9 @@ Two loops over one mind, never locked across a model call
   a `wait` that says nothing, and told to ask "Is that your guess?" of a
   question put to it in speech, or to urge a quiet table to guess.
 - **A failure is asked again.** An answer, or the pick, that fails or is not
-  well formed is logged as `Failed` and asked again, up to three times in
-  all; then the episode fails, with the last error, which the host's
+  well formed is logged as `Failed` and asked again 10 seconds later, so
+  that a busy server has time to clear, up to three times in all; then the
+  episode fails, with the last error, which the host's
   clean-up returns. A word that fails is asked again up to as many times,
   and then the speech it was about is dropped.
 - **The time limit** is a timer, `Over`, which ends an idle game; an answer
@@ -139,9 +159,11 @@ host's answer, how many are left, how much time is left, and what the
 player may do. It offers `speak`, `wait`, and `guess` when the player may
 guess: while guesses are left, none is waiting, and someone has spoken
 since the last answer, so that a guess is proposed before it is made. A
-guess the model makes that was put already fails the answer. A guess made
-while another came in during the call is not put, so one guess waits at a
-time.
+guess the model makes that was put already fails the answer, and the next
+request tells the player it was not put. A guess made while another came
+in during the call is not put, so one guess waits at a time. A player
+whose decision fails, its model unreached or its answer not well formed,
+tries again after 10 seconds unless something wakes it sooner.
 
 ### The log
 
@@ -157,6 +179,7 @@ JSON Lines of `free_agent::Event`, as Social Deduction's, written by a
 | `Action`, `Observation` | each actor | every message, sent and received |
 | `Thinking`, `Thought`, `Usage`, `Failed` | each actor | each model call, and each failure to act |
 | `Uncounted` | host | a guess after the last |
+| `Repeated` | host | a guess repeating one counted already |
 | `End` | host | who won and how, the guesses answered, the object, how long it took |
 
 ### Configuration and startup
@@ -199,6 +222,35 @@ was built.
   into proposals. Saying a crossed guess as a proposal instead was tried,
   and made three players parrot the same line.
 
+Tuning against `qwen2.5-7b-instruct-1m`, Ollama's `qwen2.5:7b` and
+`llama3.2:3b` (#466) changed more.
+
+- **The guess about the object itself.** On 72 test guesses with known
+  answers, the host answered 59 right shown *Is it alive?* about a
+  unicycle, and 66 shown also *Is a unicycle alive?*. Asking it to think
+  first in an argument the players never see did no better, and telling it
+  to add no hints, or that a similar thing is answered No, did worse (61
+  and 62). The host picks its object as one says it after *I'm thinking
+  of*, article and all, so that *durian* stays *durian*; a configured
+  object named bare is asked about as *a* or *an* one: about *the raven*,
+  read as Poe's poem, it answered 6 of 14 right; about *a raven*, 11.
+- **A short host prompt.** The host's instructions for speaking cost it
+  answers: told only the rules and the object, it answered 12 of 12
+  guesses about living things right, against 10 with them, and 67 of the
+  72 against 66. The instructions for speaking are in the request that
+  asks it to speak.
+- **Repeated guesses.** Two players put the same guess at once, and both
+  were counted: four of twenty guesses went to repeats in one game.
+- **Retries.** A busy server timed out all four players' first calls, and
+  nothing woke them again; a player refused a repeated guess in silence
+  tried it again for five minutes.
+- **Spoken to by name.** Players speak of *the host's answers* in nearly
+  every line, and the host asked "Is that your guess?" nine times in one
+  game; it is now asked only when called *host*.
+- **Three players with parts.** Four players parroted one another, all
+  woken by the same answer; three players and the host fit LM Studio's four
+  slots. A scout, a keeper and a closer each have a part to play.
+
 ## Alternatives considered
 
 ### A separate environment and a host player
@@ -227,8 +279,10 @@ coordination to the players, and the player's policy helps them.
   episode.
 - A host's model call in flight at the time limit holds the end until it
   returns, by up to the request timeout.
-- Five actors asking one local server take turns at its parallel slots, so
-  a ten-minute game on a laptop holds about twenty guesses.
+- The example's three players and the host fill a local server's four
+  parallel slots; more players take turns at them, and a server that
+  answers one request at a time, as Ollama does by default, makes every
+  actor wait for the others.
 
 ## Deliberately deferred
 

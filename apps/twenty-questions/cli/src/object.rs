@@ -38,6 +38,17 @@ pub fn says(text: &str, object: &str) -> bool {
     holds(text, &name(object))
 }
 
+/// Whether `text` holds a word of the name of `object`, one of three
+/// letters or more, as words of its own, singular or plural. A guess the
+/// host judges to name the object must: small models call a category,
+/// *Is it furniture?*, the object itself.
+pub fn shares_a_word(text: &str, object: &str) -> bool {
+    name(object)
+        .split_whitespace()
+        .filter(|word| word.len() >= 3)
+        .any(|word| holds(text, word))
+}
+
 /// Whether `text` gives `object` away, when it answers `asked`: it says
 /// the object's name, or the name's last word, its head noun, which
 /// `asked` did not say already. `It's a kind of tower.` gives *the Eiffel
@@ -47,6 +58,79 @@ pub fn gives_away(text: &str, object: &str, asked: &str) -> bool {
     let name = name(object);
     let head = name.rsplit(' ').next().unwrap_or_default();
     holds(text, &name) || holds(text, head) && !holds(asked, head)
+}
+
+/// `object` as one says it after *I'm thinking of*: with its own article,
+/// lowercased, or else, named bare as a configured object may be, with *a*
+/// or *an*, unless it is a proper name of several capitalized words. `owl`
+/// is `an owl`, `An egg` is `an egg` and `Big Ben` is `Big Ben`. A small
+/// model judges a question about its secret better about *a raven* than
+/// *the raven*, which it reads as Poe's poem. The host picks its object
+/// already said this way, as in *durian*, which this cannot tell.
+pub fn spoken(object: &str) -> String {
+    let object = object.trim();
+    if object.is_empty() {
+        return String::new();
+    }
+    let article = object
+        .split_once(' ')
+        .map(|(article, rest)| (article.to_lowercase(), rest));
+    match article {
+        Some((article, rest)) if ["a", "an", "the"].contains(&article.as_str()) => {
+            format!("{article} {rest}")
+        }
+        Some(_) if proper(object) => object.to_string(),
+        _ if object.starts_with(|c: char| "aeiou".contains(c.to_ascii_lowercase())) => {
+            format!("an {object}")
+        }
+        _ => format!("a {object}"),
+    }
+}
+
+/// `question` put about `object`, as it is [`spoken`], itself: each *it*
+/// in it, a word of its own, replaced by the object, capitalized where the
+/// *it* was. `Is it alive?` about `a unicycle` is `Is a unicycle alive?`,
+/// and about `durian`, `Is durian alive?`. A small model judges a question
+/// about its secret far better put this way.
+pub fn about(question: &str, object: &str) -> String {
+    let object = object.trim();
+    if object.is_empty() {
+        return question.to_string();
+    }
+    let capitalized: String = object
+        .chars()
+        .take(1)
+        .flat_map(char::to_uppercase)
+        .chain(object.chars().skip(1))
+        .collect();
+    let mut about = String::new();
+    let mut word = String::new();
+    let put = |word: &mut String, about: &mut String| {
+        match word.eq_ignore_ascii_case("it") {
+            true if word.starts_with('I') => about.push_str(&capitalized),
+            true => about.push_str(object),
+            false => about.push_str(word),
+        }
+        word.clear();
+    };
+    for c in question.chars() {
+        if c.is_alphanumeric() {
+            word.push(c);
+        } else {
+            put(&mut word, &mut about);
+            about.push(c);
+        }
+    }
+    put(&mut word, &mut about);
+    about
+}
+
+/// Whether `name` is a proper name: each of its words capitalized, but for
+/// small words such as *of*, as in *Statue of Liberty*.
+fn proper(name: &str) -> bool {
+    name.split_whitespace()
+        .filter(|word| !["of", "the", "and", "de"].contains(word))
+        .all(|word| word.starts_with(char::is_uppercase))
 }
 
 /// Whether `text`, lowercased, holds `words`, also lowercase, as words of
@@ -110,6 +194,61 @@ mod tests {
         assert!(says("Scissors?", "a pair of scissors"));
         assert!(says("Is it a scissor?", "a pair of scissors"));
         assert!(!says("Is it a pair?", "a pair of scissors"));
+    }
+
+    #[test]
+    fn a_question_is_put_about_the_object_in_place_of_it() {
+        assert_eq!(about("Is it alive?", "a unicycle"), "Is a unicycle alive?");
+        assert_eq!(
+            about("Can you eat it?", "a banana"),
+            "Can you eat a banana?"
+        );
+        assert_eq!(about("It flies?", "a penguin"), "A penguin flies?");
+        assert_eq!(
+            about("IT is bigger than it was? Items?", "the Eiffel Tower"),
+            "The Eiffel Tower is bigger than the Eiffel Tower was? Items?"
+        );
+        assert_eq!(
+            about("Is its handle long?", "a teapot"),
+            "Is its handle long?"
+        );
+        assert_eq!(about("Is it?", ""), "Is it?");
+        // The object is put as it is said after "I'm thinking of".
+        assert_eq!(about("Is it a fruit?", "durian"), "Is durian a fruit?");
+        assert_eq!(about("Is it tall?", "Big Ben"), "Is Big Ben tall?");
+        assert_eq!(about("It swims?", "an octopus"), "An octopus swims?");
+    }
+
+    #[test]
+    fn an_object_is_spoken_with_its_own_article_or_else_a_or_an() {
+        assert_eq!(spoken("a unicorn"), "a unicorn");
+        assert_eq!(spoken("An egg"), "an egg");
+        assert_eq!(spoken(" the Eiffel Tower "), "the Eiffel Tower");
+        // A configured object named bare takes "a" or "an", unless it is a
+        // proper name: "the raven" is read as Poe's poem.
+        assert_eq!(spoken("chicken"), "a chicken");
+        assert_eq!(spoken("Chicken"), "a Chicken");
+        assert_eq!(spoken("owl"), "an owl");
+        assert_eq!(spoken("Big Ben"), "Big Ben");
+        assert_eq!(spoken("Statue of Liberty"), "Statue of Liberty");
+        assert_eq!(spoken(""), "");
+    }
+
+    #[test]
+    fn a_line_shares_a_word_of_the_name_when_it_holds_one_of_three_letters_or_more() {
+        assert!(shares_a_word(
+            "Is it a cast iron pan?",
+            "a cast iron skillet"
+        ));
+        assert!(shares_a_word("Is it a pot?", "a china tea pot"));
+        assert!(shares_a_word("Is it a ravens' wing?", "raven"));
+        assert!(!shares_a_word("Is it furniture?", "a loveseat"));
+        assert!(!shares_a_word(
+            "Is it a pair of shoes?",
+            "a pair of scissors"
+        ));
+        assert!(!shares_a_word("Is it an ox?", "an ox cart"));
+        assert!(!shares_a_word("Is it a kettle for tea?", "a teapot"));
     }
 
     #[test]

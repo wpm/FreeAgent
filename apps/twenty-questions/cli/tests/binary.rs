@@ -77,21 +77,32 @@ fn the_example_plays_to_the_end_tells_the_game_and_logs_it_between_its_header_an
     assert!(output.status.success(), "{output:?}");
     let told = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = told.lines().collect();
+    // The parts are dealt to the seats at random.
+    let mut parts: Vec<&str> = lines[..3]
+        .iter()
+        .map(|line| line.split_once(" plays ").unwrap().1)
+        .collect();
+    parts.sort();
+    assert_eq!(parts, ["closer.", "keeper.", "scout."], "{told}");
     assert_eq!(
-        lines[..3],
+        lines[3..5],
         [
-            "Alice, Bob, Carol and Dave play everyone.",
             "They have 20 guesses and 1m.",
             "qwen's context window is 3072 tokens, as the configuration file says.",
         ]
     );
     // The category is drawn at random.
     assert!(
-        lines[3].starts_with("Asked for ")
-            && lines[3].ends_with(", the host is thinking of a teapot."),
+        lines[5].starts_with("Asked for ")
+            && lines[5].ends_with(", the host is thinking of a teapot."),
         "{told}"
     );
-    assert!(lines.contains(&"Alice: Let's ask."), "{told}");
+    // A guess is put only once someone has spoken, but who speaks first
+    // depends on how the players' calls are scheduled.
+    assert!(
+        lines.iter().any(|line| line.ends_with(": Let's ask.")),
+        "{told}"
+    );
     assert!(
         lines
             .iter()
@@ -217,10 +228,17 @@ fn episodes_play_one_after_another_each_logged_between_its_own_header_and_end() 
     // Each episode is told in turn, set off from the one before by a blank
     // line.
     let told = String::from_utf8(output.stdout).unwrap();
-    let seated = "Alice, Bob, Carol and Dave play everyone.\n";
-    assert!(told.starts_with(seated), "{told}");
-    assert_eq!(told.matches(seated).count(), 3, "{told}");
-    assert_eq!(told.matches(&format!("\n\n{seated}")).count(), 2, "{told}");
+    let lines: Vec<&str> = told.lines().collect();
+    let seated = |at: usize| lines[at].contains(" plays ");
+    let opening: Vec<usize> = (0..lines.len())
+        .filter(|at| seated(*at) && (*at == 0 || !seated(at - 1)))
+        .collect();
+    assert_eq!(opening.len(), 3, "{told}");
+    assert_eq!(opening[0], 0, "{told}");
+    assert!(
+        opening[1..].iter().all(|at| lines[at - 1].is_empty()),
+        "{told}"
+    );
 }
 
 #[test]
@@ -373,7 +391,7 @@ fn configs_lists_every_example_configuration_with_its_description() {
     assert_eq!(paths, expected, "{listing}");
     assert!(
         listing
-            .contains("Four players and a host, all one model, who picks its own secret object."),
+            .contains("Three players and a host, all one model, who picks its own secret object."),
         "{listing}"
     );
 }

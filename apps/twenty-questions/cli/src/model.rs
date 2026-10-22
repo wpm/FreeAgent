@@ -109,7 +109,16 @@ struct Text {
 /// The arguments of a [`wait`] call.
 #[derive(Deserialize)]
 struct Waiting {
-    seconds: u64,
+    seconds: Seconds,
+}
+
+/// A number of seconds as a model writes it: a number, or its digits in a
+/// string, as Llama writes them.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Seconds {
+    Number(u64),
+    Digits(String),
 }
 
 /// What `call`, a call to a tool taking `text`, says. Arguments that do
@@ -127,6 +136,14 @@ pub(crate) fn said(call: &free_agent_model::Call) -> anyhow::Result<String> {
 /// `limit` in whole seconds, is an error.
 pub(crate) fn waited(call: &free_agent_model::Call, limit: Duration) -> anyhow::Result<Duration> {
     let Waiting { seconds } = arguments(call)?;
+    let seconds = match seconds {
+        Seconds::Number(seconds) => seconds,
+        Seconds::Digits(digits) => digits.trim().parse().with_context(|| {
+            format!(
+                "the arguments of the model's {WAIT} call: {digits:?} is not a number of seconds"
+            )
+        })?,
+    };
     if !(1..=limit.as_secs()).contains(&seconds) {
         bail!(
             "the model asked to wait {seconds}s, which is not between 1s and {}",

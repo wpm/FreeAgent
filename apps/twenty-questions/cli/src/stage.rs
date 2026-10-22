@@ -555,6 +555,37 @@ pub(crate) mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_guess_repeating_one_counted_is_told_and_not_numbered() {
+        let alice = [(after(1), Script::Guess("Is it alive?"))];
+        let bob = [(after(1), Script::Guess("is it alive?"))];
+        let rules = Rules {
+            time_limit: after(30),
+            ..Rules::default()
+        };
+        let played = scripted(rules, &[("Alice", &alice), ("Bob", &bob)]).await;
+        let beats = shown(&folded(&played.events));
+        let guesses: Vec<&Beat> = beats
+            .iter()
+            .filter(|beat| matches!(beat, Beat::Guessed { .. }))
+            .collect();
+        assert_eq!(guesses.len(), 1, "{beats:?}");
+        // Either may reach the host first.
+        let put = [("Alice", "Is it alive?"), ("Bob", "is it alive?")];
+        let (other, repeated) = put
+            .into_iter()
+            .find(
+                |(who, _)| !matches!(guesses[0], Beat::Guessed { who: first, .. } if first == who),
+            )
+            .unwrap();
+        assert!(
+            beats.contains(&Beat::Told(vec![format!(
+                "{other} repeats a guess put already: {repeated} It is not counted."
+            )])),
+            "{beats:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_quiet_game_ends_out_of_time() {
         let rules = Rules {
             time_limit: after(30),

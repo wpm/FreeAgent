@@ -5,7 +5,9 @@ secret object, and language-model players talk among themselves and put
 yes-or-no guesses to it until one names the object, the twenty guesses run
 out, or the time does. Everyone talks at once, with no turns. The host is a
 model too, and runs the game: it picks the object when the configuration
-names none, answers each guess in the order it came, and ends the game.
+names none, answers each guess in the order it came, and ends the game. A
+guess that repeats one already counted, as when two players put the same
+guess at once, is not counted and costs no guess.
 
 ## Installing
 
@@ -50,7 +52,10 @@ twenty-questions play prompted.toml
 ```
 
 `prompted.toml` plays against a local [LM Studio](https://lmstudio.ai) server
-serving `qwen2.5-7b-instruct-1m`. The same files are in
+serving `qwen2.5-7b-instruct-1m`. `ollama.toml` plays the same game against a
+local [Ollama](https://ollama.com) server serving `qwen2.5:7b`, and
+`mixed.toml` seats the players on LM Studio and the host on Claude Haiku,
+which answers guesses more truly. The same files are in
 [`configs/`](configs). A configuration file that is missing says how to write
 out the examples.
 
@@ -168,6 +173,8 @@ Each episode's log opens with a `Header`, naming the log's `format`, the
   and the usage its provider reported.
 - `Failed`: an actor that failed to act, with the error.
 - `Uncounted`: a guess that came after the last one.
+- `Repeated`: a guess repeating one counted already, as when two players put
+  the same guess at once. It is neither counted nor answered.
 - `End`: the side that won, `players` or `host`, and how: `named`,
   `out_of_guesses` or `out_of_time`; the guesses used, the object, and how
   long the game took.

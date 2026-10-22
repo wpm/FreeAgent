@@ -470,17 +470,20 @@ mod tests {
         let app = defaults();
         assert_eq!(app.models.keys().collect::<Vec<_>>(), ["qwen"]);
         assert_eq!(app.game, game_defaults());
-        assert_eq!(app.game.players, 4);
-        assert_eq!(app.game.time_limit, "10m");
+        assert_eq!(app.game.players, 3);
+        assert_eq!(app.game.time_limit, "15m");
         assert_eq!(app.game.strategy, "everyone");
         assert_eq!(app.game.host.model, "qwen");
         assert_eq!(app.game.host.object, "");
-        assert_eq!(app.game.host.categories.len(), 8);
+        assert_eq!(app.game.host.categories.len(), 24);
         assert_eq!(app.game.strategies["everyone"].model, "qwen");
-        assert_eq!(app.game.prompt_parts.keys().collect::<Vec<_>>(), ["rules"]);
+        assert_eq!(
+            app.game.prompt_parts.keys().collect::<Vec<_>>(),
+            ["rules", "team"]
+        );
         assert_eq!(
             app.summary(),
-            "4 players · qwen2.5-7b-instruct-1m · host picks"
+            "3 players · qwen2.5-7b-instruct-1m · host picks"
         );
         assert!(validate(&app).is_empty(), "{:?}", validate(&app));
     }
@@ -527,7 +530,7 @@ mod tests {
         }
         let text = text(&app);
         let settled = config::parse(&text).unwrap_or_else(|e| panic!("{e:#}\n{text}"));
-        assert_eq!(settled.seats, ["Alice", "Bob", "Carol", "Dave"]);
+        assert_eq!(settled.seats, ["Alice", "Bob", "Carol"]);
         assert_eq!(settled.host.object, None);
         prepare(&text, &Environment).await.unwrap();
     }
@@ -544,7 +547,7 @@ mod tests {
         let settled = config::parse(&text).unwrap();
         assert_eq!(settled.models.keys().collect::<Vec<_>>(), ["qwen"]);
         assert_eq!(settled.host.object.as_deref(), Some("a teapot"));
-        assert_eq!(settled.allotments["everyone"], 4);
+        assert_eq!(settled.allotments["scout"], 1);
     }
 
     #[test]
@@ -622,15 +625,16 @@ mod tests {
     #[test]
     fn the_strategies_name_models_that_exist_and_the_seats_play_strategies_that_do() {
         let mut app = defaults();
-        app.game.strategies.get_mut("everyone").unwrap().model = "ghost".to_string();
+        app.game.strategies.get_mut("scout").unwrap().model = "ghost".to_string();
         assert_eq!(
             only_error(&app),
             (
-                path(&["game", "strategies", "everyone", "model"]),
-                "strategy 'everyone' names model 'ghost', which doesn't exist".to_string()
+                path(&["game", "strategies", "scout", "model"]),
+                "strategy 'scout' names model 'ghost', which doesn't exist".to_string()
             )
         );
         let mut app = defaults();
+        app.game.allotments.clear();
         app.game.strategy = "missing".to_string();
         assert_eq!(
             only_error(&app),
@@ -639,7 +643,7 @@ mod tests {
                 "the strategy everyone plays, 'missing', doesn't exist".to_string()
             )
         );
-        app.game.allotments.insert("missing".to_string(), 4);
+        app.game.allotments.insert("missing".to_string(), 3);
         assert_eq!(
             only_error(&app),
             (
@@ -667,11 +671,11 @@ mod tests {
             only_error(&app)
         };
         let (at, message) = broken(|game| {
-            game.strategies.get_mut("everyone").unwrap().system = "{{ nothing }}".to_string();
+            game.strategies.get_mut("scout").unwrap().system = "{{ nothing }}".to_string();
         });
-        assert_eq!(at, path(&["game", "strategies", "everyone", "system"]));
+        assert_eq!(at, path(&["game", "strategies", "scout", "system"]));
         assert!(
-            message.starts_with("rendering the prompt of strategy everyone for Alice"),
+            message.starts_with("rendering the prompt of strategy scout for Alice"),
             "{message}"
         );
         let (at, _) = broken(|game| game.host.system = "{{ nothing }}".to_string());
@@ -688,21 +692,21 @@ mod tests {
     #[test]
     fn a_player_s_prompt_that_names_the_object_is_an_error_at_that_prompt() {
         let mut app = defaults();
-        app.game.strategies.get_mut("everyone").unwrap().system = "{{ object }}".to_string();
+        app.game.strategies.get_mut("scout").unwrap().system = "{{ object }}".to_string();
         let (at, message) = only_error(&app);
-        assert_eq!(at, path(&["game", "strategies", "everyone", "system"]));
+        assert_eq!(at, path(&["game", "strategies", "scout", "system"]));
         assert!(message.contains("undefined"), "{message}");
     }
 
     #[test]
     fn no_more_seats_are_allotted_than_there_are_players() {
         let mut app = defaults();
-        app.game.allotments.insert("everyone".to_string(), 5);
+        app.game.allotments.insert("everyone".to_string(), 1);
         assert_eq!(
             only_error(&app),
             (
                 path(&["game", "allotments"]),
-                "[players] strategies allots 5 seats, more than the 4 players".to_string()
+                "[players] strategies allots 4 seats, more than the 3 players".to_string()
             )
         );
     }

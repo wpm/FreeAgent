@@ -49,12 +49,21 @@ mod tests {
     }
 
     #[test]
+    fn every_example_settles_and_renders_its_prompts() {
+        for example in EXAMPLES {
+            let settled = crate::config::parse(example.text)
+                .unwrap_or_else(|error| panic!("{}: {error:#}", example.path));
+            settled.prompts().unwrap();
+        }
+    }
+
+    #[test]
     fn the_listing_names_each_example_with_its_description() {
         let listing = listing(EXAMPLES);
         assert!(
             listing.lines().any(|line| line.starts_with("prompted.toml")
                 && line.ends_with(
-                    "Four players and a host, all one model, who picks its own secret object."
+                    "Three players and a host, all one model, who picks its own secret object."
                 )),
             "{listing}"
         );
