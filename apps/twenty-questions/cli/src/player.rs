@@ -22,7 +22,7 @@
 //!
 //! A model that is not reached, or an answer that is not well formed, is a
 //! failure: the player logs it as [`Entry::Failed`], carries nothing out,
-//! and the game goes on.
+//! and tries again after [`RETRY`], and the game goes on.
 
 use crate::game::{Actor, Seated, act, everyone_but, observe};
 use crate::log::Entry;
@@ -46,6 +46,11 @@ use tokio::time::Instant;
 
 /// The name of the tool a player guesses with.
 pub(crate) const GUESS: &str = "guess";
+
+/// How long a player whose decision failed waits before it tries again,
+/// unless something wakes it sooner. A busy local server can time out
+/// every player at once, and nothing else would wake them.
+pub const RETRY: Duration = Duration::from_secs(10);
 
 /// The system prompt the probe tells the model.
 const PROBE_PROMPT: &str =
@@ -407,9 +412,9 @@ impl Player {
 
     /// Woken, decide: take the wake-up, ask the model where the game
     /// stands, and carry out what it answers. If that fails, log the
-    /// failure, which is all there is to do about it: the player has not
-    /// acted, and the game goes on. Being woken before the game began is
-    /// an error.
+    /// failure, and be reminded to try again after [`RETRY`], unless
+    /// something wakes it sooner: the player has not acted, and the game
+    /// goes on. Being woken before the game began is an error.
     async fn decide(&self) -> anyhow::Result<()> {
         self.mind.woken();
         let (view, began) = self
@@ -424,6 +429,8 @@ impl Player {
                 by: self.context.id.clone(),
                 error: format!("{error:#}"),
             });
+            let count = self.mind.remind();
+            self.context.think_after(RETRY, Message::Remind { count })?;
         }
         Ok(())
     }
@@ -863,10 +870,13 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_player_whose_model_fails_logs_the_failure_and_the_game_goes_on() {
+    async fn a_player_whose_model_fails_logs_the_failure_and_tries_again_later() {
         let model = Arc::new(FakeModel::failing("no model"));
         let played = with_alice(&host_model(1), &model, a_minute(), &[]).await;
-        assert_eq!(played.failures("Alice"), ["no model"]);
+        // Woken at the beginning, and again every 10s after each failure,
+        // in a game of a minute.
+        assert_eq!(RETRY, Duration::from_secs(10));
+        assert_eq!(played.failures("Alice"), ["no model"; 6]);
         played.ran.unwrap();
     }
 
