@@ -36,7 +36,7 @@ use crate::model::{
     Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak,
     text_parameter,
 };
-use crate::object::{gives_away, says};
+use crate::object::{about, gives_away, says};
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use free_agent::{Behavior, Context, Think};
@@ -94,13 +94,14 @@ fn answer_tools() -> Vec<Tool> {
 }
 
 /// What the host is asked when `asker`'s guess `guess` waits for its
-/// answer, about `object`.
+/// answer, about `object`: the guess, and the guess put [`about`] the
+/// object itself.
 fn answering(asker: &str, guess: &str, object: &str) -> String {
     format!(
-        "{asker} guesses: \"{guess}\"\n\nDoes {asker}'s guess name {object} itself? If it \
-         does, call named. If it asks about a property, a category, or a different thing, \
-         call answer and answer truthfully about {object}, calling it 'it' and never by its \
-         name, since saying its name would give it away."
+        "{asker} guesses: \"{guess}\"\n\nAbout the secret object, that asks: \"{}\"\n\nIf \
+         the guess names {object} itself, call named. Otherwise call answer, and answer \
+         truthfully, calling it 'it' and never by its name.",
+        about(guess, object)
     )
 }
 
@@ -1513,6 +1514,13 @@ mod tests {
             spoken(&answer("No.")).unwrap_err().to_string(),
             "the model called answer, which is not a tool it was offered"
         );
+    }
+
+    #[test]
+    fn a_guess_is_asked_of_the_host_about_the_object_itself() {
+        let asked = super::answering("Alice", "Is it alive?", "a unicycle");
+        assert!(asked.starts_with("Alice guesses: \"Is it alive?\""), "{asked}");
+        assert!(asked.contains("\"Is a unicycle alive?\""), "{asked}");
     }
 
     #[test]

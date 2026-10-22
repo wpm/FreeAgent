@@ -49,6 +49,43 @@ pub fn gives_away(text: &str, object: &str, asked: &str) -> bool {
     holds(text, &name) || holds(text, head) && !holds(asked, head)
 }
 
+/// `question` put about `object` itself: each *it* in it, a word of its
+/// own, replaced by the object, capitalized where the *it* was. `Is it
+/// alive?` about `a unicycle` is `Is a unicycle alive?`. A small model
+/// judges a question about its secret far better put this way.
+pub fn about(question: &str, object: &str) -> String {
+    let object = object.trim();
+    if object.is_empty() {
+        return question.to_string();
+    }
+    let capitalized: String = object
+        .chars()
+        .take(1)
+        .flat_map(char::to_uppercase)
+        .chain(object.chars().skip(1))
+        .collect();
+    let mut about = String::new();
+    let mut word = String::new();
+    let put = |word: &mut String, about: &mut String| {
+        match word.eq_ignore_ascii_case("it") {
+            true if word.starts_with('I') => about.push_str(&capitalized),
+            true => about.push_str(object),
+            false => about.push_str(word),
+        }
+        word.clear();
+    };
+    for c in question.chars() {
+        if c.is_alphanumeric() {
+            word.push(c);
+        } else {
+            put(&mut word, &mut about);
+            about.push(c);
+        }
+    }
+    put(&mut word, &mut about);
+    about
+}
+
 /// Whether `text`, lowercased, holds `words`, also lowercase, as words of
 /// their own, in the singular or the plural: with an *s* or *es* after
 /// them, or without the one they end in.
@@ -110,6 +147,19 @@ mod tests {
         assert!(says("Scissors?", "a pair of scissors"));
         assert!(says("Is it a scissor?", "a pair of scissors"));
         assert!(!says("Is it a pair?", "a pair of scissors"));
+    }
+
+    #[test]
+    fn a_question_is_put_about_the_object_in_place_of_it() {
+        assert_eq!(about("Is it alive?", "a unicycle"), "Is a unicycle alive?");
+        assert_eq!(about("Can you eat it?", "a banana"), "Can you eat a banana?");
+        assert_eq!(about("It flies?", "a penguin"), "A penguin flies?");
+        assert_eq!(
+            about("IT is bigger than it was? Items?", "the Eiffel Tower"),
+            "The Eiffel Tower is bigger than the Eiffel Tower was? Items?"
+        );
+        assert_eq!(about("Is its handle long?", "a teapot"), "Is its handle long?");
+        assert_eq!(about("Is it?", ""), "Is it?");
     }
 
     #[test]
