@@ -38,6 +38,17 @@ pub fn says(text: &str, object: &str) -> bool {
     holds(text, &name(object))
 }
 
+/// Whether `text` holds a word of the name of `object`, one of three
+/// letters or more, as words of its own, singular or plural. A guess the
+/// host judges to name the object must: small models call a category,
+/// *Is it furniture?*, the object itself.
+pub fn shares_a_word(text: &str, object: &str) -> bool {
+    name(object)
+        .split_whitespace()
+        .filter(|word| word.len() >= 3)
+        .any(|word| holds(text, word))
+}
+
 /// Whether `text` gives `object` away, when it answers `asked`: it says
 /// the object's name, or the name's last word, its head noun, which
 /// `asked` did not say already. `It's a kind of tower.` gives *the Eiffel
@@ -200,6 +211,23 @@ mod tests {
             "Statue of Liberty is tall?"
         );
         assert_eq!(about("Is it alive?", "An egg"), "Is an egg alive?");
+    }
+
+    #[test]
+    fn a_line_shares_a_word_of_the_name_when_it_holds_one_of_three_letters_or_more() {
+        assert!(shares_a_word(
+            "Is it a cast iron pan?",
+            "a cast iron skillet"
+        ));
+        assert!(shares_a_word("Is it a pot?", "a china tea pot"));
+        assert!(shares_a_word("Is it a ravens' wing?", "raven"));
+        assert!(!shares_a_word("Is it furniture?", "a loveseat"));
+        assert!(!shares_a_word(
+            "Is it a pair of shoes?",
+            "a pair of scissors"
+        ));
+        assert!(!shares_a_word("Is it an ox?", "an ox cart"));
+        assert!(!shares_a_word("Is it a kettle for tea?", "a teapot"));
     }
 
     #[test]

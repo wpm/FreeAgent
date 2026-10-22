@@ -38,7 +38,7 @@ use crate::message::{HOST, Message, View, folded};
 use crate::model::{
     Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak, text_parameter,
 };
-use crate::object::{about, gives_away, says};
+use crate::object::{about, gives_away, says, shares_a_word};
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use free_agent::{Behavior, Context, Think};
@@ -625,7 +625,9 @@ impl Host {
     /// shown the guess alone, with no story: an answer is about the object
     /// and the question, and a story of earlier answers only tempts a small
     /// model to repeat them. A guess that
-    /// says the object's name is named whichever tool the model called. An
+    /// says the object's name is named whichever tool the model called, and
+    /// one the model calls named that shares no word with the name is
+    /// answered Yes and is not named. An
     /// answer that says it of a guess that does not is cut to its first
     /// word when that is Yes or No, and is otherwise an error.
     async fn try_answer(&self, object: &str, guess: &Waiting) -> anyhow::Result<()> {
@@ -643,7 +645,10 @@ impl Host {
         if self.out_of_time() {
             return self.end(Victory::OutOfTime);
         }
-        let (text, named) = answered(&response?)?;
+        let (text, named) = match answered(&response?)? {
+            (_, true) if !shares_a_word(&guess.text, object) => ("Yes.".to_string(), false),
+            answer => answer,
+        };
         let named = named || says(&guess.text, object);
         let text = match !named && gives_away(&text, object, &guess.text) {
             true => match leading_yes_or_no(&text) {
@@ -1006,10 +1011,10 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_guess_the_host_calls_named_wins_in_other_words() {
+    async fn a_guess_the_host_calls_named_wins_in_words_of_the_name() {
         let model = answering(
             |guess| match guess {
-                "Is it a kettle for tea?" => {
+                "Is it a pot for tea?" | "Is it a kettle?" => {
                     Ok(Response::tool_call(NAMED, &json!({"text": "Yes!"})))
                 }
                 _ => Ok(answer("No.")),
@@ -1017,13 +1022,24 @@ mod tests {
             1,
         );
         let script = [
-            (1, Line::Guess("Is it alive?")),
-            (5, Line::Guess("Is it a kettle for tea?")),
+            (1, Line::Guess("Is it a kettle?")),
+            (5, Line::Guess("Is it a pot for tea?")),
         ];
-        let played = hosted(&model, Rules::default(), &[("Bob", &script)]).await;
+        let played = hosted(
+            &model,
+            Rules {
+                object: Some("a china tea pot"),
+                ..Rules::default()
+            },
+            &[("Bob", &script)],
+        )
+        .await;
+        // A guess that names no word of the object's name is only answered
+        // Yes, however the host judged it: the host called "Is it
+        // furniture?" a loveseat.
         assert_eq!(
             answers(&played),
-            [(1, "Bob", "No.", false, 19), (2, "Bob", "Yes!", true, 18)]
+            [(1, "Bob", "Yes.", false, 19), (2, "Bob", "Yes!", true, 18)]
         );
         assert_eq!(played.end().1, Victory::Named);
     }

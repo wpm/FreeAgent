@@ -68,8 +68,13 @@ everyone talks to everyone at once.**
   calls: the guess, lowercased, holds the object's name, lowercased and
   without a leading *a*, *an* or *the* or a measure such as *pair of*, as
   words of their own, singular or plural. *Scissors?* says *a pair of
-  scissors*; *Is it a category?* does not say *a cat*. A guess that names
-  it in other words wins when the host calls `named`.
+  scissors*; *Is it a category?* does not say *a cat*. A guess that holds
+  some word of the name, of three letters or more, wins when the host
+  calls `named`, as *Is it a cast iron pan?* for *a cast iron skillet*. A
+  guess the host calls `named` that holds no such word is answered *Yes.*
+  and does not win. *Amended 2026-10-21 (#466):* the host called *Is it
+  furniture?* a loveseat and *Is it a flower?* a tulip, and two of ten
+  games were won that way.
 - **The host keeps its secret.** A line of the host's, an answer or a word,
   that gives the object away before the game is won is not sent: one that
   says its name, or the name's last word, its head noun, unless the guess
