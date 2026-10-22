@@ -33,7 +33,7 @@ use crate::game::{Actor, Seated, act, everyone_but, observe};
 use crate::log::{Entry, Side, Victory};
 use crate::message::{HOST, Message, View};
 use crate::model::{
-    ANSWER, Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak,
+    Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak,
     text_parameter,
 };
 use crate::object::{gives_away, says};
@@ -169,17 +169,16 @@ fn choose() -> Tool {
     )
 }
 
+/// The system prompt the host picks the object under. Ollama reads no
+/// tool call from Qwen asked without a system prompt of its own.
+pub(crate) const PICKER: &str = "You are the host of a game of Twenty Questions.";
+
 /// The request that picks the object, of the model `model_id` under
-/// `tool_choice`: `pick` and then [`ANSWER`] as its one message, offering
+/// `tool_choice`: [`PICKER`], and `pick` and then [`ANSWER`], offering
 /// [`choose`], at `temperature`.
 fn picking(model_id: &str, tool_choice: ToolChoice, pick: &str, temperature: f64) -> Request {
-    Request::offering(
-        model_id,
-        vec![free_agent_model::Message::user(format!("{pick} {ANSWER}"))],
-        vec![choose()],
-        tool_choice,
-    )
-    .at_temperature(temperature)
+    request(model_id, tool_choice, PICKER, pick.to_string(), vec![choose()])
+        .at_temperature(temperature)
 }
 
 /// The most a request to the model `model_id` from the host told `prompt`
@@ -846,6 +845,7 @@ impl Think for Host {
 mod tests {
     use super::*;
     use crate::game::tests::{Line, Played, Puppet, Rules, configuration, hosting, table};
+    use crate::model::ANSWER;
     use crate::model::canned::canned;
     use free_agent_model::fake::FakeModel;
     use std::sync::atomic::AtomicUsize;
@@ -1294,9 +1294,10 @@ mod tests {
         assert_eq!(pick.temperature, Some(1.2));
         assert_eq!(
             pick.messages,
-            [free_agent_model::Message::user(format!(
-                "Pick an animal. {ANSWER}"
-            ))]
+            [
+                free_agent_model::Message::system(PICKER),
+                free_agent_model::Message::user(format!("Pick an animal. {ANSWER}"))
+            ]
         );
         assert_eq!(pick.tools, [choose()]);
         let entries = played.entries();
