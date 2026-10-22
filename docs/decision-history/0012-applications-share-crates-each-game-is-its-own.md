@@ -118,3 +118,11 @@ dependency would have to be undone later. Rejected.
 1. Factoring the prompted player, the log writer and the cue machinery
    once both applications work.
 2. Sharing API keys and models between the two apps.
+
+## Notes
+
+- **2026-10-22:** Twenty Questions' probe asks a model to play Twenty
+  Questions. The coverage CI holds is the native shared crates':
+  `free-agent-model`, `free-agent-game` and `free-agent-gui-types`.
+  `free-agent-gui` and `free-agent-desktop` are tested in CI's Viewer and
+  Desktop jobs instead, as each app's frontend and desktop shell are.

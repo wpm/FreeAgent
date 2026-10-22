@@ -39,8 +39,8 @@ pub trait Settings {
     fn providers_mut(&mut self) -> &mut Vec<Provider>;
 
     /// Each strategy, or anything else, that asks a model, as the Models
-    /// page names it, such as `Werewolf “everyone”`, with the name of the
-    /// model it asks, in the order the app shows them.
+    /// page names it, such as `Werewolf “everyone”` or `The host`, with
+    /// the name of the model it asks, in the order the app shows them.
     fn model_users(&self) -> Vec<(String, &str)>;
 
     /// Make every strategy, or anything else, that names the model `old`
@@ -155,7 +155,7 @@ pub trait Strategies: Settings {
     const MAY_BE_RANDOM: bool;
 
     /// Where the fields of `of` are: the path their paths start with,
-    /// such as `["werewolf"]`.
+    /// such as `["werewolf"]` or `["game"]`.
     fn at(of: Self::Of) -> Vec<String>;
 
     /// The strategies of `of`, by name.
@@ -240,8 +240,8 @@ pub fn unique(wanted: &str, taken: impl Fn(&str) -> bool) -> String {
     name
 }
 
-/// A key as words, the first capitalized: `day_limit` as `Day limit`,
-/// `merlin` as `Merlin`.
+/// A key as words, the first capitalized: `time_limit` as `Time limit`,
+/// `host` as `Host`.
 pub fn label(key: &str) -> String {
     let words = key.replace('_', " ");
     let mut chars = words.chars();

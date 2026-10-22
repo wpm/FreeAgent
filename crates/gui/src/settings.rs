@@ -83,7 +83,7 @@ pub trait Page: Copy + PartialEq + Send + Sync + 'static {
     fn tip(self) -> String;
 
     /// What its fields' paths start with, and its tab's id ends with:
-    /// `werewolf`.
+    /// `werewolf` in Social Deduction, `game` in Twenty Questions.
     fn key(self) -> &'static str;
 }
 
@@ -169,7 +169,7 @@ impl<P: Page> Tab<P> {
     }
 }
 
-/// The field a hash names: `#settings=werewolf/strategies/everyone`, its
+/// The field a hash names: `#settings=game/strategies/scout`, its
 /// segments as `decode` decodes each, or none.
 pub fn hashed(hash: &str, decode: impl Fn(&str) -> String) -> Option<Vec<String>> {
     let (_, path) = hash.split_once("#settings=")?;

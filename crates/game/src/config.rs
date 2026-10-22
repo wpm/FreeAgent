@@ -14,7 +14,7 @@ pub const CONFIG_FORMAT: u32 = 1;
 /// A configuration that compares, clones or copies its [`Format`] needs a
 /// program that does too.
 pub trait Program {
-    /// The program's name: `social-deduction`.
+    /// The program's name: `social-deduction` or `twenty-questions`.
     const NAME: &'static str;
 }
 
