@@ -10,11 +10,9 @@ use free_agent::{Behavior, Episode, Event, Logger};
 use free_agent_game::examples;
 use free_agent_game::log::{Ended, Secrets};
 use free_agent_game::report::Line;
-use free_agent_model::check::{Mark, checked};
-use free_agent_model::spec::{Environment, required};
-use free_agent_model::{
-    Provider, REQUEST_TIMEOUT, ToolChoice, key_variable, known_providers, served,
-};
+use free_agent_model::check::models;
+use free_agent_model::known_providers_help;
+use free_agent_model::spec::Environment;
 use social_deduction::config;
 use social_deduction::examples::EXAMPLES;
 use social_deduction::game::{Entry, Game, Narrate};
@@ -22,7 +20,6 @@ use social_deduction::live::PATIENCE;
 use social_deduction::log::Writer;
 use social_deduction::model::plays;
 use social_deduction::run::{Prepared, Ready};
-use std::fmt::Write as _;
 use std::io::{self, ErrorKind::NotFound, Write};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -114,24 +111,16 @@ async fn main() -> anyhow::Result<()> {
             api_key_env,
             check,
         } => {
-            let variable = key_variable(&base_url, api_key_env.as_deref());
-            let api_key = variable
-                .map(|variable| required(&Environment, variable))
-                .transpose()?;
-            let provider = Provider::new(&base_url, api_key, REQUEST_TIMEOUT)?;
-            let listed = provider.listing().await?;
-            let mut ids: Vec<String> = listed.iter().map(|model| model.id.clone()).collect();
-            ids.sort();
-            let models = match check {
-                None => ids.into_iter().map(|id| (id, None)).collect(),
-                Some(check) => {
-                    for id in &check {
-                        served(&base_url, &listed, id)?;
-                    }
-                    checked(&provider, ids, &check, &mut io::stderr(), plays).await?
-                }
-            };
-            print!("{}", listing(&models));
+            let listing = models(
+                &base_url,
+                api_key_env.as_deref(),
+                check.as_deref(),
+                &Environment,
+                &mut io::stderr(),
+                plays,
+            )
+            .await?;
+            print!("{listing}");
             Ok(())
         }
         CommandLine::Configs { write: None, .. } => {
@@ -162,53 +151,6 @@ fn loaded(path: &Path) -> anyhow::Result<config::Settled> {
             error
         }
     })
-}
-
-/// What `models --help` ends with: a table of the providers known, the
-/// root of each one's API and the environment variable its key is read
-/// from unless --api-key-env names another.
-fn known_providers_help() -> String {
-    let providers = known_providers();
-    let width = providers
-        .iter()
-        .map(|(_, root, _)| root.len())
-        .max()
-        .unwrap_or_default();
-    let mut help = String::from(
-        "Providers known, with the environment variable their API key is read from:\n",
-    );
-    for (_, root, variable) in providers {
-        writeln!(help, "  {root:width$}  {}", variable.unwrap_or("-")).unwrap();
-    }
-    help
-}
-
-/// The listing `models` prints: one id per line, in order. When any model
-/// is marked, each id comes after its mark, `* `, `~ ` or `! `, or two spaces
-/// when it has none, so the ids line up, and the listing ends, set off by
-/// an empty line, with a line saying what the marks mean.
-fn listing(models: &[(String, Option<Mark>)]) -> String {
-    let any_marked = models.iter().any(|(_, mark)| mark.is_some());
-    let mut listing = String::new();
-    for (id, mark) in models {
-        let shown = match mark {
-            Some(Mark::Played(ToolChoice::Required)) => "* ",
-            Some(Mark::Played(ToolChoice::Auto)) => "~ ",
-            Some(Mark::DidNotPlay) => "! ",
-            None if any_marked => "  ",
-            None => "",
-        };
-        writeln!(listing, "{shown}{id}").unwrap();
-    }
-    if any_marked {
-        writeln!(
-            listing,
-            "\n* marks a model that played when asked, ~ one that played when asked to call a \
-             tool but not made to, and ! one that did not."
-        )
-        .unwrap();
-    }
-    listing
 }
 
 /// Play `episodes` episodes of the game of `G` that is `ready`, one after
@@ -560,26 +502,13 @@ mod tests {
     }
 
     #[test]
-    fn the_models_help_ends_with_the_providers_known_in_a_table() {
+    fn the_models_help_ends_with_the_providers_known() {
         let help = CommandLine::command()
             .find_subcommand_mut("models")
             .unwrap()
             .render_help()
             .to_string();
         assert!(help.ends_with(&known_providers_help()), "{help}");
-        let table = known_providers_help();
-        let rows: Vec<&str> = table.lines().skip(1).collect();
-        assert!(
-            rows.contains(&"  https://api.openai.com/v1     OPENAI_API_KEY"),
-            "{table}"
-        );
-        assert!(
-            rows.contains(&"  https://api.anthropic.com/v1  ANTHROPIC_API_KEY"),
-            "{table}"
-        );
-        // The variables line up, whatever the roots' lengths.
-        let columns: HashSet<Option<usize>> = rows.iter().map(|row| row.rfind("  ")).collect();
-        assert_eq!(columns.len(), 1, "{table}");
     }
 
     /// A player who fails as it starts.
@@ -702,29 +631,5 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(format!("{error:#}"), "actor ann failed: no model");
-    }
-
-    #[test]
-    fn the_listing_is_one_id_per_line_and_when_any_is_marked_lines_them_up_and_says_what_the_marks_mean()
-     {
-        let ids = ["gpt-0", "qwen2.5-7b-instruct"].map(String::from);
-        let plain: Vec<(String, Option<Mark>)> = ids.iter().map(|id| (id.clone(), None)).collect();
-        assert_eq!(listing(&plain), "gpt-0\nqwen2.5-7b-instruct\n");
-        assert_eq!(listing(&[]), "");
-        let models = [
-            ("gpt-0".to_string(), Some(Mark::DidNotPlay)),
-            ("llama".to_string(), None),
-            (
-                "qwen2.5-7b-instruct".to_string(),
-                Some(Mark::Played(ToolChoice::Required)),
-            ),
-            ("sonnet".to_string(), Some(Mark::Played(ToolChoice::Auto))),
-        ];
-        assert_eq!(
-            listing(&models),
-            "! gpt-0\n  llama\n* qwen2.5-7b-instruct\n~ sonnet\n\n\
-             * marks a model that played when asked, ~ one that played when asked to call a tool \
-             but not made to, and ! one that did not.\n"
-        );
     }
 }

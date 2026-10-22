@@ -3,7 +3,8 @@
 //! it does. Nothing but tests uses this module.
 
 pub use free_agent_model::canned::{
-    CANARY, CANARY_VARIABLE, assert_redacted, refusing, unreachable,
+    CANARY, CANARY_VARIABLE, assert_redacted, refusal, refusing, serving, unreachable,
+    wanting_a_key,
 };
 
 use crate::host::{ANSWER_TOOL, CHOOSE, NAMED};
@@ -96,6 +97,12 @@ pub fn canned_calls(request: &Value) -> anyhow::Result<Vec<(String, Value)>> {
 /// the process, as [`canned::playing`] plays.
 pub fn playing(ids: &[&str]) -> String {
     canned::playing(canned_calls, ids)
+}
+
+/// A provider that serves `ids` but plays only `selecting` of them, as
+/// [`canned::playing_only`] does.
+pub fn playing_only(ids: &[&str], selecting: &[&str]) -> String {
+    canned::playing_only(canned_calls, ids, selecting)
 }
 
 /// A provider that plays each of `ids` only when not made to call a tool,

@@ -183,6 +183,25 @@ pub fn known_providers() -> Vec<(&'static str, &'static str, Option<&'static str
         .collect()
 }
 
+/// What an app's `models --help` ends with: a table of the providers
+/// known, the root of each one's API and the environment variable its key
+/// is read from unless `--api-key-env` names another.
+pub fn known_providers_help() -> String {
+    let providers = known_providers();
+    let width = providers
+        .iter()
+        .map(|(_, root, _)| root.len())
+        .max()
+        .unwrap_or_default();
+    let mut help = String::from(
+        "Providers known, with the environment variable their API key is read from:\n",
+    );
+    for (_, root, variable) in providers {
+        writeln!(help, "  {root:width$}  {}", variable.unwrap_or("-")).unwrap();
+    }
+    help
+}
+
 /// The ports `src/models.toml` says a local server is looked for on.
 pub fn local_ports() -> &'static [u16] {
     &KNOWLEDGE.local_ports
@@ -777,6 +796,24 @@ pub(crate) mod tests {
                 Some("ANTHROPIC_API_KEY")
             )
         );
+    }
+
+    #[test]
+    fn the_known_providers_help_is_a_table_whose_variables_line_up() {
+        let table = known_providers_help();
+        let rows: Vec<&str> = table.lines().skip(1).collect();
+        assert!(
+            rows.contains(&"  https://api.openai.com/v1     OPENAI_API_KEY"),
+            "{table}"
+        );
+        assert!(
+            rows.contains(&"  https://api.anthropic.com/v1  ANTHROPIC_API_KEY"),
+            "{table}"
+        );
+        // The variables line up, whatever the roots' lengths.
+        let columns: std::collections::HashSet<Option<usize>> =
+            rows.iter().map(|row| row.rfind("  ")).collect();
+        assert_eq!(columns.len(), 1, "{table}");
     }
 
     #[test]
