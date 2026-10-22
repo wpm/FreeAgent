@@ -28,9 +28,9 @@
 //! logged.
 
 use crate::game::{Actor, Entry, Game, Message, Tagged, act, observe};
+use crate::seat::{Dealt, PlayerId};
 use async_trait::async_trait;
 use free_agent::{ActorInit, Behavior, Context, Think};
-use free_agent_game::seat::{Dealt, PlayerId};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;

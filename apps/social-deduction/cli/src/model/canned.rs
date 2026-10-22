@@ -15,7 +15,7 @@ pub use free_agent_model::canned::{
 };
 
 use super::fake::canned_calls;
-use free_agent_game::report::seat_order;
+use crate::report::seat_order;
 use free_agent_model::canned;
 use std::cmp::Ordering;
 use std::sync::{Arc, Mutex};

@@ -9,10 +9,10 @@
 use crate::avalon::Avalon;
 use crate::config::{self, Configuration, Name, Settings, Settled, SystemPrompt};
 use crate::game::{self, Actor, Entry, Game};
+use crate::seat::{Dealt, PlayerId};
 use crate::werewolf::Werewolf;
 use free_agent::{Episode, Logger};
 use free_agent_game::log::Secrets;
-use free_agent_game::seat::{Dealt, PlayerId};
 use free_agent_model::spec::{Handles, Keys, Models};
 use secrecy::SecretString;
 use std::collections::HashMap;

@@ -24,7 +24,7 @@
 use super::{Avalon, Role, Rules, Table};
 use crate::config::Lineup;
 pub use crate::config::players;
-use free_agent_game::strategy::RoleConfig;
+use crate::strategy::RoleConfig;
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -178,9 +178,9 @@ mod tests {
     use crate::game::game;
     use crate::model::canned::{self, playing};
     use crate::model::fake::{FakeModel, choosing_first};
-    use free_agent_game::seat::PlayerId;
-    use free_agent_game::strategy::Strategy;
-    use free_agent_game::strategy::{Prompted, RANDOM, Random};
+    use crate::seat::PlayerId;
+    use crate::strategy::Strategy;
+    use crate::strategy::{Prompted, RANDOM, Random};
     use free_agent_model::spec::{Environment, Handles, ModelInPlay, Models};
     use free_agent_model::window::{ContextWindow, Source};
     use free_agent_model::{CONTEXT_WINDOW, REQUEST_TIMEOUT, ToolChoice};
@@ -955,7 +955,7 @@ system = \"Smart {{{{ name }}}}.\"
                 seen,
                 ..
             } = entry
-                && from.as_str() != free_agent_game::seat::ENVIRONMENT
+                && from.as_str() != crate::seat::ENVIRONMENT
             {
                 assert_eq!(seen.is_some(), prompted.contains(from.as_str()), "{from}");
                 if let Message::Say { .. } = message {

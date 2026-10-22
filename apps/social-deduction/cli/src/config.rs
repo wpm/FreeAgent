@@ -18,12 +18,12 @@
 
 use crate::avalon::{self, Avalon};
 use crate::game::{self, Game};
+use crate::seat::{Dealt, PlayerId, numbered, seats};
+use crate::strategy::{RANDOM, Random, RoleConfig, Strategy};
 use crate::werewolf::{self, Werewolf};
 use crate::{prompted, random};
 use anyhow::{Context as _, anyhow, bail};
 use free_agent_game::config::Program;
-use free_agent_game::seat::{Dealt, PlayerId, numbered, seats};
-use free_agent_game::strategy::{RANDOM, Random, RoleConfig, Strategy};
 use free_agent_model::spec::{self, Handles, Keys, Models, Probed, Spec};
 use free_agent_model::window::{self, ContextWindow};
 use free_agent_model::{Model, Provider, ToolChoice};

@@ -14,11 +14,9 @@ use super::{
 };
 use crate::game::Narrate;
 use crate::prompted::Account;
+use crate::report::{Line, Seat, configured, in_order, in_prose, late, told_within, whole_seconds};
+use crate::seat::PlayerId;
 use free_agent::Event;
-use free_agent_game::report::{
-    Line, Seat, configured, in_order, in_prose, late, told_within, whole_seconds,
-};
-use free_agent_game::seat::PlayerId;
 use humantime::format_duration;
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, SystemTime};
@@ -554,11 +552,11 @@ mod tests {
     };
     use crate::avalon::{Rules, State};
     use crate::model::fake::acted_in_this_phase;
-    use free_agent_game::report::FORGOTTEN;
+    use crate::report::FORGOTTEN;
+    use crate::seat::ENVIRONMENT;
+    use crate::seat::id;
+    use crate::strategy::RANDOM;
     use free_agent_game::report::testing::estimated;
-    use free_agent_game::seat::ENVIRONMENT;
-    use free_agent_game::seat::id;
-    use free_agent_game::strategy::RANDOM;
     use std::collections::HashSet;
 
     /// A narrator that has been told the deal of the default table.

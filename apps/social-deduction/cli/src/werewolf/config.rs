@@ -23,8 +23,8 @@
 
 use super::{Limits, Role, Rules, Table, Werewolf};
 pub use crate::config::players;
+use crate::strategy::RoleConfig;
 use anyhow::bail;
-use free_agent_game::strategy::RoleConfig;
 use humantime::format_duration;
 use serde::Deserialize;
 use std::time::Duration;
@@ -155,14 +155,14 @@ mod tests {
     use crate::game::game;
     use crate::model::canned::{self, playing};
     use crate::model::fake::{FakeModel, choosing_first};
+    use crate::report::Line;
+    use crate::seat::PlayerId;
+    use crate::strategy::Strategy;
+    use crate::strategy::{Prompted, RANDOM, Random};
     use crate::werewolf::Dealt;
     use crate::werewolf::report::Narrator;
     use crate::werewolf::tests::{between_the_deal_and_the_end, logged, run};
     use crate::werewolf::{Entry, Message, Move, Outcome};
-    use free_agent_game::report::Line;
-    use free_agent_game::seat::PlayerId;
-    use free_agent_game::strategy::Strategy;
-    use free_agent_game::strategy::{Prompted, RANDOM, Random};
     use free_agent_model::spec::{Environment, Handles, ModelInPlay, Models};
     use free_agent_model::window::{ContextWindow, Source};
     use free_agent_model::{CONTEXT_WINDOW, REQUEST_TIMEOUT, ToolChoice};

@@ -1,33 +1,30 @@
 //! What every game shares in telling its story: the lines it is told in,
-//! the order the seats are told in, how a player is named, lists in prose,
-//! how long something took, the models in play, whether a message comes
-//! late, and how a player's story forgets talk to fit a budget.
+//! the order the seats are told in, lists in prose, how long something
+//! took, the models in play, and how a player's story forgets talk to fit
+//! a budget.
 
 use crate::seat::{PlayerId, PlayerName};
 use free_agent_model::spec::Models;
 use free_agent_model::window::{ContextWindow, Source};
 use free_agent_model::{ToolChoice, tokens};
 use humantime::format_duration;
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::time::Duration;
 
 /// A line of a game's story, as its narrator tells it. The console prints
 /// each line as it displays; a viewer tells speech, headings, votes and
-/// blank lines apart by what they are.
+/// blank lines apart by what they are. A game tells the lines its story
+/// has, and no game need tell every kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Line {
-    /// A phase heading: `Night 1.`, `Day 2.`, `Quest 1, proposal 1 of 5.
-    /// Player 1 (Assassin) leads and needs a team of 2.`
+    /// The heading of a part of the game, such as a round.
     Heading(String),
-    /// One player's vote or selection, or its withdrawal: `Player 4
-    /// (werewolf) votes to kill Player 3 (seer).`
+    /// One player's vote or selection, or its withdrawal.
     Vote(String),
-    /// Anything else the narrator tells: `Player 6 dies.`
+    /// Anything else the narrator tells: `Alice wins.`
     Told(String),
     /// An utterance. `speaker` is the subject as the narrator renders it,
-    /// `Player 3 (seer)`, so the role comes from the narrator's own table.
+    /// such as `Alice` or, where the narrator tells roles, `Alice (host)`.
     Said {
         /// Who spoke.
         who: PlayerId,
@@ -82,41 +79,6 @@ pub fn in_order<'a>(players: impl IntoIterator<Item = &'a PlayerId>) -> Vec<&'a 
     players
 }
 
-/// Seat order: the order of the [`PlayerName`]s, so that `Player 2`
-/// comes before `Player 10`.
-pub fn seat_order(a: &PlayerId, b: &PlayerId) -> Ordering {
-    PlayerName::from(a.as_str()).cmp(&PlayerName::from(b.as_str()))
-}
-
-/// A player as an account names it: `player (role)` when the role is
-/// known, the name alone when it is not.
-#[derive(Debug, Clone, Copy)]
-pub struct Seat<'a, R> {
-    /// The player.
-    pub player: &'a PlayerId,
-    /// Its role, when the account knows it.
-    pub role: Option<R>,
-}
-
-impl<'a, R: Copy> Seat<'a, R> {
-    /// `player` as an account knowing `roles` names it.
-    pub fn named(player: &'a PlayerId, roles: &HashMap<PlayerId, R>) -> Self {
-        Seat {
-            player,
-            role: roles.get(player).copied(),
-        }
-    }
-}
-
-impl<R: fmt::Display> fmt::Display for Seat<'_, R> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.role {
-            Some(role) => write!(f, "{} ({role})", self.player),
-            None => f.write_str(self.player),
-        }
-    }
-}
-
 /// `named` as a list in prose: "a", "a and b", "a, b and c".
 pub fn in_prose(named: impl IntoIterator<Item = impl fmt::Display>) -> String {
     let named: Vec<String> = named.into_iter().map(|name| name.to_string()).collect();
@@ -152,12 +114,6 @@ fn context_window(name: &str, ContextWindow { tokens, source }: ContextWindow) -
         Source::Default => "the default",
     };
     format!("{name}'s context window is {tokens} tokens, {source}.")
-}
-
-/// Whether a later phase than the one numbered `seq` is among those
-/// `announced`, by number: a message for that phase comes late.
-pub fn late<V>(announced: &BTreeMap<u64, V>, seq: u64) -> bool {
-    announced.range(seq + 1..).next().is_some()
 }
 
 /// The line that stands in place of the last line of talk a story forgets.
@@ -275,17 +231,6 @@ mod tests {
             in_order(&players),
             ["ann", "Player 1", "Player 2", "Player 10"]
         );
-        let mut sorted = players.to_vec();
-        sorted.sort_by(seat_order);
-        assert_eq!(sorted, ["ann", "Player 1", "Player 2", "Player 10"]);
-    }
-
-    #[test]
-    fn a_player_is_named_with_its_role_when_the_account_knows_it() {
-        let roles = HashMap::from([("ann".to_string(), "seer")]);
-        let named = |player: &str| Seat::named(&player.to_string(), &roles).to_string();
-        assert_eq!(named("ann"), "ann (seer)");
-        assert_eq!(named("bob"), "bob");
     }
 
     #[test]
@@ -340,14 +285,6 @@ mod tests {
             told(8192, Source::File),
             "qwen's context window is 8192 tokens, as the configuration file says."
         );
-    }
-
-    #[test]
-    fn a_message_comes_late_once_a_later_phase_is_announced() {
-        let announced = BTreeMap::from([(1, ()), (2, ())]);
-        assert!(late(&announced, 1));
-        assert!(!late(&announced, 2));
-        assert!(!late(&announced, 3));
     }
 
     /// An account of a phase, a line of talk at length, another phase,

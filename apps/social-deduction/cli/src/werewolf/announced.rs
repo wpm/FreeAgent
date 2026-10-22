@@ -21,7 +21,7 @@ use super::{
     Choices, Ending, Hunt, Message, Move, Outcome, Phase, PlayerId, Role, State, Werewolf,
 };
 use crate::announced::{Announced, Awaited, Core, Counted, Opening, Over, Resolved};
-use free_agent_game::report::in_order;
+use crate::report::in_order;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -213,13 +213,13 @@ mod tests {
     use super::*;
     use crate::announced::Opened;
     use crate::announced::tests::{counted, last};
+    use crate::seat::id;
     use crate::werewolf::candidates;
     use crate::werewolf::tests::{
         self, Script, at_once, closed, closed_before_it_ended, mute, mute_holding,
         observed_by_the_environment, one_wolf_against, play, quick, retraction, selection, village,
     };
     use crate::werewolf::{Actor, Entry, Rules, Seat, Team};
-    use free_agent_game::seat::id;
     use std::collections::HashSet;
     use tokio::sync::oneshot;
 

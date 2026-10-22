@@ -51,10 +51,10 @@
 //! to call one, and an answer in prose is a failure like any other.
 
 use crate::game::{Actor, Ending, Entry, Game, Message, Seat, act, close, observe};
+use crate::seat::PlayerId;
 use anyhow::{Context as _, bail};
 use async_trait::async_trait;
 use free_agent::{ActorId, Behavior, Builder, Context, Event, Think, ThinkBuilder};
-use free_agent_game::seat::PlayerId;
 use free_agent_model::{Request, Response, Tool, ToolChoice};
 use humantime::format_duration;
 use serde::Deserialize;
@@ -760,7 +760,7 @@ pub(crate) mod tests {
     use crate::game::Narrate;
     use crate::game::tests::logged;
     use crate::model::fake::FakeModel;
-    use free_agent_game::seat::ENVIRONMENT;
+    use crate::seat::ENVIRONMENT;
     use free_agent_model::Response;
     use std::collections::BTreeMap;
     use std::sync::Arc;

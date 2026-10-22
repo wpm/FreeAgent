@@ -98,8 +98,8 @@ mod tests {
     use crate::avalon::{
         Actor, Ballot, Deed, Entry, Message, Phase, QuestResult, Rules, Tally, Team, Victory,
     };
-    use free_agent_game::seat::ENVIRONMENT;
-    use free_agent_game::seat::id;
+    use crate::seat::ENVIRONMENT;
+    use crate::seat::id;
     use std::time::Duration;
     use tokio::sync::oneshot;
 

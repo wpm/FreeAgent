@@ -5,10 +5,10 @@
 
 use super::{Entry, Hunt, Message, Move, Outcome, Phase, Role, View, Werewolf};
 use crate::game::Tagged;
+use crate::report::in_order;
+use crate::seat::PlayerId;
 use crate::stage::{self, Staged, millis, millis_of, set};
 use free_agent::Event;
-use free_agent_game::report::in_order;
-use free_agent_game::seat::PlayerId;
 use social_deduction_gui_types::{
     Death, Learned, Millis, NightDeed, NightOutcome, Panel, Ratify, SeatState, WerewolfPanel,
     WerewolfPhase,
@@ -258,11 +258,11 @@ fn phase(phase: &Phase) -> WerewolfPhase {
 mod tests {
     use super::*;
     use crate::game::tests::{announcement, dealt, logged, logged_at, seated};
+    use crate::seat::{ENVIRONMENT, id, to_the_environment};
     use crate::stage::Board as _;
+    use crate::strategy::RANDOM;
     use crate::werewolf::Rules;
     use crate::werewolf::tests::{closing, retraction, selection, tentative};
-    use free_agent_game::seat::{ENVIRONMENT, id, to_the_environment};
-    use free_agent_game::strategy::RANDOM;
     use social_deduction_gui_types::{Beat, Role as Shown};
     use std::collections::HashSet;
     use std::num::NonZero;

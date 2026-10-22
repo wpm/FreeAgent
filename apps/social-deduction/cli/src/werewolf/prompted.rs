@@ -22,8 +22,8 @@
 use super::{Message, Move, Phase, Role, View, Werewolf, awake, candidates};
 use crate::game::Game;
 use crate::prompted::{PROBE_PROMPT, SPEAK, WAIT, arguments, request, said, speak, wait, waited};
+use crate::seat::{PlayerId, numbered, seats};
 use anyhow::{anyhow, bail};
-use free_agent_game::seat::{PlayerId, numbered, seats};
 use free_agent_model::check::{first_answered, probed};
 use free_agent_model::spec::Probed;
 use free_agent_model::{Response, Tool, ToolChoice};
@@ -505,6 +505,8 @@ mod tests {
         sent, situated, speaking, story, told, usages, waiting,
     };
     use crate::prompted::{ANSWER, Account, Mind, Shown};
+    use crate::report::FORGOTTEN;
+    use crate::strategy::{Prompted, Strategy};
     use crate::werewolf::Outcome;
     use crate::werewolf::config::{Configuration, players};
     use crate::werewolf::report::Story;
@@ -519,8 +521,6 @@ mod tests {
         to_the_players_but,
     };
     use free_agent::ActorId;
-    use free_agent_game::report::FORGOTTEN;
-    use free_agent_game::strategy::{Prompted, Strategy};
     use free_agent_model::Request;
     use free_agent_model::spec::{Handles, ModelInPlay};
     use free_agent_model::window::{ContextWindow, Source};
