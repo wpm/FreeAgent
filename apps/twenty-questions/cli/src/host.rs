@@ -122,6 +122,9 @@ fn talk_tools() -> Vec<Tool> {
 /// What opens the speech the host is told, when no guess waits.
 const HEARD: &str = "Since you last spoke or waited, the players said:";
 
+/// What the host is told instead, when it heard no speech.
+const SILENT: &str = "Since you last spoke or waited, the players have said nothing.";
+
 /// How long the players may go without a guess before the host may urge
 /// them to put one.
 pub const NUDGE: Duration = Duration::from_secs(120);
@@ -502,7 +505,8 @@ impl Host {
         began.is_some_and(|began| began.elapsed() >= self.mind.brief.time_limit)
     }
 
-    /// Tell every player the game has begun, and set the time limit.
+    /// Tell every player the game has begun, and set the time limit and the
+    /// first reminder to urge a quiet table.
     fn begin(&self) -> anyhow::Result<()> {
         let brief = &self.mind.brief;
         let view = View {
@@ -520,7 +524,14 @@ impl Host {
             view,
         };
         self.tell(begin, None)?;
+        self.remind(0)?;
         self.context.think_after(brief.time_limit, Message::Over)
+    }
+
+    /// Be reminded [`NUDGE`] from now to see whether the table has gone
+    /// quiet since the `count`th guess, or the beginning when it is 0.
+    fn remind(&self, count: u64) -> anyhow::Result<()> {
+        self.context.think_after(NUDGE, Message::Remind { count })
     }
 
     /// Log a failure to act, as what went wrong says it.
@@ -796,7 +807,10 @@ impl Host {
             &prompt,
             |budget| {
                 let (lines, shown) = self.heard(budget.saturating_sub(estimate(HEARD) + 1));
-                (format!("{HEARD}\n{lines}"), shown)
+                match shown.seen {
+                    0 => (SILENT.to_string(), shown),
+                    _ => (format!("{HEARD}\n{lines}"), shown),
+                }
             },
             &talking(used, brief.guesses, time_left, quiet),
             talk_tools(),
@@ -903,6 +917,7 @@ impl Behavior for Host {
                 text: text.clone(),
             };
             state.waiting.push_back(waiting);
+            self.remind(state.counted)?;
         } else if let Message::Say { text, .. } = message {
             let line = format!("{from}: \"{text}\"");
             let spoken_to = addressed(&line);
@@ -928,11 +943,18 @@ impl Think for Host {
     type Message = Message;
 
     /// Woken, decide what to do. At the time limit, end the game unless it
-    /// is over already. Nothing else is thought about.
+    /// is over already. Reminded, wake if no guess has come since the
+    /// reminder was set, so that a quiet table is urged to guess. Nothing
+    /// else is thought about.
     async fn think(&mut self, message: &Message) -> anyhow::Result<()> {
+        let (over, counted) = {
+            let state = self.mind.state.lock().unwrap();
+            (state.over, state.counted)
+        };
         match message {
             Message::Wake => self.decide().await,
-            Message::Over if !self.mind.state.lock().unwrap().over => self.end(Victory::OutOfTime),
+            Message::Over if !over => self.end(Victory::OutOfTime),
+            Message::Remind { count } if *count == counted && !over => self.wake(),
             _ => Ok(()),
         }
     }
@@ -1379,11 +1401,45 @@ mod tests {
         assert_eq!(asked.len(), 1, "{asked:?}");
         let urged = &asked[0];
         let heard = format!(
-            "{HEARD}\nAlice: \"What now?\"\n\nGuesses used: 0 of 20. Time left: 1m 10s. The \
-             last guess came 2m 10s ago"
+            "{SILENT}\n\nGuesses used: 0 of 20. Time left: 1m 20s. The last guess came 2m ago"
         );
         assert!(urged.starts_with(&heard), "{urged}");
         assert_eq!(played.sent_by(HOST).len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_host_urges_a_silent_table_once_nobody_has_guessed_for_a_while() {
+        let model = Arc::new(FakeModel::answering(|request| {
+            match answering_a_guess(request) {
+                true => Ok(answer("No.")),
+                false => Ok(speaking("Put a guess, please.")),
+            }
+        }));
+        let script = [(130, Line::Guess("Is it alive?"))];
+        let played = hosted(
+            &model,
+            Rules {
+                time_limit: Duration::from_secs(400),
+                ..Rules::default()
+            },
+            &[("Alice", &script)],
+        )
+        .await;
+        let urged: Vec<String> = model
+            .requests()
+            .into_iter()
+            .filter(|request| !answering_a_guess(request))
+            .map(|request| request.messages[1].content.clone())
+            .collect();
+        // Once NUDGE after the beginning, and once NUDGE after the guess.
+        assert_eq!(urged.len(), 2, "{urged:?}");
+        assert!(
+            urged[0].contains("The last guess came 2m ago"),
+            "{}",
+            urged[0]
+        );
+        assert!(urged[1].contains("Guesses used: 1 of 20."), "{}", urged[1]);
+        assert_eq!(played.end().1, Victory::OutOfTime);
     }
 
     #[tokio::test(start_paused = true)]

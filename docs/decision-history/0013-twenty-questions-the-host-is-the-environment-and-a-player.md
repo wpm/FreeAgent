@@ -136,10 +136,12 @@ Two loops over one mind, never locked across a model call
   offered `answer` and `named`. With none
   waiting, it is asked whether to speak only when a player spoke to it by
   name, or, once until the next guess, when nobody has put a guess for two
-  minutes; otherwise the speech it heard is let go unasked. Asked, it is
-  shown that speech and how long since the last guess, offered `speak` and
-  a `wait` that says nothing, and told to ask "Is that your guess?" of a
-  question put to it in speech, or to urge a quiet table to guess.
+  minutes, which a reminder it sets at the beginning and at each guess
+  wakes it to see; otherwise the speech it heard is let go unasked. Asked,
+  it is shown that speech and how long since the last guess, offered
+  `speak` and a `wait` that says nothing, and told to ask "Is that your
+  guess?" of a question put to it in speech, or to urge a quiet table to
+  guess.
 - **A failure is asked again.** An answer, or the pick, that fails or is not
   well formed is logged as `Failed` and asked again 10 seconds later, so
   that a busy server has time to clear, up to three times in all; then the
