@@ -70,15 +70,22 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-  # The viewer's frontend and the shared look it is built on build for the
-  # browser, so the jobs above leave them out. This one checks them
-  # natively and for wasm, builds the page the
-  # Website workflow deploys, from freshly played games and the recorded
-  # prompted ones, and drives the page in headless Chromium, along with the
-  # website's download section as visitors on each platform see it.
+  # The apps' frontends and the shared look they are built on build for the
+  # browser, so the jobs above leave them out. One leg per app checks its
+  # page natively and for wasm, builds it, and drives it in headless
+  # Chromium: Social Deduction's from freshly played games and the recorded
+  # prompted ones, along with the website's download section as visitors
+  # on each platform see it, and Twenty Questions' playing its recorded
+  # game through a stand-in for the desktop app's backend.
   viewer:
-    name: Viewer
+    name: Viewer (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Social Deduction, app: social-deduction, crates: -p free-agent-gui -p social-deduction-gui }
+          - { name: Twenty Questions, app: twenty-questions, crates: -p twenty-questions-gui }
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -90,45 +97,46 @@ jobs:
         with:
           # Pinned: the page breaks in the browser when built by trunk 0.22.0.
           tool: trunk@0.21.14
-      - run: cargo clippy -p free-agent-gui -p social-deduction-gui --all-targets -- -D warnings
-      - run: cargo test -p free-agent-gui -p social-deduction-gui
-      - run: cargo check -p free-agent-gui -p social-deduction-gui --target wasm32-unknown-unknown
-      - run: apps/social-deduction/gui/build-page.sh
+      - run: cargo clippy ${{ matrix.crates }} --all-targets -- -D warnings
+      - run: cargo test ${{ matrix.crates }}
+      - run: cargo check ${{ matrix.crates }} --target wasm32-unknown-unknown
+      - run: apps/${{ matrix.app }}/gui/build-page.sh
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/social-deduction/gui/e2e/package-lock.json
+          cache-dependency-path: apps/${{ matrix.app }}/gui/e2e/package-lock.json
       - run: npm ci
-        working-directory: apps/social-deduction/gui/e2e
+        working-directory: apps/${{ matrix.app }}/gui/e2e
       # Playwright's Chromium, kept between runs for as long as the lock
       # file pins the same Playwright.
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('apps/social-deduction/gui/e2e/package-lock.json') }}
+          key: playwright-${{ runner.os }}-${{ hashFiles(format('apps/{0}/gui/e2e/package-lock.json', matrix.app)) }}
       - run: npx playwright install --with-deps chromium
-        working-directory: apps/social-deduction/gui/e2e
+        working-directory: apps/${{ matrix.app }}/gui/e2e
       - run: npm test
-        working-directory: apps/social-deduction/gui/e2e
+        working-directory: apps/${{ matrix.app }}/gui/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: viewer-screenshots
-          path: apps/social-deduction/gui/e2e/screenshots
+          name: ${{ matrix.app }}-screenshots
+          path: apps/${{ matrix.app }}/gui/e2e/screenshots
 
-  # The desktop shells, the shared one and the app's, need each platform's
-  # webview, so the jobs above leave them out. One leg per platform, since
-  # the shells have code only one of them compiles: the macOS menus,
-  # command-line tool and dev app bundle, and the Windows subsystem
-  # attribute.
+  # The desktop shells, the shared one and each app's, need each
+  # platform's webview, so the jobs above leave them out. One leg per app
+  # and platform, since the shells have code only one platform compiles:
+  # the macOS menus, command-line tool and dev app bundle, and the Windows
+  # subsystem attribute.
   desktop:
-    name: Desktop (${{ matrix.name }})
-    runs-on: ${{ matrix.os }}
+    name: Desktop (${{ matrix.app }}, ${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
+        app: [social-deduction, twenty-questions]
+        platform:
           - { name: Linux, os: ubuntu-latest }
           - { name: Linux arm64, os: ubuntu-24.04-arm }
           - { name: macOS, os: macos-latest }
@@ -149,10 +157,10 @@ jobs:
       # The command line the app carries, which tauri-build copies beside
       # the app's binary and fails without. A debug build shares what the
       # tests build.
-      - run: .github/scripts/sidecar.sh --debug
+      - run: .github/scripts/sidecar.sh ${{ matrix.app }} --debug
         shell: bash
-      - run: cargo clippy -p free-agent-desktop -p social-deduction-desktop --all-targets -- -D warnings
-      - run: cargo test -p free-agent-desktop -p social-deduction-desktop
+      - run: cargo clippy -p free-agent-desktop -p ${{ matrix.app }}-desktop --all-targets -- -D warnings
+      - run: cargo test -p free-agent-desktop -p ${{ matrix.app }}-desktop
 
   # The workflows and the release scripts, which otherwise run only at a
   # release.
@@ -202,14 +210,13 @@ jobs:
           tool: cargo-llvm-cov
       # Without --workspace the tests of the applications and the shared
       # crates still run, but the report leaves their source files out. The
-      # viewer's frontend and the shared look are the browser's, and the
-      # Viewer job tests them. The desktop shells are wiring: Tauri
-      # commands, windows, menus and dialogs around social_deduction's live
-      # and editing modules and free_agent_model's catalog and secret
-      # modules, which are measured here, the keyring store and the macOS
-      # dev bundle. They need a webview to build, so the Desktop jobs test
-      # them.
-      - run: cargo llvm-cov --workspace --exclude free-agent-gui --exclude social-deduction-gui --exclude free-agent-desktop --exclude social-deduction-desktop --lcov --output-path lcov.info
+      # apps' frontends and the shared look are the browser's, and the
+      # Viewer jobs test them. The desktop shells are wiring: Tauri
+      # commands, windows, menus and dialogs around each app's live and
+      # settings modules and free_agent_model's catalog and secret modules,
+      # which are measured here, the keyring store and the macOS dev bundle.
+      # They need a webview to build, so the Desktop jobs test them.
+      - run: cargo llvm-cov --workspace --exclude free-agent-gui --exclude social-deduction-gui --exclude twenty-questions-gui --exclude free-agent-desktop --exclude social-deduction-desktop --exclude twenty-questions-desktop --lcov --output-path lcov.info
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v7
         with:

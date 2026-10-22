@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Twenty Questions",
+  "identifier": "io.github.wpm.twenty-questions",
+  "build": {
+    "beforeDevCommand": { "script": "trunk serve", "cwd": ".." },
+    "devUrl": "http://localhost:1421",
+    "beforeBuildCommand": { "script": "trunk build --release", "cwd": ".." },
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Twenty Questions",
+        "width": 900,
+        "height": 760,
+        "minWidth": 420,
+        "minHeight": 480
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "externalBin": ["binaries/twenty-questions"],
+    "windows": {
+      "nsis": { "installerHooks": "installer-hooks.nsh" }
+    },
+    "icon": [
+      "icons/128x128@2x.png",
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://wpm.github.io/FreeAgent/twenty-questions/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUwOEY5NDVDNUE5REMxMUMKUldRY3daMWFYSlNQVUdpTFhzWWRmdkhzM3JaM3FmUmE4UUJoRGJtUjlZSE1ydS82Z3lVaXRwejQK"
+    }
+  }
+}

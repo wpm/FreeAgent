@@ -17,5 +17,6 @@ pub mod narrator;
 pub mod object;
 pub mod player;
 pub mod run;
+pub mod settings;
 pub mod stage;
 pub mod story;

@@ -157,12 +157,12 @@ printf 'rustc 1.0.0\nhost: x86_64-unknown-linux-gnu\r\n'
 TOOL
 cat > "$tools/cargo" <<'TOOL'
 #!/usr/bin/env bash
-target=; profile=debug
-while [ $# -gt 0 ]; do case $1 in --target) target=$2; shift 2 ;; --release) profile=release; shift ;; *) shift ;; esac; done
+target=; profile=debug; bin=
+while [ $# -gt 0 ]; do case $1 in --target) target=$2; shift 2 ;; --bin) bin=$2; shift 2 ;; --release) profile=release; shift ;; *) shift ;; esac; done
 exe=; case $target in *windows*) exe=.exe ;; esac
 dir=$CARGO_TARGET_DIR/${target:+$target/}$profile
 mkdir -p "$dir"
-echo "$profile build for ${target:-the host}" > "$dir/social-deduction$exe"
+echo "$profile build for ${target:-the host}" > "$dir/$bin$exe"
 TOOL
 cat > "$tools/lipo" <<'TOOL'
 #!/usr/bin/env bash
@@ -194,7 +194,13 @@ check "a universal sidecar comes with one for each chip" test "$(files "$scratch
 check "a universal sidecar joins the two" test "$(cat "$scratch/universal/social-deduction-universal-apple-darwin")" = \
   $'release build for aarch64-apple-darwin\nrelease build for x86_64-apple-darwin'
 
+# Twenty Questions' is built from its own crate under its own name.
+sidecar "$scratch/twenty" twenty-questions --debug
+check "a product's sidecar is named for it" test "$(files "$scratch/twenty")" = "twenty-questions-x86_64-unknown-linux-gnu "
+check "a product's sidecar is its own build" test "$(cat "$scratch/twenty/twenty-questions-x86_64-unknown-linux-gnu")" = "debug build for the host"
+
 check "there is no release mode" fails sidecar "$scratch/gone" --release social-deduction-v1.2.3
+check "there is no other product" fails sidecar "$scratch/gone" chess
 
 # bundled-cli.sh finds social-deduction in each bundle and asks its version.
 mkdir -p "$scratch/bundles/Social Deduction.app/Contents/MacOS" "$scratch/bundles/Empty.app/Contents/MacOS"

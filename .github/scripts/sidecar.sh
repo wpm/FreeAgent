@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Puts the social-deduction command line where the desktop app's bundle
-# picks it up as a sidecar (bundle.externalBin in tauri.conf.json), under
-# Tauri's name for it: binaries/social-deduction-<target triple>, with
-# .exe on Windows.
+# Puts a product's command line where its desktop app's bundle picks it
+# up as a sidecar (bundle.externalBin in tauri.conf.json), under Tauri's
+# name for it: binaries/<product>-<target triple>, with .exe on Windows.
 #
-#   sidecar.sh [--target <triple>] [--debug]
+#   sidecar.sh [<product>] [--target <triple>] [--debug]
 #
+# The product is social-deduction by default, or twenty-questions: the
+# crate, its binary and its folder under apps/ are all named for it.
 # The target is the host's by default. cargo builds it, optimized, or with
 # --debug as a debug build that shares what `cargo test` builds.
 # universal-apple-darwin is the two macOS binaries joined with lipo, and
@@ -15,17 +16,19 @@
 #
 # Environment:
 #   SIDECAR_DIR       where the sidecars go (default
-#                     apps/social-deduction/gui/src-tauri/binaries)
+#                     apps/<product>/gui/src-tauri/binaries)
 #   CARGO_TARGET_DIR  where cargo builds (default the workspace's target)
 set -euo pipefail
 
-usage="usage: sidecar.sh [--target <triple>] [--debug]"
+usage="usage: sidecar.sh [<product>] [--target <triple>] [--debug]"
+product=social-deduction
 target=
 profile=release
 while [ $# -gt 0 ]; do
   case $1 in
     --target) target=${2:?$usage}; shift 2 ;;
     --debug) profile=debug; shift ;;
+    social-deduction | twenty-questions) product=$1; shift ;;
     *) echo "$usage" >&2; exit 2 ;;
   esac
 done
@@ -36,23 +39,23 @@ host=${host%$'\r'}
 target=${target:-$host}
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-out=${SIDECAR_DIR:-$root/apps/social-deduction/gui/src-tauri/binaries}
+out=${SIDECAR_DIR:-$root/apps/$product/gui/src-tauri/binaries}
 mkdir -p "$out"
 
 exe() { # <triple>
   case $1 in *windows*) echo .exe ;; esac
 }
 name() { # <triple>
-  echo "social-deduction-$1$(exe "$1")"
+  echo "$product-$1$(exe "$1")"
 }
 
 # Puts the binary for one target into the sidecar directory.
 one() { # <triple>
-  local triple=$1 built=${CARGO_TARGET_DIR:-$root/target} args=(--locked -p social-deduction --bin social-deduction)
+  local triple=$1 built=${CARGO_TARGET_DIR:-$root/target} args=(--locked -p "$product" --bin "$product")
   if [ "$profile" = release ]; then args+=(--release); fi
   if [ "$triple" != "$host" ]; then args+=(--target "$triple"); built=$built/$triple; fi
   cargo build "${args[@]}"
-  cp "$built/$profile/social-deduction$(exe "$triple")" "$out/$(name "$triple")"
+  cp "$built/$profile/$product$(exe "$triple")" "$out/$(name "$triple")"
   echo "$out/$(name "$triple")"
 }
 

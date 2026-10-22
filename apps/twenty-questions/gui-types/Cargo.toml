@@ -10,9 +10,12 @@ homepage.workspace = true
 # Twenty Questions' own types, shared by its native code and its frontend.
 publish = false
 
-# Serde, and the episode IDs a log's games are told apart by, so the crate
-# builds for wasm32-unknown-unknown.
+# The shared types, serde, minijinja to read templates, and the episode IDs
+# a log's games are told apart by, so the crate builds for
+# wasm32-unknown-unknown.
 [dependencies]
+free-agent-gui-types.workspace = true
+minijinja.workspace = true
 serde.workspace = true
 uuid.workspace = true
 

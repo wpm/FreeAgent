@@ -10,9 +10,12 @@
 //! object, the guesses used and the time left. Library code folds the
 //! game's log into a stream of [`Cue`]s, and the frontend draws each one as
 //! it arrives: what the screen shows at any cue follows from the cues
-//! before it. A log's games cross as [`Recordings`].
+//! before it. A log's games cross as [`Recordings`]. The desktop app's
+//! [`settings`] cross as they are.
 
 #![warn(missing_docs)]
+
+pub mod settings;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

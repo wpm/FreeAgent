@@ -1,0 +1,12 @@
+{
+  "name": "twenty-questions-e2e",
+  "private": true,
+  "description": "Drives Twenty Questions' built page, with a stand-in for the desktop app's backend, in headless Chromium and checks what it shows.",
+  "type": "module",
+  "scripts": {
+    "test": "node check.mjs ../dist"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}

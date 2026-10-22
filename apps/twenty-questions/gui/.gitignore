@@ -1,0 +1,7 @@
+# Trunk's build.
+/dist/
+# The screen check's packages and screenshots, and the cues of the
+# recorded game it plays, which build-page.sh folds.
+/e2e/node_modules/
+/e2e/screenshots/
+/e2e/prompted.json
