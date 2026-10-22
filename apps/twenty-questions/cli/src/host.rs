@@ -1013,12 +1013,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_guess_the_host_calls_named_wins_in_words_of_the_name() {
         let model = answering(
-            |guess| match guess {
-                "Is it a pot for tea?" | "Is it a kettle?" => {
-                    Ok(Response::tool_call(NAMED, &json!({"text": "Yes!"})))
-                }
-                _ => Ok(answer("No.")),
-            },
+            |_| Ok(Response::tool_call(NAMED, &json!({"text": "Yes!"}))),
             1,
         );
         let script = [
