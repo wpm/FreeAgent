@@ -492,6 +492,15 @@ const cursor = (page) =>
     };
   });
 
+/** Whether the review's controls on `page` crowd the title or the count
+ * rather than sitting in a row of their own under them. */
+const crowded = (page) =>
+  page.evaluate(() => {
+    const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+    const [title, count, controls] = [box('.tq-title'), box('.tq-count'), box('.tq-controls')];
+    return title.right > count.left || Math.max(title.bottom, count.bottom) > controls.top;
+  });
+
 /** The menus the main window last enabled, as JSON. */
 const menus = async (page) => JSON.stringify(await page.evaluate(() => window.standIn.menus));
 
@@ -510,6 +519,10 @@ await section('review of a game just played', async () => {
     `review: a game over goes into review on its last bubble, where it left off, with nothing dimmed (${JSON.stringify(last)})`,
   );
   check(last.name === null && last.outcome === `The players won in ${named}`, `review: the header says who won and names no file (${last.name}, ${last.outcome})`);
+  await main.setViewportSize({ width: 900, height: 760 });
+  check(!(await crowded(main)), 'review: at 900 px the review has a row of its own under the title and the count');
+  await main.screenshot({ path: join(shots, 'review-played.png') });
+  await main.setViewportSize({ width: 1000, height: 760 });
   check((await menus(main)) === JSON.stringify({ games: 1, open: true, save: true }), 'review: Open Game Log…, Save Game Log… and Go are enabled in the review of a game just played');
   await main.click('.tq-header button:text("Save Log…")');
   await main.waitForTimeout(100);
@@ -597,12 +610,7 @@ await section('review of a log', async () => {
   check((await menus(main)) === JSON.stringify({ games: 3, open: true, save: false }), 'log: Open Game Log… and Go are enabled, Previous and Next Game with them, and Save Game Log… is not');
   check((await header(main)).buttons.join() === '‹,›,Close', `log: ‹ › and Close control the log (${(await header(main)).buttons})`);
   await main.screenshot({ path: join(shots, 'review-log.png') });
-  const crowded = await main.evaluate(() => {
-    const box = (selector) => document.querySelector(selector).getBoundingClientRect();
-    const [title, count, controls] = [box('.tq-title'), box('.tq-count'), box('.tq-controls')];
-    return title.right > count.left || count.bottom > controls.top;
-  });
-  check(!crowded, 'log: the review of several games has a row of its own under the title and the count');
+  check(!(await crowded(main)), 'log: the review has a row of its own under the title and the count');
   await main.keyboard.press('Meta+ArrowDown');
   await main.keyboard.press('Meta+]');
   await main.waitForTimeout(300);
