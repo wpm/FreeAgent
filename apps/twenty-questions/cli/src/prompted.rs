@@ -248,8 +248,8 @@ pub(crate) struct Mind {
     /// How many reminders the player has set, which numbers them so that
     /// only the latest counts.
     reminders: AtomicU64,
-    /// A guess the model made that was put already, which the next
-    /// request tells it was not put. Never locked across an await.
+    /// Why a guess the model made was not put, which the next request
+    /// tells it. Never locked across an await.
     refused: Mutex<Option<String>>,
     /// Its system prompt, rendered for its seat.
     prompt: String,
@@ -414,6 +414,13 @@ impl Player {
         Ok(())
     }
 
+    /// Have the next request tell the model its guess `question` was not
+    /// put, and `why`.
+    fn refuse(&self, question: &str, why: &str) {
+        *self.mind.refused.lock().unwrap() =
+            Some(format!("Your guess \"{question}\" was not put: {why}."));
+    }
+
     /// Woken, decide: take the wake-up, ask the model where the game
     /// stands, and carry out what it answers. If that fails, log the
     /// failure, and be reminded to try again after [`RETRY`], unless
@@ -444,21 +451,18 @@ impl Player {
     /// everyone else, and then a reminder if it asked to wait. A guess put
     /// before the model was asked, whatever its case, or twice in the
     /// answer, fails the answer, which is carried out not at all, and the
-    /// next request tells the model it was not put. A guess
-    /// the player may no longer make by the time it is sent, since another
-    /// came in while the model was asked, is not put: one guess waits at a
-    /// time.
+    /// next request tells the model it was not put. A guess the player may
+    /// no longer make by the time it is sent, since another came in while
+    /// the model was asked, is not put, so that one guess waits at a time:
+    /// it is logged as a failure, and the next request tells the model so.
     async fn play(&self, view: &View, began: Instant) -> anyhow::Result<()> {
         let guesses = self.mind.guesses(view.guesses);
         let may_guess = guesses.may_guess();
         let put = self.mind.questions();
         let time_left = view.time_limit.saturating_sub(began.elapsed());
         let mut situation = guesses.situation(time_left);
-        if let Some(question) = self.mind.refused.lock().unwrap().take() {
-            situation = format!(
-                "Your guess \"{question}\" was not put: it was put already. Never repeat a \
-                 guess. {situation}"
-            );
+        if let Some(refused) = self.mind.refused.lock().unwrap().take() {
+            situation = format!("{refused} {situation}");
         }
         let (request, shown) = self.mind.asker.request(
             &self.mind.prompt,
@@ -472,7 +476,7 @@ impl Player {
         for sending in &sends {
             if let Sending::Guess(question) = sending {
                 if guessed.contains(&folded(question)) {
-                    *self.mind.refused.lock().unwrap() = Some(question.clone());
+                    self.refuse(question, "it was put already. Never repeat a guess");
                     bail!("the model guessed \"{question}\", which was put already");
                 }
                 guessed.push(folded(question));
@@ -481,9 +485,15 @@ impl Player {
         let me = &self.context.id;
         let to = everyone_but(me, &view.players);
         for sending in sends {
-            if let Sending::Guess(_) = sending
+            if let Sending::Guess(question) = &sending
                 && !self.mind.guesses(view.guesses).may_guess()
             {
+                let why = "another guess came in while you decided";
+                self.context.log(Entry::Failed {
+                    by: me.clone(),
+                    error: format!("the guess \"{question}\" was not put: {why}"),
+                });
+                self.refuse(question, why);
                 continue;
             }
             let message = sending.message(me, self.mind.number());
@@ -928,7 +938,17 @@ mod tests {
                 text: "Agreed.".to_string(),
             }]
         );
-        assert!(played.failures("Alice").is_empty());
+        assert_eq!(
+            played.failures("Alice"),
+            ["the guess \"Is it big?\" was not put: another guess came in while you decided"]
+        );
+        let told =
+            "Your guess \"Is it big?\" was not put: another guess came in while you decided.";
+        assert!(
+            questions(&model).iter().any(|asked| asked.contains(told)),
+            "{:?}",
+            questions(&model)
+        );
     }
 
     #[tokio::test(start_paused = true)]

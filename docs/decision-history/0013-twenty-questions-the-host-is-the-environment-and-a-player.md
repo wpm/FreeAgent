@@ -169,7 +169,8 @@ guess: while guesses are left, none is waiting, and someone has spoken
 since the last answer, so that a guess is proposed before it is made. A
 guess the model makes that was put already fails the answer, and the next
 request tells the player it was not put. A guess made while another came
-in during the call is not put, so one guess waits at a time. A player
+in during the call is not put, so one guess waits at a time; it is logged
+as `Failed`, and the next request tells the player why. A player
 whose decision fails, its model unreached or its answer not well formed,
 tries again after 10 seconds unless something wakes it sooner.
 
