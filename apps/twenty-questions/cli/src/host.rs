@@ -13,23 +13,22 @@
 //! waits, the host is asked to answer the oldest, offered only `answer`
 //! and `named`. Otherwise it is offered `speak` and `wait`.
 //!
-//! A guess that says the object's name wins whichever tool the host calls.
-//! A line of the host's that says the name before the game is won is not
-//! sent: it is a failure, logged as [`Entry::Failed`], and the host is
-//! asked again. A failed answer is asked again up to [`ATTEMPTS`] times,
-//! [`RETRY`] apart, and so is the pick; after that the episode fails with
-//! the last error. A
-//! failed word in conversation is asked again up to as many times, and then
-//! dropped.
+//! A guess that says the object's name wins the moment the host counts
+//! it, unanswered. A line of the host's that says the name before the game
+//! is won is not sent: it is a failure, logged as [`Entry::Failed`], and
+//! the host is asked again. A failed answer is asked again up to
+//! [`ATTEMPTS`] times, [`RETRY`] apart, and so is the pick; after that the
+//! episode fails with the last error. A failed word in conversation is
+//! asked again up to as many times, and then dropped.
 //!
 //! When the configuration names no object, the host picks one as the game
 //! begins, asked with the pick prompt for a category drawn at random, at
 //! the configured temperature, before it tells the players the game has
-//! begun. The game ends when a guess is answered as naming the object,
-//! which wins it for the players, or when the last guess is answered
-//! without, or at the time limit, which win it for the host. Either way
-//! the host stops every player and logs the [`Entry::End`] with the
-//! object.
+//! begun. The game ends when a guess says the object's name or is
+//! answered as naming it, which wins it for the players, or when the last
+//! guess is answered without, or at the time limit, which win it for the
+//! host. Either way the host stops every player and logs the
+//! [`Entry::End`] with the object.
 
 use crate::config::{Configuration, HostPrompt};
 use crate::game::{Actor, RETRY, Seated, act, everyone_but, observe};
@@ -525,17 +524,27 @@ impl Host {
         Ok(())
     }
 
-    /// End the game, won `by` this: log the end with the object, send the
-    /// winner, and stop everyone.
+    /// End the game, won `by` this with the guesses answered.
     fn end(&self, by: Victory) -> anyhow::Result<()> {
+        let used = self.mind.state.lock().unwrap().answered;
+        self.finish(by, used)
+    }
+
+    /// End the game, won `by` this with `used` guesses: log the end with
+    /// the object, send the winner, and stop everyone. A game is ended
+    /// once.
+    fn finish(&self, by: Victory, used: u64) -> anyhow::Result<()> {
         let took = self.elapsed();
         let end = {
             let mut state = self.mind.state.lock().unwrap();
+            if state.over {
+                return Ok(());
+            }
             state.over = true;
             Entry::End {
                 winner: by.winner(),
                 by,
-                used: state.answered,
+                used,
                 object: state.object.clone().unwrap_or_default(),
                 took,
             }
@@ -624,12 +633,10 @@ impl Host {
     /// answer, unless the time ran out while it was asked. The model is
     /// shown the guess alone, with no story: an answer is about the object
     /// and the question, and a story of earlier answers only tempts a small
-    /// model to repeat them. A guess that
-    /// says the object's name is named whichever tool the model called, and
-    /// one the model calls named that shares no word with the name is
-    /// answered Yes and is not named. An
-    /// answer that says it of a guess that does not is cut to its first
-    /// word when that is Yes or No, and is otherwise an error.
+    /// model to repeat them. A guess the model calls named that shares no
+    /// word with the name is answered Yes and is not named. An answer that
+    /// says the name is cut to its first word when that is Yes or No, and
+    /// is otherwise an error.
     async fn try_answer(&self, object: &str, guess: &Waiting) -> anyhow::Result<()> {
         let prompt = self.mind.state.lock().unwrap().prompt.clone();
         let asker = &self.mind.brief.asker;
@@ -649,7 +656,6 @@ impl Host {
             (_, true) if !shares_a_word(&guess.text, object) => ("Yes.".to_string(), false),
             answer => answer,
         };
-        let named = named || says(&guess.text, object);
         let text = match !named && gives_away(&text, object, &guess.text) {
             true => match leading_yes_or_no(&text) {
                 Some(word) => word.to_string(),
@@ -692,7 +698,7 @@ impl Host {
         };
         self.tell(answer, Some(shown))?;
         if named {
-            self.end(Victory::Named)
+            self.finish(Victory::Named, guess.number)
         } else if answered == guesses {
             self.end(Victory::OutOfGuesses)
         } else if more || !self.mind.heard.lock().unwrap().is_empty() {
@@ -828,9 +834,10 @@ impl Behavior for Host {
 
     /// Log a message from a player as observed and remember it. A guess is
     /// counted and queued while guesses remain, and logged as uncounted
-    /// after, or as repeated when it repeats one counted already; a guess
-    /// counted, or speech, wakes the think loop. Once the
-    /// game is over, nothing wakes it.
+    /// after, or as repeated when it repeats one counted already. A guess
+    /// counted that says the object's name wins the game at once, without
+    /// waiting for the model; any other, or speech, wakes the think loop.
+    /// Once the game is over, nothing wakes it.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
         let Some(n) = message.number() else {
             return Ok(());
@@ -858,6 +865,15 @@ impl Behavior for Host {
                 return Ok(());
             }
             state.counted += 1;
+            if state
+                .object
+                .as_deref()
+                .is_some_and(|object| says(text, object))
+            {
+                let used = state.counted;
+                drop(state);
+                return self.finish(Victory::Named, used);
+            }
             state.quiet_since = Some(Instant::now());
             state.nudged = false;
             let waiting = Waiting {
@@ -987,27 +1003,37 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_guess_saying_the_object_s_name_wins_though_the_host_calls_answer() {
-        let model = answering(|_| Ok(answer("No.")), 1);
+    async fn a_guess_saying_the_object_s_name_wins_the_moment_it_is_counted() {
+        // The host was still answering the fourteenth guess when the
+        // fifteenth named the orangutan, and the time ran out first.
+        let model = answering(|_| Ok(answer("No.")), 50);
         let played = hosted(
             &model,
-            Rules::default(),
-            &[("Alice", &[(1, Line::Guess("Is it a TEAPOT?"))])],
+            Rules {
+                time_limit: Duration::from_secs(60),
+                ..Rules::default()
+            },
+            &[
+                ("Alice", &[(1, Line::Guess("Is it alive?"))]),
+                ("Bob", &[(2, Line::Guess("Is it a TEAPOT?"))]),
+            ],
         )
         .await;
         played.ran.as_ref().unwrap();
-        assert_eq!(answers(&played), [(1, "Alice", "No.", true, 19)]);
+        assert!(answers(&played).is_empty());
         assert_eq!(
             played.end(),
             (
                 Side::Players,
                 Victory::Named,
-                1,
+                2,
                 "a teapot",
                 Duration::from_secs(2)
             )
         );
         assert_eq!(played.won, Some(Side::Players));
+        let asked: Vec<String> = model.requests().iter().map(guess_in).collect();
+        assert_eq!(asked, ["Is it alive?"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1442,7 +1468,13 @@ mod tests {
                 object: None,
                 ..Rules::default()
             },
-            &[("Alice", &[(1, Line::Guess("Is it a teapot?"))])],
+            &[(
+                "Alice",
+                &[
+                    (1, Line::Guess("Is it alive?")),
+                    (5, Line::Guess("Is it a teapot?")),
+                ],
+            )],
         )
         .await;
         let pick = &model.requests()[0];
@@ -1485,9 +1517,9 @@ mod tests {
             (
                 Side::Players,
                 Victory::Named,
-                1,
+                2,
                 "a teapot",
-                Duration::from_secs(2)
+                Duration::from_secs(5)
             )
         );
         // The host's prompt is rendered for the object it picked.

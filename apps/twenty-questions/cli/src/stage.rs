@@ -510,11 +510,10 @@ pub(crate) mod tests {
                 guessed("Alice", "Is it alive?", 1),
                 answered(1, "No.", false, 19),
                 guessed("Bob", "Is it a teapot?", 2),
-                answered(2, "Yes, it is!", true, 18),
             ],
             over(
                 Victory::Named,
-                "The players named a teapot with 2 of their 20 guesses, in 31s.",
+                "The players named a teapot with 2 of their 20 guesses, in 30s.",
             ),
         ]
         .concat();

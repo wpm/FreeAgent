@@ -153,7 +153,8 @@ pub enum Entry {
         winner: Side,
         /// How it won.
         by: Victory,
-        /// How many guesses were answered.
+        /// How many guesses the players used: the number of the guess that
+        /// named the object, or else how many were answered.
         used: u64,
         /// The secret object.
         object: String,

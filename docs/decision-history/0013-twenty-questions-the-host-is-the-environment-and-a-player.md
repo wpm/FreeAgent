@@ -61,11 +61,11 @@ everyone talks to everyone at once.**
   at the same moment, each before hearing the other's, and both were
   counted and answered alike; in one game four of the twenty guesses went
   to repeats.
-- **The host answers every guess**, one at a time in the order received, in
-  its own words, with one of two tools: `answer(text)` for a guess that does
+- **The host answers every guess** but one that says the object's name,
+  one at a time in the order received, in its own words, with one of two tools: `answer(text)` for a guess that does
   not name the object, and `named(text)` for one that does.
-- **A guess that says the object's name wins**, whichever tool the host
-  calls: the guess, lowercased, holds the object's name, lowercased and
+- **A guess that says the object's name wins** the moment the host counts
+  it, unanswered: the guess, lowercased, holds the object's name, lowercased and
   without a leading *a*, *an* or *the* or a measure such as *pair of*, as
   words of their own, singular or plural. *Scissors?* says *a pair of
   scissors*; *Is it a category?* does not say *a cat*. A guess that holds
@@ -74,7 +74,11 @@ everyone talks to everyone at once.**
   guess the host calls `named` that holds no such word is answered *Yes.*
   and does not win. *Amended 2026-10-21 (#466):* the host called *Is it
   furniture?* a loveseat and *Is it a flower?* a tulip, and two of ten
-  games were won that way.
+  games were won that way. *Amended 2026-10-22 (#454 review):* such a guess
+  used to wait its turn for the host's answer, and with the host still
+  answering the fourteenth guess, the fifteenth, *Is it an orangutan?*,
+  lost on time. Now the host's code ends the game as it counts the guess,
+  and the narrator and the log tell it as named, unanswered.
 - **The host keeps its secret.** A line of the host's, an answer or a word,
   that gives the object away before the game is won is not sent: one that
   says its name, or the name's last word, its head noun, unless the guess
@@ -85,7 +89,8 @@ everyone talks to everyone at once.**
   `Failed`, and the host is asked again. *Amended 2026-10-21 (#466):* the
   host kept saying *No, a rose bush is not …* and failed the episode on
   the third try, when its *No* was right.
-- **The end.** A guess answered as naming the object wins for the players.
+- **The end.** A guess that says the object's name, or one answered as
+  naming it, wins for the players.
   The last guess answered without it, or the time limit (10 minutes unless
   configured), wins for the host. A guess still waiting when the game ends
   is not answered. Either way the host logs `End`, with the object, and stops
@@ -121,9 +126,10 @@ closes.
 Two loops over one mind, never locked across a model call
 ([ADR-0002](0002-actors-perceive-think-and-act.md)).
 
-- **Perceiving**, it counts each `Guess` while guesses remain and queues
-  it, and keeps each line of speech it hears. A counted guess or a line of
-  speech wakes the think loop, debounced as a player's is.
+- **Perceiving**, it counts each `Guess` while guesses remain, ends the
+  game on one that says the object's name and queues any other, and keeps
+  each line of speech it hears. A guess queued or a line of speech wakes
+  the think loop, debounced as a player's is.
 - **Thinking**, a guess waiting comes first: the host is asked to answer
   the oldest, shown the guess alone and the guess put about the object
   itself, its *it* replaced by the object (*Is a unicycle alive?*),

@@ -109,7 +109,6 @@ fn the_example_plays_to_the_end_tells_the_game_and_logs_it_between_its_header_an
             .any(|line| line.ends_with("guesses (1 of 20): Is it a teapot?")),
         "{told}"
     );
-    assert!(lines.contains(&"Host: Yes, it is!"), "{told}");
     assert!(
         lines
             .last()
