@@ -740,7 +740,7 @@ system = "You are {{ name }}. Talk a lot."
     fn the_example_settles_with_the_defaults_and_renders_every_prompt() {
         let settings = settled(&example());
         assert_eq!(settings.guesses, GUESSES);
-        assert_eq!(settings.time_limit, TIME_LIMIT);
+        assert_eq!(settings.time_limit, Duration::from_secs(900));
         assert_eq!(settings.seats, ["Alice", "Bob", "Carol"]);
         assert_eq!(
             settings.allotments,

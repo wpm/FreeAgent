@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(app.models.keys().collect::<Vec<_>>(), ["qwen"]);
         assert_eq!(app.game, game_defaults());
         assert_eq!(app.game.players, 3);
-        assert_eq!(app.game.time_limit, "10m");
+        assert_eq!(app.game.time_limit, "15m");
         assert_eq!(app.game.strategy, "everyone");
         assert_eq!(app.game.host.model, "qwen");
         assert_eq!(app.game.host.object, "");

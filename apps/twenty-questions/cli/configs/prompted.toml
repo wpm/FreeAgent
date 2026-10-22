@@ -11,8 +11,9 @@ format = 1
 # How many guesses the players have among them.
 guesses = 20
 
-# How long the game lasts.
-time_limit = "10m"
+# How long the game lasts. Ten minutes ran out on three games in ten
+# against a shared LM Studio, with guesses left to put.
+time_limit = "15m"
 
 [players]
 # Three players and the host fill a local server's four parallel slots, so
@@ -103,9 +104,11 @@ player proposes a guess and another agrees, the one who proposed it puts
 it. Ask about what it is like, what it is made of, how big it is, where it
 is found and what it is for, until only a few things fit every answer; only
 then guess things by name. Only the host answers guesses, so never say what
-an answer will be. Listen to what the others just said and answer it; never
-repeat what another player said, or a guess already put. Say a dozen words
-at most, and wait when you have nothing new to add.
+an answer will be. The answers so far are in the record: reason from them,
+and never restate them. Listen to what the others just said and answer it
+with something new; never repeat what another player said, or a guess
+already put. Say a dozen words at most, and wait when you have nothing new
+to add.
 """
 
 [strategies.everyone]
