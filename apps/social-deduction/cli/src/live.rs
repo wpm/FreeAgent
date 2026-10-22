@@ -268,7 +268,10 @@ where
 
     /// Write down and show every event from `events` until the episode
     /// `run` has ended, then keep the log, closed with how the game
-    /// ended, and show that, both stamped with one time.
+    /// ended, and show that, both stamped with one time. Each event is
+    /// shown as its line of the log reads back, without the keys, and
+    /// nothing is shown once a line cannot be written but that the game
+    /// is over.
     async fn read(
         mut self,
         mut events: UnboundedReceiver<Event<Entry<G>>>,
@@ -277,11 +280,10 @@ where
         let mut stage = Stage::<G>::default();
         let mut won = None;
         while let Some(event) = events.recv().await {
-            self.writer = self
-                .writer
-                .take()
-                .and_then(|mut writer| writer.write(&event).ok().map(|()| writer));
-            for cue in stage.fold(&event) {
+            let line = (self.writer.as_mut()).and_then(|writer| writer.write(&event).ok());
+            self.writer = self.writer.take().filter(|_| line.is_some());
+            let read = line.and_then(|line| serde_json::from_str(&line).ok());
+            for cue in read.iter().flat_map(|event| stage.fold(event)) {
                 match cue.beat {
                     Beat::Over { .. } => won = Some(cue),
                     _ => self.show(cue),
@@ -290,14 +292,19 @@ where
         }
         let ended = Ended::of(&run.await, won.is_some());
         let at = SystemTime::now();
-        let closed = self
-            .writer
-            .take()
-            .map(|writer| writer.end_at(ended.clone(), at));
-        if let Some(Ok(log)) = closed {
+        let closed = (self.writer.take()).and_then(|writer| writer.end_at(ended, at).ok());
+        let mut ended = None;
+        if let Some((log, line)) = closed {
             let _ = self.kept.set(log.into());
+            if let Ok(Event::<Entry<G>> {
+                payload: Entry::Ended(how),
+                ..
+            }) = serde_json::from_str(&line)
+            {
+                ended = Some(how);
+            }
         }
-        for cue in stage.end(millis(at), won, Some(ended)) {
+        for cue in stage.end(millis(at), won, ended) {
             self.show(cue);
         }
     }
@@ -537,6 +544,42 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_failed_episode_whose_error_carries_a_key_shows_none_of_it() {
+        let (logger, events) = unbounded_channel::<Event<Entry<Avalon>>>();
+        let thinking = Entry::Thinking {
+            player: format!("{CANARY} player"),
+            seq: 1,
+        };
+        logger.send(logged(thinking)).unwrap();
+        drop(logger);
+        let (unused, _) = unbounded_channel();
+        let stopper = Episode::<Actor<Avalon>>::new(HashMap::new(), unused).stopper();
+        let secrets: Secrets = [SecretString::from(CANARY)].into_iter().collect();
+        let (sender, receiver) = unbounded_channel();
+        let kept = Arc::<OnceLock<_>>::default();
+        let reader = Reader::new(
+            sending(sender),
+            stopper,
+            Uuid::nil(),
+            secrets,
+            Arc::clone(&kept),
+        );
+        let run = async { Err(anyhow::anyhow!("{CANARY} cannot be used")) };
+        reader.read(events, run).await;
+        let cues = received(receiver).await;
+        let shown = serde_json::to_string(&cues).unwrap();
+        assert!(!shown.contains(CANARY), "{shown}");
+        let saved = String::from_utf8(kept.get().unwrap().to_vec()).unwrap();
+        assert_eq!(cues, recordings(&saved).unwrap().games.remove(0).cues);
+        assert_eq!(
+            cues.last().map(|cue| &cue.beat),
+            Some(&Beat::Over {
+                outcome: Outcome::Failed("[redacted] cannot be used".to_string()),
+            })
+        );
+    }
+
     /// The random game `name`, to prepare.
     async fn preparing(name: &str) -> anyhow::Result<Prepared> {
         Ok(prepared(name).await)
@@ -617,7 +660,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_game_whose_keys_come_from_the_keychain_keeps_a_log_with_none_of_them() {
+    async fn a_game_whose_keys_come_from_the_keychain_shows_and_keeps_none_of_them() {
         let base_url = leaking(&["qwen2.5-7b-instruct"], CANARY);
         let keychain = Keychain(Fake::default());
         keychain
@@ -631,10 +674,9 @@ mod tests {
         let cues = received(receiver).await;
         let log = String::from_utf8(session.log().unwrap().bytes.to_vec()).unwrap();
         assert_redacted(&log, CANARY);
-        assert_eq!(
-            recordings(&log).unwrap().games.remove(0).cues.len(),
-            cues.len()
-        );
+        let shown = serde_json::to_string(&cues).unwrap();
+        assert!(!shown.contains(CANARY), "{shown}");
+        assert_eq!(recordings(&log).unwrap().games.remove(0).cues, cues);
         assert!(log.ends_with("{\"Ended\":\"won\"}}\n"), "{log}");
     }
 
