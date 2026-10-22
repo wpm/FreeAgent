@@ -5,8 +5,8 @@
 #
 #   sidecar.sh [<product>] [--target <triple>] [--debug]
 #
-# The product is social-deduction by default, or twenty-questions: the
-# crate, its binary and its folder under apps/ are all named for it.
+# The product is social-deduction by default, or another of product.sh's
+# desktop apps.
 # The target is the host's by default. cargo builds it, optimized, or with
 # --debug as a debug build that shares what `cargo test` builds.
 # universal-apple-darwin is the two macOS binaries joined with lipo, and
@@ -22,14 +22,16 @@ set -euo pipefail
 
 usage="usage: sidecar.sh [<product>] [--target <triple>] [--debug]"
 product=social-deduction
+# shellcheck source=SCRIPTDIR/product.sh
+. "$(dirname "$0")/product.sh"
 target=
 profile=release
 while [ $# -gt 0 ]; do
   case $1 in
     --target) target=${2:?$usage}; shift 2 ;;
     --debug) profile=debug; shift ;;
-    social-deduction | twenty-questions) product=$1; shift ;;
-    *) echo "$usage" >&2; exit 2 ;;
+    -*) echo "$usage" >&2; exit 2 ;;
+    *) product_names "$1" || exit 2; product=$1; shift ;;
   esac
 done
 # Built for the host without --target, cargo puts the binary where its

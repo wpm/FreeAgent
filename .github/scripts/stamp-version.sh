@@ -6,6 +6,7 @@
 #   stamp-version.sh <product>-v<version>
 #
 #   stamp-version.sh social-deduction-v0.2.0
+#   stamp-version.sh twenty-questions-v0.1.0
 #   stamp-version.sh free-agent-v0.3.0-rc.1
 #
 # <version> is semver, prereleases included. Sets version = "<version>" in
@@ -27,6 +28,7 @@ crates() { # <product>
   case $1 in
     free-agent) echo free-agent ;;
     social-deduction) echo social-deduction social-deduction-gui social-deduction-desktop social-deduction-gui-types ;;
+    twenty-questions) echo twenty-questions twenty-questions-gui twenty-questions-desktop twenty-questions-gui-types ;;
     *) return 1 ;;
   esac
 }

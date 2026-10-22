@@ -2,7 +2,7 @@
 # A release's body with the desktop app's notes from release-notes.sh on
 # top.
 #
-#   gh release view <tag> --json body --jq .body | release-body.sh <version>
+#   gh release view <tag> --json body --jq .body | release-body.sh <product> <version>
 #
 # Reads the body the release has, the notes GitHub generated, and
 # prints it with the desktop app's notes above it, between the markers
@@ -13,10 +13,13 @@
 # Environment: as release-notes.sh, which says how the macOS build is signed.
 set -euo pipefail
 
-version=${1:?usage: release-body.sh <version>}
+usage="usage: release-body.sh <product> <version>"
+product=${1:?$usage}
+version=${2:?$usage}
 start='<!-- desktop-app -->'
 end='<!-- /desktop-app -->'
-section=$(printf '%s\n%s\n%s' "$start" "$("$(dirname "$0")/release-notes.sh" "$version")" "$end")
+notes=$("$(dirname "$0")/release-notes.sh" "$product" "$version")
+section=$(printf '%s\n%s\n%s' "$start" "$notes" "$end")
 
 # The body without its marked notes and the blank line after them.
 rest=$(awk -v start="$start" -v end="$end" '

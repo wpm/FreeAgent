@@ -12,14 +12,21 @@
 #
 #   https://github.com/wpm/FreeAgent/releases/download/<tag>
 #
-# Prints a "<product> <tag>" line for each product, sorted. Fails, changing
-# nothing, when a placeholder's product has no such release, naming it, or
-# when a page links through releases/latest, naming the page.
+# and the product's downloads, the lines from <!-- downloads:<product> -->
+# to <!-- /downloads:<product> -->, stay as they are. Until a product has
+# a full release, its downloads say instead that the first release is on
+# its way.
+#
+# Prints a "<product> <tag>" line for each product with a release, sorted.
+# Fails, changing nothing, when a placeholder outside its product's
+# downloads has no release, naming the product, or when a page links
+# through releases/latest, naming the page.
 set -euo pipefail
 
 site=${1:?usage: site-releases.sh <site dir> < releases.json}
 releases=$(jq -s 'add // []')
 download=https://github.com/wpm/FreeAgent/releases/download
+soon='<p class="text">The first release is on its way.</p>'
 
 pages=()
 while IFS= read -r -d '' page; do pages+=("$page"); done < <(find "$site" -name '*.html' -type f -print0)
@@ -35,7 +42,7 @@ fi
 products=$( (grep -ohE '\{\{release:[A-Za-z0-9_-]+\}\}' "${pages[@]}" /dev/null || true) | sed -E 's/^\{\{release:(.*)\}\}$/\1/' | LC_ALL=C sort -u)
 
 resolved=()
-missing=0
+unreleased=()
 for product in $products; do
   # A version's precedence: its numbers, then a release above its own
   # prereleases (whose identifiers compare as text, close enough here).
@@ -48,21 +55,48 @@ for product in $products; do
           key: [($v.major | tonumber), ($v.minor | tonumber), ($v.patch | tonumber),
                 ($v.pre == null), ($v.pre // "")] } ]
     | max_by(.key) | .tag // empty' <<< "$releases")
-  if [ -z "$tag" ]; then
-    echo "no full release of $product, tagged $product-v<version>, for the site's {{release:$product}} links" >&2
+  if [ -z "$tag" ]; then unreleased+=("$product"); else resolved+=("$product $tag"); fi
+done
+
+# Each page is resolved into a scratch copy first, so that a failure
+# leaves the site as it was.
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+for i in "${!pages[@]}"; do
+  copy=$scratch/$i.html
+  cp "${pages[$i]}" "$copy"
+  for product in "${unreleased[@]+"${unreleased[@]}"}"; do
+    if ! awk -v start="<!-- downloads:$product -->" -v end="<!-- /downloads:$product -->" -v soon="$soon" '
+        { line = $0; sub(/^[ \t]+/, "", line) }
+        line == start { inside = 1; print substr($0, 1, index($0, start) - 1) soon; next }
+        inside { if (line == end) inside = 0; next }
+        { print }
+        END { exit inside }' "$copy" > "$copy.soon"; then
+      echo "${pages[$i]} has <!-- downloads:$product --> with no <!-- /downloads:$product --> after it" >&2
+      exit 1
+    fi
+    mv "$copy.soon" "$copy"
+  done
+  for line in "${resolved[@]+"${resolved[@]}"}"; do
+    sed "s|{{release:${line% *}}}|$download/${line#* }|g" "$copy" > "$copy.resolved"
+    mv "$copy.resolved" "$copy"
+  done
+done
+
+missing=0
+for product in "${unreleased[@]+"${unreleased[@]}"}"; do
+  if grep -qF "{{release:$product}}" "$scratch"/*.html; then
+    echo "no full release of $product, tagged $product-v<version>, for the site's {{release:$product}} links outside its downloads" >&2
     missing=1
   else
-    resolved+=("$product $tag")
+    echo "no full release of $product yet: its downloads say the first release is on its way" >&2
   fi
 done
 [ "$missing" -eq 0 ] || exit 1
 
+for i in "${!pages[@]}"; do
+  mv "$scratch/$i.html" "${pages[$i]}"
+done
 for line in "${resolved[@]+"${resolved[@]}"}"; do
-  product=${line% *}
-  tag=${line#* }
-  for page in "${pages[@]}"; do
-    sed "s|{{release:$product}}|$download/$tag|g" "$page" > "$page.resolved"
-    mv "$page.resolved" "$page"
-  done
   echo "$line"
 done

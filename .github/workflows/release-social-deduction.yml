@@ -90,7 +90,7 @@ jobs:
           MACOS_SIGNED: ${{ steps.apple.outputs.signed }}
           MACOS_NOTARIZED: ${{ steps.apple.outputs.notarized }}
         run: |
-          gh release view "$TAG" --json body --jq .body | .github/scripts/release-body.sh "$VERSION" > notes.md
+          gh release view "$TAG" --json body --jq .body | .github/scripts/release-body.sh social-deduction "$VERSION" > notes.md
           gh release edit "$TAG" --notes-file notes.md
 
   build:
@@ -176,7 +176,7 @@ jobs:
         env:
           TARGET: ${{ matrix.sidecar }}
         run: |
-          .github/scripts/sidecar.sh --target "$TARGET" | tee "$RUNNER_TEMP/sidecars.txt"
+          .github/scripts/sidecar.sh social-deduction --target "$TARGET" | tee "$RUNNER_TEMP/sidecars.txt"
           echo "path=$(tail -n 1 "$RUNNER_TEMP/sidecars.txt")" >> "$GITHUB_OUTPUT"
       # The same binary alone, for servers and CI.
       - name: The command line's archive
@@ -184,7 +184,7 @@ jobs:
         env:
           TARGET: ${{ matrix.sidecar }}
           SIDECAR: ${{ steps.sidecar.outputs.path }}
-        run: .github/scripts/cli-archive.sh "$TARGET" "$SIDECAR" cli
+        run: .github/scripts/cli-archive.sh social-deduction "$TARGET" "$SIDECAR" cli
       # Runs `tauri build`, which runs Trunk for the frontend first (the
       # beforeBuildCommand in tauri.conf.json), then uploads the bundles
       # to the release, or only as workflow artifacts on a trial run.
@@ -209,7 +209,7 @@ jobs:
           ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
           VERSION: ${{ needs.check.outputs.version }}
           SIDECAR: ${{ runner.os != 'macOS' && steps.sidecar.outputs.path || '' }}
-        run: .github/scripts/bundled-cli.sh "$VERSION" ${SIDECAR:+"$SIDECAR"} <<< "$ARTIFACTS"
+        run: .github/scripts/bundled-cli.sh social-deduction "$VERSION" ${SIDECAR:+"$SIDECAR"} <<< "$ARTIFACTS"
       # The .deb and the .rpm put the command line on the PATH, as the
       # release's version, on Ubuntu and on Fedora.
       - name: The installed command line
@@ -236,7 +236,7 @@ jobs:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
           $setup = $env:ARTIFACTS | ConvertFrom-Json | Where-Object { $_ -like '*-setup.exe' }
-          .github/scripts/installer-path.ps1 $setup $env:VERSION
+          .github/scripts/installer-path.ps1 social-deduction $setup $env:VERSION
       - name: The macOS signature
         if: steps.apple.outputs.signed == 'true'
         env:
@@ -251,7 +251,7 @@ jobs:
         shell: bash
         env:
           ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
-        run: .github/scripts/stable-names.sh stable <<< "$ARTIFACTS"
+        run: .github/scripts/stable-names.sh social-deduction stable <<< "$ARTIFACTS"
       - if: env.TAG != ''
         shell: bash
         env:

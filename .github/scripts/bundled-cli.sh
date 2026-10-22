@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
-# Checks that each of the desktop app's bundles carries the command line,
+# Checks that each of a desktop app's bundles carries its command line,
 # and that it is the release's.
 #
-#   bundled-cli.sh <version> [<sidecar>] < artifact-paths.json
+#   bundled-cli.sh <product> <version> [<sidecar>] < artifact-paths.json
 #
 # Reads tauri-action's artifactPaths output, a JSON array of paths, opens
 # each bundle (.app, .dmg, .deb, .rpm, .AppImage, -setup.exe, .msi), finds
-# social-deduction in it and runs `social-deduction --version`, which has
-# to print <version>. Given the sidecar the bundle was built with, each
+# the <product> binary in it and runs `<product> --version`, which has to
+# print <version>. Given the sidecar the bundle was built with, each
 # bundle's binary has to be that very file, except the AppImage's, which
 # linuxdeploy rewrites. Everything else, the updater archives among them,
-# is left out. Fails when a bundle doesn't open or has no
-# social-deduction, or no path is a bundle.
+# is left out. Fails when a bundle doesn't open or has no <product>, or no
+# path is a bundle.
 set -euo pipefail
 
-version=${1:?usage: bundled-cli.sh <version> [<sidecar>] < artifact-paths.json}
-sidecar=${2:-}
+usage="usage: bundled-cli.sh <product> <version> [<sidecar>] < artifact-paths.json"
+product=${1:?$usage}
+version=${2:?$usage}
+sidecar=${3:-}
+# shellcheck source=SCRIPTDIR/product.sh
+. "$(dirname "$0")/product.sh"
+product_names "$product"
 
 sha() { # <file>
   if command -v sha256sum > /dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d ' ' -f 1
@@ -68,16 +73,16 @@ while IFS= read -r bundle; do
     failed=$((failed + 1))
     continue
   fi
-  binary=$(find "$root" -type f \( -name social-deduction -o -name social-deduction.exe \) | head -n 1)
+  binary=$(find "$root" -type f \( -name "$product" -o -name "$product.exe" \) | head -n 1)
   if [ -z "$binary" ]; then
-    echo "FAIL: $bundle has no social-deduction" >&2
+    echo "FAIL: $bundle has no $product" >&2
     failed=$((failed + 1))
     continue
   fi
   said=$("$binary" --version)
   said=${said%$'\r'}
-  if [ "$said" != "social-deduction $version" ]; then
-    echo "FAIL: $binary says \"$said\", not \"social-deduction $version\"" >&2
+  if [ "$said" != "$product $version" ]; then
+    echo "FAIL: $binary says \"$said\", not \"$product $version\"" >&2
     failed=$((failed + 1))
     continue
   fi

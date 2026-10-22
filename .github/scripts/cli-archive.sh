@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
-# Packs the social-deduction command line for one platform, for servers
-# and CI, with its example configurations, its README and the licenses.
+# Packs a product's command line for one platform, for servers and CI,
+# with its example configurations, its README and the licenses.
 #
-#   cli-archive.sh <target> <binary> <directory>
+#   cli-archive.sh <product> <target> <binary> <directory>
 #
-# Writes social-deduction-<target>.tar.gz, holding a folder of that name,
-# or social-deduction-<target>.zip, holding the files at its top, for a
+# Writes <product>-<target>.tar.gz, holding a folder of that name, or
+# <product>-<target>.zip, holding the files at its top, for a
 # Windows target. Beside it goes a .sha256 in sha256sum's format. Prints
 # the archive's path and then the checksum's.
 set -euo pipefail
 
-usage="usage: cli-archive.sh <target> <binary> <directory>"
-target=${1:?$usage}
-binary=${2:?$usage}
-out=${3:?$usage}
+usage="usage: cli-archive.sh <product> <target> <binary> <directory>"
+product=${1:?$usage}
+target=${2:?$usage}
+binary=${3:?$usage}
+out=${4:?$usage}
+# shellcheck source=SCRIPTDIR/product.sh
+. "$(dirname "$0")/product.sh"
+product_names "$product"
 [ -f "$binary" ] || { echo "no binary at $binary" >&2; exit 1; }
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-name=social-deduction-$target
+name=$product-$target
 exe=
 case $target in *windows*) exe=.exe ;; esac
 
@@ -27,9 +31,9 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 staged=$scratch/$name
 mkdir "$staged"
-cp "$binary" "$staged/social-deduction$exe"
-cp -R "$root/apps/social-deduction/cli/configs" "$staged/configs"
-cp "$root/apps/social-deduction/cli/README.md" "$staged/README.md"
+cp "$binary" "$staged/$product$exe"
+cp -R "$root/apps/$product/cli/configs" "$staged/configs"
+cp "$root/apps/$product/cli/README.md" "$staged/README.md"
 cp "$root"/LICENSE-* "$staged/"
 
 if [ -n "$exe" ]; then
