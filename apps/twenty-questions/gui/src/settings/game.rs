@@ -4,7 +4,9 @@
 //! and the prompt parts, each a section of grouped lists.
 
 use free_agent_gui::settings::strategies::{PromptParts, StrategyList, path_of};
-use free_agent_gui::settings::{Choice, Editor, Named, Page, PageHead, Problem, Section, field_id};
+use free_agent_gui::settings::{
+    Choice, Editor, Named, Page, PageHead, Problem, RestoreDefaults, Section, field_id,
+};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use twenty_questions_gui_types::settings::{AppSettings, GUESSES, GameSettings, NAMES, label};
@@ -62,9 +64,7 @@ fn edit_game(editor: Editor<AppSettings>, change: impl FnOnce(&mut GameSettings)
 /// and the prompt parts, with **Restore defaults…**.
 #[component]
 pub(super) fn GameTab(editor: Editor<AppSettings>) -> impl IntoView {
-    let confirming = RwSignal::new(false);
-    let restore = move |_| {
-        confirming.set(false);
+    let restore = move || {
         spawn_local(async move {
             if let Ok(defaults) = tauri::game_defaults().await {
                 edit_game(editor, |settings| *settings = defaults);
@@ -85,23 +85,7 @@ pub(super) fn GameTab(editor: Editor<AppSettings>) -> impl IntoView {
     };
     view! {
         <PageHead title="Game" tip=GamePage.tip()>
-            <Show
-                when=move || confirming.get()
-                fallback=move || view! {
-                    <button
-                        on:click=move |_| confirming.set(true)
-                        data-tip="Put back the game settings the app came with. The models stay as they are. You confirm first."
-                    >
-                        "Restore defaults…"
-                    </button>
-                }
-            >
-                <div class="tq-confirm" role="alertdialog">
-                    <span>"Replace the game settings with the defaults? The models stay as they are."</span>
-                    <button on:click=restore data-tip="Replace the game settings with the defaults.">"Restore"</button>
-                    <button on:click=move |_| confirming.set(false) data-tip="Keep the settings as they are.">"Cancel"</button>
-                </div>
-            </Show>
+            <RestoreDefaults what="the game settings" restore=restore />
         </PageHead>
         <span id=field_id(&game_path(&[])) tabindex="-1"></span>
         <Problem error=editor.error(game_path(&[])) />

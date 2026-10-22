@@ -2,7 +2,9 @@
 //! and prompt parts, each a section of grouped lists.
 
 use free_agent_gui::settings::strategies::{PromptParts, StrategyList, path_of};
-use free_agent_gui::settings::{Choice, Editor, Named, Page, PageHead, Problem, Section, field_id};
+use free_agent_gui::settings::{
+    Choice, Editor, Named, Page, PageHead, Problem, RestoreDefaults, Section, field_id,
+};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use social_deduction_gui_types::settings::{
@@ -128,9 +130,7 @@ fn game_path(game: GameName, rest: &[&str]) -> Vec<String> {
 #[component]
 pub(super) fn GameTab(editor: Editor<AppSettings>, game: GameName) -> impl IntoView {
     let title = game_title(game);
-    let confirming = RwSignal::new(false);
-    let restore = move |_| {
-        confirming.set(false);
+    let restore = move || {
         spawn_local(async move {
             if let Ok(defaults) = tauri::game_defaults(game).await {
                 editor.edit_game(game, |settings| *settings = defaults);
@@ -192,23 +192,7 @@ pub(super) fn GameTab(editor: Editor<AppSettings>, game: GameName) -> impl IntoV
     };
     view! {
         <PageHead title=title tip=GamePage(game).tip()>
-            <Show
-                when=move || confirming.get()
-                fallback=move || view! {
-                    <button
-                        on:click=move |_| confirming.set(true)
-                        data-tip=format!("Put back the {title} settings the app came with. The models stay as they are. You confirm first.")
-                    >
-                        "Restore defaults…"
-                    </button>
-                }
-            >
-                <div class="sd-confirm" role="alertdialog">
-                    <span>{format!("Replace the {title} settings with the defaults? The models stay as they are.")}</span>
-                    <button on:click=restore data-tip=format!("Replace the {title} settings with the defaults.")>"Restore"</button>
-                    <button on:click=move |_| confirming.set(false) data-tip="Keep the settings as they are.">"Cancel"</button>
-                </div>
-            </Show>
+            <RestoreDefaults what=format!("the {title} settings") restore=restore />
         </PageHead>
         <Section title="Players" tip="How many players take each role. The total is the table's size." note=table.into_any()>
             <div class="fa-list sd-roles">

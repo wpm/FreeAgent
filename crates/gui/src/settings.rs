@@ -445,6 +445,49 @@ pub fn PageHead(
     }
 }
 
+/// **Restore defaults…**, a page's action, which asks first and then
+/// calls `restore` to put back `what`, such as `the game settings`, as the
+/// app came with them. The models stay as they are.
+#[component]
+pub fn RestoreDefaults(
+    /// What is put back.
+    #[prop(into)]
+    what: String,
+    /// Put it back.
+    restore: impl Fn() + Copy + Send + Sync + 'static,
+) -> impl IntoView {
+    let confirming = RwSignal::new(false);
+    let ask = format!(
+        "Put back {what} the app came with. The models stay as they are. You confirm first."
+    );
+    let question = format!("Replace {what} with the defaults? The models stay as they are.");
+    let replace = format!("Replace {what} with the defaults.");
+    view! {
+        <Show
+            when=move || confirming.get()
+            fallback=move || view! {
+                <button on:click=move |_| confirming.set(true) data-tip=ask.clone()>
+                    "Restore defaults…"
+                </button>
+            }
+        >
+            <div class="fa-confirm" role="alertdialog">
+                <span>{question.clone()}</span>
+                <button
+                    on:click=move |_| {
+                        confirming.set(false);
+                        restore();
+                    }
+                    data-tip=replace.clone()
+                >
+                    "Restore"
+                </button>
+                <button on:click=move |_| confirming.set(false) data-tip="Keep the settings as they are.">"Cancel"</button>
+            </div>
+        </Show>
+    }
+}
+
 /// A section of a page: its title, a note beside it, and what it holds,
 /// most often a grouped list.
 #[component]

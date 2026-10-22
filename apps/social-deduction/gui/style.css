@@ -662,23 +662,12 @@
 }
 
 /* A game's page in the Settings window, which is Free Agent's: each
-   role's square, the restore's confirmation, the phase limits, and who
-   plays what. */
+   role's square, the phase limits, and who plays what. */
 
 .sd-square {
   flex: none;
   width: 12px;
   height: 12px;
-}
-
-.sd-confirm {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--fa-warn);
-  border-radius: 0.5rem;
 }
 
 .sd-limit input {

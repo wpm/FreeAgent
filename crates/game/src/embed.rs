@@ -74,7 +74,9 @@ mod tests {
         }
         examples(&dir, &dir);
         let entry = |path: &str| {
-            let file = path.split('/').fold(configs.clone(), |file, part| file.join(part));
+            let file = path
+                .split('/')
+                .fold(configs.clone(), |file, part| file.join(part));
             let file = file.display().to_string();
             format!("    Example {{ path: {path:?}, text: include_str!({file:?}) }},\n")
         };

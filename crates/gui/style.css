@@ -783,6 +783,18 @@ body,
   line-height: 1.1;
 }
 
+/* Restore defaults' confirmation, in the page's head. */
+
+.fa-confirm {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--fa-warn);
+  border-radius: 0.5rem;
+}
+
 /* A section: a serif title, a note beside it, and a grouped list or
    two. */
 

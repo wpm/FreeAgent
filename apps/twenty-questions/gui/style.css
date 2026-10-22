@@ -368,19 +368,8 @@
   font: inherit;
 }
 
-/* The Settings window's Game page: the restore's confirmation, the
-   one-line fields, the players' names, the strategies two across, and
-   the seats split off. */
-
-.tq-confirm {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--fa-warn);
-  border-radius: 0.5rem;
-}
+/* The Settings window's Game page: the one-line fields, the players'
+   names, the strategies two across, and the seats split off. */
 
 .tq-text-field input {
   flex: 0 1 16rem;
