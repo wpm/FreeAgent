@@ -1,6 +1,11 @@
 # What `cargo tauri dev` need not rebuild the shell for: the page, which
-# Trunk rebuilds and serves itself.
+# Trunk rebuilds and serves itself, and the screen check and its fixture.
 /dist/
 /src/
 /index.html
 /style.css
+/Trunk.toml
+/README.md
+/build-page.sh
+/e2e/
+/fixtures/

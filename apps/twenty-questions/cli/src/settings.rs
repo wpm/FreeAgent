@@ -24,17 +24,13 @@ pub const FILE: &str = "settings.toml";
 /// The example configuration the game's settings start from.
 const EXAMPLE: &str = include_str!("../configs/prompted.toml");
 
-/// A configuration file as the settings read and write it: every key the
-/// file may hold, with its values as written.
+/// A configuration file as the settings write it, and read the example:
+/// every key the file may hold, with its values as written.
 #[derive(Debug, Serialize, Deserialize)]
 struct Written {
-    #[serde(default)]
     format: Format,
-    #[serde(default = "guesses")]
     guesses: u64,
-    #[serde(default = "time_limit")]
     time_limit: String,
-    #[serde(default)]
     players: WrittenPlayers,
     host: HostConfig,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -45,40 +41,14 @@ struct Written {
     strategies: BTreeMap<String, Prompted>,
 }
 
-/// The default `guesses`, for `serde`.
-fn guesses() -> u64 {
-    GUESSES
-}
-
-/// The default `time_limit`, as written, for `serde`.
-fn time_limit() -> String {
-    humantime::format_duration(config::TIME_LIMIT).to_string()
-}
-
 /// The `[players]` table as written.
 #[derive(Debug, Serialize, Deserialize)]
 struct WrittenPlayers {
-    #[serde(default = "players")]
     count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     strategy: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     strategies: BTreeMap<String, usize>,
-}
-
-impl Default for WrittenPlayers {
-    fn default() -> Self {
-        WrittenPlayers {
-            count: players(),
-            strategy: None,
-            strategies: BTreeMap::new(),
-        }
-    }
-}
-
-/// The default `count`, for `serde`.
-fn players() -> usize {
-    config::PLAYERS
 }
 
 /// The configuration a game is played under, as written: the game's
@@ -137,13 +107,10 @@ pub fn text(app: &AppSettings) -> String {
 fn example() -> (GameSettings, BTreeMap<String, ModelSettings>) {
     let settled = config::parse(EXAMPLE).expect("the example settles");
     let written: Written = toml::from_str(EXAMPLE).expect("the example parses");
-    let strategy = written.players.strategy.unwrap_or_else(|| {
-        let mut allotted = settled.allotments.keys();
-        allotted
-            .next()
-            .expect("the example seats a strategy")
-            .clone()
-    });
+    let strategy = written
+        .players
+        .strategy
+        .expect("the example names the strategy everyone plays");
     let host = settled.host;
     let game = GameSettings {
         players: written.players.count,

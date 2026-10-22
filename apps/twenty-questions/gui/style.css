@@ -295,16 +295,16 @@
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: center;
-  gap: 1rem 2rem;
+  gap: 18px 2rem;
   padding: 28px 0;
   border-top: 1px solid var(--fa-ink);
   border-bottom: 1px solid var(--fa-ink);
 }
 
 .tq-start .tq-pips {
+  grid-column: 1 / -1;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 18px;
 }
 
 .tq-start .tq-pip {
