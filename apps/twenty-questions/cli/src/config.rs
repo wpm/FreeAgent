@@ -48,15 +48,7 @@ impl Program for TwentyQuestions {
 /// A configuration file's `format` key, as `twenty-questions` reads it.
 pub type Format = free_agent_game::config::Format<TwentyQuestions>;
 
-/// The players' names, in seat order: the first twelve of the
-/// cryptographers' cast.
-pub const NAMES: [&str; 12] = [
-    "Alice", "Bob", "Carol", "Dave", "Eve", "Frank", "Grace", "Heidi", "Ian", "Judy", "Kevin",
-    "Leo",
-];
-
-/// How many guesses the players have unless the file says.
-pub const GUESSES: u64 = 20;
+pub use twenty_questions_gui_types::settings::{GUESSES, NAMES};
 
 /// How long a game lasts unless the file says.
 pub const TIME_LIMIT: Duration = Duration::from_secs(600);
@@ -81,6 +73,46 @@ const PICK_VARIABLE: &str = "category";
 
 /// What the host's prompt is checked with when the file names no object.
 const PLACEHOLDER: &str = "a teapot";
+
+/// What an error is about when it is about one prompt or one prompt part.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum About {
+    /// The system prompt of the strategy named.
+    Strategy(String),
+    /// The host's system prompt.
+    Host,
+    /// The host's pick.
+    Pick,
+    /// The prompt part named.
+    Part(String),
+    /// The seats allotted to strategies.
+    Allotments,
+}
+
+/// An error, or an error's context, that says what it is [`About`], so
+/// that it can be shown at that prompt or part.
+#[derive(Debug)]
+pub struct Placed {
+    /// What it is about.
+    pub about: About,
+    /// What it says.
+    said: String,
+}
+
+impl Placed {
+    /// Saying `said` about `about`.
+    fn new(about: About, said: String) -> Self {
+        Placed { about, said }
+    }
+}
+
+impl std::fmt::Display for Placed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.said)
+    }
+}
+
+impl std::error::Error for Placed {}
 
 /// The seat numbered `number`, from 1, named as [`NAMES`] names it.
 pub fn named(number: usize) -> PlayerId {
@@ -307,21 +339,24 @@ fn check_parts(parts: &BTreeMap<String, String>) -> anyhow::Result<()> {
         .collect();
     let mut pulled = BTreeMap::new();
     for name in parts.keys() {
+        let refused = |said: String| Placed::new(About::Part(name.clone()), said);
         if !is_part_name(name) {
-            bail!(
+            bail!(refused(format!(
                 "[prompt_parts] has a part named {name:?}; a part's name is words of letters, \
                  digits and underscores, not starting with a digit"
-            );
+            )));
         }
         let variable = part_variable(name);
         if variables.contains(&variable.as_str()) {
-            bail!("[prompt_parts] has a part named {name:?}, which is a template variable");
+            bail!(refused(format!(
+                "[prompt_parts] has a part named {name:?}, which is a template variable"
+            )));
         }
         if let Some(other) = pulled.insert(variable.clone(), name) {
-            bail!(
+            bail!(refused(format!(
                 "[prompt_parts] has parts named {other:?} and {name:?}, which are both pulled \
                  in with {{{{ {variable} }}}}"
-            );
+            )));
         }
     }
     Ok(())
@@ -352,10 +387,13 @@ fn allot(
     }
     let taken: usize = allotted.values().sum();
     if taken > players.count {
-        bail!(
-            "[players] strategies allots {taken} seats, more than the {} players",
-            players.count
-        );
+        bail!(Placed::new(
+            About::Allotments,
+            format!(
+                "[players] strategies allots {taken} seats, more than the {} players",
+                players.count
+            )
+        ));
     }
     let left = players.count - taken;
     if left > 0 {
@@ -425,7 +463,10 @@ impl HostPrompt {
             &self.template,
             merge_maps([context! { object => object }, self.variables.clone()]),
         )
-        .context("rendering the host's prompt")
+        .context(Placed::new(
+            About::Host,
+            "rendering the host's prompt".to_string(),
+        ))
     }
 }
 
@@ -482,7 +523,8 @@ impl Settings {
                 };
                 let text = render(&strategy.system, merge_maps([variables, parts.clone()]))
                     .with_context(|| {
-                        format!("rendering the prompt of strategy {name} for {seat}")
+                        let said = format!("rendering the prompt of strategy {name} for {seat}");
+                        Placed::new(About::Strategy(name.clone()), said)
                     })?;
                 players.insert((seat.clone(), name.clone()), text);
             }
@@ -500,8 +542,10 @@ impl Settings {
                     Some(category) => context! { category => category },
                     None => context! {},
                 };
-                let text = render(pick, merge_maps([variables, parts.clone()]))
-                    .context("rendering the host's pick")?;
+                let text =
+                    render(pick, merge_maps([variables, parts.clone()])).with_context(|| {
+                        Placed::new(About::Pick, "rendering the host's pick".to_string())
+                    })?;
                 picks.push((category.cloned(), text));
             }
         }
@@ -1027,6 +1071,52 @@ system = "You are {{ name }}. Talk a lot."
         });
         let error = format!("{:#}", settled(&text).prompts().unwrap_err());
         assert!(error.starts_with("rendering the host's pick"), "{error}");
+    }
+
+    #[test]
+    fn an_error_about_one_prompt_or_part_says_which() {
+        let about = |error: anyhow::Error| error.downcast_ref::<Placed>().map(|p| p.about.clone());
+        let text = edited(|table| {
+            at(at(table, "strategies"), "chatty")
+                .insert("system".to_string(), toml::Value::from("{{ object }}"));
+        });
+        let error = settled(&text).prompts().unwrap_err();
+        assert_eq!(about(error), Some(About::Strategy("chatty".to_string())));
+        let text = edited(|table| {
+            at(table, "host").insert("system".to_string(), toml::Value::from("{{ name }}"));
+        });
+        assert_eq!(
+            about(settled(&text).prompts().unwrap_err()),
+            Some(About::Host)
+        );
+        let text = edited(|table| {
+            at(table, "host").insert("pick".to_string(), toml::Value::from("{{ object }}"));
+        });
+        assert_eq!(
+            about(settled(&text).prompts().unwrap_err()),
+            Some(About::Pick)
+        );
+        for part in ["2nd", "object"] {
+            let text = edited(|table| {
+                at(table, "prompt_parts").insert(part.to_string(), toml::Value::from("text"));
+            });
+            let error = parse(&text).unwrap_err();
+            assert_eq!(about(error), Some(About::Part(part.to_string())));
+        }
+        let error = parse(&edited(|table| {
+            let allotted = toml::Value::from(toml::Table::from_iter([(
+                "chatty".to_string(),
+                toml::Value::from(4),
+            )]));
+            at(table, "players").insert("strategies".to_string(), allotted);
+        }))
+        .unwrap_err();
+        assert_eq!(about(error), Some(About::Allotments));
+        let error = parse(&edited(|table| {
+            table.insert("guesses".to_string(), toml::Value::from(0));
+        }))
+        .unwrap_err();
+        assert_eq!(about(error), None);
     }
 
     #[test]

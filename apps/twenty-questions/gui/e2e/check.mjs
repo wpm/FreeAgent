@@ -18,8 +18,13 @@
 // to the start, as File ▸ New Game does. Every player hue is clear of
 // marigold and holds ink at 4.5:1 or more, light and dark. At 420 px wide
 // nothing scrolls sideways. #settings opens the Settings window: General,
-// Models and Game, Game holding the players, the host's model and secret
-// object, and the strategy. The console stays clean throughout.
+// Models and Game. Game holds the whole game: the players, named from
+// their count, the guesses and the time limit; the host's model, secret
+// object, prompt, pick, temperature and categories; the strategies, two
+// across where they fit, with Add strategy; who plays what, with Split
+// seats…; and the prompt parts, each counting the prompts that use it.
+// Each error shows in marigold beneath its own field. The console stays
+// clean throughout.
 // What any app's chrome and Settings window must pass comes from
 // free-agent-gui's crates/gui/e2e/chrome.mjs.
 // Screenshots land in ./screenshots for a human to look at.
@@ -38,6 +43,7 @@ import {
   helped,
   models,
   narrowSettings,
+  refusedPart,
   ringed,
   section,
   serve,
@@ -452,16 +458,46 @@ await section('settings', async () => {
   await models(settings, 'settings', { plays: 'Twenty Questions', shots });
   await settings.click('#tab-game');
   await settings.waitForSelector('.fa-strategy');
-  const page = await settings.evaluate(() => ({
-    sections: [...document.querySelectorAll('.fa-section-head h2')].map((h2) => h2.textContent),
-    players: document.querySelector('[id="field-game.players"]')?.value,
-    model: document.querySelector('[id="field-game.host.model"]')?.value,
-    object: document.querySelector('[id="field-game.host.object"]')?.placeholder,
-    strategy: document.querySelector('.fa-strategy .fa-item-name')?.textContent,
-  }));
+  const page = await settings.evaluate(() => {
+    const at = (path) => document.querySelector(`[id="field-game.${path}"]`)?.value;
+    return {
+      sections: [...document.querySelectorAll('.fa-section-head h2')].map((h2) => h2.textContent),
+      players: at('players'),
+      names: document.querySelector('.tq-names')?.textContent,
+      guesses: at('guesses'),
+      time: at('time_limit'),
+      model: at('host.model'),
+      object: document.querySelector('[id="field-game.host.object"]')?.placeholder,
+      system: at('host.system')?.startsWith('{{ rules }}'),
+      pick: at('host.pick'),
+      temperature: at('host.temperature'),
+      categories: at('host.categories'),
+      strategy: document.querySelector('.fa-strategy .fa-item-name')?.textContent,
+      everyone: at('strategy'),
+      uses: [...document.querySelectorAll('.fa-part .fa-uses')].map((uses) => uses.textContent),
+      head: document.querySelectorAll('.fa-page > .fa-field-error').length,
+    };
+  });
   check(
-    JSON.stringify(page) === JSON.stringify({ sections: ['Players', 'Host', 'Strategy'], players: '4', model: 'qwen', object: 'The host picks', strategy: 'everyone' }),
-    `settings: the Game page holds the players, the host's model and secret, and the strategy (${JSON.stringify(page)})`,
+    JSON.stringify(page) ===
+      JSON.stringify({
+        sections: ['Players', 'Host', 'Strategies', 'Who plays what', 'Prompt parts'],
+        players: '4',
+        names: 'Alice, Bob, Carol and Dave',
+        guesses: '20',
+        time: '10m',
+        model: 'qwen',
+        object: 'The host picks',
+        system: true,
+        pick: 'Pick {{ category }}.',
+        temperature: '1.2',
+        categories: 'an animal',
+        strategy: 'everyone',
+        everyone: 'everyone',
+        uses: ['used by 2 prompts'],
+        head: 0,
+      }),
+    `settings: the Game page holds the whole game, the players named from their count and the prompt part's uses counted in prompts (${JSON.stringify(page)})`,
   );
   await settings.screenshot({ path: join(shots, 'settings-game.png'), fullPage: true });
   const [select] = await shapes(settings, '.fa-select');
@@ -469,25 +505,116 @@ await section('settings', async () => {
   const [field] = await shapes(settings, '[id="field-game.host.object"]');
   check(field.height === 36 && field.radius === '8px' && field.shadow.includes('inset'), `settings: the secret's field is sunk into the page (${JSON.stringify(field)})`);
   const [prompt] = await shapes(settings, '.fa-strategy textarea');
-  check(prompt.font.includes('monospace'), `settings: a prompt is monospace (${prompt.font})`);
-  const unringed = await ringed(settings, 8);
+  const [hostPrompt] = await shapes(settings, '[id="field-game.host.system"]');
+  check(prompt.font.includes('monospace') && hostPrompt.font.includes('monospace'), `settings: a prompt is monospace (${prompt.font})`);
+  const unringed = await ringed(settings, 20);
   check(unringed.length === 0, `settings: every control on the page shows a focus ring (${unringed.join(' ')})`);
   await typing(settings, 'settings', { selector: '[id="field-game.host.object"]', text: 'a teapot', what: 'the secret object' });
-  await groupedLists(settings, 'settings', { lists: 3 });
-  await helped(settings, 'settings', ['general', 'game']);
+  await typing(settings, 'settings', { selector: '[id="field-game.time_limit"]', text: '5m', what: 'the time limit', empty: true });
+  await typing(settings, 'settings', { selector: '[id="field-game.host.categories"]', text: 'a bird\na tree', what: 'the categories, one per line', empty: true });
   await settings.click('[aria-label="More players"]', { timeout: 5000 });
+  await settings.click('[aria-label="Fewer guesses"]', { timeout: 5000 });
   await settings.waitForTimeout(100);
-  const more = await settings.$eval('[id="field-game.players"]', (input) => input.value);
-  check(more === '5', `settings: + adds a player (${more})`);
+  const stepped = await settings.evaluate(() => ({
+    players: document.querySelector('[id="field-game.players"]').value,
+    names: document.querySelector('.tq-names').textContent,
+    guesses: document.querySelector('[id="field-game.guesses"]').value,
+  }));
+  check(
+    JSON.stringify(stepped) === JSON.stringify({ players: '5', names: 'Alice, Bob, Carol, Dave and Eve', guesses: '19' }),
+    `settings: + adds a player, named next, and − takes a guess (${JSON.stringify(stepped)})`,
+  );
+  // A second strategy, then a seat split off to play it.
+  await settings.fill('.fa-adder-strategy input', 'skeptic');
+  await settings.click('.fa-adder-strategy button');
+  await settings.waitForSelector('.fa-strategy >> nth=1');
+  await settings.click('text=Split seats…');
+  await settings.fill('[id="field-game.allotments.skeptic"]', '1');
+  await settings.press('[id="field-game.allotments.skeptic"]', 'Tab');
+  const split = await settings.evaluate(() => ({
+    seats: [...document.querySelectorAll('.tq-seats')].map((seats) => `${seats.querySelector('input').value} ${seats.textContent}`),
+    expanded: document.querySelector('.fa-section .fa-link[aria-expanded]').getAttribute('aria-expanded'),
+  }));
+  check(
+    JSON.stringify(split) === JSON.stringify({ seats: ['0 everyone', '1 skeptic'], expanded: 'true' }),
+    `settings: Split seats… gives seats to each strategy (${JSON.stringify(split)})`,
+  );
+  await groupedLists(settings, 'settings', { lists: 7 });
+  await refusedPart(settings, 'settings');
+  await helped(settings, 'settings', ['general', 'game']);
+  // Scrolling hides help, so the field is in view before it is hovered.
+  await settings.$eval('[id="field-game.host.object"]', (field) => field.scrollIntoView({ block: 'center' }));
+  await settings.waitForTimeout(100);
   await tips(settings, 'settings', {
     hover: { selector: '[id="field-game.host.object"]', text: 'What the host is thinking of' },
     focus: { selector: '[id="field-game.host.object"]', text: 'What the host is thinking of' },
     press: '.fa-stepper button',
     shot: join(shots, 'settings-tip-game.png'),
   });
-  await narrowSettings(settings, 'settings', join(shots, 'settings-game-narrow.png'));
+  // A window wide enough sets the strategies two across, shot tall enough
+  // to hold the whole page.
+  await settings.setViewportSize({ width: 1100, height: 2000 });
+  await settings.waitForTimeout(100);
+  const across = await settings.$$eval('.fa-strategy', (cards) => cards.map((card) => Math.round(card.getBoundingClientRect().top)));
+  check(across.length === 2 && across[0] === across[1], `settings: the strategies sit two across (${across})`);
+  await settings.screenshot({ path: join(shots, 'settings-game-wide.png'), fullPage: true });
   await settings.emulateMedia({ colorScheme: 'dark' });
+  await still(settings);
+  await settings.screenshot({ path: join(shots, 'settings-game-wide-dark.png'), fullPage: true });
+  await settings.emulateMedia({ colorScheme: 'light' });
+  await settings.setViewportSize({ width: 760, height: 560 });
+  await narrowSettings(settings, 'settings', join(shots, 'settings-game-narrow.png'));
+  await settings.setViewportSize({ width: 520, height: 700 });
+  await settings.emulateMedia({ colorScheme: 'dark' });
+  await still(settings);
+  const below = await settings.$$eval('.fa-strategy', (cards) => cards.map((card) => Math.round(card.getBoundingClientRect().left)));
+  check(below.length === 2 && below[0] === below[1], `settings: on a narrow window the strategies stack (${below})`);
+  await settings.screenshot({ path: join(shots, 'settings-game-narrow-dark.png'), fullPage: true });
+  await settings.setViewportSize({ width: 760, height: 560 });
   await settings.screenshot({ path: join(shots, 'settings-game-dark.png'), fullPage: true });
+  await settings.emulateMedia({ colorScheme: 'light' });
+  await app.close();
+});
+
+await section('settings errors', async () => {
+  // Each error shows flagged in marigold beneath its own field, and none
+  // at the page's head.
+  const errors = [
+    { path: ['game', 'time_limit'], message: "'soon' isn't a duration, such as 10m" },
+    { path: ['game', 'host', 'temperature'], message: 'a temperature is from 0 to 2' },
+    { path: ['game', 'strategies', 'everyone', 'system'], message: 'rendering the prompt of strategy everyone for Alice' },
+    { path: ['game', 'prompt_parts', 'rules'], message: '[prompt_parts] has a part named "rules"' },
+    { path: ['game', 'allotments'], message: '[players] strategies allots 5 seats, more than the 4 players' },
+  ];
+  const app = await browser.newContext({ colorScheme: 'light', viewport: { width: 760, height: 560 } });
+  const split = { ...desktop.settings, game: { ...desktop.settings.game, allotments: { everyone: 5 } } };
+  await app.addInitScript(backend({ settings: split, errors }, answers));
+  const settings = watch(await app.newPage());
+  await settings.goto(`${origin}#settings`);
+  await settings.click('#tab-game');
+  await settings.waitForSelector('.fa-strategy');
+  const shown = await settings.evaluate((errors) => {
+    const warn = getComputedStyle(document.documentElement).getPropertyValue('--fa-warn').trim();
+    return {
+      placed: errors.map(({ path, message }) => {
+        const field = document.getElementById(`field-${path.join('.')}`);
+        const error = [...(field?.closest('.fa-item')?.querySelectorAll('.fa-field-error') ?? [])].find((p) => p.textContent === message);
+        return error ? getComputedStyle(error, '::before').backgroundColor : `${path.join('.')} not beneath its field`;
+      }),
+      warn,
+      head: document.querySelectorAll('.fa-page > .fa-field-error').length,
+    };
+  }, errors);
+  const marigold = await settings.evaluate((warn) => {
+    const probe = document.createElement('p');
+    probe.style.color = warn;
+    document.body.append(probe);
+    const color = getComputedStyle(probe).color;
+    probe.remove();
+    return color;
+  }, shown.warn);
+  check(shown.placed.every((color) => color === marigold) && shown.head === 0, `settings: each error shows flagged in marigold beneath its field (${JSON.stringify(shown)})`);
+  await settings.screenshot({ path: join(shots, 'settings-game-errors.png'), fullPage: true });
   await app.close();
 });
 

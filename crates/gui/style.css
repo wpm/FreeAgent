@@ -877,6 +877,13 @@ body,
   font-style: italic;
 }
 
+/* The strategies sit in their section as its other lists do, unless an
+   app lays them out otherwise. */
+
+.fa-strategies {
+  display: contents;
+}
+
 .fa-strategy .fa-item-name {
   flex: 1 1 6rem;
   font-size: 16px;

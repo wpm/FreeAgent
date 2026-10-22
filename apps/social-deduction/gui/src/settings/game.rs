@@ -1,14 +1,12 @@
 //! A game's page: its players, phase limits, strategies, who plays what,
 //! and prompt parts, each a section of grouped lists.
 
-use free_agent_gui::settings::strategies::{PromptParts, StrategyCard, path_of, refused_strategy};
-use free_agent_gui::settings::{
-    Adder, Choice, Editor, Named, Page, PageHead, Problem, Section, field_id,
-};
+use free_agent_gui::settings::strategies::{PromptParts, StrategyList, path_of};
+use free_agent_gui::settings::{Choice, Editor, Named, Page, PageHead, Problem, Section, field_id};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use social_deduction_gui_types::settings::{
-    AppSettings, GameSettings, RANDOM, RoleSettings, Strategies, game_title, label,
+    AppSettings, GameSettings, RANDOM, RoleSettings, game_title, label,
 };
 use social_deduction_gui_types::{GameName, Role, Side};
 
@@ -181,18 +179,6 @@ pub(super) fn GameTab(editor: Editor<AppSettings>, game: GameName) -> impl IntoV
         });
         names
     });
-    let add_strategy = Callback::new(move |name: String| {
-        editor.edit_game(game, |s| {
-            s.strategies.entry(name).or_default();
-        });
-    });
-    let refuse_strategy = Callback::new(move |name: String| {
-        editor.settings.with_untracked(|s| {
-            refused_strategy(&name, AppSettings::MAY_BE_RANDOM, |name| {
-                s.game(game).strategies.contains_key(name)
-            })
-        })
-    });
     let everyone = editor.game(game, |s| s.strategy.clone());
     let table = view! {
         <span class="fa-note" id=field_id(&game_path(game, &["roles"])) data-tip="Everyone at the table, every role counted.">
@@ -240,25 +226,13 @@ pub(super) fn GameTab(editor: Editor<AppSettings>, game: GameName) -> impl IntoV
             </div>
         </Section>
         <Section title="Strategies" tip="How players decide what to do. A prompted strategy asks a model, told its system prompt. A random one chooses at random.">
-            <For each=move || strategy_names.get() key=Clone::clone let:name>
-                <StrategyCard
-                    editor=editor
-                    of=game
-                    name=name
-                    models=model_options
-                    name_tip="The name roles are given this strategy by."
-                    remove_tip="Remove this strategy. A role that plays it needs another."
-                    system_tip="What the model is told before the game. It can pull in prompt parts with {{ name }}, and use {{ name }}, {{ role }} and {% if %} for the player it is playing."
-                />
-            </For>
-            <Adder
-                label="Add strategy"
-                placeholder="New strategy: cautious, bluffer…"
-                tip="A name for the new strategy, like cautious or bluffer."
-                button_tip="Add a prompted strategy with this name."
-                add=add_strategy
-                refuse=refuse_strategy
-                class="fa-adder-strategy"
+            <StrategyList
+                editor=editor
+                of=game
+                models=model_options
+                name_tip="The name roles are given this strategy by."
+                remove_tip="Remove this strategy. A role that plays it needs another."
+                system_tip="What the model is told before the game. It can pull in prompt parts with {{ name }}, and use {{ name }}, {{ role }} and {% if %} for the player it is playing."
             />
         </Section>
         <Section title="Who plays what" tip="Which strategy plays each role. A role left the same as everyone plays the strategy chosen for everyone.">

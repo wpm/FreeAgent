@@ -12,13 +12,13 @@ use leptos::prelude::*;
 use super::{Adder, Choice, Edited, Editor, Problem, Segments, field_id, focus_by_id};
 use crate::chrome::Cross;
 
-/// How many strategies use a prompt part, `users` of them: `unused`,
-/// `used by 1 strategy`, `used by 2 strategies`.
-pub fn uses_told(users: usize) -> String {
+/// How many use a prompt part, `users` of them, each `called` as one and
+/// as many: `unused`, `used by 1 strategy`, `used by 2 strategies`.
+pub fn uses_told(users: usize, (one, many): (&str, &str)) -> String {
     match users {
         0 => "unused".to_string(),
-        1 => "used by 1 strategy".to_string(),
-        n => format!("used by {n} strategies"),
+        1 => format!("used by 1 {one}"),
+        n => format!("used by {n} {many}"),
     }
 }
 
@@ -182,6 +182,67 @@ pub fn StrategyCard<S: Strategies + Edited>(
     }
 }
 
+/// The strategies of `of`, a [`StrategyCard`] each, and a field to add
+/// another, a prompted strategy. `models` and the tips are the cards'.
+/// The cards sit in the section as it lays them out, or, where `class`
+/// says, as it does.
+#[component]
+pub fn StrategyList<S: Strategies + Edited>(
+    /// The settings.
+    editor: Editor<S>,
+    /// Whose strategies they are.
+    of: S::Of,
+    /// Each model to choose from, and its label.
+    models: Memo<Vec<(String, String)>>,
+    /// What a strategy's name is for.
+    name_tip: &'static str,
+    /// What removing a strategy does.
+    remove_tip: &'static str,
+    /// What a system prompt is, and what it can pull in.
+    system_tip: &'static str,
+    /// Classes for the cards' box besides `fa-strategies`.
+    #[prop(optional)]
+    class: &'static str,
+) -> impl IntoView {
+    let names = editor.read(move |s| s.strategies(of).keys().cloned().collect::<Vec<_>>());
+    let add = Callback::new(move |name: String| {
+        editor.edit(|s| {
+            s.strategies_mut(of).entry(name).or_default();
+        });
+    });
+    let refuse = Callback::new(move |name: String| {
+        editor.settings.with_untracked(|s| {
+            refused_strategy(&name, S::MAY_BE_RANDOM, |name| {
+                s.strategies(of).contains_key(name)
+            })
+        })
+    });
+    view! {
+        <div class=format!("fa-strategies {class}")>
+            <For each=move || names.get() key=Clone::clone let:name>
+                <StrategyCard
+                    editor=editor
+                    of=of
+                    name=name
+                    models=models
+                    name_tip=name_tip
+                    remove_tip=remove_tip
+                    system_tip=system_tip
+                />
+            </For>
+        </div>
+        <Adder
+            label="Add strategy"
+            placeholder="New strategy: cautious, bluffer…"
+            tip="A name for the new strategy, like cautious or bluffer."
+            button_tip="Add a prompted strategy with this name."
+            add=add
+            refuse=refuse
+            class="fa-adder-strategy"
+        />
+    }
+}
+
 /// The prompt parts of `of`, a grouped list each, and a field to add
 /// another.
 #[component]
@@ -248,10 +309,11 @@ fn PartEditor<S: Strategies + Edited>(
     let pulled = format!("{{{{ {} }}}}", part_variable(&name));
     let uses_tip = {
         let pulled = pulled.clone();
+        let one = S::PART_USERS.0;
         move || {
             users.with(|users| {
                 if users.is_empty() {
-                    format!("No strategy pulls this in yet. Add {pulled} to a system prompt.")
+                    format!("No {one} pulls this in yet. Add {pulled} to a system prompt.")
                 } else {
                     format!("Pulled in by {}.", users.join(", "))
                 }
@@ -262,7 +324,7 @@ fn PartEditor<S: Strategies + Edited>(
         <div class="fa-list fa-part">
             <div class="fa-item">
                 <code class="fa-item-name" data-tip="Write this in a system prompt to pull in this part.">{pulled.clone()}</code>
-                <span class="fa-note fa-uses" data-tip=uses_tip>{move || uses_told(users.with(Vec::len))}</span>
+                <span class="fa-note fa-uses" data-tip=uses_tip>{move || uses_told(users.with(Vec::len), S::PART_USERS)}</span>
                 <button
                     class="fa-link"
                     data-tip="Remove this prompt part. A system prompt that pulls it in shows an error."
@@ -301,9 +363,11 @@ mod tests {
 
     #[test]
     fn a_prompt_part_s_uses_are_counted() {
-        assert_eq!(uses_told(0), "unused");
-        assert_eq!(uses_told(1), "used by 1 strategy");
-        assert_eq!(uses_told(3), "used by 3 strategies");
+        let called = ("strategy", "strategies");
+        assert_eq!(uses_told(0, called), "unused");
+        assert_eq!(uses_told(1, called), "used by 1 strategy");
+        assert_eq!(uses_told(3, called), "used by 3 strategies");
+        assert_eq!(uses_told(2, ("prompt", "prompts")), "used by 2 prompts");
     }
 
     #[test]
