@@ -68,11 +68,11 @@ impl Narrator {
             Entry::Action { message, .. } => self.acted(message),
             Entry::Observation { by, from, n } if by == HOST => self.counted(from, *n),
             Entry::Uncounted { from, n } => vec![Line::Told(format!(
-                "{from} guesses after the last guess: {} It is not counted.",
+                "{from} guesses after the last guess: \"{}\" It is not counted.",
                 self.asked(from, *n).unwrap_or_default()
             ))],
             Entry::Repeated { from, n } => vec![Line::Told(format!(
-                "{from} repeats a guess put already: {} It is not counted.",
+                "{from} repeats a guess put already: \"{}\" It is not counted.",
                 self.asked(from, *n).unwrap_or_default()
             ))],
             Entry::Failed { by, error } => vec![Line::Told(format!("{by} fails to play: {error}"))],
@@ -360,11 +360,11 @@ mod tests {
                 "Bob: Should we ask whether it's alive?",
                 "Bob guesses (1 of 2): Is it alive?",
                 "Host: Is that your guess, Bob?",
-                "Carol repeats a guess put already: IS IT ALIVE? It is not counted.",
+                "Carol repeats a guess put already: \"IS IT ALIVE?\" It is not counted.",
                 "Host: No, it isn't alive.",
                 "Carol fails to play: no model",
                 "Bob guesses (2 of 2): Is it a teapot?",
-                "Carol guesses after the last guess: Is it a kettle? It is not counted.",
+                "Carol guesses after the last guess: \"Is it a kettle?\" It is not counted.",
                 "Host: Yes, it is!",
                 "",
                 "The players named a teapot with 2 of their 2 guesses, in 6m 41s.",

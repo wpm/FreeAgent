@@ -578,7 +578,7 @@ pub(crate) mod tests {
             .unwrap();
         assert!(
             beats.contains(&Beat::Told(vec![format!(
-                "{other} repeats a guess put already: {repeated} It is not counted."
+                "{other} repeats a guess put already: \"{repeated}\" It is not counted."
             )])),
             "{beats:?}"
         );
