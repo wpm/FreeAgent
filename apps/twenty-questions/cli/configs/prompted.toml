@@ -132,8 +132,7 @@ guesses. {{ team }}
 
 You propose the next guess: the yes-or-no question that splits what the
 answers so far leave possible in two, so that about half of it would get
-a yes. Ask what it is like, not what it is: "Does it have horns?", "Does
-it live in Asia?", "Is it used outdoors?".
+a yes.
 """
 
 [strategies.keeper]
@@ -155,7 +154,6 @@ system = """
 You are {{ name }}, a player, with {{ others }}. You share {{ guesses }}
 guesses. {{ team }}
 
-You close in: once the answers leave only two or three particular things,
-propose guessing the likeliest by name. Until then, and after a name
-that is wrong, ask what sets the things that are left apart.
+You close in: once the answers leave only a few particular things, propose
+guessing the likeliest by name, and if that is wrong, the next.
 """
