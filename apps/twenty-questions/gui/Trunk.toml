@@ -10,6 +10,7 @@ open = false
 [watch]
 # The page and the shared look it is built on.
 watch = [".", "../../../crates/gui"]
-# The desktop shell writes under src-tauri as it builds, and the screen
-# check under e2e as it runs; neither is a reason to rebuild the page.
-ignore = ["src-tauri", "e2e", "fixtures"]
+# The desktop shell writes under src-tauri as it builds, the screen check
+# under e2e as it runs, and build-page.sh under game; none is a reason to
+# rebuild the page.
+ignore = ["src-tauri", "e2e", "fixtures", "game"]

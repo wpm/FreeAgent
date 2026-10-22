@@ -1,5 +1,6 @@
 # What `cargo tauri dev` need not rebuild the shell for: the page, which
-# Trunk rebuilds and serves itself, and the screen check and its fixture.
+# Trunk rebuilds and serves itself, and the screen check, its fixtures and
+# the cues build-page.sh folds from them.
 /dist/
 /src/
 /index.html
@@ -9,3 +10,4 @@
 /build-page.sh
 /e2e/
 /fixtures/
+/game/

@@ -38,3 +38,19 @@ pub async fn play(cues: &Channel<Cue>) -> Result<(), String> {
 pub fn stop() {
     command("stop", object(&[]));
 }
+
+/// Enable the menus for what the main window shows: **Open Game Log…**
+/// when `open`, **Save Game Log…** when `save`, and the **Go** menu while
+/// it reviews a log of `games` games, none outside review, its **Previous
+/// Game** and **Next Game** when there are several.
+pub fn menus(open: bool, save: bool, games: usize) {
+    background(
+        "menus",
+        json!({ "open": open, "save": save, "games": games }),
+    );
+}
+
+/// Save the log of the game just played where the user picks.
+pub fn save_log() {
+    command("save_log", object(&[]));
+}

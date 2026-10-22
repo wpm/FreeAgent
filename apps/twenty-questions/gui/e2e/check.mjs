@@ -14,8 +14,18 @@
 // header, with the guesses used as n / 20 over a pip each, the one waiting
 // for its answer pulsing and the one that won in its guesser's color, and
 // the countdown under them. Thinking shows as dots in the thinker's bubble.
-// At the end the header says who won and offers New game, which goes back
-// to the start, as File ▸ New Game does. Every player hue is clear of
+// At the end the game goes into review on its last bubble, the header
+// saying who won and offering Save Log… and New game, which goes back to
+// the start, as File ▸ New Game does; Save Game Log… is enabled there and
+// nowhere else. In review the arrow keys, Home and End, ⌘↑ and ⌘↓, ⌥↑
+// and ⌥↓ from guess to guess, and a click move the cursor, every later
+// bubble dimmed, and the secret, the count, the pips and the countdown
+// show the game as it stood there. A log opened, of three games, starts
+// on its first bubble under the file's name; ⌘] and the list of games
+// open another game on its first bubble, and Close goes back to the
+// start. In a plain browser the page opens game/prompted.json in review
+// on its last bubble, Play plays it again and it is back in review once
+// every cue is shown, and a game that can't be fetched says why. Every player hue is clear of
 // marigold and holds ink at 4.5:1 or more, light and dark. At 420 px wide
 // nothing scrolls sideways. #settings opens the Settings window: General,
 // Models and Game. Game holds the whole game: the players, named from
@@ -60,11 +70,14 @@ const shots = resolve('screenshots');
 await mkdir(shots, { recursive: true });
 const { server, origin } = await serve(dist);
 
-/** The recorded prompted game's cues, which build-page.sh folds. */
-const cues = JSON.parse(await readFile(resolve('prompted.json'), 'utf8'));
+/** The recorded prompted game's cues, which build-page.sh folds into game/. */
+const cues = JSON.parse(await readFile(join(dist, 'game', 'prompted.json'), 'utf8'));
 
 /** Whether `cue` is a beat of `kind`, such as `Guessed`. */
 const is = (cue, kind) => cue.beat === kind || (typeof cue.beat === 'object' && kind in cue.beat);
+
+/** The guess of the recorded game that named the object. */
+const named = cues.find((cue) => is(cue, 'Answered') && cue.beat.Answered.named)?.beat.Answered.guess;
 
 /** How many times its pace the recorded game plays at. */
 const PACE = 10;
@@ -99,10 +112,44 @@ const desktop = {
 
 /** Twenty Questions' answers to the stand-in backend, run on the page:
  * `play` plays the cues the page holds as `window.recorded` at `pace`
- * times their pace, and `stop` ends the game stopped. */
+ * times their pace, `stop` ends the game stopped, `menus` keeps the menus
+ * the main window enables and `save_log` counts the logs saved. The
+ * native menu's Go shortcuts take their keys before the page sees them. */
 function answers(standIn) {
   standIn.played = 0;
+  standIn.menus = null;
+  standIn.saved = 0;
+  const shortcuts = {
+    'Meta+ArrowUp': 'first',
+    'Meta+ArrowDown': 'last',
+    'Alt+ArrowUp': 'previous_chapter',
+    'Alt+ArrowDown': 'next_chapter',
+    'Meta+[': 'previous_game',
+    'Meta+]': 'next_game',
+  };
+  window.addEventListener(
+    'keydown',
+    (event) => {
+      const pressed = `${event.metaKey ? 'Meta+' : ''}${event.altKey ? 'Alt+' : ''}${event.key}`;
+      const go = shortcuts[pressed];
+      const games = standIn.menus?.games ?? 0;
+      if (go && games > (go.endsWith('_game') ? 1 : 0)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        standIn.emit('go', go, 'main');
+      }
+    },
+    true,
+  );
   return {
+    menus: (enabled) => {
+      standIn.menus = enabled;
+      return null;
+    },
+    save_log: () => {
+      standIn.saved += 1;
+      return null;
+    },
     play: ({ cues: channel }) => {
       standIn.played += 1;
       const recorded = window.recorded;
@@ -196,7 +243,7 @@ async function checkHues(page, label) {
 }
 
 /** What the chat shows: each bubble's sender, side, background, text
- * color, tag, quote and border, and whether it is ringed. */
+ * color, tag, quote and border, and whether it is ringed or selected. */
 const bubbles = (page) =>
   page.$$eval('.rc-message', (messages) => {
     const pane = document.querySelector('.rc-messages').getBoundingClientRect();
@@ -215,6 +262,7 @@ const bubbles = (page) =>
           border: style.borderTopColor,
           borderWidth: style.borderTopWidth,
           ringed: style.outlineStyle !== 'none' && style.outlineWidth !== '0px',
+          selected: message.classList.contains('rc-selected'),
           tag: element.querySelector('.tq-tag')?.textContent ?? null,
           tagCaps: element.querySelector('.tq-tag') ? getComputedStyle(element.querySelector('.tq-tag')).fontVariantCaps : null,
           quote: element.querySelector('.tq-quote')?.textContent ?? null,
@@ -377,8 +425,7 @@ await section('play', async () => {
     return bubble.name !== 'Host' || bubble.tag !== `Answer ${guess}` || bubble.quote !== asked[guess];
   });
   check(answers.length === answered.length && badAnswers.length === 0, `play: an answer is the host's bubble, tagged with its guess and quoting it (${JSON.stringify(badAnswers.slice(0, 2))})`);
-  const named = answered.find((cue) => cue.beat.Answered.named)?.beat.Answered.guess;
-  const ringedTags = shown.filter((bubble) => bubble.ringed).map((bubble) => bubble.tag);
+  const ringedTags = shown.filter((bubble) => bubble.ringed && !bubble.selected).map((bubble) => bubble.tag);
   check(
     named !== undefined && JSON.stringify(ringedTags) === JSON.stringify([`Guess ${named}`, `Answer ${named}`]),
     `play: the answer that names the object and its guess are ringed (${JSON.stringify(ringedTags)})`,
@@ -394,7 +441,7 @@ await section('play', async () => {
   check(over.pips.slice(counted.length).every((pip) => pip.class === 'tq-pip'), 'play: the guesses left are open pips');
   check(/^\d+:\d\d$/.test(over.clock), `play: the countdown shows the time left, stopped (${over.clock})`);
   check(over.outcome === `The players won in ${named}`, `play: the header says who won (${over.outcome})`);
-  check(over.buttons.join() === 'New game', `play: New game shows once the game is over (${over.buttons})`);
+  check(over.buttons.join() === 'Save Log…,New game', `play: Save Log… and New game show once the game is over (${over.buttons})`);
   check((await main.$$('.rc-thinking')).length === 0, 'play: no dots once the game is over');
 
   await main.emulateMedia({ colorScheme: 'dark' });
@@ -408,10 +455,231 @@ await section('play', async () => {
   check(darkWrong.length === 0 && dark.ink !== ink, `dark: players keep their colors, deep, and the host's ink turns light (${JSON.stringify(darkWrong.slice(0, 2))})`);
   await main.screenshot({ path: join(shots, 'over-dark.png') });
 
-  await main.click('.tq-header button');
+  await main.click('.tq-header button:text("New game")');
   await main.waitForSelector('.fa-start');
   check((await main.$$('.rc-message')).length === 0, 'play: New game goes back to the start');
   await app.close();
+});
+
+/** Where the review cursor is on `page`: the position shown, the
+ * selected bubble and its tag, how many bubbles there are, how many are
+ * dimmed and whether the first of them looks it, whether the selected
+ * one is in view, the file named and the game of how many, and the
+ * header. */
+const cursor = (page) =>
+  page.evaluate(() => {
+    const messages = [...document.querySelectorAll('.rc-message')];
+    const later = messages.filter((message) => message.classList.contains('rc-later'));
+    const selected = document.querySelector('.rc-message.rc-selected');
+    const pane = document.querySelector('.rc-messages').getBoundingClientRect();
+    const box = selected?.getBoundingClientRect();
+    return {
+      position: document.querySelector('.fa-review-position')?.textContent ?? null,
+      selected: messages.indexOf(selected),
+      tag: selected?.querySelector('.tq-tag')?.textContent ?? null,
+      count: messages.length,
+      later: later.length,
+      laterFirst: messages.indexOf(later[0]),
+      dimmed: later.length > 0 && Number(getComputedStyle(later[0]).opacity) < 1,
+      inView: box !== undefined && box.top >= pane.top - 1 && box.bottom <= pane.bottom + 1,
+      name: document.querySelector('.fa-review-name')?.textContent ?? null,
+      of: document.querySelector('.fa-review-game')?.textContent ?? null,
+      secret: document.querySelector('.tq-secret')?.textContent ?? null,
+      outcome: document.querySelector('.tq-outcome')?.textContent ?? null,
+      tally: document.querySelector('.tq-tally')?.textContent ?? null,
+      waiting: [...document.querySelectorAll('.tq-header .tq-waiting')].map((pip) => getComputedStyle(pip).animationName),
+      clock: document.querySelector('.tq-header .fa-clock')?.textContent ?? null,
+    };
+  });
+
+/** The menus the main window last enabled, as JSON. */
+const menus = async (page) => JSON.stringify(await page.evaluate(() => window.standIn.menus));
+
+// The game just played goes into review on its last bubble.
+await section('review of a game just played', async () => {
+  const { app, main } = await mainWindow();
+  check((await menus(main)) === JSON.stringify({ games: 0, open: true, save: false }), 'review: Open Game Log… is enabled at the start, and Go and Save Game Log… are not');
+  await main.click('.tq-play');
+  await main.waitForSelector('.tq-secret strong');
+  check((await menus(main)) === JSON.stringify({ games: 0, open: false, save: false }), 'review: Open Game Log… and Save Game Log… are disabled while the game plays');
+  await main.waitForSelector('.fa-review-position', { timeout: playing * 2 });
+  await main.waitForTimeout(300);
+  const last = await cursor(main);
+  check(
+    last.count > 0 && last.selected === last.count - 1 && last.later === 0 && last.position === `${last.count} / ${last.count}` && last.inView,
+    `review: a game over goes into review on its last bubble, where it left off, with nothing dimmed (${JSON.stringify(last)})`,
+  );
+  check(last.name === null && last.outcome === `The players won in ${named}`, `review: the header says who won and names no file (${last.name}, ${last.outcome})`);
+  check((await menus(main)) === JSON.stringify({ games: 1, open: true, save: true }), 'review: Open Game Log…, Save Game Log… and Go are enabled in the review of a game just played');
+  await main.click('.tq-header button:text("Save Log…")');
+  await main.waitForTimeout(100);
+  check((await main.evaluate(() => window.standIn.saved)) === 1, "review: Save Log… saves the game's log");
+
+  await main.keyboard.press('Meta+ArrowUp');
+  await main.waitForTimeout(300);
+  const first = await cursor(main);
+  check(
+    first.selected === 0 && first.later === last.count - 1 && first.laterFirst === 1 && first.dimmed && first.inView,
+    `review: ⌘↑ goes to the first bubble, every later one dimmed (${JSON.stringify(first)})`,
+  );
+  check(
+    first.outcome === null && first.tally === '0 / 20' && first.waiting.length === 0,
+    `review: the first bubble shows the game as it stood, before any guess and the end (${JSON.stringify(first)})`,
+  );
+  await main.screenshot({ path: join(shots, 'review-first.png') });
+  await main.keyboard.press('Alt+ArrowDown');
+  const guess = await cursor(main);
+  check(
+    guess.tag === 'Guess 1' && guess.tally === '1 / 20' && guess.waiting.length === 1 && guess.waiting[0] === 'none' && /^\d+:\d\d$/.test(guess.clock),
+    `review: ⌥↓ goes to the first guess, waiting for its answer and holding still, with the time left then (${JSON.stringify(guess)})`,
+  );
+  await main.keyboard.press('Alt+ArrowDown');
+  check((await cursor(main)).tag === 'Guess 2', 'review: ⌥↓ goes on to the next guess');
+  await main.keyboard.press('Alt+ArrowUp');
+  check((await cursor(main)).tag === 'Guess 1', 'review: ⌥↑ goes back a guess');
+  await main.screenshot({ path: join(shots, 'review-guess.png') });
+  await main.keyboard.press('ArrowDown');
+  await main.keyboard.press('ArrowRight');
+  check((await cursor(main)).selected === guess.selected + 2, 'review: the arrow keys step forward');
+  await main.keyboard.press('ArrowUp');
+  check((await cursor(main)).selected === guess.selected + 1, 'review: the arrow keys step back');
+  await main.keyboard.press('End');
+  check((await cursor(main)).selected === last.count - 1, 'review: End goes to the last bubble');
+  await main.keyboard.press('ArrowDown');
+  check((await cursor(main)).selected === last.count - 1, 'review: the cursor stops at the last bubble');
+  await main.keyboard.press('Home');
+  check((await cursor(main)).selected === 0, 'review: Home goes to the first bubble');
+  await (await main.$$('.rc-message'))[4].click();
+  check((await cursor(main)).selected === 4, 'review: a click on a bubble puts the cursor there');
+  await main.keyboard.press('Meta+ArrowDown');
+  await main.waitForTimeout(300);
+  const end = await cursor(main);
+  check(end.selected === last.count - 1 && end.outcome === last.outcome && end.clock === last.clock && end.inView, `review: ⌘↓ goes back to the last bubble and the end (${JSON.stringify(end)})`);
+
+  // A log opened from here offers Close.
+  await main.evaluate((cues) => {
+    const games = [{ episode: '00000000-0000-0000-0000-000000000001', cues }];
+    window.standIn.emit('review', { name: 'one.jsonl', recordings: { games, problems: [] } }, 'main');
+  }, cues);
+  await main.waitForSelector('.fa-review-name');
+  check((await header(main)).buttons.join() === 'Close', 'review: a log opened from the review of a game just played offers Close');
+  await main.evaluate(() => window.standIn.emit('new-game', null, 'main'));
+  await main.waitForSelector('.fa-start');
+  check((await menus(main)) === JSON.stringify({ games: 0, open: true, save: false }), 'review: New Game goes from a review to the start, and Save Game Log… is disabled');
+  await app.close();
+});
+
+// A log of three games opened in review: the backend sends them as Open
+// Game Log… would, the second cut off half way.
+await section('review of a log', async () => {
+  const { app, main } = await mainWindow();
+  await main.evaluate((cues) => {
+    const game = (episode, cues) => ({ episode: `00000000-0000-0000-0000-00000000000${episode}`, cues });
+    const games = [game(1, cues), game(2, cues.slice(0, cues.length / 2)), game(3, cues)];
+    window.standIn.emit('review', { name: 'three.jsonl', recordings: { games, problems: ['the log is bad at line 9'] } }, 'main');
+  }, cues);
+  await main.waitForSelector('.fa-review-position');
+  await main.waitForTimeout(300);
+  const first = await cursor(main);
+  check(
+    first.name === 'three.jsonl' && first.of === 'Game 1 of 3' && first.position === `1 / ${first.count}` && first.selected === 0 && first.later === first.count - 1,
+    `log: a log opens on the first bubble of its first game, every later one dimmed (${JSON.stringify(first)})`,
+  );
+  const warning = await main.$eval('.fa-review-warning', (warning) => warning.textContent);
+  check(warning === "Some of this log couldn't be read: the log is bad at line 9", `log: what couldn't be read shows above the chat (${warning})`);
+  const titles = await main.$$eval('.fa-review-games option', (options) => options.map((option) => option.textContent));
+  const object = cues.find((cue) => is(cue, 'Secret')).beat.Secret.object;
+  check(
+    JSON.stringify(titles) === JSON.stringify([`1. ${object}, the players won in ${named}`, `2. ${object}, unfinished`, `3. ${object}, the players won in ${named}`]),
+    `log: each game is listed by its secret and how it ended (${JSON.stringify(titles)})`,
+  );
+  check((await menus(main)) === JSON.stringify({ games: 3, open: true, save: false }), 'log: Open Game Log… and Go are enabled, Previous and Next Game with them, and Save Game Log… is not');
+  check((await header(main)).buttons.join() === '‹,›,Close', `log: ‹ › and Close control the log (${(await header(main)).buttons})`);
+  await main.screenshot({ path: join(shots, 'review-log.png') });
+  const crowded = await main.evaluate(() => {
+    const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+    const [title, count, controls] = [box('.tq-title'), box('.tq-count'), box('.tq-controls')];
+    return title.right > count.left || count.bottom > controls.top;
+  });
+  check(!crowded, 'log: the review of several games has a row of its own under the title and the count');
+  await main.keyboard.press('Meta+ArrowDown');
+  await main.keyboard.press('Meta+]');
+  await main.waitForTimeout(300);
+  const second = await cursor(main);
+  check(second.of === 'Game 2 of 3' && second.selected === 0 && second.count < first.count, `log: ⌘] opens the next game on its first bubble (${JSON.stringify(second)})`);
+  await main.keyboard.press('End');
+  check((await cursor(main)).outcome === null, 'log: a game cut off ends with no outcome');
+  await main.selectOption('.fa-review-games select', '2');
+  await main.waitForTimeout(100);
+  check((await cursor(main)).of === 'Game 3 of 3', 'log: the list of games opens the one chosen');
+  await main.keyboard.press('Meta+[');
+  check((await cursor(main)).of === 'Game 2 of 3', 'log: ⌘[ opens the game before');
+  await main.emulateMedia({ colorScheme: 'dark' });
+  await still(main);
+  await main.screenshot({ path: join(shots, 'review-log-dark.png') });
+  await main.setViewportSize({ width: 420, height: 760 });
+  await main.waitForTimeout(200);
+  const wide = await main.evaluate(() => document.documentElement.scrollWidth);
+  check(wide <= 420, `log: nothing scrolls sideways at 420 px (${wide})`);
+  await main.screenshot({ path: join(shots, 'review-log-narrow-dark.png') });
+  await main.click('.tq-header button:text("Close")');
+  await main.waitForSelector('.fa-start');
+  check((await menus(main)) === JSON.stringify({ games: 0, open: true, save: false }), 'log: Close goes back to the start, and Go is disabled again');
+  await main.evaluate(() => window.standIn.emit('review', { name: 'empty.jsonl', recordings: { games: [], problems: [] } }, 'main'));
+  await main.waitForSelector('.fa-start .fa-error');
+  const empty = await main.$eval('.fa-start .fa-error', (error) => error.textContent);
+  check(empty === 'empty.jsonl holds no games.', `log: a log with no game to show stays at the start and says why (${empty})`);
+  await app.close();
+});
+
+// The web page, in a plain browser, with no backend.
+await section('web', async () => {
+  const web = await browser.newContext({ colorScheme: 'light', viewport: { width: 1000, height: 760 } });
+  const page = watch(await web.newPage());
+  await page.goto(`${origin}#prompted-fast`);
+  await page.waitForSelector('.fa-review-position');
+  await page.waitForTimeout(300);
+  const rest = await cursor(page);
+  check(
+    rest.selected === rest.count - 1 && rest.later === 0 && rest.position === `${rest.count} / ${rest.count}` && rest.name === null && rest.outcome === `The players won in ${named}`,
+    `web: the recorded game opens in review on its last bubble (${JSON.stringify(rest)})`,
+  );
+  check((await header(page)).buttons.join() === 'Play', 'web: Play is the only control');
+  await page.screenshot({ path: join(shots, 'web.png') });
+  await page.keyboard.press('ArrowUp');
+  const back = await cursor(page);
+  check(back.selected === rest.count - 2 && back.later === 1, `web: the arrow keys step back, dimming the bubble after (${JSON.stringify(back)})`);
+  await page.keyboard.press('Home');
+  check((await cursor(page)).selected === 0, 'web: Home goes to the first bubble');
+  await (await page.$$('.rc-message'))[3].click();
+  check((await cursor(page)).selected === 3, 'web: a click on a bubble puts the cursor there');
+  await page.click('.tq-header button');
+  await page.waitForTimeout(500);
+  const played = await cursor(page);
+  check(played.position === null && played.count < rest.count && (await header(page)).buttons.join() === 'Play again', `web: Play leaves review and plays the game again (${JSON.stringify(played)})`);
+  await page.waitForSelector('.fa-review-position', { timeout: (cues.length * 250) / 10 + 10_000 });
+  await page.waitForTimeout(300);
+  const again = await cursor(page);
+  check(again.selected === again.count - 1 && again.count === rest.count, `web: once every cue is shown the game is back in review on its last bubble (${JSON.stringify(again)})`);
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await still(page);
+  await page.screenshot({ path: join(shots, 'web-dark.png') });
+  await page.setViewportSize({ width: 420, height: 760 });
+  await page.waitForTimeout(200);
+  const wide = await page.evaluate(() => document.documentElement.scrollWidth);
+  check(wide <= 420, `web: nothing scrolls sideways at 420 px (${wide})`);
+  await page.screenshot({ path: join(shots, 'web-narrow-dark.png') });
+  await web.close();
+});
+
+await section('web without the game', async () => {
+  const web = await browser.newContext({ colorScheme: 'light', viewport: { width: 1000, height: 760 } });
+  const page = await web.newPage();
+  await page.goto(`${origin}#missing`);
+  await page.waitForSelector('.tq-main .fa-error');
+  const error = await page.$eval('.tq-main .fa-error', (error) => error.textContent);
+  check(error === 'game/missing.json: 404', `web: a game that can't be fetched says why (${error})`);
+  await web.close();
 });
 
 await section('stop and new game', async () => {

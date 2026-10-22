@@ -11,11 +11,14 @@
 //! game's log into a stream of [`Cue`]s, and the frontend draws each one as
 //! it arrives: what the screen shows at any cue follows from the cues
 //! before it. A log's games cross as [`Recordings`]. The desktop app's
-//! [`settings`] cross as they are.
+//! [`settings`] cross as they are, and the [`go`] menu's moves cross the
+//! same way.
 
 #![warn(missing_docs)]
 
 pub mod settings;
+
+pub use free_agent_gui_types::go;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

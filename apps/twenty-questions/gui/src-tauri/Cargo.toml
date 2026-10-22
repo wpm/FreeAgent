@@ -19,6 +19,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 anyhow.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 free-agent-desktop.workspace = true
 free-agent-model.workspace = true
 futures-util.workspace = true
