@@ -20,6 +20,7 @@
 
 use crate::host;
 use crate::model::plays;
+use crate::object;
 use crate::player;
 use anyhow::{Context as _, bail};
 use free_agent_game::config::Program;
@@ -314,6 +315,7 @@ impl Config {
         if host.object.is_none() && host.pick.is_none() {
             bail!("[host] has neither an object nor a pick; the host needs one to know its object");
         }
+        host.object = host.object.as_deref().map(object::spoken);
         let allotments = allot(&players, &strategies)?;
         Ok(Settings {
             guesses,
@@ -734,6 +736,15 @@ system = "You are {{ name }}. Talk a lot."
     /// The table `key` names in `table`.
     fn at<'a>(table: &'a mut toml::Table, key: &str) -> &'a mut toml::Table {
         table[key].as_table_mut().unwrap()
+    }
+
+    #[test]
+    fn a_configured_object_named_bare_settles_with_a_or_an() {
+        let owl = edited(|table| {
+            at(table, "host").insert("object".to_string(), " owl ".into());
+        });
+        assert_eq!(settled(&owl).host.object.as_deref(), Some("an owl"));
+        assert_eq!(settled(SMALL).host.object.as_deref(), Some("a teapot"));
     }
 
     #[test]

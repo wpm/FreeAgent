@@ -69,10 +69,15 @@ pub fn gives_away(text: &str, object: &str, asked: &str) -> bool {
 /// already said this way, as in *durian*, which this cannot tell.
 pub fn spoken(object: &str) -> String {
     let object = object.trim();
-    match object.split_once(' ') {
-        _ if object.is_empty() => String::new(),
-        Some((article, rest)) if ["a", "an", "the"].contains(&article.to_lowercase().as_str()) => {
-            format!("{} {rest}", article.to_lowercase())
+    if object.is_empty() {
+        return String::new();
+    }
+    let article = object
+        .split_once(' ')
+        .map(|(article, rest)| (article.to_lowercase(), rest));
+    match article {
+        Some((article, rest)) if ["a", "an", "the"].contains(&article.as_str()) => {
+            format!("{article} {rest}")
         }
         Some(_) if proper(object) => object.to_string(),
         _ if object.starts_with(|c: char| "aeiou".contains(c.to_ascii_lowercase())) => {
