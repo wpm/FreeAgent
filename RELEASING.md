@@ -119,10 +119,9 @@ installed copy keeps the endpoint it was built with.
 Create `apps/<app>/` with whichever of `cli/`, `gui/`, `gui/src-tauri/` and
 `gui-types/` it has; the workspace picks them up. Then:
 
-1. List its crates under a new product in the table in
-   `.github/scripts/stamp-version.sh`, and, for a desktop app, name it in
-   `.github/scripts/product.sh` and `installer-path.ps1` and say what it
-   plays in `release-notes.sh`.
+1. Add it to `.github/scripts/product.sh` with its title and what it
+   plays, for its release notes. `stamp-version.sh` then stamps its
+   crates, named for it as Social Deduction's are.
 2. Copy `.github/workflows/release-social-deduction.yml` with the new tag
    prefix and product.
 3. Add a label for it to `.github/labeler.yml`, matching `apps/<app>/**`,

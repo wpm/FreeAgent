@@ -17,11 +17,6 @@ version=${2:?$usage}
 . "$(dirname "$0")/product.sh"
 product_names "$product"
 
-case $product in
-  social-deduction) plays="plays one game of Werewolf or Avalon and shows it as a group chat beside a live board" ;;
-  twenty-questions) plays="plays one game of Twenty Questions and shows it as a group chat, with the secret object and the guesses used on top" ;;
-esac
-
 cat <<NOTES
 ## Desktop app
 

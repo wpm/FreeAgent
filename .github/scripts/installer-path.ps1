@@ -4,8 +4,8 @@
 #
 #   installer-path.ps1 <product> <setup.exe> <version>
 #
-# The product, social-deduction or twenty-questions, is the command line's
-# name, and in words, "Social Deduction", the install folder's.
+# The product, as product.sh names it, is the command line's name, and in
+# words, "Social Deduction", the install folder's.
 #
 # Gives the user's Path a %VARIABLE% entry and enough others to be longer
 # than 1024 characters, then installs silently twice, as an upgrade does,
@@ -14,7 +14,7 @@
 # <version>. Uninstalls and checks that the Path is exactly as it was.
 # Puts the user's own Path back at the end.
 param(
-    [Parameter(Mandatory)] [ValidateSet('social-deduction', 'twenty-questions')] [string] $Product,
+    [Parameter(Mandatory)] [string] $Product,
     [Parameter(Mandatory)] [string] $Setup,
     [Parameter(Mandatory)] [string] $Version
 )

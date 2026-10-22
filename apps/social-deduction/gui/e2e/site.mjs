@@ -49,14 +49,16 @@ const apps = [
       `${app.product}-arm64.deb`,
       `${app.product}-aarch64.rpm`,
     ].map((name) => download + name),
-    // What each platform's visitor is offered: the button's label and target.
-    offered: {
-      macos: { label: 'Download for macOS', href: `${download}${app.stem}.dmg` },
-      windows: { label: 'Download for Windows', href: `${download}${app.stem}-setup.exe` },
-      linux: { label: 'Download for Linux', href: '#linux' },
-    },
   };
 });
+
+// What each platform's visitor is offered: the button's label and target,
+// the .dmg or the setup.exe, or the Linux rows.
+const offered = {
+  macos: { label: 'Download for macOS', href: (app) => app.installers[0] },
+  windows: { label: 'Download for Windows', href: (app) => app.installers[1] },
+  linux: { label: 'Download for Linux', href: () => '#linux' },
+};
 
 const agents = {
   macos: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15',
@@ -120,7 +122,8 @@ function everything(app, what, seen) {
 }
 
 function offers(app, what, seen, platform) {
-  const { label, href } = app.offered[platform];
+  const label = offered[platform].label;
+  const href = offered[platform].href(app);
   check(seen.button?.label === label, `${what}: the button says ${label}`);
   check(seen.button?.href === href, `${what}: the button goes to ${href}`);
   check(JSON.stringify(seen.steps) === JSON.stringify([platform]), `${what}: the ${platform} step alone`);
@@ -138,7 +141,7 @@ for (const app of apps) {
   const origin = new URL(app.page, root).href;
   const at = (options) => visit(origin, options);
   const named = (what) => `${app.name}, ${what}`;
-  for (const platform of Object.keys(app.offered)) {
+  for (const platform of Object.keys(offered)) {
     // userAgentData where the browser has it, as Chromium does, which wins
     // over the user agent.
     const other = platform === 'macos' ? agents.windows : agents.macos;

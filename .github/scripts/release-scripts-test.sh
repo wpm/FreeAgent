@@ -66,6 +66,7 @@ check "a body for no app fails" fails ./release-body.sh chess 1.2.3 <<< "$genera
 # spelling.
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
+files() { find "$1" -type f -exec basename {} \; | LC_ALL=C sort | tr '\n' ' '; }
 built() { # <directory> <app>: tauri-action's paths for every installer of the app, at 1.2.3
   local dir=$1 app=$2 file files
   files=("$app.app.tar.gz" \
@@ -78,7 +79,7 @@ built() { # <directory> <app>: tauri-action's paths for every installer of the a
 }
 built "$scratch/built" "Social Deduction" > "$scratch/paths.json"
 ./stable-names.sh social-deduction "$scratch/stable" < "$scratch/paths.json" > /dev/null
-listing=$(find "$scratch/stable" -type f -exec basename {} \; | LC_ALL=C sort | tr '\n' ' ')
+listing=$(files "$scratch/stable")
 check "installers get their stable names" test "$listing" = \
   "Social-Deduction-aarch64.AppImage Social-Deduction-setup.exe Social-Deduction-x86_64.AppImage Social-Deduction.dmg Social-Deduction.msi social-deduction-aarch64.rpm social-deduction-amd64.deb social-deduction-arm64.deb social-deduction-x86_64.rpm "
 check "a copy is the installer it names" test "$(cat "$scratch/stable/Social-Deduction.dmg")" = "Social Deduction_1.2.3_universal.dmg"
@@ -88,7 +89,7 @@ check "an x86_64 package is the x86_64 build" test "$(cat "$scratch/stable/socia
 check "an x86_64 AppImage spelled amd64 is the x86_64 build" test "$(cat "$scratch/stable/Social-Deduction-x86_64.AppImage")" = "Social Deduction_1.2.3_amd64.AppImage"
 built "$scratch/built-twenty" "Twenty Questions" > "$scratch/paths-twenty.json"
 ./stable-names.sh twenty-questions "$scratch/stable-twenty" < "$scratch/paths-twenty.json" > /dev/null
-listing=$(find "$scratch/stable-twenty" -type f -exec basename {} \; | LC_ALL=C sort | tr '\n' ' ')
+listing=$(files "$scratch/stable-twenty")
 check "Twenty Questions' installers get its stable names" test "$listing" = \
   "Twenty-Questions-aarch64.AppImage Twenty-Questions-setup.exe Twenty-Questions-x86_64.AppImage Twenty-Questions.dmg Twenty-Questions.msi twenty-questions-aarch64.rpm twenty-questions-amd64.deb twenty-questions-arm64.deb twenty-questions-x86_64.rpm "
 check "a Twenty Questions copy is the installer it names" test "$(cat "$scratch/stable-twenty/twenty-questions-amd64.deb")" = "Twenty Questions_1.2.3_amd64.deb"
@@ -234,7 +235,6 @@ sidecar() { # <directory> <argument>...
   PATH="$tools:$PATH" CARGO_TARGET_DIR="$scratch/target" \
     SIDECAR_DIR="$out" ./sidecar.sh "$@" > /dev/null
 }
-files() { find "$1" -type f -exec basename {} \; | LC_ALL=C sort | tr '\n' ' '; }
 
 # Built here, for the host by default, under Tauri's name for the target.
 sidecar "$scratch/host"

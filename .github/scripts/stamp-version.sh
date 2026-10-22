@@ -22,15 +22,16 @@ set -euo pipefail
 
 tag=${1-}
 
-# The products, each with its crates: the one place a product's crates are
-# named. (.github/labeler.yml finds them by their folders.)
+# shellcheck source=SCRIPTDIR/product.sh
+. "$(dirname "$0")/product.sh"
+
+# The products, each with its crates: the library, and each of product.sh's
+# desktop apps with its command line, frontend, desktop shell and shared
+# types. (.github/labeler.yml finds them by their folders.)
 crates() { # <product>
-  case $1 in
-    free-agent) echo free-agent ;;
-    social-deduction) echo social-deduction social-deduction-gui social-deduction-desktop social-deduction-gui-types ;;
-    twenty-questions) echo twenty-questions twenty-questions-gui twenty-questions-desktop twenty-questions-gui-types ;;
-    *) return 1 ;;
-  esac
+  if [ "$1" = free-agent ]; then echo free-agent; return; fi
+  product_names "$1" 2> /dev/null || return 1
+  echo "$1" "$1-gui" "$1-desktop" "$1-gui-types"
 }
 
 semver='(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?'
