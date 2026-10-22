@@ -107,17 +107,19 @@ impl<G: Game, W: Write> Writer<G, W> {
         Ok(writer)
     }
 
-    /// Write `event`, one of the episode's, without its secrets.
+    /// Write `event`, one of the episode's, without its secrets, and give
+    /// back the line written.
     ///
     /// # Errors
     ///
     /// Fails when writing to `sink` fails, or when the event cannot be
     /// serialized.
-    pub fn write(&mut self, event: &Event<Entry<G>>) -> io::Result<()> {
+    pub fn write(&mut self, event: &Event<Entry<G>>) -> io::Result<String> {
         let mut line = Vec::new();
         event.write(&mut line)?;
         let line = self.secrets.redacted(&String::from_utf8_lossy(&line));
-        self.sink.write_all(line.as_bytes())
+        self.sink.write_all(line.as_bytes())?;
+        Ok(line)
     }
 
     /// Write how the episode `ended`, its last line, and give back the
@@ -127,23 +129,23 @@ impl<G: Game, W: Write> Writer<G, W> {
     ///
     /// Fails when writing to `sink` fails.
     pub fn end(self, ended: Ended) -> io::Result<W> {
-        self.end_at(ended, SystemTime::now())
+        Ok(self.end_at(ended, SystemTime::now())?.0)
     }
 
     /// Write how the episode `ended`, stamped `time`, its last line, and
-    /// give back the sink, flushed.
+    /// give back the sink, flushed, and how it ended as written.
     ///
     /// # Errors
     ///
     /// Fails when writing to `sink` fails.
-    pub fn end_at(mut self, ended: Ended, time: SystemTime) -> io::Result<W> {
-        self.write(&Event {
+    pub fn end_at(mut self, ended: Ended, time: SystemTime) -> io::Result<(W, Ended)> {
+        let line = self.write(&Event {
             time,
             episode: self.episode,
             payload: Entry::Ended(ended),
         })?;
         self.sink.flush()?;
-        Ok(self.sink)
+        Ok((self.sink, Ended::read(&line)?))
     }
 }
 
@@ -230,12 +232,13 @@ mod tests {
     }
 
     #[test]
-    fn an_episode_ended_at_a_time_is_stamped_with_it() {
+    fn an_episode_ended_at_a_time_is_stamped_with_it_and_gives_back_how_it_ended() {
         let time = SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(1_234);
-        let written = Writer::<Avalon, _>::start(Vec::new(), episode(), Secrets::default())
+        let (written, last) = Writer::<Avalon, _>::start(Vec::new(), episode(), Secrets::default())
             .unwrap()
             .end_at(Ended::Stopped, time)
             .unwrap();
+        assert_eq!(last, Ended::Stopped);
         let ended = read::<Avalon>(&written).pop().unwrap();
         assert_eq!(ended.time, time);
         assert_eq!(ended.payload, Entry::Ended(Ended::Stopped));

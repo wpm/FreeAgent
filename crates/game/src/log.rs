@@ -30,6 +30,28 @@ impl Ended {
             Ok(()) => Ended::Stopped,
         }
     }
+
+    /// How an episode ended, read from `line`, its log's last line.
+    ///
+    /// # Errors
+    ///
+    /// Fails when `line` is not how an episode ended.
+    pub fn read(line: &str) -> serde_json::Result<Self> {
+        /// The last line of a log, its payload alone.
+        #[derive(Deserialize)]
+        struct Last {
+            payload: Payload,
+        }
+        /// The last line's payload.
+        #[derive(Deserialize)]
+        enum Payload {
+            Ended(Ended),
+        }
+        let Last {
+            payload: Payload::Ended(ended),
+        } = serde_json::from_str(line)?;
+        Ok(ended)
+    }
 }
 
 /// What a log writes in place of a secret.
@@ -123,6 +145,16 @@ mod tests {
         );
         assert_eq!(Ended::of(&Ok(()), true), Ended::Won);
         assert_eq!(Ended::of(&Ok(()), false), Ended::Stopped);
+    }
+
+    #[test]
+    fn how_an_episode_ended_is_read_from_its_last_line_and_any_other_line_is_an_error() {
+        let last = r#"{"time":"2026-10-21T00:00:00Z","episode":"x","payload":{"Ended":{"failed":"no model"}}}"#;
+        assert_eq!(
+            Ended::read(last).unwrap(),
+            Ended::Failed("no model".to_string())
+        );
+        assert!(Ended::read(r#"{"payload":{"Thinking":{}}}"#).is_err());
     }
 
     /// The secrets `keys` are.
