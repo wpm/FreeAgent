@@ -6,6 +6,7 @@
 #![warn(missing_docs)]
 
 pub mod config;
+pub mod examples;
 pub mod game;
 pub mod host;
 pub mod log;
