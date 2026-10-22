@@ -8,7 +8,7 @@ use crate::host::Host;
 use crate::log::Entry;
 use crate::message::{HOST, Message};
 use crate::model::Shown;
-use crate::player::Player;
+use crate::prompted::Player;
 use async_trait::async_trait;
 use free_agent::{ActorId, ActorInit, Behavior, Context, Episode, Logger};
 use free_agent_game::seat::{PlayerId, Seat};

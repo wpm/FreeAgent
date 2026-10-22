@@ -17,7 +17,7 @@ pub mod canned;
 use crate::host;
 use crate::log::{Ending, Entry};
 use crate::message::Message;
-use crate::player;
+use crate::prompted;
 use anyhow::{Context as _, bail};
 use free_agent::Context;
 use free_agent_model::check::{first_answered, probed};
@@ -281,8 +281,8 @@ impl Asker {
 /// reached or answered with anything but the model's answer.
 pub async fn plays(model: &dyn Model, id: &str) -> anyhow::Result<Probed> {
     let (tool_choice, answered) = first_answered(ToolChoice::Required, async |tool_choice| {
-        let response = model.complete(&player::probe(id, tool_choice)).await?;
-        player::probed(&response)
+        let response = model.complete(&prompted::probe(id, tool_choice)).await?;
+        prompted::probed(&response)
     })
     .await;
     let asked = async {
@@ -311,7 +311,7 @@ mod tests {
     use super::*;
     use crate::host::{ANSWER_TOOL, CHOOSE, NAMED};
     use crate::model::canned::{canned, refusing_required, unreachable};
-    use crate::player::GUESS;
+    use crate::prompted::GUESS;
     use free_agent_model::fake::FakeModel;
     use free_agent_model::{Provider, REQUEST_TIMEOUT};
 

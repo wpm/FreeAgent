@@ -10,7 +10,7 @@ pub use free_agent_model::canned::{
 use crate::host::{ANSWER_TOOL, CHOOSE, NAMED};
 use crate::model::{SPEAK, WAIT};
 use crate::object::says;
-use crate::player::GUESS;
+use crate::prompted::GUESS;
 use anyhow::anyhow;
 use free_agent_model::canned;
 use free_agent_model::{Request, Response};

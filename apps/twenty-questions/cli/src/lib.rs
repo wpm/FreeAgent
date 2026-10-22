@@ -15,7 +15,7 @@ pub mod message;
 pub mod model;
 pub mod narrator;
 pub mod object;
-pub mod player;
+pub mod prompted;
 pub mod run;
 pub mod settings;
 pub mod stage;

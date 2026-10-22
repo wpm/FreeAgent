@@ -10,7 +10,7 @@ use crate::game::{self, Actor};
 use crate::host::{Brief, Host};
 use crate::log::{Entry, Side};
 use crate::model::Asker;
-use crate::player::Player;
+use crate::prompted::Player;
 use free_agent::{Episode, Logger};
 use free_agent_game::log::Secrets;
 use free_agent_model::spec::{Handles, Keys, Models};

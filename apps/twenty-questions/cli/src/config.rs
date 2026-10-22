@@ -21,7 +21,7 @@
 use crate::host;
 use crate::model::plays;
 use crate::object;
-use crate::player;
+use crate::prompted;
 use anyhow::{Context as _, bail};
 use free_agent_game::config::Program;
 use free_agent_game::report::in_prose;
@@ -577,7 +577,7 @@ impl Settings {
             .players
             .iter()
             .filter(|((_, strategy), _)| self.strategies[strategy].model == name)
-            .map(|(_, prompt)| player::unstoried(id, prompt, self.guesses, self.time_limit));
+            .map(|(_, prompt)| prompted::unstoried(id, prompt, self.guesses, self.time_limit));
         let host = (self.host.model.as_deref() == Some(name)).then(|| {
             let object = self.host.object.as_deref().unwrap_or(PLACEHOLDER);
             let prompt = prompts.host.render(object).unwrap_or_default();
