@@ -618,6 +618,13 @@ mod tests {
     }
 
     #[test]
+    fn a_wait_may_give_its_seconds_as_digits_in_a_string() {
+        let calls = [(WAIT.to_string(), json!({"seconds": " 30 "}))];
+        let asked = asked_of(&calls, true).unwrap();
+        assert_eq!(asked.wait, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
     fn the_situation_says_the_guesses_waiting_how_many_are_left_and_what_the_player_may_do() {
         let time = Duration::from_secs(370);
         let fresh = Guesses::fresh(20);

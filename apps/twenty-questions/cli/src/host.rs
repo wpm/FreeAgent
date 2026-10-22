@@ -33,8 +33,7 @@ use crate::game::{Actor, Seated, act, everyone_but, observe};
 use crate::log::{Entry, Side, Victory};
 use crate::message::{HOST, Message, View};
 use crate::model::{
-    Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak,
-    text_parameter,
+    Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak, text_parameter,
 };
 use crate::object::{about, gives_away, says};
 use anyhow::{anyhow, bail};
@@ -178,8 +177,14 @@ pub(crate) const PICKER: &str = "You are the host of a game of Twenty Questions.
 /// `tool_choice`: [`PICKER`], and `pick` and then [`ANSWER`], offering
 /// [`choose`], at `temperature`.
 fn picking(model_id: &str, tool_choice: ToolChoice, pick: &str, temperature: f64) -> Request {
-    request(model_id, tool_choice, PICKER, pick.to_string(), vec![choose()])
-        .at_temperature(temperature)
+    request(
+        model_id,
+        tool_choice,
+        PICKER,
+        pick.to_string(),
+        vec![choose()],
+    )
+    .at_temperature(temperature)
 }
 
 /// The most a request to the model `model_id` from the host told `prompt`
@@ -1519,7 +1524,10 @@ mod tests {
     #[test]
     fn a_guess_is_asked_of_the_host_about_the_object_itself() {
         let asked = super::answering("Alice", "Is it alive?", "a unicycle");
-        assert!(asked.starts_with("Alice guesses: \"Is it alive?\""), "{asked}");
+        assert!(
+            asked.starts_with("Alice guesses: \"Is it alive?\""),
+            "{asked}"
+        );
         assert!(asked.contains("\"Is a unicycle alive?\""), "{asked}");
     }
 

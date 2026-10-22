@@ -152,13 +152,19 @@ mod tests {
     #[test]
     fn a_question_is_put_about_the_object_in_place_of_it() {
         assert_eq!(about("Is it alive?", "a unicycle"), "Is a unicycle alive?");
-        assert_eq!(about("Can you eat it?", "a banana"), "Can you eat a banana?");
+        assert_eq!(
+            about("Can you eat it?", "a banana"),
+            "Can you eat a banana?"
+        );
         assert_eq!(about("It flies?", "a penguin"), "A penguin flies?");
         assert_eq!(
             about("IT is bigger than it was? Items?", "the Eiffel Tower"),
             "The Eiffel Tower is bigger than the Eiffel Tower was? Items?"
         );
-        assert_eq!(about("Is its handle long?", "a teapot"), "Is its handle long?");
+        assert_eq!(
+            about("Is its handle long?", "a teapot"),
+            "Is its handle long?"
+        );
         assert_eq!(about("Is it?", ""), "Is it?");
     }
 
