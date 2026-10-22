@@ -45,13 +45,18 @@ everyone talks to everyone at once.**
 - **The secret object.** The configuration names it, or the host picks one
   as the game begins, asked with a pick prompt of its own at a high
   temperature (1.2 unless configured), for a category drawn at random from
-  the configuration's `categories`.
+  the configuration's `categories`, under a system prompt of its own.
 - **Everyone talks at once.** Whatever anyone says goes to everyone else,
   the host included.
 - **A guess** is the one move that counts: a `Guess` message, a yes-or-no
   question put formally to the host. The players share twenty, numbered in
   the order the host receives them. A guess after the last is logged as
   `Uncounted`, and neither counted nor answered.
+- **A repeated guess is not counted.** A guess whose question, trimmed and
+  in any case, repeats one counted already, as when two players put the
+  same guess at once, is logged as `Repeated`, and neither counted nor
+  answered. Each player tells only the first of the two it hears, and
+  takes the host's answer to either as the answer to both.
 - **The host answers every guess**, one at a time in the order received, in
   its own words, with one of two tools: `answer(text)` for a guess that does
   not name the object, and `named(text)` for one that does.
@@ -108,7 +113,9 @@ Two loops over one mind, never locked across a model call
   it, and keeps each line of speech it hears. A counted guess or a line of
   speech wakes the think loop, debounced as a player's is.
 - **Thinking**, a guess waiting comes first: the host is asked to answer
-  the oldest, shown the guess alone, offered `answer` and `named`. With none
+  the oldest, shown the guess alone and the guess put about the object
+  itself, its *it* replaced by the object (*Is a unicycle alive?*),
+  offered `answer` and `named`. With none
   waiting, it is asked whether to speak only when a player spoke to it by
   name, or, once until the next guess, when nobody has put a guess for two
   minutes; otherwise the speech it heard is let go unasked. Asked, it is
@@ -139,9 +146,11 @@ host's answer, how many are left, how much time is left, and what the
 player may do. It offers `speak`, `wait`, and `guess` when the player may
 guess: while guesses are left, none is waiting, and someone has spoken
 since the last answer, so that a guess is proposed before it is made. A
-guess the model makes that was put already fails the answer. A guess made
-while another came in during the call is not put, so one guess waits at a
-time.
+guess the model makes that was put already fails the answer, and the next
+request tells the player it was not put. A guess made while another came
+in during the call is not put, so one guess waits at a time. A player
+whose decision fails, its model unreached or its answer not well formed,
+tries again after 10 seconds unless something wakes it sooner.
 
 ### The log
 
@@ -157,6 +166,7 @@ JSON Lines of `free_agent::Event`, as Social Deduction's, written by a
 | `Action`, `Observation` | each actor | every message, sent and received |
 | `Thinking`, `Thought`, `Usage`, `Failed` | each actor | each model call, and each failure to act |
 | `Uncounted` | host | a guess after the last |
+| `Repeated` | host | a guess repeating one counted already |
 | `End` | host | who won and how, the guesses answered, the object, how long it took |
 
 ### Configuration and startup
