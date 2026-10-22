@@ -55,8 +55,12 @@ everyone talks to everyone at once.**
 - **A repeated guess is not counted.** A guess whose question, trimmed and
   in any case, repeats one counted already, as when two players put the
   same guess at once, is logged as `Repeated`, and neither counted nor
-  answered. Each player tells only the first of the two it hears, and
-  takes the host's answer to either as the answer to both.
+  answered, so it costs no guess. Each player tells only the first of the
+  two it hears, and takes the host's answer to either as the answer to
+  both. *Amended 2026-10-21 (#466):* two players often put the same guess
+  at the same moment, each before hearing the other's, and both were
+  counted and answered alike; in one game four of the twenty guesses went
+  to repeats.
 - **The host answers every guess**, one at a time in the order received, in
   its own words, with one of two tools: `answer(text)` for a guess that does
   not name the object, and `named(text)` for one that does.

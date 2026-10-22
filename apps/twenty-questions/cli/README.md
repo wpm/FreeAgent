@@ -5,7 +5,9 @@ secret object, and language-model players talk among themselves and put
 yes-or-no guesses to it until one names the object, the twenty guesses run
 out, or the time does. Everyone talks at once, with no turns. The host is a
 model too, and runs the game: it picks the object when the configuration
-names none, answers each guess in the order it came, and ends the game.
+names none, answers each guess in the order it came, and ends the game. A
+guess that repeats one already counted, as when two players put the same
+guess at once, is not counted and costs no guess.
 
 ## Installing
 
