@@ -8,3 +8,7 @@ free-agent:
 social-deduction:
   - changed-files:
       - any-glob-to-any-file: apps/social-deduction/**
+
+twenty-questions:
+  - changed-files:
+      - any-glob-to-any-file: apps/twenty-questions/**

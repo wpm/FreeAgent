@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Twenty Questions · Free Agent</title>
+<meta name="description" content="Twenty Questions, played by language models, on Free Agent.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Free Agent">
+<meta property="og:title" content="Twenty Questions · Free Agent">
+<meta property="og:description" content="Twenty Questions, played by language models, on Free Agent.">
+<meta property="og:url" content="https://wpm.github.io/FreeAgent/twenty-questions.html">
+<meta property="og:image" content="https://wpm.github.io/FreeAgent/images/social-preview.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="Free Agent: agents acting on their own">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<script src="download.js" defer></script>
+</head>
+<body>
+<header class="wrap">
+  <div class="bar">
+    <a class="wordmark" href="index.html"><span class="mark">Free</span> Agent</a>
+    <nav>
+      <a href="https://docs.rs/free-agent">Docs</a>
+      <a href="https://crates.io/crates/free-agent">Crate</a>
+      <a href="index.html#apps">Apps</a>
+    </nav>
+  </div>
+  <p class="crumb"><a href="index.html#apps">Apps</a> › Twenty Questions</p>
+  <h1 class="title">Twenty Questions</h1>
+  <p class="subtitle">A secret object, a table of language models, and twenty guesses among them.</p>
+</header>
+
+<main class="wrap">
+<section class="first">
+  <div class="text">
+    <p class="big">A host thinks of something. The players have twenty yes-or-no guesses among them to name it, so before each one they have to agree on what is worth asking.</p>
+    <p>Everyone talks at once, with no turns. The players think aloud, build on one another’s ideas, and settle on a guess, and only a guess counts: a formal question put to the host, which answers each in the order it came. The players win when a guess names the object. The host wins when the guesses or the time run out.</p>
+  </div>
+  <figure>
+    <img src="images/twenty-questions-won.png" width="2560" height="1600" alt="A game of Twenty Questions won: each player speaks in a bubble of its own color, the host answers in ink, and the header holds the secret object and the guesses used">
+    <figcaption>Carol’s ninth guess names the unicycle. The secret is on screen the whole game; the players never see it.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>The host and the players</h2>
+  <ul class="points">
+    <li><strong>The host runs the game.</strong> It picks the secret object, or takes the one you name, then numbers and answers each guess and ends the game.</li>
+    <li><strong>The host picks with a prompt of its own,</strong> at a high temperature, from a category drawn at random, so one game’s object is rarely the last one’s.</li>
+    <li><strong>One to twelve players,</strong> Alice to Leo, each a prompt and a model. Mix them at one table: a cautious prompt beside a bold one, or a small model beside a large one.</li>
+    <li><strong>Every game has a winner,</strong> so every game is a result.</li>
+  </ul>
+  <figure>
+    <img src="images/twenty-questions-settings.png" width="2560" height="1600" alt="The Settings window’s Game page: the players, the guesses, the time limit, and the host’s model, secret object and prompt">
+    <figcaption>Settings holds the whole game: the players and their strategies, the guesses and the time limit, and the host’s model, object and prompts.</figcaption>
+  </figure>
+  <ul class="points">
+    <li>Use any OpenAI-compatible server, hosted or on your own machine. The app finds LM Studio, Ollama, llama.cpp and vLLM by itself.</li>
+    <li>Every model is checked before it plays, so you know which ones can follow the rules.</li>
+  </ul>
+  <div class="sample">
+    <h3>A sample in your browser</h3>
+    <p><a href="twenty-questions/viewer/">Watch a game</a> right in your browser: a game played by language models, from the first question to the guess that names the object. Your own tables and models, and the command line, are in the app.</p>
+  </div>
+</section>
+
+<section>
+  <h2>Generate data from the command line</h2>
+  <p class="text">Twenty Questions installs a command line beside its desktop app. <code>twenty-questions</code> plays games headless, with models from any OpenAI-compatible server, local or hosted, and logs every event as JSON Lines.</p>
+<pre><code><span class="c"># Write out the example table, then play 500 games</span>
+twenty-questions configs --write .
+twenty-questions play prompted.toml --episodes 500 2&gt; games.jsonl</code></pre>
+  <ul class="points">
+    <li>The game is told on standard output as it happens and logged on standard error, one JSON object per event.</li>
+    <li><code>--episodes N</code> plays N games in a row, dealing the strategies to the seats afresh and picking a new object each time.</li>
+    <li>Each episode opens with a header naming the log format and the version that wrote it, and closes with how it ended.</li>
+    <li>API keys are redacted, so a log is safe to share.</li>
+    <li>Players, prompts and models are a TOML file. Open any log in the desktop app to step through the game message by message.</li>
+  </ul>
+</section>
+
+<section id="platforms">
+  <h2>Download</h2>
+  <!-- downloads:twenty-questions -->
+  <p class="text">Each installer gives you the desktop app, to watch games live and review them move by move, and the <code>twenty-questions</code> command line, to play them by the hundred.</p>
+  <div id="download" hidden>
+    <a class="button" href="#platforms">Download</a>
+    <p class="gets" data-platform="macos" hidden>Drag it to Applications, then choose
+    <strong>Twenty Questions ▸ Install Command-Line Tool…</strong></p>
+    <p class="gets" data-platform="windows" hidden>Windows may warn that the app is from
+    an unknown publisher: choose <strong>More info</strong>, then
+    <strong>Run anyway</strong>.</p>
+    <p class="gets" data-platform="linux" hidden>The command line is installed to
+    <code>/usr/bin</code>.</p>
+  </div>
+  <ul class="downloads">
+    <li id="macos"><span class="platform">macOS</span>
+      <span>Apple silicon and Intel, <a href="{{release:twenty-questions}}/Twenty-Questions.dmg"><code>Twenty-Questions.dmg</code></a></span></li>
+    <li id="windows"><span class="platform">Windows</span>
+      <span>x64, <a href="{{release:twenty-questions}}/Twenty-Questions-setup.exe"><code>Twenty-Questions-setup.exe</code></a></span></li>
+    <li id="linux" class="linux"><span class="platform">Linux x86_64</span>
+      <span><a href="{{release:twenty-questions}}/twenty-questions-amd64.deb"><code>.deb</code></a> ·
+      <a href="{{release:twenty-questions}}/twenty-questions-x86_64.rpm"><code>.rpm</code></a></span></li>
+    <li class="linux"><span class="platform">Linux arm64</span>
+      <span><a href="{{release:twenty-questions}}/twenty-questions-arm64.deb"><code>.deb</code></a> ·
+      <a href="{{release:twenty-questions}}/twenty-questions-aarch64.rpm"><code>.rpm</code></a></span></li>
+  </ul>
+  <!-- /downloads:twenty-questions -->
+</section>
+</main>
+
+<footer class="wrap">
+  <p>Free Agent is by <a href="https://github.com/wpm">W.P. McNeill</a>,
+  licensed under <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-MIT">MIT</a>
+  or <a href="https://github.com/wpm/FreeAgent/blob/main/LICENSE-APACHE">Apache-2.0</a>.</p>
+</footer>
+</body>
+</html>

@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in Free Agent or Social Deduction isn't working as it should.
+description: Something in Free Agent, Social Deduction or Twenty Questions isn't working as it should.
 labels: [bug]
 body:
   - type: markdown
@@ -14,6 +14,8 @@ body:
       options:
         - Social Deduction desktop app
         - social-deduction command line
+        - Twenty Questions desktop app
+        - twenty-questions command line
         - free-agent crate
         - The website or the sample game in the browser
         - Not sure
@@ -25,8 +27,8 @@ body:
     attributes:
       label: Version
       description: >-
-        Run `social-deduction --version`, which the desktop app installs too.
-        On macOS, Social Deduction ▸ About Social Deduction also shows it.
+        Run `social-deduction --version` or `twenty-questions --version`, which
+        each desktop app installs too. On macOS, the app's About item also shows it.
         For the crate, the version of `free-agent` in your Cargo.lock.
       placeholder: "0.1.0"
     validations:
@@ -85,7 +87,7 @@ body:
       label: The game's log
       description: >-
         If a game was involved, attach its log: File ▸ Save Game Log… in the app, or what
-        `social-deduction play` wrote to standard error. API keys are redacted, so a log is safe
+        `social-deduction play` or `twenty-questions play` wrote to standard error. API keys are redacted, so a log is safe
         to share. Drag the file here, zipped if GitHub won't take the .jsonl as it is.
 
   - type: textarea

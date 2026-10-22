@@ -6,6 +6,9 @@ changelog:
     - title: Social Deduction
       labels:
         - social-deduction
+    - title: Twenty Questions
+      labels:
+        - twenty-questions
     - title: Free Agent library
       labels:
         - free-agent

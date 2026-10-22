@@ -42,6 +42,18 @@ API key comes from the OS keychain, under the service
 `io.github.wpm.twenty-questions`, then from the environment variable that
 names it.
 
+## Installing
+
+The installers for macOS, Windows and Linux are on the
+[website](https://wpm.github.io/FreeAgent/twenty-questions.html#platforms)
+and on each `twenty-questions-v*` release on the
+[Releases page](https://github.com/wpm/FreeAgent/releases). Each gives you
+the app and the `twenty-questions` command line; the
+[command line's README](../cli/README.md#installing) says where it goes on
+each platform. The installed app looks for updates at
+`https://wpm.github.io/FreeAgent/twenty-questions/latest.json`, and
+[RELEASING.md](../../../RELEASING.md) says how a release is made.
+
 ## Development
 
 The page is Leptos, built by Trunk on port 1421, and the shell is

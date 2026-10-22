@@ -2,7 +2,8 @@
 // names the platform where the browser has it, and the user agent where it
 // doesn't. The button takes its target from the list of every platform
 // under it, and stays hidden on a platform with no installer, so without
-// JavaScript or a platform the list is all there is.
+// JavaScript or a platform the list is all there is. Before a product's
+// first release its page has neither.
 {
   // Phones, tablets and Chromebooks run none of the installers. An iPad's
   // Safari says it is a Mac, but a Mac has no touch screen.
@@ -17,8 +18,8 @@
 
   const labels = { macos: 'macOS', windows: 'Windows', linux: 'Linux' };
   const platform = detect();
-  if (platform) {
-    const download = document.getElementById('download');
+  const download = document.getElementById('download');
+  if (platform && download) {
     const button = download.querySelector('.button');
     button.textContent = `Download for ${labels[platform]}`;
     // Browsers on Linux don't say the architecture reliably, so the Linux

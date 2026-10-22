@@ -1,7 +1,7 @@
 {
   "name": "social-deduction-e2e",
   "private": true,
-  "description": "Drives the built viewer, and the website's download section, in headless Chromium and checks what they show.",
+  "description": "Drives the built viewer, and the website's download sections, in headless Chromium and checks what they show.",
   "type": "module",
   "scripts": {
     "test": "node check.mjs ../dist && npm run test:site",
