@@ -50,20 +50,30 @@ pub fn gives_away(text: &str, object: &str, asked: &str) -> bool {
 }
 
 /// `question` put about `object` itself: each *it* in it, a word of its
-/// own, replaced by the object, capitalized where the *it* was. `Is it
-/// alive?` about `a unicycle` is `Is a unicycle alive?`. A small model
-/// judges a question about its secret far better put this way.
+/// own, replaced by the object, with its article, *the* when it has none,
+/// capitalized where the *it* was. `Is it alive?` about `a unicycle` is
+/// `Is a unicycle alive?`, and about `chicken`, `Is the chicken alive?`. A
+/// small model judges a question about its secret far better put this
+/// way.
 pub fn about(question: &str, object: &str) -> String {
     let object = object.trim();
     if object.is_empty() {
         return question.to_string();
     }
+    let (article, rest) = match object.split_once(' ') {
+        Some((article, rest)) if ["a", "an", "the"].contains(&article.to_lowercase().as_str()) => {
+            (article.to_lowercase(), rest)
+        }
+        _ => ("the".to_string(), object),
+    };
+    let object = format!("{article} {rest}");
     let capitalized: String = object
         .chars()
         .take(1)
         .flat_map(char::to_uppercase)
         .chain(object.chars().skip(1))
         .collect();
+    let object = object.as_str();
     let mut about = String::new();
     let mut word = String::new();
     let put = |word: &mut String, about: &mut String| {
@@ -166,6 +176,10 @@ mod tests {
             "Is its handle long?"
         );
         assert_eq!(about("Is it?", ""), "Is it?");
+        // An object named without an article is "the" object.
+        assert_eq!(about("Is it alive?", "chicken"), "Is the chicken alive?");
+        assert_eq!(about("It flies?", "Chicken"), "The Chicken flies?");
+        assert_eq!(about("Is it alive?", "An egg"), "Is an egg alive?");
     }
 
     #[test]
