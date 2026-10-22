@@ -215,7 +215,9 @@ Tuning against `qwen2.5-7b-instruct-1m`, Ollama's `qwen2.5:7b` and
 - **The guess about the object itself.** On 72 test guesses with known
   answers, the host answered 59 right shown *Is it alive?* about a
   unicycle, and 66 shown also *Is a unicycle alive?*. Asking it to think
-  first in a hidden argument, or to add no hints, made it worse. An object
+  first in an argument the players never see did no better, and telling it
+  to add no hints, or that a similar thing is answered No, did worse (61
+  and 62). An object
   picked without an article is asked about as *a* or *an* one: about *the
   raven*, read as Poe's poem, it answered 6 of 14 right; about *a raven*,
   11.
