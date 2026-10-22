@@ -54,7 +54,7 @@ mod tests {
         assert!(
             listing.lines().any(|line| line.starts_with("prompted.toml")
                 && line.ends_with(
-                    "Four players and a host, all one model, who picks its own secret object."
+                    "Three players and a host, all one model, who picks its own secret object."
                 )),
             "{listing}"
         );
