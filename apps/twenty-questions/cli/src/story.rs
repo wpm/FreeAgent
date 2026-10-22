@@ -7,7 +7,7 @@
 //! many guesses are left. Told within a budget it forgets talk, oldest
 //! first, until it fits, but never a guess or an answer.
 
-use crate::message::{HOST, Message, View};
+use crate::message::{HOST, Message, View, folded};
 use free_agent::ActorId;
 use free_agent_game::report::{in_prose, told_within, whole_seconds};
 use free_agent_game::seat::PlayerId;
@@ -48,6 +48,9 @@ pub struct Story {
     waiting: Vec<(PlayerId, String, usize)>,
     /// The lines told so far, in order, each with what it is.
     account: Vec<(String, Kind)>,
+    /// The guesses heard that repeat one heard before, untold: who asked
+    /// each, and the question, [`folded`].
+    repeats: Vec<(PlayerId, String)>,
 }
 
 impl Story {
@@ -58,6 +61,7 @@ impl Story {
             me: me.into(),
             waiting: Vec::new(),
             account: Vec::new(),
+            repeats: Vec::new(),
         }
     }
 
@@ -95,6 +99,13 @@ impl Story {
             Message::Over | Message::Wake | Message::Remind { .. } => return,
         };
         self.account.push((line, kind));
+    }
+
+    /// Keep, untold, that `from` guessed `question`, repeating a guess
+    /// heard before, so that the host's answer to it answers the guess it
+    /// repeats.
+    pub fn repeat(&mut self, from: &PlayerId, question: &str) {
+        self.repeats.push((from.clone(), folded(question)));
     }
 
     /// The guesses heard and not yet answered, oldest first, each as who
@@ -145,6 +156,7 @@ impl Story {
             .waiting
             .iter()
             .position(|(asker, _, _)| asker == asked_by)
+            .or_else(|| self.repeated(asked_by))
         {
             Some(at) => {
                 let (_, question, line) = self.waiting.remove(at);
@@ -157,6 +169,20 @@ impl Story {
             "The host answers {whose} guess {guess}{question}: \"{text}\" {}",
             guesses_left(left)
         )
+    }
+
+    /// Where the guess waiting that a guess of `asked_by`'s repeated is,
+    /// forgetting the repeat: the host may have counted the repeat, which
+    /// was not told, where the player heard the guess it repeats first.
+    fn repeated(&mut self, asked_by: &PlayerId) -> Option<usize> {
+        let at = self
+            .repeats
+            .iter()
+            .position(|(asker, _)| asker == asked_by)?;
+        let (_, question) = self.repeats.remove(at);
+        self.waiting
+            .iter()
+            .position(|(_, waiting, _)| folded(waiting) == question)
     }
 
     /// `actor` as the subject of a sentence, with the ending its verb takes:
@@ -245,6 +271,31 @@ mod tests {
 
     fn did(message: Message) -> Memory {
         Memory::Acted { message }
+    }
+
+    #[test]
+    fn a_repeat_answered_answers_the_guess_it_repeats() {
+        let mut story = Story::of("Carol");
+        story.recall(&heard(guess("Alice", "Is it big?")));
+        story.repeat(&"Bob".to_string(), " IS IT BIG?");
+        story.recall(&heard(answer(1, "Bob", "No.", 19)));
+        assert_eq!(story.waiting().count(), 0);
+        story.recall(&heard(guess("Alice", "Is it red?")));
+        story.repeat(&"Bob".to_string(), "is it red?");
+        story.recall(&heard(answer(2, "Alice", "Yes.", 18)));
+        story.recall(&heard(guess("Dave", "Is it round?")));
+        story.recall(&heard(answer(3, "Bob", "No.", 17)));
+        assert_eq!(
+            story.lines()[1..],
+            [
+                "The host answers Bob's guess 1 \"Is it big?\": \"No.\" 19 guesses are left.",
+                "Alice guesses: \"Is it red?\"",
+                "The host answers Alice's guess 2 \"Is it red?\": \"Yes.\" 18 guesses are left.",
+                "Dave guesses: \"Is it round?\"",
+                "The host answers Bob's guess 3: \"No.\" 17 guesses are left.",
+            ]
+        );
+        assert_eq!(story.waiting().count(), 1);
     }
 
     #[test]

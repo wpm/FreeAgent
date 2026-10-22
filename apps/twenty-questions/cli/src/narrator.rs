@@ -6,11 +6,11 @@
 //! it, with the text its asker's action holds.
 
 use crate::log::{Entry, Victory};
-use crate::message::{HOST, Message};
+use crate::message::{HOST, Message, folded};
 use free_agent::{ActorId, Event};
 use free_agent_game::report::{Line, configured, in_prose, whole_seconds};
 use free_agent_game::seat::PlayerId;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Turns the events of a game, one at a time, into lines of prose. It
 /// tells who plays which strategy and what they have, each model in play,
@@ -26,6 +26,8 @@ pub struct Narrator {
     asked: HashMap<(ActorId, u64), String>,
     /// How many guesses the host has counted.
     counted: u64,
+    /// Every guess the host has counted, [`folded`].
+    put: HashSet<String>,
     /// Whether the game is over.
     over: bool,
 }
@@ -65,16 +67,14 @@ impl Narrator {
             }],
             Entry::Action { message, .. } => self.acted(message),
             Entry::Observation { by, from, n } if by == HOST => self.counted(from, *n),
-            Entry::Uncounted { from, n } => {
-                let text = self
-                    .asked
-                    .get(&(from.clone(), *n))
-                    .cloned()
-                    .unwrap_or_default();
-                vec![Line::Told(format!(
-                    "{from} guesses after the last guess: {text} It is not counted."
-                ))]
-            }
+            Entry::Uncounted { from, n } => vec![Line::Told(format!(
+                "{from} guesses after the last guess: {} It is not counted.",
+                self.question(from, *n)
+            ))],
+            Entry::Repeated { from, n } => vec![Line::Told(format!(
+                "{from} repeats a guess put already: {} It is not counted.",
+                self.question(from, *n)
+            ))],
             Entry::Failed { by, error } => vec![Line::Told(format!("{by} fails to play: {error}"))],
             Entry::End {
                 by,
@@ -124,13 +124,22 @@ impl Narrator {
         }
     }
 
+    /// The question of the guess `from` numbered `n`.
+    fn question(&self, from: &ActorId, n: u64) -> String {
+        self.asked
+            .get(&(from.clone(), n))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// What the host observing the message `from` numbered `n` adds: the
-    /// guess, numbered, if it is one and is counted.
+    /// guess, numbered, if it is one and is counted, as the host counts:
+    /// while guesses are left, and not repeating one counted already.
     fn counted(&mut self, from: &ActorId, n: u64) -> Vec<Line> {
         let Some(text) = self.asked.get(&(from.clone(), n)) else {
             return vec![];
         };
-        if self.counted == self.guesses {
+        if self.counted == self.guesses || !self.put.insert(folded(text)) {
             return vec![];
         }
         self.counted += 1;
@@ -317,6 +326,12 @@ mod tests {
             observed(HOST, "Bob", 1),
             observed(HOST, "Bob", 2),
             say(HOST, 2, "Is that your guess, Bob?"),
+            guess("Carol", 2, "IS IT ALIVE?"),
+            observed(HOST, "Carol", 2),
+            Entry::Repeated {
+                from: "Carol".to_string(),
+                n: 2,
+            },
             answer(3, 1, "No, it isn't alive.", false),
             Entry::Failed {
                 by: "Carol".to_string(),
@@ -353,6 +368,7 @@ mod tests {
                 "Bob: Should we ask whether it's alive?",
                 "Bob guesses (1 of 2): Is it alive?",
                 "Host: Is that your guess, Bob?",
+                "Carol repeats a guess put already: IS IT ALIVE? It is not counted.",
                 "Host: No, it isn't alive.",
                 "Carol fails to play: no model",
                 "Bob guesses (2 of 2): Is it a teapot?",

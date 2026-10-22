@@ -11,6 +11,13 @@ use std::time::Duration;
 /// The host's name in the episode.
 pub const HOST: &str = "Host";
 
+/// A guess's question as guesses are told apart: trimmed and in lower
+/// case. A guess whose question folds to one put already repeats it, and
+/// is not counted.
+pub fn folded(question: &str) -> String {
+    question.trim().to_lowercase()
+}
+
 /// What a player is shown of the game as it begins.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct View {

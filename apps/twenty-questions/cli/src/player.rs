@@ -26,7 +26,7 @@
 
 use crate::game::{Actor, Seated, act, everyone_but, observe};
 use crate::log::Entry;
-use crate::message::{HOST, Message, View};
+use crate::message::{HOST, Message, View, folded};
 use crate::model::{
     Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak, text_parameter,
     wait, waited,
@@ -181,11 +181,6 @@ struct Question {
     question: String,
 }
 
-/// `question` as guesses are told apart: trimmed and in lower case.
-fn folded(question: &str) -> String {
-    question.trim().to_lowercase()
-}
-
 /// What a call has the player send.
 #[derive(Debug, PartialEq)]
 enum Sending {
@@ -300,11 +295,20 @@ impl Mind {
     }
 
     /// Add `event` to the end of the history, and what it adds to the
-    /// story to the end of the story, together.
+    /// story to the end of the story, together. A guess repeating one
+    /// heard already is not told, since the host counts only the first it
+    /// hears, which may be either.
     fn remember(&self, event: Event<Memory>) {
         let mut remembered = self.remembered.lock().unwrap();
-        remembered.story.recall(&event.payload);
         let (Memory::Observed { message } | Memory::Acted { message }) = &event.payload;
+        if let Message::Guess { from, text, .. } = message
+            && remembered.questions.contains(&folded(text))
+        {
+            remembered.story.repeat(from, text);
+            remembered.history.push(event);
+            return;
+        }
+        remembered.story.recall(&event.payload);
         match message {
             Message::Guess { text, .. } => remembered.questions.push(folded(text)),
             Message::Say { from, .. } if from != HOST => remembered.talked = true,
@@ -634,6 +638,52 @@ mod tests {
         assert!(
             error.starts_with("the arguments of the model's wait call"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn a_guess_repeating_one_heard_is_not_counted_and_answering_either_answers_both() {
+        let alice = "Alice".to_string();
+        let mind = Mind::new(&alice, String::new(), asking(&host_model(1)));
+        let guess = |from: &str, n, text: &str| Message::Guess {
+            from: from.to_string(),
+            n,
+            text: text.to_string(),
+        };
+        let episode = uuid::Uuid::nil();
+        let acted = Memory::Acted {
+            message: guess("Alice", 1, "Is it big?"),
+        };
+        mind.remember(Event::now(episode, acted));
+        let observed = Memory::Observed {
+            message: guess("Bob", 1, " is it BIG? "),
+        };
+        mind.remember(Event::now(episode, observed));
+        let guesses = mind.guesses(20);
+        assert_eq!(guesses.left, 19);
+        assert_eq!(
+            guesses.waiting,
+            [("Alice".to_string(), "Is it big?".to_string())]
+        );
+        // The host counted Bob's.
+        let answer = Message::Answer {
+            n: 2,
+            guess: 1,
+            asked_by: "Bob".to_string(),
+            text: "No.".to_string(),
+            named: false,
+            left: 19,
+        };
+        let observed = Memory::Observed { message: answer };
+        mind.remember(Event::now(episode, observed));
+        assert!(mind.guesses(20).waiting.is_empty());
+        let (story, _) = mind.story(10_000);
+        assert!(
+            story.ends_with(
+                "You guess: \"Is it big?\"\nThe host answers Bob's guess 1 \"Is it big?\": \"No.\" \
+                 19 guesses are left."
+            ),
+            "{story}"
         );
     }
 

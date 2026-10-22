@@ -136,6 +136,15 @@ pub enum Entry {
         /// The player's number for it.
         n: u64,
     },
+    /// The guess `from` numbered `n` repeats one put already, as when two
+    /// players put the same guess at once, and is neither counted nor
+    /// answered. Logged by the host.
+    Repeated {
+        /// Who asked it.
+        from: PlayerId,
+        /// The player's number for it.
+        n: u64,
+    },
     /// The game is over: who won and how, how many guesses the players
     /// used, the secret object, and how long the game took. Logged by the
     /// host.

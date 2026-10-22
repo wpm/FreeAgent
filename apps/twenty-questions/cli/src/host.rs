@@ -4,7 +4,9 @@
 //! Like a player, the host has two loops sharing one mind, never locked
 //! across a model call. **Perceiving**, it numbers each guess as it
 //! arrives, counts it while guesses remain, and queues it to be answered;
-//! a guess that comes after the last is logged as [`Entry::Uncounted`].
+//! a guess that comes after the last is logged as [`Entry::Uncounted`],
+//! and one that repeats a guess counted already, as two players putting
+//! the same guess at once do, as [`Entry::Repeated`].
 //! It hears all speech. **Thinking**, it is woken like a player, by each
 //! guess and by everyone's speech, with at most one call in flight and one
 //! waiting, and a guess waiting to be answered comes first: while one
@@ -31,7 +33,7 @@
 use crate::config::{Configuration, HostPrompt};
 use crate::game::{Actor, Seated, act, everyone_but, observe};
 use crate::log::{Entry, Side, Victory};
-use crate::message::{HOST, Message, View};
+use crate::message::{HOST, Message, View, folded};
 use crate::model::{
     Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak, text_parameter,
 };
@@ -343,6 +345,8 @@ struct State {
     answered: u64,
     /// The guesses counted and not yet answered, oldest first.
     waiting: VecDeque<Waiting>,
+    /// Every guess counted, [`folded`].
+    put: HashSet<String>,
     /// When the players were told the game began.
     began: Option<Instant>,
     /// Whether the game is over.
@@ -789,7 +793,8 @@ impl Behavior for Host {
 
     /// Log a message from a player as observed and remember it. A guess is
     /// counted and queued while guesses remain, and logged as uncounted
-    /// after; a guess counted, or speech, wakes the think loop. Once the
+    /// after, or as repeated when it repeats one counted already; a guess
+    /// counted, or speech, wakes the think loop. Once the
     /// game is over, nothing wakes it.
     async fn receive(&mut self, message: &Message) -> anyhow::Result<()> {
         let Some(n) = message.number() else {
@@ -802,6 +807,11 @@ impl Behavior for Host {
             if state.counted == self.mind.brief.guesses {
                 drop(state);
                 self.context.log(Entry::Uncounted { from, n });
+                return Ok(());
+            }
+            if !state.put.insert(folded(text)) {
+                drop(state);
+                self.context.log(Entry::Repeated { from, n });
                 return Ok(());
             }
             state.counted += 1;
@@ -1076,6 +1086,42 @@ mod tests {
             }]
         );
         assert_eq!(played.end().2, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_guess_repeating_one_put_already_is_neither_counted_nor_answered() {
+        let model = answering(|_| Ok(answer("No.")), 10);
+        let played = hosted(
+            &model,
+            Rules::default(),
+            &[
+                ("Alice", &[(1, Line::Guess("Is it big?"))]),
+                (
+                    "Bob",
+                    &[
+                        (2, Line::Guess(" is it BIG? ")),
+                        (30, Line::Guess("Is it red?")),
+                    ],
+                ),
+            ],
+        )
+        .await;
+        assert_eq!(
+            answers(&played),
+            [(1, "Alice", "No.", false, 19), (2, "Bob", "No.", false, 18)]
+        );
+        let repeated: Vec<&Entry> = played
+            .entries()
+            .into_iter()
+            .filter(|entry| matches!(entry, Entry::Repeated { .. }))
+            .collect();
+        assert_eq!(
+            repeated,
+            [&Entry::Repeated {
+                from: "Bob".to_string(),
+                n: 1
+            }]
+        );
     }
 
     #[tokio::test(start_paused = true)]
