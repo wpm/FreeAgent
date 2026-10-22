@@ -20,11 +20,11 @@ use social_deduction_gui_types::go::Go;
 use social_deduction_gui_types::settings::{Snapshot, game_title};
 use social_deduction_gui_types::{Cue, GameName, Side};
 
-use crate::mode::Mode;
 use crate::review::Review;
 use crate::screen::side_key;
 use crate::tauri;
 use crate::view::{Live, Reviewer, Reviewing, Viewer};
+use free_agent_gui::mode::Mode;
 
 /// The app's mark: its two balloons, without the tile.
 const LOGO: &str = include_str!("../src-tauri/mark.svg");
@@ -40,7 +40,7 @@ pub fn Desktop() -> impl IntoView {
     let screen = live.screen;
     let reviewing = Reviewing::new(live);
     // Memos, so that a change of mode redraws only what it changes.
-    let listing = Memo::new(move |_| mode.get().listing());
+    let listing = Memo::new(move |_| mode.get().starting());
     let reviewed = Memo::new(move |_| mode.get().reviewing());
     let pending = Memo::new(move |_| mode.get().preparing());
     // The channel of the game playing, kept for as long as it plays.

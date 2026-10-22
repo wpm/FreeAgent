@@ -19,10 +19,10 @@ use twenty_questions_gui_types::Cue;
 use twenty_questions_gui_types::go::Go;
 use twenty_questions_gui_types::settings::Snapshot;
 
-use crate::mode::Mode;
 use crate::review::Review;
 use crate::tauri;
 use crate::view::{Live, Reviewer, Reviewing, Viewer};
+use free_agent_gui::mode::Mode;
 
 /// The app's mark: its speech bubble and question mark, without the tile.
 const LOGO: &str = include_str!("../src-tauri/mark.svg");
@@ -61,7 +61,7 @@ pub fn Desktop() -> impl IntoView {
 
     let run = Callback::new(move |()| {
         failed.set(None);
-        mode.set(Mode::Preparing);
+        mode.set(Mode::Preparing(()));
         live.reset();
         shown.set_value(Vec::new());
         let channel = Channel::new(move |cue: Cue| {
@@ -189,7 +189,7 @@ fn Start(
             Some((error.message, error.path))
         })
     });
-    let starting = move || mode.get() == Mode::Preparing;
+    let starting = move || mode.get().preparing().is_some();
     let blocked =
         move || starting() || snapshot.with(Option::is_none) || first_error.with(Option::is_some);
     view! {

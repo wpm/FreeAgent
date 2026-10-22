@@ -12,7 +12,6 @@
 
 pub mod address;
 mod desktop;
-mod mode;
 pub mod review;
 pub mod screen;
 pub mod settings;
