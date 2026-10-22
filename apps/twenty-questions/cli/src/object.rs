@@ -60,20 +60,17 @@ pub fn gives_away(text: &str, object: &str, asked: &str) -> bool {
     holds(text, &name) || holds(text, head) && !holds(asked, head)
 }
 
-/// `question` put about `object` itself: each *it* in it, a word of its
-/// own, replaced by the object, capitalized where the *it* was. An object
-/// named without an article takes *a* or *an*, unless it is a proper name
-/// of several capitalized words: `Is it alive?` about `a unicycle` is `Is a
-/// unicycle alive?`, about `owl`, `Is an owl alive?`, and about `Big Ben`,
-/// `Is Big Ben alive?`. A small model judges a question about its secret
-/// far better put this way, and better about *a raven* than *the raven*,
-/// which it reads as Poe's poem.
-pub fn about(question: &str, object: &str) -> String {
+/// `object` as one says it after *I'm thinking of*: with its own article,
+/// lowercased, or else, named bare as a configured object may be, with *a*
+/// or *an*, unless it is a proper name of several capitalized words. `owl`
+/// is `an owl`, `An egg` is `an egg` and `Big Ben` is `Big Ben`. A small
+/// model judges a question about its secret better about *a raven* than
+/// *the raven*, which it reads as Poe's poem. The host picks its object
+/// already said this way, as in *durian*, which this cannot tell.
+pub fn spoken(object: &str) -> String {
     let object = object.trim();
-    if object.is_empty() {
-        return question.to_string();
-    }
-    let object = match object.split_once(' ') {
+    match object.split_once(' ') {
+        _ if object.is_empty() => String::new(),
         Some((article, rest)) if ["a", "an", "the"].contains(&article.to_lowercase().as_str()) => {
             format!("{} {rest}", article.to_lowercase())
         }
@@ -82,14 +79,25 @@ pub fn about(question: &str, object: &str) -> String {
             format!("an {object}")
         }
         _ => format!("a {object}"),
-    };
+    }
+}
+
+/// `question` put about `object`, as it is [`spoken`], itself: each *it*
+/// in it, a word of its own, replaced by the object, capitalized where the
+/// *it* was. `Is it alive?` about `a unicycle` is `Is a unicycle alive?`,
+/// and about `durian`, `Is durian alive?`. A small model judges a question
+/// about its secret far better put this way.
+pub fn about(question: &str, object: &str) -> String {
+    let object = object.trim();
+    if object.is_empty() {
+        return question.to_string();
+    }
     let capitalized: String = object
         .chars()
         .take(1)
         .flat_map(char::to_uppercase)
         .chain(object.chars().skip(1))
         .collect();
-    let object = object.as_str();
     let mut about = String::new();
     let mut word = String::new();
     let put = |word: &mut String, about: &mut String| {
@@ -200,17 +208,25 @@ mod tests {
             "Is its handle long?"
         );
         assert_eq!(about("Is it?", ""), "Is it?");
-        // An object named without an article takes "a" or "an", unless it
-        // is a proper name: "the raven" is read as Poe's poem.
-        assert_eq!(about("Is it alive?", "chicken"), "Is a chicken alive?");
-        assert_eq!(about("It flies?", "Chicken"), "A Chicken flies?");
-        assert_eq!(about("Can it fly?", "owl"), "Can an owl fly?");
+        // The object is put as it is said after "I'm thinking of".
+        assert_eq!(about("Is it a fruit?", "durian"), "Is durian a fruit?");
         assert_eq!(about("Is it tall?", "Big Ben"), "Is Big Ben tall?");
-        assert_eq!(
-            about("It is tall?", "Statue of Liberty"),
-            "Statue of Liberty is tall?"
-        );
-        assert_eq!(about("Is it alive?", "An egg"), "Is an egg alive?");
+        assert_eq!(about("It swims?", "an octopus"), "An octopus swims?");
+    }
+
+    #[test]
+    fn an_object_is_spoken_with_its_own_article_or_else_a_or_an() {
+        assert_eq!(spoken("a unicorn"), "a unicorn");
+        assert_eq!(spoken("An egg"), "an egg");
+        assert_eq!(spoken(" the Eiffel Tower "), "the Eiffel Tower");
+        // A configured object named bare takes "a" or "an", unless it is a
+        // proper name: "the raven" is read as Poe's poem.
+        assert_eq!(spoken("chicken"), "a chicken");
+        assert_eq!(spoken("Chicken"), "a Chicken");
+        assert_eq!(spoken("owl"), "an owl");
+        assert_eq!(spoken("Big Ben"), "Big Ben");
+        assert_eq!(spoken("Statue of Liberty"), "Statue of Liberty");
+        assert_eq!(spoken(""), "");
     }
 
     #[test]

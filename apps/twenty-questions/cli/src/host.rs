@@ -38,7 +38,7 @@ use crate::message::{HOST, Message, View, folded};
 use crate::model::{
     Asker, SPEAK, Shown, WAIT, arguments, calls, not_offered, request, said, speak, text_parameter,
 };
-use crate::object::{about, gives_away, says, shares_a_word};
+use crate::object::{self, about, gives_away, says, shares_a_word};
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use free_agent::{Behavior, Context, Think};
@@ -185,7 +185,7 @@ fn choose() -> Tool {
             "properties": {"object": {
                 "type": "string",
                 "minLength": 1,
-                "description": "The secret object, as you would name it in a sentence: a teapot, the Eiffel Tower.",
+                "description": "The secret object, as you would say it after \"I'm thinking of\": a unicorn, an octopus, the Eiffel Tower, durian.",
             }},
             "required": ["object"],
             "additionalProperties": false,
@@ -415,7 +415,7 @@ impl Host {
     pub fn init(brief: Brief, winner: oneshot::Sender<Side>) -> Seated {
         let mind = Arc::new(Mind {
             state: Mutex::new(State {
-                object: brief.object.clone(),
+                object: brief.object.as_deref().map(object::spoken),
                 ..State::default()
             }),
             brief,
@@ -1500,6 +1500,73 @@ mod tests {
             answering.messages[0].content,
             "You are the host. The secret object is a teapot."
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_picked_object_is_put_as_the_host_said_it() {
+        let model = Arc::new(FakeModel::answering(|request| {
+            match request.tools.iter().any(|tool| tool.name == CHOOSE) {
+                true => Ok(Response::tool_call(CHOOSE, &json!({"object": "durian"}))),
+                false => Ok(answer("Yes.")),
+            }
+        }));
+        hosted(
+            &model,
+            Rules {
+                object: None,
+                ..Rules::default()
+            },
+            &[("Alice", &[(1, Line::Guess("Is it a fruit?"))])],
+        )
+        .await;
+        let answering = model
+            .requests()
+            .into_iter()
+            .find(answering_a_guess)
+            .unwrap();
+        assert_eq!(
+            answering.messages[0].content,
+            "You are the host. The secret object is durian."
+        );
+        assert!(
+            answering.messages[1]
+                .content
+                .contains("\"Is durian a fruit?\""),
+            "{}",
+            answering.messages[1].content
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_configured_object_named_bare_is_put_with_a_or_an() {
+        let model = answering(|_| Ok(answer("Yes.")), 1);
+        let played = hosted(
+            &model,
+            Rules {
+                object: Some("owl"),
+                time_limit: Duration::from_secs(5),
+                ..Rules::default()
+            },
+            &[("Alice", &[(1, Line::Guess("Can it fly?"))])],
+        )
+        .await;
+        let answering = model
+            .requests()
+            .into_iter()
+            .find(answering_a_guess)
+            .unwrap();
+        assert_eq!(
+            answering.messages[0].content,
+            "You are the host. The secret object is an owl."
+        );
+        assert!(
+            answering.messages[1]
+                .content
+                .contains("\"Can an owl fly?\""),
+            "{}",
+            answering.messages[1].content
+        );
+        assert_eq!(played.end().2, 1);
     }
 
     #[tokio::test(start_paused = true)]

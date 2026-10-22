@@ -64,7 +64,8 @@ categories = [
 pick = """
 Pick a secret object for a game of Twenty Questions: {{ category }}. Pick
 one particular thing that everyone knows by its everyday name, though not
-the most obvious one, and name it in English.
+the most obvious one. Name it in English as you would say it after "I'm
+thinking of", with its article if it takes one.
 """
 # The host's prompt is short: a small model answers more truly told only
 # what it needs to answer.
