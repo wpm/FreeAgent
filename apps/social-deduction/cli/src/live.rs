@@ -268,10 +268,9 @@ where
 
     /// Write down and show every event from `events` until the episode
     /// `run` has ended, then keep the log, closed with how the game
-    /// ended, and show that, both stamped with one time. Each event is
-    /// shown as its line of the log reads back, without the keys, and
-    /// nothing is shown once a line cannot be written but that the game
-    /// is over.
+    /// ended, and show that, both stamped with one time. Each event, and
+    /// how the game ended, is shown as its line of the log reads back,
+    /// without the keys, and none is once a line cannot be written.
     async fn read(
         mut self,
         mut events: UnboundedReceiver<Event<Entry<G>>>,

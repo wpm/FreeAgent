@@ -242,9 +242,9 @@ where
 
     /// Write down and show every event from `events` until the episode
     /// `run` has ended, then keep the log, closed with how the game
-    /// ended, and show that, both stamped with one time. Each event is
-    /// shown as its line of the log reads back, without the keys, and
-    /// nothing is shown once a line cannot be written.
+    /// ended, and show that, both stamped with one time. Each event, and
+    /// how the game ended, is shown as its line of the log reads back,
+    /// without the keys, and none is once a line cannot be written.
     async fn read(
         mut self,
         mut events: UnboundedReceiver<Event<Entry>>,
@@ -261,14 +261,19 @@ where
         }
         let ended = Ended::of(&run.await, stage.is_won());
         let at = SystemTime::now();
-        let closed = self
-            .writer
-            .take()
-            .map(|writer| writer.end_at(ended.clone(), at));
-        if let Some(Ok(log)) = closed {
+        let closed = (self.writer.take()).and_then(|writer| writer.end_at(ended, at).ok());
+        let mut ended = None;
+        if let Some((log, line)) = closed {
             let _ = self.kept.set(log.into());
+            if let Ok(Event {
+                payload: Entry::Ended(how),
+                ..
+            }) = serde_json::from_str(&line)
+            {
+                ended = Some(how);
+            }
         }
-        for cue in stage.end(millis(at), Some(ended)) {
+        for cue in stage.end(millis(at), ended) {
             self.show(cue);
         }
     }
@@ -422,6 +427,41 @@ mod tests {
         let cues = received(receiver).await;
         assert_eq!(cues.len(), 1, "{cues:?}");
         assert!(matches!(cues[0].beat, Beat::Cast { .. }), "{cues:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_episode_whose_error_carries_a_key_shows_none_of_it() {
+        let (logger, events) = unbounded_channel::<Event<Entry>>();
+        let thinking = Entry::Thinking {
+            by: format!("{CANARY} player"),
+        };
+        logger.send(logged(thinking)).unwrap();
+        drop(logger);
+        let (unused, _) = unbounded_channel();
+        let stopper = Episode::<crate::game::Actor>::new(HashMap::new(), unused).stopper();
+        let secrets: Secrets = [SecretString::from(CANARY)].into_iter().collect();
+        let (sender, receiver) = unbounded_channel();
+        let kept = Arc::<OnceLock<_>>::default();
+        let reader = Reader::new(
+            sending(sender),
+            stopper,
+            Uuid::nil(),
+            secrets,
+            Arc::clone(&kept),
+        );
+        let run = async { Err(anyhow!("{CANARY} cannot be used")) };
+        reader.read(events, run).await;
+        let cues = received(receiver).await;
+        let shown = serde_json::to_string(&cues).unwrap();
+        assert!(!shown.contains(CANARY), "{shown}");
+        let saved = String::from_utf8(kept.get().unwrap().to_vec()).unwrap();
+        assert_eq!(cues, only(&saved));
+        assert_eq!(
+            cues.last().map(|cue| &cue.beat),
+            Some(&Beat::Over {
+                outcome: Outcome::Failed("[redacted] cannot be used".to_string()),
+            })
+        );
     }
 
     #[tokio::test]

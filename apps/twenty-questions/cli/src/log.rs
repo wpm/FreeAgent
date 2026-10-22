@@ -285,23 +285,23 @@ impl<W: Write> Writer<W> {
     ///
     /// Fails when writing to `sink` fails.
     pub fn end(self, ended: Ended) -> io::Result<W> {
-        self.end_at(ended, SystemTime::now())
+        Ok(self.end_at(ended, SystemTime::now())?.0)
     }
 
     /// Write how the episode `ended`, stamped `time`, its last line, and
-    /// give back the sink, flushed.
+    /// give back the sink, flushed, and the line written.
     ///
     /// # Errors
     ///
     /// Fails when writing to `sink` fails.
-    pub fn end_at(mut self, ended: Ended, time: SystemTime) -> io::Result<W> {
-        self.write(&Event {
+    pub fn end_at(mut self, ended: Ended, time: SystemTime) -> io::Result<(W, String)> {
+        let line = self.write(&Event {
             time,
             episode: self.episode,
             payload: Entry::Ended(ended),
         })?;
         self.sink.flush()?;
-        Ok(self.sink)
+        Ok((self.sink, line))
     }
 }
 
