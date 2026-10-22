@@ -50,23 +50,28 @@ pub fn gives_away(text: &str, object: &str, asked: &str) -> bool {
 }
 
 /// `question` put about `object` itself: each *it* in it, a word of its
-/// own, replaced by the object, with its article, *the* when it has none,
-/// capitalized where the *it* was. `Is it alive?` about `a unicycle` is
-/// `Is a unicycle alive?`, and about `chicken`, `Is the chicken alive?`. A
-/// small model judges a question about its secret far better put this
-/// way.
+/// own, replaced by the object, capitalized where the *it* was. An object
+/// named without an article takes *a* or *an*, unless it is a proper name
+/// of several capitalized words: `Is it alive?` about `a unicycle` is `Is a
+/// unicycle alive?`, about `owl`, `Is an owl alive?`, and about `Big Ben`,
+/// `Is Big Ben alive?`. A small model judges a question about its secret
+/// far better put this way, and better about *a raven* than *the raven*,
+/// which it reads as Poe's poem.
 pub fn about(question: &str, object: &str) -> String {
     let object = object.trim();
     if object.is_empty() {
         return question.to_string();
     }
-    let (article, rest) = match object.split_once(' ') {
+    let object = match object.split_once(' ') {
         Some((article, rest)) if ["a", "an", "the"].contains(&article.to_lowercase().as_str()) => {
-            (article.to_lowercase(), rest)
+            format!("{} {rest}", article.to_lowercase())
         }
-        _ => ("the".to_string(), object),
+        Some(_) if proper(object) => object.to_string(),
+        _ if object.starts_with(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U']) => {
+            format!("an {object}")
+        }
+        _ => format!("a {object}"),
     };
-    let object = format!("{article} {rest}");
     let capitalized: String = object
         .chars()
         .take(1)
@@ -94,6 +99,14 @@ pub fn about(question: &str, object: &str) -> String {
     }
     put(&mut word, &mut about);
     about
+}
+
+/// Whether `name` is a proper name: each of its words capitalized, but for
+/// small words such as *of*, as in *Statue of Liberty*.
+fn proper(name: &str) -> bool {
+    name.split_whitespace()
+        .filter(|word| !["of", "the", "and", "de"].contains(word))
+        .all(|word| word.starts_with(char::is_uppercase))
 }
 
 /// Whether `text`, lowercased, holds `words`, also lowercase, as words of
@@ -176,9 +189,16 @@ mod tests {
             "Is its handle long?"
         );
         assert_eq!(about("Is it?", ""), "Is it?");
-        // An object named without an article is "the" object.
-        assert_eq!(about("Is it alive?", "chicken"), "Is the chicken alive?");
-        assert_eq!(about("It flies?", "Chicken"), "The Chicken flies?");
+        // An object named without an article takes "a" or "an", unless it
+        // is a proper name: "the raven" is read as Poe's poem.
+        assert_eq!(about("Is it alive?", "chicken"), "Is a chicken alive?");
+        assert_eq!(about("It flies?", "Chicken"), "A Chicken flies?");
+        assert_eq!(about("Can it fly?", "owl"), "Can an owl fly?");
+        assert_eq!(about("Is it tall?", "Big Ben"), "Is Big Ben tall?");
+        assert_eq!(
+            about("It is tall?", "Statue of Liberty"),
+            "Statue of Liberty is tall?"
+        );
         assert_eq!(about("Is it alive?", "An egg"), "Is an egg alive?");
     }
 
