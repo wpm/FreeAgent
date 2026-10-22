@@ -75,8 +75,11 @@ everyone talks to everyone at once.**
   says its name, or the name's last word, its head noun, unless the guess
   it answers said that word already. *Scissors are made of metal* gives
   away *a pair of scissors*; *Yes, it is a tower* answers *Is it a tower?*
-  about *the Eiffel Tower*. Such a line is logged as `Failed`, and the host
-  is asked again.
+  about *the Eiffel Tower*. An answer that gives it away after a leading
+  *Yes* or *No* is cut to that word; any other such line is logged as
+  `Failed`, and the host is asked again. *Amended 2026-10-21 (#466):* the
+  host kept saying *No, a rose bush is not …* and failed the episode on
+  the third try, when its *No* was right.
 - **The end.** A guess answered as naming the object wins for the players.
   The last guess answered without it, or the time limit (10 minutes unless
   configured), wins for the host. A guess still waiting when the game ends

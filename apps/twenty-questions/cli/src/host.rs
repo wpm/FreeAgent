@@ -127,6 +127,20 @@ const HEARD: &str = "Since you last spoke or waited, the players said:";
 /// them to put one.
 pub const NUDGE: Duration = Duration::from_secs(120);
 
+/// `Yes.` or `No.`, when `text` begins with that word: what an answer that
+/// gives the object away after it is cut to.
+fn leading_yes_or_no(text: &str) -> Option<&'static str> {
+    let first = text
+        .split(|c: char| !c.is_alphabetic())
+        .find(|word| !word.is_empty())?
+        .to_lowercase();
+    match first.as_str() {
+        "yes" => Some("Yes."),
+        "no" => Some("No."),
+        _ => None,
+    }
+}
+
 /// What the host is asked when no guess waits, after the speech it heard:
 /// how many of the `guesses` the players have `used`, how much time is
 /// left, how long it has been `quiet` since the last guess, and that only
@@ -611,8 +625,9 @@ impl Host {
     /// shown the guess alone, with no story: an answer is about the object
     /// and the question, and a story of earlier answers only tempts a small
     /// model to repeat them. A guess that
-    /// says the object's name is named whichever tool the model called, and
-    /// an answer that says it of a guess that does not is an error.
+    /// says the object's name is named whichever tool the model called. An
+    /// answer that says it of a guess that does not is cut to its first
+    /// word when that is Yes or No, and is otherwise an error.
     async fn try_answer(&self, object: &str, guess: &Waiting) -> anyhow::Result<()> {
         let prompt = self.mind.state.lock().unwrap().prompt.clone();
         let asker = &self.mind.brief.asker;
@@ -630,9 +645,13 @@ impl Host {
         }
         let (text, named) = answered(&response?)?;
         let named = named || says(&guess.text, object);
-        if !named && gives_away(&text, object, &guess.text) {
-            bail!("the host's answer gives the secret object away: {text}");
-        }
+        let text = match !named && gives_away(&text, object, &guess.text) {
+            true => match leading_yes_or_no(&text) {
+                Some(word) => word.to_string(),
+                None => bail!("the host's answer gives the secret object away: {text}"),
+            },
+            false => text,
+        };
         self.reply(guess, text, named, shown)
     }
 
@@ -1015,7 +1034,7 @@ mod tests {
         let counted = Arc::clone(&calls);
         let model = answering(
             move |_| match counted.fetch_add(1, Ordering::Relaxed) {
-                0 => Ok(answer("Yes, a teapot is found in a kitchen.")),
+                0 => Ok(answer("A teapot is found in a kitchen.")),
                 _ => Ok(answer("Yes.")),
             },
             1,
@@ -1032,12 +1051,44 @@ mod tests {
         .await;
         assert_eq!(
             played.failures(HOST),
-            [
-                "the host's answer gives the secret object away: Yes, a teapot is found in a kitchen."
-            ]
+            ["the host's answer gives the secret object away: A teapot is found in a kitchen."]
         );
         assert_eq!(answers(&played), [(1, "Alice", "Yes.", false, 19)]);
         assert_eq!(played.end().1, Victory::OutOfTime);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_saying_the_name_after_yes_or_no_is_cut_to_yes_or_no() {
+        let model = answering(
+            |guess| {
+                Ok(answer(match guess {
+                    "Is it found in a kitchen?" => "Yes, a teapot is found in a kitchen.",
+                    _ => "NO! Teapots are not alive.",
+                }))
+            },
+            1,
+        );
+        let script = [
+            (1, Line::Guess("Is it found in a kitchen?")),
+            (5, Line::Guess("Is it alive?")),
+        ];
+        let played = hosted(
+            &model,
+            Rules {
+                time_limit: Duration::from_secs(60),
+                ..Rules::default()
+            },
+            &[("Alice", &script)],
+        )
+        .await;
+        assert!(played.failures(HOST).is_empty());
+        assert_eq!(
+            answers(&played),
+            [
+                (1, "Alice", "Yes.", false, 19),
+                (2, "Alice", "No.", false, 18)
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]
