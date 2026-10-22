@@ -220,9 +220,10 @@ Tuning against `qwen2.5-7b-instruct-1m`, Ollama's `qwen2.5:7b` and
   raven*, read as Poe's poem, it answered 6 of 14 right; about *a raven*,
   11.
 - **A short host prompt.** The host's instructions for speaking cost it
-  answers: told only the rules and the object, it answered all 12 of a set
-  it had answered 7 of. The instructions for speaking are in the request
-  that asks it to speak.
+  answers: told only the rules and the object, it answered 12 of 12
+  guesses about living things right, against 10 with them, and 67 of the
+  72 against 66. The instructions for speaking are in the request that
+  asks it to speak.
 - **Repeated guesses.** Two players put the same guess at once, and both
   were counted: four of twenty guesses went to repeats in one game.
 - **Retries.** A busy server timed out all four players' first calls, and
