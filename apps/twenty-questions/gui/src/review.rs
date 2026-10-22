@@ -15,8 +15,6 @@ struct Game {
     title: String,
     /// The screen at each of its bubbles.
     timeline: Timeline,
-    /// The bubbles that begin its chapters, in order.
-    chapters: Vec<usize>,
 }
 
 impl Game {
@@ -25,7 +23,6 @@ impl Game {
         let secret = timeline.secret().unwrap_or("no secret");
         Self {
             title: format!("{secret}, {}", ended(timeline.outcome(), timeline.won())),
-            chapters: timeline.chapters(),
             timeline,
         }
     }
@@ -158,7 +155,7 @@ impl Review {
     pub fn go(&mut self, go: Go) {
         let last = self.len() - 1;
         let cursor = self.cursor;
-        let chapters = &self.games[self.game].chapters;
+        let chapters = self.timeline().chapters();
         let before = chapters.iter().rev().find(|&&k| k < cursor).copied();
         let after = chapters.iter().find(|&&k| k > cursor).copied();
         match go {

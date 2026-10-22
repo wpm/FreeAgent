@@ -52,6 +52,8 @@ pub enum Body {
     Answer {
         /// The number of the guess it answers.
         guess: u64,
+        /// Who put the guess it answers, if anyone did.
+        asker: Option<PlayerId>,
         /// The guess it answers, as asked.
         asked: String,
         /// The answer.
@@ -184,9 +186,10 @@ impl Screen {
                 if *named {
                     self.won = Some(*guess);
                 }
-                let asked = self.asker(*guess).map(|(_, asked)| asked.clone());
+                let (asker, asked) = self.asker(*guess).cloned().unzip();
                 let body = Body::Answer {
                     guess: *guess,
+                    asker,
                     asked: asked.unwrap_or_default(),
                     text: text.clone(),
                 };
@@ -308,15 +311,6 @@ impl Screen {
     /// did.
     pub fn asker_color(&self, guess: u64) -> Option<u8> {
         self.asker(guess).and_then(|(who, _)| self.color(who))
-    }
-
-    /// The color of the player whose bubble holds the guess numbered
-    /// `guess`, which rings its answer, if a player's bubble holds it.
-    pub fn guesser_color(&self, guess: u64) -> Option<u8> {
-        self.posts.iter().find_map(|post| match post.body {
-            Body::Guess { guess: put, .. } if put == guess => self.color(&post.name),
-            _ => None,
-        })
     }
 
     /// Who put the guess numbered `guess`, and what it asked.
@@ -670,6 +664,7 @@ mod tests {
                     "Host",
                     &Body::Answer {
                         guess: 1,
+                        asker: Some("Bob".to_string()),
                         asked: "Is it alive?".to_string(),
                         text: "No.".to_string()
                     }
@@ -719,6 +714,7 @@ mod tests {
                 "Host",
                 &Body::Answer {
                     guess: 4,
+                    asker: None,
                     asked: String::new(),
                     text: "No.".to_string()
                 }
@@ -924,19 +920,6 @@ mod tests {
         assert_eq!(screen.era(), 1);
         assert_eq!(screen.cursor, Some(3));
         assert_eq!(Screen { era: 0, ..screen }, timeline.screen(3));
-    }
-
-    #[test]
-    fn an_answer_is_ringed_in_the_color_of_the_guess_it_answers_wherever_the_cursor_is() {
-        let screen = Timeline::new(&[
-            cast(&["Alice", "Bob"]),
-            guessed(1, "Bob", 1, "Is it alive?"),
-            answered(2, 1, "Yes!", true),
-        ])
-        .screen(0);
-        assert_eq!(screen.used(), 1);
-        assert_eq!(screen.guesser_color(1), Some(1));
-        assert_eq!(screen.guesser_color(2), None);
     }
 
     #[test]

@@ -370,7 +370,9 @@ pub(crate) fn Viewer(
     };
     // Memos, so that a cue that leaves a part as it was redraws none of it.
     let names = Memo::new(move |_| screen.with(|screen| screen.names.clone()));
-    let posts = Memo::new(move |_| screen.with(|screen| (screen.era(), screen.posts.clone())));
+    // Posts are only ever added in an era, so their count and the era say
+    // when they change.
+    let posted = Memo::new(move |_| screen.with(|screen| (screen.era(), screen.posts.len())));
     let thinkers = Memo::new(move |_| screen.with(|screen| screen.thinkers.clone()));
     let won = Memo::new(move |_| screen.with(|screen| screen.won));
     let secret = Memo::new(move |_| screen.with(|screen| screen.secret.clone()));
@@ -406,12 +408,11 @@ pub(crate) fn Viewer(
     });
     let rendered = options.clone();
     let messages = Signal::derive(move || {
-        let mut messages = posts.with(|(era, posts)| {
-            screen.with_untracked(|screen| {
-                (posts.iter())
-                    .map(|post| message(*era, post, screen, won, rendered.clone(), on_link))
-                    .collect::<Vec<_>>()
-            })
+        let (era, _) = posted.get();
+        let mut messages = screen.with_untracked(|screen| {
+            (screen.posts.iter())
+                .map(|post| message(era, post, screen, won, rendered.clone(), on_link))
+                .collect::<Vec<_>>()
         });
         thinkers.with(|thinkers| {
             messages.extend(thinkers.iter().map(|thinker| dots(thinker, silence)));
@@ -527,7 +528,9 @@ fn message(
             None,
             text,
         ),
-        Body::Answer { guess, asked, text } => {
+        Body::Answer {
+            guess, asked, text, ..
+        } => {
             let asked = (!asked.is_empty()).then(|| asked.clone());
             (
                 "tq-answer",
@@ -546,8 +549,8 @@ fn message(
         ),
     };
     let ring = match &post.body {
-        Body::Answer { guess, .. } => screen
-            .guesser_color(*guess)
+        Body::Answer { asker, .. } => (asker.as_deref())
+            .and_then(|who| screen.color(who))
             .map(|color| format!("--tq-ring: {}", mark(color))),
         _ => None,
     };
