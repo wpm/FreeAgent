@@ -403,8 +403,8 @@ struct Mind {
     brief: Brief,
     state: Mutex<State>,
     /// Each line of speech heard since the host last decided whether to
-    /// speak, as `Bob: "…"`.
-    heard: Mutex<Vec<(String, ())>>,
+    /// speak, as `Bob: "…"`, with whether it speaks to the host by name.
+    heard: Mutex<Vec<(String, bool)>>,
     /// The number of the last message the host sent to others.
     n: AtomicU64,
     /// Whether a [`Message::Wake`] is waiting for the think loop.
@@ -736,8 +736,8 @@ impl Host {
     /// when a player spoke to the host by name or nobody has put a guess
     /// for [`NUDGE`], once until the next guess; otherwise forget the
     /// speech heard without asking. A failure is asked again, by waking,
-    /// until [`ATTEMPTS`] fail in a row, and then the speech it was about is
-    /// forgotten.
+    /// until [`ATTEMPTS`] fail in a row, and then the speech heard before
+    /// the last was asked is forgotten.
     async fn talk(&self, object: &str) -> anyhow::Result<()> {
         let quiet = {
             let state = self.mind.state.lock().unwrap();
@@ -747,17 +747,14 @@ impl Host {
                 .unwrap_or_default();
             (quiet >= NUDGE && !state.nudged).then_some(quiet)
         };
-        let spoken_to = self
-            .mind
-            .heard
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|(line, _)| addressed(line));
-        if !spoken_to && quiet.is_none() {
-            self.mind.heard.lock().unwrap().clear();
-            return Ok(());
-        }
+        let told = {
+            let mut heard = self.mind.heard.lock().unwrap();
+            if quiet.is_none() && !heard.iter().any(|(_, spoken_to)| *spoken_to) {
+                heard.clear();
+                return Ok(());
+            }
+            heard.len()
+        };
         let error = match self.try_talk(object).await {
             Ok(()) => {
                 let mut state = self.mind.state.lock().unwrap();
@@ -775,7 +772,7 @@ impl Host {
             return self.wake();
         }
         state.stumbles = 0;
-        self.mind.heard.lock().unwrap().clear();
+        self.mind.heard.lock().unwrap().drain(..told);
         Ok(())
     }
 
@@ -908,7 +905,8 @@ impl Behavior for Host {
             state.waiting.push_back(waiting);
         } else if let Message::Say { text, .. } = message {
             let line = format!("{from}: \"{text}\"");
-            self.mind.heard.lock().unwrap().push((line, ()));
+            let spoken_to = addressed(&line);
+            self.mind.heard.lock().unwrap().push((line, spoken_to));
         }
         match self.mind.state.lock().unwrap().over {
             true => Ok(()),
@@ -1643,6 +1641,30 @@ mod tests {
         let heard = format!("{HEARD}\nAlice: \"Host, anyone?\"\n\n");
         assert!(last.starts_with(&heard), "{last}");
         assert_eq!(played.failures(HOST).len(), 2 * ATTEMPTS as usize);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn speech_heard_while_the_host_s_last_word_failed_is_kept_for_the_next() {
+        let leaking = Arc::new(
+            FakeModel::responding(speaking("It's a teapot!")).taking(Duration::from_secs(5)),
+        );
+        // The third word is asked from 11s to 16s.
+        let script = [(1, Line::Say("Host?")), (13, Line::Say("Host, anyone?"))];
+        let played = hosted(
+            &leaking,
+            Rules {
+                time_limit: Duration::from_secs(60),
+                ..Rules::default()
+            },
+            &[("Alice", &script)],
+        )
+        .await;
+        assert_eq!(played.failures(HOST).len(), 2 * ATTEMPTS as usize);
+        let last = leaking.requests().pop().unwrap().messages[1]
+            .content
+            .clone();
+        let heard = format!("{HEARD}\nAlice: \"Host, anyone?\"\n\n");
+        assert!(last.starts_with(&heard), "{last}");
     }
 
     #[tokio::test(start_paused = true)]
