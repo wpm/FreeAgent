@@ -488,12 +488,11 @@ impl Player {
             if let Sending::Guess(question) = &sending
                 && !self.mind.guesses(view.guesses).may_guess()
             {
-                let why = "another guess came in while you decided";
                 self.context.log(Entry::Failed {
                     by: me.clone(),
-                    error: format!("the guess \"{question}\" was not put: {why}"),
+                    error: format!("the guess \"{question}\" was not put: another came in first"),
                 });
-                self.refuse(question, why);
+                self.refuse(question, "another guess came in while you decided");
                 continue;
             }
             let message = sending.message(me, self.mind.number());
@@ -940,7 +939,7 @@ mod tests {
         );
         assert_eq!(
             played.failures("Alice"),
-            ["the guess \"Is it big?\" was not put: another guess came in while you decided"]
+            ["the guess \"Is it big?\" was not put: another came in first"]
         );
         let told =
             "Your guess \"Is it big?\" was not put: another guess came in while you decided.";
