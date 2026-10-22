@@ -116,9 +116,10 @@ impl Stage {
     }
 
     /// The last cues of a game that `ended` as it did at `at`: a thought
-    /// for every call still out, in seat order, then the outcome. A failure
-    /// tells its error first and is a failure even after a win. Otherwise a
-    /// game won is won, and one with no end is [`Outcome::Unfinished`].
+    /// for every call still out, the host's first and then the players' in
+    /// seat order, then the outcome. A failure tells its error first and is
+    /// a failure even after a win. Otherwise a game won is won, and one with
+    /// no end is [`Outcome::Unfinished`].
     pub fn end(&mut self, at: Millis, ended: Option<Ended>) -> Vec<Cue> {
         let mut beats = self.hushed();
         let won = self.won.take();
@@ -151,10 +152,13 @@ impl Stage {
             .then(|| Beat::Thought { who: who.clone() })
     }
 
-    /// The thoughts of everyone still thinking, in seat order.
+    /// The thoughts of everyone still thinking: the host's first, then the
+    /// players' in seat order.
     fn hushed(&mut self) -> Vec<Beat> {
         let thinking = std::mem::take(&mut self.thinking);
-        in_order(&thinking)
+        let mut hushed = in_order(&thinking);
+        hushed.sort_by_key(|who| *who != HOST);
+        hushed
             .into_iter()
             .map(|who| Beat::Thought { who: who.clone() })
             .collect()
@@ -834,17 +838,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn calls_still_out_at_the_end_of_a_log_are_closed_there_in_seat_order_and_it_is_unfinished() {
+    fn calls_still_out_at_the_end_of_a_log_are_closed_there_host_first_and_it_is_unfinished() {
+        // Ian sorts after the host by name.
         let thinking = |by: &str| logged(Entry::Thinking { by: by.to_string() });
-        let log = written(&[thinking("Bob"), thinking(HOST), thinking("Alice")]);
+        let log = written(&[thinking("Ian"), thinking(HOST), thinking("Alice")]);
         let who = |name: &str| name.to_string();
         let beats = beats_of(&log);
         assert_eq!(
             beats[3..],
             [
-                Beat::Thought { who: who("Alice") },
-                Beat::Thought { who: who("Bob") },
                 Beat::Thought { who: who(HOST) },
+                Beat::Thought { who: who("Alice") },
+                Beat::Thought { who: who("Ian") },
                 Beat::Over {
                     outcome: Outcome::Unfinished
                 },
