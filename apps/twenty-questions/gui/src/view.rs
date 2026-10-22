@@ -169,7 +169,6 @@ pub(crate) fn Viewer(
                     </p>
                     {move || outcome.get().map(|outcome| view! { <p class="tq-outcome">{outcome}</p> })}
                 </div>
-                <div class="tq-controls">{children()}</div>
                 <div class="tq-count" role="group" aria-label="Guesses used">
                     <p class="tq-tally" data-tip="The guesses the players have put, of those they have.">
                         <span class="tq-used">{move || used.get()}</span>
@@ -180,6 +179,7 @@ pub(crate) fn Viewer(
                     </div>
                     {move || timer.get().map(|timer| view! { <CountdownClock timer=timer now=now /> })}
                 </div>
+                <div class="tq-controls">{children()}</div>
             </header>
             <main class="tq-main">
                 <Transcript

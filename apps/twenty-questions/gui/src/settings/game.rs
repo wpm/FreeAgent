@@ -159,7 +159,7 @@ fn Players(editor: Editor<AppSettings>) -> impl IntoView {
                     aria-label="Fewer players"
                     data-tip="One player fewer."
                     on:click=move |_| step(-1)
-                    disabled=move || count.get() <= 1
+                    disabled=move || { count.get() <= 1 }
                 >
                     "−"
                 </button>
@@ -177,7 +177,7 @@ fn Players(editor: Editor<AppSettings>) -> impl IntoView {
                     aria-label="More players"
                     data-tip="One player more."
                     on:click=move |_| step(1)
-                    disabled=move || count.get() >= MOST
+                    disabled=move || { count.get() >= MOST }
                 >
                     "+"
                 </button>

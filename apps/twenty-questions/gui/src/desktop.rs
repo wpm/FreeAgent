@@ -153,13 +153,13 @@ fn Start(
                 <p class="fa-tagline">"Language models put twenty yes-or-no questions to a host who is thinking of something."</p>
                 {move || error.get().map(|error| view! { <pre class="fa-error">{error}</pre> })}
                 <div class="tq-start">
-                    <div class="tq-about">
-                    <div class="tq-pips" aria-hidden="true">
-                        {move || (0..guesses()).map(|_| view! { <span class="tq-pip"></span> }).collect_view()}
-                    </div>
-                    <p class="tq-summary" data-tip="The players, models and secret of the next game. Change them in Settings.">
-                        {summary}
-                    </p>
+                    <div>
+                        <div class="tq-pips" aria-hidden="true">
+                            {move || (1..=guesses()).map(|guess| view! { <span class="tq-pip">{guess}</span> }).collect_view()}
+                        </div>
+                        <p class="tq-summary" data-tip="The players, models and secret of the next game. Change them in Settings.">
+                            {summary}
+                        </p>
                     </div>
                     <div class="tq-run">
                         {move || starting().then(|| view! { <button class="fa-large" on:click=|_| tauri::stop() data-tip="Stop starting the game.">"Stop"</button> })}
