@@ -341,8 +341,15 @@ impl Screen {
     }
 }
 
-/// The bubble whose message ID is `id`: bubble `k` is posted as `m{k+1}`.
-pub fn bubble(id: &str) -> Option<usize> {
+/// The key the chat knows the post `id` by in `era`, `3-m12`, so that a
+/// post of one game is never taken for the post of another with its ID.
+pub fn key(era: u64, id: &str) -> String {
+    format!("{era}-{id}")
+}
+
+/// The bubble whose chat key is `key`: bubble `k` is posted as `m{k+1}`.
+pub fn bubble(key: &str) -> Option<usize> {
+    let (_, id) = key.split_once('-')?;
     id.strip_prefix('m')?.parse::<usize>().ok()?.checked_sub(1)
 }
 
@@ -898,10 +905,12 @@ mod tests {
     }
 
     #[test]
-    fn a_bubble_is_found_by_its_message_id() {
-        assert_eq!(bubble("m1"), Some(0));
-        assert_eq!(bubble("m12"), Some(11));
-        assert_eq!(bubble("m0"), None);
+    fn a_bubble_is_found_by_its_key_in_the_chat() {
+        assert_eq!(key(3, "m12"), "3-m12");
+        assert_eq!(bubble(&key(0, "m1")), Some(0));
+        assert_eq!(bubble(&key(3, "m12")), Some(11));
+        assert_eq!(bubble("2-m0"), None);
+        assert_eq!(bubble("m1"), None);
         assert_eq!(bubble("think-Alice"), None);
     }
 

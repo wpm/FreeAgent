@@ -570,12 +570,13 @@ await section('review of a game just played', async () => {
 });
 
 // A log of three games opened in review: the backend sends them as Open
-// Game Log… would, the second cut off half way.
+// Game Log… would, the second cut off half way, its players' words marked.
 await section('review of a log', async () => {
   const { app, main } = await mainWindow();
   await main.evaluate((cues) => {
     const game = (episode, cues) => ({ episode: `00000000-0000-0000-0000-00000000000${episode}`, cues });
-    const games = [game(1, cues), game(2, cues.slice(0, cues.length / 2)), game(3, cues)];
+    const marked = cues.slice(0, cues.length / 2).map((cue) => (typeof cue.beat === 'object' && 'Said' in cue.beat ? { ...cue, beat: { Said: { ...cue.beat.Said, text: `Second: ${cue.beat.Said.text}` } } } : cue));
+    const games = [game(1, cues), game(2, marked), game(3, cues)];
     window.standIn.emit('review', { name: 'three.jsonl', recordings: { games, problems: ['the log is bad at line 9'] } }, 'main');
   }, cues);
   await main.waitForSelector('.fa-review-position');
@@ -607,11 +608,16 @@ await section('review of a log', async () => {
   await main.waitForTimeout(300);
   const second = await cursor(main);
   check(second.of === 'Game 2 of 3' && second.selected === 0 && second.count < first.count, `log: ⌘] opens the next game on its first bubble (${JSON.stringify(second)})`);
+  /** What the players say in the chat. */
+  const said = () => main.$$eval('.rc-message', (messages) => messages.filter((message) => !['Host', 'Narrator'].includes(message.dataset.name) && !message.querySelector('.tq-tag')).map((message) => message.querySelector('.rc-bubble').textContent));
+  const secondSaid = await said();
+  check(secondSaid.length > 0 && secondSaid.every((text) => text.startsWith('Second: ')), `log: the chat shows the game opened (${JSON.stringify(secondSaid.slice(0, 2))})`);
   await main.keyboard.press('End');
   check((await cursor(main)).outcome === null, 'log: a game cut off ends with no outcome');
   await main.selectOption('.fa-review-games select', '2');
   await main.waitForTimeout(100);
   check((await cursor(main)).of === 'Game 3 of 3', 'log: the list of games opens the one chosen');
+  check((await said()).every((text) => !text.startsWith('Second: ')), 'log: the chat shows the game chosen');
   await main.keyboard.press('Meta+[');
   check((await cursor(main)).of === 'Game 2 of 3', 'log: ⌘[ opens the game before');
   await main.emulateMedia({ colorScheme: 'dark' });

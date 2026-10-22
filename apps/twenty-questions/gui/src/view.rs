@@ -260,9 +260,20 @@ impl Reviewing {
         self.moved(|review| review.choose(game));
     }
 
-    /// Move the cursor by `act`, and show the bubble it lands on.
+    /// Move the cursor by `act`, and show the bubble it lands on. Another
+    /// game shows on a screen of its own.
     fn moved(self, act: impl FnOnce(&mut Review)) {
-        if let Some(Some(())) = self.review.try_update(|review| review.as_mut().map(act)) {
+        let moved = self.review.try_update(|review| {
+            review.as_mut().map(|review| {
+                let game = review.game();
+                act(review);
+                review.game() != game
+            })
+        });
+        if let Some(Some(another)) = moved {
+            if another {
+                self.live.reset();
+            }
             self.shown();
         }
     }
@@ -359,7 +370,7 @@ pub(crate) fn Viewer(
     };
     // Memos, so that a cue that leaves a part as it was redraws none of it.
     let names = Memo::new(move |_| screen.with(|screen| screen.names.clone()));
-    let posts = Memo::new(move |_| screen.with(|screen| screen.posts.clone()));
+    let posts = Memo::new(move |_| screen.with(|screen| (screen.era(), screen.posts.clone())));
     let thinkers = Memo::new(move |_| screen.with(|screen| screen.thinkers.clone()));
     let won = Memo::new(move |_| screen.with(|screen| screen.won));
     let secret = Memo::new(move |_| screen.with(|screen| screen.secret.clone()));
@@ -390,15 +401,15 @@ pub(crate) fn Viewer(
     let selected = Signal::derive(move || {
         screen.with(|screen| {
             let post = screen.posts.get(screen.cursor?)?;
-            Some(post.id.clone())
+            Some(screen::key(screen.era(), &post.id))
         })
     });
     let rendered = options.clone();
     let messages = Signal::derive(move || {
-        let mut messages = posts.with(|posts| {
+        let mut messages = posts.with(|(era, posts)| {
             screen.with_untracked(|screen| {
                 (posts.iter())
-                    .map(|post| message(post, screen, won, rendered.clone(), on_link))
+                    .map(|post| message(*era, post, screen, won, rendered.clone(), on_link))
                     .collect::<Vec<_>>()
             })
         });
@@ -494,18 +505,19 @@ fn pip(pip: Pip) -> impl IntoView {
     view! { <span class=class style=style></span> }
 }
 
-/// `post` as a Rich-Chat message. A guess, an answer and a guess too late
-/// to count carry their tag, and the answer the guess it answers, marked
-/// in the guesser's color; a guess and its answer are ringed in it once
-/// `won` names the guess.
+/// `post` as a Rich-Chat message, keyed for `era`. A guess, an answer
+/// and a guess too late to count carry their tag, and the answer the
+/// guess it answers, marked in the guesser's color; a guess and its
+/// answer are ringed in it once `won` names the guess.
 fn message(
+    era: u64,
     post: &Post,
     screen: &Screen,
     won: Memo<Option<u64>>,
     options: RenderOptions,
     on_link: Option<Callback<String>>,
 ) -> Message {
-    let (id, name) = (post.id.clone(), post.name.clone());
+    let (id, name) = (screen::key(era, &post.id), post.name.clone());
     let (class, tag, guess, asked, text) = match &post.body {
         Body::Told(text) | Body::Said(text) => return Message::new(id, name, text.clone()),
         Body::Guess { guess, text } => (
