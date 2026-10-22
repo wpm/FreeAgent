@@ -1,11 +1,11 @@
 //! The commands that play a game: playing the game chosen, stopping it,
 //! and saving its log once it is over.
 
-use crate::review::FILTER;
 use crate::secret::keychain;
 use crate::settings::{Store, snapshot};
 use chrono::{DateTime, TimeZone};
 use free_agent_desktop::dialog::save_as;
+use free_agent_desktop::review::FILTER;
 use social_deduction::config::Name;
 use social_deduction::live::Session;
 use social_deduction::run::prepare;

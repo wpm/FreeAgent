@@ -1,11 +1,11 @@
 //! The commands that play a game: playing it, stopping it, and saving its
 //! log once it is over.
 
-use crate::review::FILTER;
 use crate::secret::keychain;
 use crate::settings::{Store, snapshot};
 use chrono::{DateTime, TimeZone};
 use free_agent_desktop::dialog::save_as;
+use free_agent_desktop::review::FILTER;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, async_runtime};
 use twenty_questions::live::Session;
