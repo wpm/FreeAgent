@@ -168,6 +168,8 @@ Each episode's log opens with a `Header`, naming the log's `format`, the
   and the usage its provider reported.
 - `Failed`: an actor that failed to act, with the error.
 - `Uncounted`: a guess that came after the last one.
+- `Repeated`: a guess repeating one counted already, as when two players put
+  the same guess at once. It is neither counted nor answered.
 - `End`: the side that won, `players` or `host`, and how: `named`,
   `out_of_guesses` or `out_of_time`; the guesses used, the object, and how
   long the game took.
