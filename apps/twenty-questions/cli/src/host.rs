@@ -354,6 +354,22 @@ struct Waiting {
     text: String,
 }
 
+/// The object the host's model picked, with the category it was asked for
+/// and the host's system prompt rendered for it.
+struct Picked {
+    object: String,
+    category: Option<String>,
+    prompt: String,
+}
+
+/// What the host's model made of a guess, once judged.
+enum Judged {
+    /// The answer to send, and whether it names the object.
+    Answer { text: String, named: bool },
+    /// The time ran out while the model was asked.
+    Late,
+}
+
 /// Where the game stands, as the host keeps it.
 #[derive(Default)]
 struct State {
@@ -537,23 +553,22 @@ impl Host {
         let took = self.elapsed();
         let end = {
             let mut state = self.mind.state.lock().unwrap();
-            if state.over {
-                return Ok(());
-            }
-            state.over = true;
-            Entry::End {
+            let over = std::mem::replace(&mut state.over, true);
+            (!over).then(|| Entry::End {
                 winner: by.winner(),
                 by,
                 used,
                 object: state.object.clone().unwrap_or_default(),
                 took,
-            }
+            })
         };
-        self.context.log(end);
-        if let Some(winner) = self.mind.winner.lock().unwrap().take() {
-            let _ = winner.send(by.winner());
-        }
-        self.stop()
+        end.map_or(Ok(()), |end| {
+            self.context.log(end);
+            if let Some(winner) = self.mind.winner.lock().unwrap().take() {
+                let _ = winner.send(by.winner());
+            }
+            self.stop()
+        })
     }
 
     /// Fail the episode with `error`: stop everyone, and keep the error for
@@ -565,10 +580,11 @@ impl Host {
     }
 
     /// Woken, decide: take the wake-up, and pick the object if there is none
-    /// yet, answer the oldest guess waiting if there is one, each as
-    /// persistently as [`Host::persist`] tries, and otherwise talk. Nothing is decided once the game is over, since the host stops
-    /// as it ends the game, and the time limit, which comes before any
-    /// wake-up waiting, ends a game whose host is not asking its model.
+    /// yet, or answer the oldest guess waiting if there is one, each asked
+    /// as persistently as [`Host::persist`] asks, and otherwise talk.
+    /// Nothing is decided once the game is over, since the host stops as it
+    /// ends the game, and the time limit, which comes before any wake-up
+    /// waiting, ends a game whose host is not asking its model.
     async fn decide(&self) -> anyhow::Result<()> {
         self.mind.waking.store(false, Ordering::Relaxed);
         let (object, waiting) = {
@@ -576,36 +592,45 @@ impl Host {
             (state.object.clone(), state.waiting.front().cloned())
         };
         match (object, waiting) {
-            (None, _) => self.persist(|| self.try_pick()).await,
-            (Some(object), Some(guess)) => self.persist(|| self.try_answer(&object, &guess)).await,
+            (None, _) => match self.persist(|| self.try_pick()).await? {
+                Some(picked) => self.picked(picked),
+                None => Ok(()),
+            },
+            (Some(object), Some(guess)) => {
+                match self.persist(|| self.try_answer(&object, &guess)).await? {
+                    Some(Judged::Answer { text, named }) => self.reply(&guess, text, named),
+                    Some(Judged::Late) => self.end(Victory::OutOfTime),
+                    None => Ok(()),
+                }
+            }
             (Some(object), None) => self.talk(&object).await,
         }
     }
 
     /// Make `attempt` up to [`ATTEMPTS`] times, [`RETRY`] apart, logging
-    /// each failure, until one succeeds. After the last failure the
-    /// episode fails.
-    async fn persist<F: Future<Output = anyhow::Result<()>>>(
+    /// each failure, until one succeeds, and give what it made. After the
+    /// last failure the episode fails, and there is nothing to give.
+    async fn persist<T, F: Future<Output = anyhow::Result<T>>>(
         &self,
         attempt: impl Fn() -> F,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<T>> {
         let mut tries = 0;
         loop {
             tries += 1;
-            let Err(error) = attempt().await else {
-                return Ok(());
+            let error = match attempt().await {
+                Ok(made) => return Ok(Some(made)),
+                Err(error) => error,
             };
             self.failed(&error);
             if tries == ATTEMPTS {
-                return self.fail(error);
+                return self.fail(error).map(|()| None);
             }
             tokio::time::sleep(RETRY).await;
         }
     }
 
-    /// Ask the model to pick the object for a category drawn at random,
-    /// and begin the game with it.
-    async fn try_pick(&self) -> anyhow::Result<()> {
+    /// Ask the model to pick the object for a category drawn at random.
+    async fn try_pick(&self) -> anyhow::Result<Picked> {
         let brief = &self.mind.brief;
         let (category, pick) = brief
             .picks
@@ -617,19 +642,28 @@ impl Host {
         let response = asker.complete(&self.context, &request).await?;
         let object = chosen(&response)?;
         let prompt = brief.prompt.render(&object)?;
-        self.context.log(Entry::Chosen {
-            object: object.clone(),
+        Ok(Picked {
+            object,
             category,
+            prompt,
+        })
+    }
+
+    /// Log the object `picked`, and begin the game with it.
+    fn picked(&self, picked: Picked) -> anyhow::Result<()> {
+        self.context.log(Entry::Chosen {
+            object: picked.object.clone(),
+            category: picked.category,
         });
         {
             let mut state = self.mind.state.lock().unwrap();
-            state.object = Some(object);
-            state.prompt = prompt;
+            state.object = Some(picked.object);
+            state.prompt = picked.prompt;
         }
         self.begin()
     }
 
-    /// Ask the model to answer `guess`, about `object`, and send the
+    /// Ask the model to answer `guess`, about `object`, and judge the
     /// answer, unless the time ran out while it was asked. The model is
     /// shown the guess alone, with no story: an answer is about the object
     /// and the question, and a story of earlier answers only tempts a small
@@ -637,7 +671,7 @@ impl Host {
     /// word with the name is answered Yes and is not named. An answer that
     /// says the name is cut to its first word when that is Yes or No, and
     /// is otherwise an error.
-    async fn try_answer(&self, object: &str, guess: &Waiting) -> anyhow::Result<()> {
+    async fn try_answer(&self, object: &str, guess: &Waiting) -> anyhow::Result<Judged> {
         let prompt = self.mind.state.lock().unwrap().prompt.clone();
         let asker = &self.mind.brief.asker;
         let request = request(
@@ -647,10 +681,9 @@ impl Host {
             answering(&guess.from, &guess.text, object),
             answer_tools(),
         );
-        let shown = Shown::default();
         let response = asker.complete(&self.context, &request).await;
         if self.out_of_time() {
-            return self.end(Victory::OutOfTime);
+            return Ok(Judged::Late);
         }
         let (text, named) = match answered(&response?)? {
             (_, true) if !shares_a_word(&guess.text, object) => ("Yes.".to_string(), false),
@@ -663,40 +696,31 @@ impl Host {
             },
             false => text,
         };
-        self.reply(guess, text, named, shown)
+        Ok(Judged::Answer { text, named })
     }
 
     /// Send `text`, the answer to `guess`, which names the object when
-    /// `named`, made from what the model was `shown`, and end the game if
-    /// it is won or the last guess is answered. Otherwise, wake to answer
-    /// the next guess if one is waiting, or to the speech heard meanwhile.
-    fn reply(
-        &self,
-        guess: &Waiting,
-        text: String,
-        named: bool,
-        shown: Shown,
-    ) -> anyhow::Result<()> {
+    /// `named`, and only once it is sent count it answered.
+    /// End the game if it is won or the last guess is answered. Otherwise,
+    /// wake to answer the next guess if one is waiting, or to the speech
+    /// heard meanwhile.
+    fn reply(&self, guess: &Waiting, text: String, named: bool) -> anyhow::Result<()> {
         let guesses = self.mind.brief.guesses;
-        let (left, answered, more) = {
+        let (answered, more) = {
             let mut state = self.mind.state.lock().unwrap();
+            let answer = Message::Answer {
+                n: self.number(),
+                guess: guess.number,
+                asked_by: guess.from.clone(),
+                text,
+                named,
+                left: guesses - state.counted,
+            };
+            self.tell(answer, Some(Shown::default()))?;
             state.waiting.pop_front();
             state.answered += 1;
-            (
-                guesses - state.counted,
-                state.answered,
-                !state.waiting.is_empty(),
-            )
+            (state.answered, !state.waiting.is_empty())
         };
-        let answer = Message::Answer {
-            n: self.number(),
-            guess: guess.number,
-            asked_by: guess.from.clone(),
-            text,
-            named,
-            left,
-        };
-        self.tell(answer, Some(shown))?;
         if named {
             self.finish(Victory::Named, guess.number)
         } else if answered == guesses {
