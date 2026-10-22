@@ -296,16 +296,17 @@ impl Mind {
     fn remember(&self, event: Event<Memory>) {
         let mut remembered = self.remembered.lock().unwrap();
         let (Memory::Observed { message } | Memory::Acted { message }) = &event.payload;
-        if let Message::Guess { from, text, .. } = message
-            && remembered.questions.contains(&folded(text))
-        {
-            remembered.story.repeat(from, text);
-            remembered.history.push(event);
-            return;
+        if let Message::Guess { from, text, .. } = message {
+            let question = folded(text);
+            if remembered.questions.contains(&question) {
+                remembered.story.repeat(from, text);
+                remembered.history.push(event);
+                return;
+            }
+            remembered.questions.push(question);
         }
         remembered.story.recall(&event.payload);
         match message {
-            Message::Guess { text, .. } => remembered.questions.push(folded(text)),
             Message::Say { from, .. } if from != HOST => remembered.talked = true,
             Message::Answer { .. } => remembered.talked = false,
             _ => {}

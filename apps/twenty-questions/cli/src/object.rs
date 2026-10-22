@@ -67,7 +67,7 @@ pub fn about(question: &str, object: &str) -> String {
             format!("{} {rest}", article.to_lowercase())
         }
         Some(_) if proper(object) => object.to_string(),
-        _ if object.starts_with(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U']) => {
+        _ if object.starts_with(|c: char| "aeiou".contains(c.to_ascii_lowercase())) => {
             format!("an {object}")
         }
         _ => format!("a {object}"),

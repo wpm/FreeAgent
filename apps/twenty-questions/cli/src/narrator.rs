@@ -69,11 +69,11 @@ impl Narrator {
             Entry::Observation { by, from, n } if by == HOST => self.counted(from, *n),
             Entry::Uncounted { from, n } => vec![Line::Told(format!(
                 "{from} guesses after the last guess: {} It is not counted.",
-                self.question(from, *n)
+                self.asked(from, *n).unwrap_or_default()
             ))],
             Entry::Repeated { from, n } => vec![Line::Told(format!(
                 "{from} repeats a guess put already: {} It is not counted.",
-                self.question(from, *n)
+                self.asked(from, *n).unwrap_or_default()
             ))],
             Entry::Failed { by, error } => vec![Line::Told(format!("{by} fails to play: {error}"))],
             Entry::End {
@@ -122,14 +122,6 @@ impl Narrator {
             Message::Answer { text, .. } => vec![said(&HOST.to_string(), text)],
             _ => vec![],
         }
-    }
-
-    /// The question of the guess `from` numbered `n`.
-    fn question(&self, from: &ActorId, n: u64) -> String {
-        self.asked
-            .get(&(from.clone(), n))
-            .cloned()
-            .unwrap_or_default()
     }
 
     /// What the host observing the message `from` numbered `n` adds: the

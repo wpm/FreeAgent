@@ -150,13 +150,15 @@ fn talking(used: u64, guesses: u64, time_left: Duration, quiet: Duration) -> Str
 /// name: calls it *host*, and not *the host* or *the host's*, which talk
 /// about it. Players mention *the host's answers* all the time.
 fn addressed(line: &str) -> bool {
+    const TALKING_ABOUT: [&str; 6] = ["the", "a", "an", "our", "this", "that"];
     let lowered = line.to_lowercase();
-    let words: Vec<&str> = lowered
+    let words = lowered
         .split_whitespace()
-        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '’'))
-        .collect();
-    let about = ["the", "a", "an", "our", "this", "that"];
-    (0..words.len()).any(|at| words[at] == "host" && (at == 0 || !about.contains(&words[at - 1])))
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '’'));
+    std::iter::once("")
+        .chain(words.clone())
+        .zip(words)
+        .any(|(before, word)| word == "host" && !TALKING_ABOUT.contains(&before))
 }
 
 /// The tool the host picks the object with: `choose`, taking the `object`.
@@ -182,7 +184,8 @@ fn choose() -> Tool {
 pub(crate) const PICKER: &str = "You are the host of a game of Twenty Questions.";
 
 /// The request that picks the object, of the model `model_id` under
-/// `tool_choice`: [`PICKER`], and `pick` and then [`ANSWER`], offering
+/// `tool_choice`: [`PICKER`], and `pick` and then
+/// [`ANSWER`](crate::model::ANSWER), offering
 /// [`choose`], at `temperature`.
 fn picking(model_id: &str, tool_choice: ToolChoice, pick: &str, temperature: f64) -> Request {
     request(
@@ -812,14 +815,22 @@ impl Behavior for Host {
         observe(&self.context, from.clone(), n);
         if let Message::Guess { text, .. } = message {
             let mut state = self.mind.state.lock().unwrap();
-            if state.counted == self.mind.brief.guesses {
+            let refused = if state.counted == self.mind.brief.guesses {
+                Some(Entry::Uncounted {
+                    from: from.clone(),
+                    n,
+                })
+            } else if !state.put.insert(folded(text)) {
+                Some(Entry::Repeated {
+                    from: from.clone(),
+                    n,
+                })
+            } else {
+                None
+            };
+            if let Some(refused) = refused {
                 drop(state);
-                self.context.log(Entry::Uncounted { from, n });
-                return Ok(());
-            }
-            if !state.put.insert(folded(text)) {
-                drop(state);
-                self.context.log(Entry::Repeated { from, n });
+                self.context.log(refused);
                 return Ok(());
             }
             state.counted += 1;
