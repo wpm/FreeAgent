@@ -289,19 +289,19 @@ impl<W: Write> Writer<W> {
     }
 
     /// Write how the episode `ended`, stamped `time`, its last line, and
-    /// give back the sink, flushed, and the line written.
+    /// give back the sink, flushed, and how it ended as written.
     ///
     /// # Errors
     ///
     /// Fails when writing to `sink` fails.
-    pub fn end_at(mut self, ended: Ended, time: SystemTime) -> io::Result<(W, String)> {
+    pub fn end_at(mut self, ended: Ended, time: SystemTime) -> io::Result<(W, Ended)> {
         let line = self.write(&Event {
             time,
             episode: self.episode,
             payload: Entry::Ended(ended),
         })?;
         self.sink.flush()?;
-        Ok((self.sink, line))
+        Ok((self.sink, Ended::read(&line)?))
     }
 }
 

@@ -133,19 +133,19 @@ impl<G: Game, W: Write> Writer<G, W> {
     }
 
     /// Write how the episode `ended`, stamped `time`, its last line, and
-    /// give back the sink, flushed, and the line written.
+    /// give back the sink, flushed, and how it ended as written.
     ///
     /// # Errors
     ///
     /// Fails when writing to `sink` fails.
-    pub fn end_at(mut self, ended: Ended, time: SystemTime) -> io::Result<(W, String)> {
+    pub fn end_at(mut self, ended: Ended, time: SystemTime) -> io::Result<(W, Ended)> {
         let line = self.write(&Event {
             time,
             episode: self.episode,
             payload: Entry::Ended(ended),
         })?;
         self.sink.flush()?;
-        Ok((self.sink, line))
+        Ok((self.sink, Ended::read(&line)?))
     }
 }
 
@@ -232,13 +232,13 @@ mod tests {
     }
 
     #[test]
-    fn an_episode_ended_at_a_time_is_stamped_with_it_and_gives_back_its_last_line() {
+    fn an_episode_ended_at_a_time_is_stamped_with_it_and_gives_back_how_it_ended() {
         let time = SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(1_234);
         let (written, last) = Writer::<Avalon, _>::start(Vec::new(), episode(), Secrets::default())
             .unwrap()
             .end_at(Ended::Stopped, time)
             .unwrap();
-        assert!(String::from_utf8_lossy(&written).ends_with(&last), "{last}");
+        assert_eq!(last, Ended::Stopped);
         let ended = read::<Avalon>(&written).pop().unwrap();
         assert_eq!(ended.time, time);
         assert_eq!(ended.payload, Entry::Ended(Ended::Stopped));

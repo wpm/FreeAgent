@@ -292,17 +292,10 @@ where
         let ended = Ended::of(&run.await, won.is_some());
         let at = SystemTime::now();
         let closed = (self.writer.take()).and_then(|writer| writer.end_at(ended, at).ok());
-        let mut ended = None;
-        if let Some((log, line)) = closed {
+        let ended = closed.map(|(log, ended)| {
             let _ = self.kept.set(log.into());
-            if let Ok(Event::<Entry<G>> {
-                payload: Entry::Ended(how),
-                ..
-            }) = serde_json::from_str(&line)
-            {
-                ended = Some(how);
-            }
-        }
+            ended
+        });
         for cue in stage.end(millis(at), won, ended) {
             self.show(cue);
         }
