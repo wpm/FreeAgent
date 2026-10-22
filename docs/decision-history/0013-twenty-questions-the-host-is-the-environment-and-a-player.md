@@ -209,6 +209,32 @@ was built.
   into proposals. Saying a crossed guess as a proposal instead was tried,
   and made three players parrot the same line.
 
+Tuning against `qwen2.5-7b-instruct-1m`, Ollama's `qwen2.5:7b` and
+`llama3.2:3b` (#466) changed more.
+
+- **The guess about the object itself.** On 72 test guesses with known
+  answers, the host answered 59 right shown *Is it alive?* about a
+  unicycle, and 66 shown also *Is a unicycle alive?*. Asking it to think
+  first in a hidden argument, or to add no hints, made it worse. An object
+  picked without an article is asked about as *a* or *an* one: about *the
+  raven*, read as Poe's poem, it answered 6 of 14 right; about *a raven*,
+  11.
+- **A short host prompt.** The host's instructions for speaking cost it
+  answers: told only the rules and the object, it answered all 12 of a set
+  it had answered 7 of. The instructions for speaking are in the request
+  that asks it to speak.
+- **Repeated guesses.** Two players put the same guess at once, and both
+  were counted: four of twenty guesses went to repeats in one game.
+- **Retries.** A busy server timed out all four players' first calls, and
+  nothing woke them again; a player refused a repeated guess in silence
+  tried it again for five minutes.
+- **Spoken to by name.** Players speak of *the host's answers* in nearly
+  every line, and the host asked "Is that your guess?" nine times in one
+  game; it is now asked only when called *host*.
+- **Three players with parts.** Four players parroted one another, all
+  woken by the same answer; three players and the host fit LM Studio's four
+  slots. A scout, a keeper and a closer each have a part to play.
+
 ## Alternatives considered
 
 ### A separate environment and a host player
@@ -237,8 +263,10 @@ coordination to the players, and the player's policy helps them.
   episode.
 - A host's model call in flight at the time limit holds the end until it
   returns, by up to the request timeout.
-- Five actors asking one local server take turns at its parallel slots, so
-  a ten-minute game on a laptop holds about twenty guesses.
+- The example's three players and the host fill a local server's four
+  parallel slots; more players take turns at them, and a server that
+  answers one request at a time, as Ollama does by default, makes every
+  actor wait for the others.
 
 ## Deliberately deferred
 
