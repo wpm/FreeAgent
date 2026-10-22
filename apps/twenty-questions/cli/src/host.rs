@@ -146,11 +146,16 @@ fn talking(used: u64, guesses: u64, time_left: Duration, quiet: Duration) -> Str
 }
 
 /// Whether `line`, a line of speech the host heard, speaks to the host by
-/// name.
+/// name: calls it *host*, and not *the host* or *the host's*, which talk
+/// about it. Players mention *the host's answers* all the time.
 fn addressed(line: &str) -> bool {
-    line.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .any(|word| word == "host")
+    let lowered = line.to_lowercase();
+    let words: Vec<&str> = lowered
+        .split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '’'))
+        .collect();
+    let about = ["the", "a", "an", "our", "this", "that"];
+    (0..words.len()).any(|at| words[at] == "host" && (at == 0 || !about.contains(&words[at - 1])))
 }
 
 /// The tool the host picks the object with: `choose`, taking the `object`.
@@ -1565,6 +1570,28 @@ mod tests {
             spoken(&answer("No.")).unwrap_err().to_string(),
             "the model called answer, which is not a tool it was offered"
         );
+    }
+
+    #[test]
+    fn a_player_speaks_to_the_host_by_calling_it_host_not_by_talking_about_it() {
+        for line in [
+            "Host, is it alive?",
+            "Is it alive, host?",
+            "Hey HOST! Is it red?",
+            "Bob: \"host: is it big?\"",
+        ] {
+            assert!(addressed(line), "{line}");
+        }
+        for line in [
+            "Considering the host's answers, it is not alive.",
+            "Let's ask the host whether it is alive.",
+            "The host said no.",
+            "Our host’s answer was yes.",
+            "A ghost story?",
+            "Bob: \"It is not alive.\"",
+        ] {
+            assert!(!addressed(line), "{line}");
+        }
     }
 
     #[test]
