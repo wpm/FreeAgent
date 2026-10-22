@@ -8,7 +8,7 @@
 //! guess, other speech a bubble from its speaker, the rest of the
 //! narration a block of told lines, and the end of the game its outcome.
 
-use crate::log::{Entry, Header, Victory};
+use crate::log::{Entry, Header};
 use crate::message::{HOST, Message};
 use crate::narrator::Narrator;
 use anyhow::Context;
@@ -20,25 +20,20 @@ use serde::de::IgnoredAny;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use twenty_questions_gui_types::{self as gui, Beat, Cue, Millis, Outcome, Part, Seat};
+use twenty_questions_gui_types::{Beat, Cue, Millis, Outcome, Part, Seat};
 pub use twenty_questions_gui_types::{Opened, Recording, Recordings};
 use uuid::Uuid;
 
 /// Folds one game's log into cues, an event at a time.
 #[derive(Debug, Default)]
 pub struct Stage {
-    /// The console's narrator, whose lines the cues carry.
+    /// The console's narrator, whose lines the cues carry and whose count
+    /// of the guesses numbers them.
     narrator: Narrator,
     /// The players and the host whose model call is out.
     thinking: HashSet<ActorId>,
-    /// The text of every guess, by its asker and the asker's number for it.
-    asked: HashMap<(ActorId, u64), String>,
-    /// How many guesses the players have.
-    guesses: u64,
-    /// How many guesses the host has counted.
-    counted: u64,
-    /// Whether the game is over.
-    over: bool,
+    /// The outcome, once a side has won, held for [`Stage::end`].
+    won: Option<Cue>,
 }
 
 impl Stage {
@@ -53,12 +48,13 @@ impl Stage {
     /// utterance a bubble from its speaker, blank lines left out. A model
     /// call going out is its caller thinking, and coming back their
     /// thought. The end is what the narrator tells of it, then a thought
-    /// for every call still out, then the outcome, last. Nothing follows
-    /// the end.
+    /// for every call still out; its outcome waits for [`Stage::end`].
+    /// Nothing follows the end.
     pub fn fold(&mut self, event: &Event<Entry>) -> Vec<Cue> {
         let at = millis(event.time);
+        let (over, counted) = (self.narrator.is_over(), self.narrator.count());
         let lines = self.narrator.narrate(event);
-        if self.over {
+        if over {
             return vec![];
         }
         let beats = match &event.payload {
@@ -66,20 +62,29 @@ impl Stage {
                 strategies,
                 guesses,
                 time_limit,
-            } => {
-                self.guesses = *guesses;
-                vec![
-                    cast(strategies, *guesses, *time_limit),
-                    Beat::Clock { rate: 1.0 },
-                ]
-            }
+            } => vec![
+                cast(strategies, *guesses, *time_limit),
+                Beat::Clock { rate: 1.0 },
+            ],
             Entry::Configuration(configuration) => {
-                let secret = configuration.host.object.as_deref().map(secret);
-                secret.into_iter().chain(beats(&lines)).collect()
+                let object = configuration.host.object.as_deref();
+                object
+                    .map(secret)
+                    .into_iter()
+                    .chain(beats(&lines))
+                    .collect()
             }
-            Entry::Chosen { object, .. } => [vec![secret(object)], beats(&lines)].concat(),
-            Entry::Action { message, .. } => self.acted(message, &lines),
-            Entry::Observation { by, from, n } if by == HOST => self.counted(from, *n),
+            Entry::Chosen { object, .. } => {
+                [secret(object)].into_iter().chain(beats(&lines)).collect()
+            }
+            Entry::Action { message, .. } => acted(message, &lines),
+            Entry::Observation { from, n, .. } if self.narrator.count() > counted => {
+                vec![Beat::Guessed {
+                    who: from.clone(),
+                    text: self.asked(from, *n),
+                    guess: self.narrator.count(),
+                }]
+            }
             Entry::Uncounted { from, n } => vec![Beat::Uncounted {
                 who: from.clone(),
                 text: self.asked(from, *n),
@@ -90,28 +95,33 @@ impl Stage {
             }
             Entry::Thought { by, .. } => self.thought(by).into_iter().collect(),
             Entry::End { by, .. } => {
-                self.over = true;
-                let mut beats = beats(&lines);
-                beats.extend(self.hushed());
                 let outcome = Outcome::Won {
-                    by: victory(*by),
+                    by: *by,
                     how: last(&lines),
                 };
-                beats.push(Beat::Over { outcome });
-                beats
+                self.won = Some(Cue {
+                    at,
+                    beat: Beat::Over { outcome },
+                });
+                [beats(&lines), self.hushed()].concat()
             }
             _ => beats(&lines),
         };
         beats.into_iter().map(|beat| Cue { at, beat }).collect()
     }
 
-    /// The last cues of a game that `ended` as it did at `at`, `won` being
-    /// the outcome [`Stage::fold`] gave if a side won: a thought for every
-    /// call still out, in seat order, then the outcome. A failure tells its
-    /// error first and is a failure even after a win. Otherwise a game won
-    /// is won, and one with no end is [`Outcome::Unfinished`].
-    pub fn end(&mut self, at: Millis, won: Option<Cue>, ended: Option<Ended>) -> Vec<Cue> {
+    /// Whether a side has won.
+    pub fn is_won(&self) -> bool {
+        self.won.is_some()
+    }
+
+    /// The last cues of a game that `ended` as it did at `at`: a thought
+    /// for every call still out, in seat order, then the outcome. A failure
+    /// tells its error first and is a failure even after a win. Otherwise a
+    /// game won is won, and one with no end is [`Outcome::Unfinished`].
+    pub fn end(&mut self, at: Millis, ended: Option<Ended>) -> Vec<Cue> {
         let mut beats = self.hushed();
+        let won = self.won.take();
         let over = |outcome| Cue {
             at,
             beat: Beat::Over { outcome },
@@ -129,52 +139,9 @@ impl Stage {
         cues
     }
 
-    /// What sending `message`, told as `lines`, adds: the beginning starts
-    /// the countdown, a guess is kept to be shown when the host counts it,
-    /// an answer is shown with its guess, and speech is said.
-    fn acted(&mut self, message: &Message, lines: &[Line]) -> Vec<Beat> {
-        match message {
-            Message::Begin { .. } => vec![Beat::Began],
-            Message::Guess { from, n, text } => {
-                self.asked.insert((from.clone(), *n), text.clone());
-                vec![]
-            }
-            Message::Answer {
-                guess,
-                text,
-                named,
-                left,
-                ..
-            } => vec![Beat::Answered {
-                guess: *guess,
-                text: text.clone(),
-                named: *named,
-                left: *left,
-            }],
-            _ => beats(lines),
-        }
-    }
-
-    /// What the host observing the message `from` numbered `n` adds: the
-    /// guess, numbered, if it is one and is counted.
-    fn counted(&mut self, from: &ActorId, n: u64) -> Vec<Beat> {
-        if !self.asked.contains_key(&(from.clone(), n)) || self.counted == self.guesses {
-            return vec![];
-        }
-        self.counted += 1;
-        vec![Beat::Guessed {
-            who: from.clone(),
-            text: self.asked(from, n),
-            guess: self.counted,
-        }]
-    }
-
     /// The text of the guess `from` numbered `n`.
     fn asked(&self, from: &ActorId, n: u64) -> String {
-        self.asked
-            .get(&(from.clone(), n))
-            .cloned()
-            .unwrap_or_default()
+        self.narrator.asked(from, n).unwrap_or_default().to_string()
     }
 
     /// `who`'s thought, if their call is out.
@@ -191,6 +158,28 @@ impl Stage {
             .into_iter()
             .map(|who| Beat::Thought { who: who.clone() })
             .collect()
+    }
+}
+
+/// What sending `message`, told as `lines`, adds: the beginning starts the
+/// countdown, an answer is shown with its guess, and speech is said. A
+/// guess waits for the host to count it.
+fn acted(message: &Message, lines: &[Line]) -> Vec<Beat> {
+    match message {
+        Message::Begin { .. } => vec![Beat::Began],
+        Message::Answer {
+            guess,
+            text,
+            named,
+            left,
+            ..
+        } => vec![Beat::Answered {
+            guess: *guess,
+            text: text.clone(),
+            named: *named,
+            left: *left,
+        }],
+        _ => beats(lines),
     }
 }
 
@@ -269,10 +258,9 @@ pub fn opened(path: &Path) -> anyhow::Result<Opened> {
 /// first line is one, folded into cues and ended as [`recordings`] ends it.
 fn recording(episode: Uuid, lines: &[(usize, &str)]) -> anyhow::Result<Recording> {
     let (number, first) = lines[0];
-    Header::read(first).with_context(|| format!("episode {episode} is bad at line {number}"))?;
+    Header::check(first).with_context(|| format!("episode {episode} is bad at line {number}"))?;
     let mut stage = Stage::default();
     let mut cues = Vec::new();
-    let mut won = None;
     let mut ended = None;
     let mut at = 0;
     for &(number, line) in lines {
@@ -282,14 +270,9 @@ fn recording(episode: Uuid, lines: &[(usize, &str)]) -> anyhow::Result<Recording
         if let Entry::Ended(how) = &event.payload {
             ended = Some(how.clone());
         }
-        for cue in stage.fold(&event) {
-            match cue.beat {
-                Beat::Over { .. } => won = Some(cue),
-                _ => cues.push(cue),
-            }
-        }
+        cues.extend(stage.fold(&event));
     }
-    cues.extend(stage.end(at, won, ended));
+    cues.extend(stage.end(at, ended));
     Ok(Recording { episode, cues })
 }
 
@@ -332,15 +315,6 @@ fn secret(object: &str) -> Beat {
     }
 }
 
-/// How the screen names `victory`.
-fn victory(victory: Victory) -> gui::Victory {
-    match victory {
-        Victory::Named => gui::Victory::Named,
-        Victory::OutOfGuesses => gui::Victory::OutOfGuesses,
-        Victory::OutOfTime => gui::Victory::OutOfTime,
-    }
-}
-
 /// The words of the last of narrator `lines`.
 fn last(lines: &[Line]) -> String {
     lines.last().map(Line::to_string).unwrap_or_default()
@@ -376,8 +350,8 @@ fn beats(lines: &[Line]) -> Vec<Beat> {
 pub(crate) mod tests {
     use super::*;
     use crate::game::tests::{Line as Script, Played, Puppet, Rules, configuration, hosting};
-    use crate::log::Writer;
     use crate::log::tests::logged;
+    use crate::log::{Victory, Writer};
     use crate::model::canned::canned;
     use free_agent_game::log::Secrets;
     use free_agent_model::fake::FakeModel;
@@ -416,10 +390,13 @@ pub(crate) mod tests {
         scripted(Rules::default(), &[("Alice", &alice), ("Bob", &bob)]).await
     }
 
-    /// The cues a fresh stage folds `events` into.
+    /// The cues a fresh stage folds `events` into, ended where they end.
     fn folded(events: &[Event<Entry>]) -> Vec<Cue> {
         let mut stage = Stage::default();
-        events.iter().flat_map(|event| stage.fold(event)).collect()
+        let mut cues: Vec<Cue> = events.iter().flat_map(|event| stage.fold(event)).collect();
+        let at = events.last().map_or(0, |event| millis(event.time));
+        cues.extend(stage.end(at, None));
+        cues
     }
 
     /// The beats of `cues` but the calls going out and coming back.
@@ -459,7 +436,7 @@ pub(crate) mod tests {
     }
 
     /// The game ended, won `by` as the narrator tells it, `how`.
-    fn over(by: gui::Victory, how: &str) -> Vec<Beat> {
+    fn over(by: Victory, how: &str) -> Vec<Beat> {
         vec![
             told(&[how]),
             Beat::Over {
@@ -536,7 +513,7 @@ pub(crate) mod tests {
                 answered(2, "Yes, it is!", true, 18),
             ],
             over(
-                gui::Victory::Named,
+                Victory::Named,
                 "The players named a teapot with 2 of their 20 guesses, in 31s.",
             ),
         ]
@@ -569,7 +546,7 @@ pub(crate) mod tests {
                 answered(1, "No.", false, 0),
             ],
             over(
-                gui::Victory::OutOfGuesses,
+                Victory::OutOfGuesses,
                 "The host wins: the players used all 1 guesses without naming a teapot, in 2s.",
             ),
         ]
@@ -587,7 +564,7 @@ pub(crate) mod tests {
         let beats = [
             opening(20, after(30)),
             over(
-                gui::Victory::OutOfTime,
+                Victory::OutOfTime,
                 "The host wins: time ran out after 30s, with 0 of 20 guesses used. It was a teapot.",
             ),
         ]
@@ -645,7 +622,7 @@ pub(crate) mod tests {
         };
         let staged = staged(&[failed, end, thinking]);
         assert_eq!(staged[0], [told(&["Host fails to play: no model"])]);
-        assert!(matches!(staged[1].last(), Some(Beat::Over { .. })));
+        assert!(matches!(staged[1][..], [Beat::Told(_)]), "{:?}", staged[1]);
         assert_eq!(staged[2], []);
     }
 
@@ -695,7 +672,7 @@ pub(crate) mod tests {
     }
 
     /// The cues of the one episode `log` holds.
-    fn only(log: &str) -> Vec<Cue> {
+    pub(crate) fn only(log: &str) -> Vec<Cue> {
         let Recordings {
             mut games,
             problems,

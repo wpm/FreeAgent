@@ -175,6 +175,7 @@ pub enum Part {
 
 /// A side of the game, one of which wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Side {
     /// The players, who win by naming the object.
     Players,
@@ -184,6 +185,7 @@ pub enum Side {
 
 /// How a game is won.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Victory {
     /// A guess named the object.
     Named,

@@ -168,37 +168,8 @@ pub enum Ending {
     Failed(String),
 }
 
-/// A side of the game, one of which wins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Side {
-    /// The players, who win by naming the object.
-    Players,
-    /// The host, who wins by keeping it.
-    Host,
-}
-
-/// How a game is won.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Victory {
-    /// A guess named the object.
-    Named,
-    /// The last guess was answered without naming it.
-    OutOfGuesses,
-    /// The time limit came first.
-    OutOfTime,
-}
-
-impl Victory {
-    /// The side that wins this way.
-    pub fn winner(self) -> Side {
-        match self {
-            Victory::Named => Side::Players,
-            Victory::OutOfGuesses | Victory::OutOfTime => Side::Host,
-        }
-    }
-}
+/// The sides of the game and how it is won, as the screen shows them too.
+pub use twenty_questions_gui_types::{Side, Victory};
 
 /// The first line of every episode: what a reader needs to know before it
 /// reads the rest.
@@ -221,35 +192,42 @@ impl Header {
             game: GAME.to_string(),
         }
     }
-}
 
-impl Header {
-    /// The header `line` holds, or `None` when it holds none.
+    /// Check the header `line` holds, if it holds one: its game is this
+    /// one, and its format one this version reads. Only what every format
+    /// says is read, so a newer header of any shape is refused as newer.
     ///
     /// # Errors
     ///
-    /// When the header is bad, is of a newer format than this version
-    /// reads, or is of another game.
-    pub fn read(line: &str) -> anyhow::Result<Option<Self>> {
+    /// When the header is bad, is of another game, or is of a newer format
+    /// than this version reads.
+    pub fn check(line: &str) -> anyhow::Result<()> {
         let Ok(event) = serde_json::from_str::<Event<serde_json::Value>>(line) else {
-            return Ok(None);
+            return Ok(());
         };
         let Some(header) = event.payload.get("Header") else {
-            return Ok(None);
+            return Ok(());
         };
-        let header = Header::deserialize(header).context("the log's header is bad")?;
-        let Header {
+        /// What every format's header says: its format, who wrote it, and
+        /// the game.
+        #[derive(Deserialize)]
+        struct Claimed {
+            format: u32,
+            version: String,
+            game: String,
+        }
+        let Claimed {
             format,
             version,
             game,
-        } = &header;
+        } = Claimed::deserialize(header).context("the log's header is bad")?;
         anyhow::ensure!(game == GAME, "This log is of {game}, not {GAME}.");
         anyhow::ensure!(
-            *format <= LOG_FORMAT,
+            format <= LOG_FORMAT,
             "This log was written by {GAME} {version} in log format {format}. \
              This version reads log formats up to {LOG_FORMAT}."
         );
-        Ok(Some(header))
+        Ok(())
     }
 }
 
@@ -285,17 +263,19 @@ impl<W: Write> Writer<W> {
         Ok(writer)
     }
 
-    /// Write `event`, one of the episode's, without its secrets.
+    /// Write `event`, one of the episode's, without its secrets, and give
+    /// back the line written.
     ///
     /// # Errors
     ///
     /// Fails when writing to `sink` fails, or when the event cannot be
     /// serialized.
-    pub fn write(&mut self, event: &Event<Entry>) -> io::Result<()> {
+    pub fn write(&mut self, event: &Event<Entry>) -> io::Result<String> {
         let mut line = Vec::new();
         event.write(&mut line)?;
         let line = self.secrets.redacted(&String::from_utf8_lossy(&line));
-        self.sink.write_all(line.as_bytes())
+        self.sink.write_all(line.as_bytes())?;
+        Ok(line)
     }
 
     /// Write how the episode `ended`, its last line, and give back the
@@ -396,26 +376,26 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_header_reads_back_and_a_line_that_is_no_header_holds_none() {
+    fn a_header_this_version_wrote_and_a_line_that_is_no_header_pass() {
         let written = Writer::start(Vec::new(), episode(), Secrets::default()).unwrap();
         let written = written.end(Ended::Won).unwrap();
         let text = String::from_utf8(written).unwrap();
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(Header::read(lines[0]).unwrap(), Some(Header::default()));
-        assert_eq!(Header::read(lines[1]).unwrap(), None);
-        assert_eq!(Header::read("not a line").unwrap(), None);
+        for line in [lines[0], lines[1], "not a line"] {
+            Header::check(line).unwrap();
+        }
     }
 
     #[test]
     fn a_header_of_another_game_a_newer_format_or_a_bad_shape_is_refused() {
         let werewolf = header_line(json!({"format": 1, "version": "0.2.0", "game": "werewolf"}));
         assert_eq!(
-            Header::read(&werewolf).unwrap_err().to_string(),
+            Header::check(&werewolf).unwrap_err().to_string(),
             "This log is of werewolf, not twenty-questions."
         );
-        let newer = header_line(json!({"format": 2, "version": "0.3.0", "game": GAME}));
+        let newer = header_line(json!({"format": 2, "version": "0.3.0", "game": GAME, "new": 1}));
         assert_eq!(
-            Header::read(&newer).unwrap_err().to_string(),
+            Header::check(&newer).unwrap_err().to_string(),
             "This log was written by twenty-questions 0.3.0 in log format 2. \
              This version reads log formats up to 1."
         );
@@ -423,7 +403,7 @@ pub(crate) mod tests {
             json!({"format": 1}),
             json!({"format": 1, "version": 1, "game": GAME}),
         ] {
-            let error = Header::read(&header_line(bad)).unwrap_err();
+            let error = Header::check(&header_line(bad)).unwrap_err();
             assert_eq!(error.to_string(), "the log's header is bad");
         }
     }
@@ -452,9 +432,6 @@ pub(crate) mod tests {
 
     #[test]
     fn the_end_says_who_won_and_how_and_round_trips() {
-        assert_eq!(Victory::Named.winner(), Side::Players);
-        assert_eq!(Victory::OutOfGuesses.winner(), Side::Host);
-        assert_eq!(Victory::OutOfTime.winner(), Side::Host);
         let end = Entry::End {
             winner: Side::Host,
             by: Victory::OutOfTime,

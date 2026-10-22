@@ -1,6 +1,6 @@
 //! A game played live for the screen. [`play`] starts a [`Ready`] game in
 //! the background and folds each event through a [`Stage`] into cues as it
-//! happens, ending with [`Beat::Over`], and keeps its log, as
+//! happens, ending with [`Beat::Over`](twenty_questions_gui_types::Beat::Over), and keeps its log, as
 //! `twenty-questions play` writes it, as a [`GameLog`]. A [`Session`] plays
 //! one game at a time, from preparing it to its end, and keeps the last
 //! one's log until the next one starts.
@@ -17,7 +17,7 @@ use std::time::SystemTime;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use twenty_questions_gui_types::{Beat, Cue};
+use twenty_questions_gui_types::Cue;
 use uuid::Uuid;
 
 /// The log of a game that is over, written as `twenty-questions play`
@@ -176,12 +176,12 @@ impl Session {
 /// cues, each passed to `show` as it happens. When `show` fails, the game
 /// stops.
 ///
-/// The last cue is [`Beat::Over`], after a thought for every call still
+/// The last cue is [`Beat::Over`](twenty_questions_gui_types::Beat::Over), after a thought for every call still
 /// out: how the game was won,
 /// [`Outcome::Stopped`](twenty_questions_gui_types::Outcome::Stopped) after
 /// a stop, or
 /// [`Outcome::Failed`](twenty_questions_gui_types::Outcome::Failed) when
-/// the episode fails, after one [`Beat::Told`] line with the error.
+/// the episode fails, after one [`Beat::Told`](twenty_questions_gui_types::Beat::Told) line with the error.
 pub fn play(
     ready: &Ready,
     show: impl FnMut(Cue) -> anyhow::Result<()> + Send + 'static,
@@ -209,13 +209,11 @@ pub fn play(
 }
 
 /// What reads a game's log: where its cues go, what stops the game when
-/// they can no longer go there, the keys the screen and the log leave out,
-/// and what writes the log down, until a line of it cannot be written, and
-/// where it is kept once it is over.
+/// they can no longer go there, and what writes the log down, until a line
+/// of it cannot be written, and where it is kept once it is over.
 struct Reader<S> {
     show: S,
     stopper: Stopper,
-    secrets: Secrets,
     writer: Option<Writer<Vec<u8>>>,
     kept: Arc<OnceLock<Arc<[u8]>>>,
 }
@@ -237,8 +235,7 @@ where
         Reader {
             show,
             stopper,
-            writer: Writer::start(Vec::new(), episode, secrets.clone()).ok(),
-            secrets,
+            writer: Writer::start(Vec::new(), episode, secrets).ok(),
             kept,
         }
     }
@@ -246,27 +243,23 @@ where
     /// Write down and show every event from `events` until the episode
     /// `run` has ended, then keep the log, closed with how the game
     /// ended, and show that, both stamped with one time. Each event is
-    /// shown as its line of the log reads back, without the keys.
+    /// shown as its line of the log reads back, without the keys, and
+    /// nothing is shown once a line cannot be written.
     async fn read(
         mut self,
         mut events: UnboundedReceiver<Event<Entry>>,
         run: impl Future<Output = anyhow::Result<()>>,
     ) {
         let mut stage = Stage::default();
-        let mut won = None;
         while let Some(event) = events.recv().await {
-            self.writer = self
-                .writer
-                .take()
-                .and_then(|mut writer| writer.write(&event).ok().map(|()| writer));
-            for cue in stage.fold(&without(&self.secrets, event)) {
-                match cue.beat {
-                    Beat::Over { .. } => won = Some(cue),
-                    _ => self.show(cue),
-                }
+            let line = (self.writer.as_mut()).and_then(|writer| writer.write(&event).ok());
+            self.writer = self.writer.take().filter(|_| line.is_some());
+            let read = line.and_then(|line| serde_json::from_str(&line).ok());
+            for cue in read.iter().flat_map(|event| stage.fold(event)) {
+                self.show(cue);
             }
         }
-        let ended = Ended::of(&run.await, won.is_some());
+        let ended = Ended::of(&run.await, stage.is_won());
         let at = SystemTime::now();
         let closed = self
             .writer
@@ -275,7 +268,7 @@ where
         if let Some(Ok(log)) = closed {
             let _ = self.kept.set(log.into());
         }
-        for cue in stage.end(millis(at), won, Some(ended)) {
+        for cue in stage.end(millis(at), Some(ended)) {
             self.show(cue);
         }
     }
@@ -288,20 +281,13 @@ where
     }
 }
 
-/// `event` as its line of the log reads back: without `secrets`.
-fn without(secrets: &Secrets, event: Event<Entry>) -> Event<Entry> {
-    let line = serde_json::to_string(&event).map(|line| secrets.redacted(&line));
-    let read = line.map(|line| serde_json::from_str(&line));
-    read.ok().and_then(Result::ok).unwrap_or(event)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::log::tests::logged;
     use crate::model::canned::{CANARY, CANARY_VARIABLE, assert_redacted, leaking, playing};
     use crate::run::prepare;
-    use crate::stage::recordings;
+    use crate::stage::tests::only;
     use free_agent::Episode;
     use free_agent_model::secret::Keychain;
     use free_agent_model::secret::testing::Fake;
@@ -309,7 +295,7 @@ mod tests {
     use secrecy::SecretString;
     use std::collections::HashMap;
     use tokio::sync::mpsc::UnboundedSender;
-    use twenty_questions_gui_types::{Outcome, Victory};
+    use twenty_questions_gui_types::{Beat, Outcome, Victory};
 
     /// A quick game of two players at the provider at `base_url`, the
     /// model's table ending with `model`.
@@ -357,7 +343,7 @@ mod tests {
     /// The text of the log `session` keeps, and the cues it reads back as.
     fn kept(session: &Session) -> (String, Vec<Cue>) {
         let text = String::from_utf8(session.log().unwrap().bytes.to_vec()).unwrap();
-        let cues = recordings(&text).unwrap().games.remove(0).cues;
+        let cues = only(&text);
         (text, cues)
     }
 
@@ -461,7 +447,7 @@ mod tests {
         reader.read(events, run).await;
         let cues = received(receiver).await;
         let saved = String::from_utf8(kept.get().unwrap().to_vec()).unwrap();
-        assert_eq!(cues, recordings(&saved).unwrap().games.remove(0).cues);
+        assert_eq!(cues, only(&saved));
         assert!(
             saved.ends_with("{\"Ended\":{\"failed\":\"actor Host failed: no model\"}}}\n"),
             "{saved}"
