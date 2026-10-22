@@ -44,14 +44,14 @@
 // first bubble with every later one dimmed; the arrow keys, Home and End,
 // ⌘↑ and ⌘↓, ⌥↓ and a click move the cursor, and the board, the outcome
 // and the position follow it; ⌘] and the list of games open another game
-// on its first bubble, and Close goes back to the start state. A game
-// just played goes into review on its last bubble under the game's name,
-// offering Save Log… beside New game; Save Game Log… is enabled there and
-// nowhere else, and ⌘↑ goes to the first bubble; a log opened from there
-// offers Close. On the web page a game at rest is in review on its
-// last bubble, the keys and a click move the cursor, and Play, then Play
-// again, leaves review until every cue is shown. The console stays clean
-// throughout.
+// on its first bubble with its own chat, and Close goes back to the start
+// state. A game just played goes into review on its last bubble under the
+// game's name, offering Save Log… beside New game; Save Game Log… is
+// enabled there and nowhere else, and ⌘↑ goes to the first bubble; a log
+// opened from there offers Close. On the web page a game at rest is in
+// review on its last bubble, the keys and a click move the cursor, and
+// Play, then Play again, leaves review until every cue is shown. The
+// console stays clean throughout.
 // What any app's chrome and Settings window must pass comes from free-agent-gui's
 // crates/gui/e2e/chrome.mjs.
 // Screenshots land in ./screenshots for a human to look at.
@@ -1014,6 +1014,15 @@ await section('desktop', async () => {
 // A log opened in review: the backend sends the recorded prompted games,
 // Werewolf then Avalon, as Open Game Log… would.
 await section('desktop review', async () => {
+  // Each game's chat, as the web page shows it.
+  const chats = {};
+  const web = watch(await context.newPage());
+  for (const [game, hash] of [['Werewolf', 'werewolf-prompted'], ['Avalon', 'avalon-prompted']]) {
+    await open(web, hash);
+    chats[game] = await web.$$eval('.rc-message', (messages) => messages.map((message) => message.querySelector('.rc-bubble')?.innerText ?? '').join('\n'));
+  }
+  await web.close();
+  check(chats.Werewolf !== chats.Avalon, 'desktop review: the two games have different chats');
   const app = await browser.newContext({ colorScheme: 'light', viewport: { width: 1100, height: 760 } });
   await app.addInitScript(backend(desktop, answers));
   const main = watch(await app.newPage());
@@ -1034,7 +1043,8 @@ await section('desktop review', async () => {
   await main.waitForSelector('.fa-review-position');
   await main.waitForTimeout(SETTLE);
   /** Where the cursor is: the position shown, the selected bubble, the
-   * dimmed ones, the game, and the board and outcome shown. */
+   * dimmed ones, the game, every bubble's text, and the board and
+   * outcome shown. */
   const where = () =>
     main.evaluate(() => {
       const messages = [...document.querySelectorAll('.rc-message')];
@@ -1048,6 +1058,7 @@ await section('desktop review', async () => {
         laterFirst: messages.indexOf(later[0]),
         dimmed: later.length > 0 && Number(getComputedStyle(later[0]).opacity) < 1,
         game: document.querySelector('.fa-header h1').textContent,
+        chat: messages.map((message) => message.querySelector('.rc-bubble')?.innerText ?? '').join('\n'),
         name: document.querySelector('.fa-review-name').textContent,
         of: document.querySelector('.fa-review-game')?.textContent ?? null,
         outcome: document.querySelector('.sd-outcome')?.textContent ?? null,
@@ -1064,13 +1075,14 @@ await section('desktop review', async () => {
   const first = await where();
   check(
     first.name === 'two.jsonl' && first.game === 'Werewolf' && first.of === 'Game 1 of 2' && first.position === `1 / ${first.count}`,
-    `desktop review: a log opens on the first bubble of its first game (${JSON.stringify({ ...first, board: undefined })})`,
+    `desktop review: a log opens on the first bubble of its first game (${JSON.stringify({ ...first, board: undefined, chat: undefined })})`,
   );
   check(
     first.selected === 0 && first.current === 1 && first.later === first.count - 1 && first.laterFirst === 1 && first.dimmed,
-    `desktop review: the first bubble is selected and every later one is dimmed (${JSON.stringify({ ...first, board: undefined })})`,
+    `desktop review: the first bubble is selected and every later one is dimmed (${JSON.stringify({ ...first, board: undefined, chat: undefined })})`,
   );
   check(first.outcome === null, `desktop review: the first bubble shows no outcome (${first.outcome})`);
+  check(first.chat === chats.Werewolf, 'desktop review: the chat shows the first game\'s bubbles');
   const arrows = await main.$$eval('.fa-review-games button', (buttons) => buttons.map((button) => [button.textContent, button.disabled]));
   check(
     JSON.stringify(arrows) === JSON.stringify([['‹', true], ['›', false]]),
@@ -1086,7 +1098,7 @@ await section('desktop review', async () => {
   const stepped = await where();
   check(
     stepped.selected === 2 && stepped.position === `3 / ${first.count}` && stepped.later === first.count - 3,
-    `desktop review: the arrow keys step forward (${JSON.stringify({ ...stepped, board: undefined })})`,
+    `desktop review: the arrow keys step forward (${JSON.stringify({ ...stepped, board: undefined, chat: undefined })})`,
   );
   await main.keyboard.press('ArrowUp');
   check((await where()).selected === 1, 'desktop review: the arrow keys step back');
@@ -1095,7 +1107,7 @@ await section('desktop review', async () => {
   const last = await where();
   check(
     last.selected === first.count - 1 && last.later === 0 && last.position === `${first.count} / ${first.count}` && last.inView,
-    `desktop review: ⌘↓ jumps to the last bubble, in view, with nothing dimmed (${JSON.stringify({ ...last, board: undefined })})`,
+    `desktop review: ⌘↓ jumps to the last bubble, in view, with nothing dimmed (${JSON.stringify({ ...last, board: undefined, chat: undefined })})`,
   );
   check(last.outcome !== null && last.board !== first.board, `desktop review: the board and outcome follow the cursor (${last.outcome})`);
   await main.screenshot({ path: join(shots, 'desktop-review-last.png') });
@@ -1119,11 +1131,16 @@ await section('desktop review', async () => {
   const second = await where();
   check(
     second.game === 'Avalon' && second.of === 'Game 2 of 2' && second.selected === 0 && second.position === `1 / ${second.count}`,
-    `desktop review: ⌘] opens the next game on its first bubble (${JSON.stringify({ ...second, board: undefined })})`,
+    `desktop review: ⌘] opens the next game on its first bubble (${JSON.stringify({ ...second, board: undefined, chat: undefined })})`,
   );
+  check(second.chat === chats.Avalon, `desktop review: after ⌘] the chat shows the next game's bubbles (${second.chat.slice(0, 200)})`);
   await main.selectOption('.fa-review-games select', '0');
   await main.waitForTimeout(100);
-  check((await where()).game === 'Werewolf', 'desktop review: the list of games opens the one chosen');
+  const chosen = await where();
+  check(
+    chosen.game === 'Werewolf' && chosen.chat === chats.Werewolf,
+    `desktop review: the list of games opens the one chosen, with its own bubbles (${chosen.chat.slice(0, 200)})`,
+  );
   await main.click('.fa-header button:text("Close")');
   await main.waitForSelector('.fa-start');
   check(

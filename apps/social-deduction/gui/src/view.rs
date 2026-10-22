@@ -290,9 +290,9 @@ impl Reviewing {
         self.moved(|review| review.go(go));
     }
 
-    /// Put the cursor on the bubble whose message ID is `id`.
-    pub fn select(self, id: &str) {
-        if let Some(k) = screen::bubble(id) {
+    /// Put the cursor on the bubble whose chat key is `key`.
+    pub fn select(self, key: &str) {
+        if let Some(k) = screen::bubble(key) {
             self.moved(|review| review.select(k));
         }
     }
@@ -302,10 +302,20 @@ impl Reviewing {
         self.moved(|review| review.choose(game));
     }
 
-    /// Move the cursor by `act`, and show what it lands.
+    /// Move the cursor by `act`, and show what it lands. Another game
+    /// shows on a screen of its own.
     fn moved(self, act: impl FnOnce(&mut Review) -> Vec<Landed>) {
-        let landed = self.review.try_update(|review| review.as_mut().map(act));
-        if let Some(Some(landed)) = landed {
+        let moved = self.review.try_update(|review| {
+            review.as_mut().map(|review| {
+                let game = review.game();
+                let landed = act(review);
+                (landed, review.game() != game)
+            })
+        });
+        if let Some(Some((landed, another))) = moved {
+            if another {
+                self.live.reset();
+            }
             self.shown(landed);
         }
     }
@@ -415,7 +425,8 @@ pub(crate) fn Viewer(
     // Memos, so that a cue that leaves the chat, the names or the board as
     // they were redraws none of them.
     let names = Memo::new(move |_| screen.with(|screen| screen.names.clone()));
-    let posts = Memo::new(move |_| screen.with(|screen| screen.posts.clone()));
+    // Posts are keyed by era, so a game's posts never pass for another's.
+    let posts = Memo::new(move |_| screen.with(|screen| (screen.era(), screen.posts.clone())));
     let thinkers = Memo::new(move |_| screen.with(|screen| screen.thinkers.clone()));
     let board = Memo::new(move |_| screen.with(Screen::board));
     let werewolf = Memo::new(move |_| screen.with(Screen::werewolf));
@@ -435,12 +446,12 @@ pub(crate) fn Viewer(
     let selected = Signal::derive(move || {
         screen.with(|screen| {
             let post = screen.posts.get(screen.cursor?)?;
-            Some(post.id.clone())
+            Some(screen::key(screen.era(), &post.id))
         })
     });
     let split = Split::new(BOARD);
     let messages = Signal::derive(move || {
-        let mut messages = posts.with(|posts| messages(posts));
+        let mut messages = posts.with(|(era, posts)| messages(*era, posts));
         thinkers.with(|thinkers| {
             messages.extend(thinkers.iter().map(|thinker| dots(thinker, silence)));
         });
@@ -538,18 +549,21 @@ async fn fetched(name: &str) -> Result<Vec<Cue>, String> {
         .map_err(|error| format!("{file}: {error}"))
 }
 
-/// `posts`, as Rich-Chat messages.
-fn messages(posts: &[Post]) -> Vec<Message> {
+/// `posts`, as Rich-Chat messages keyed for `era`.
+fn messages(era: u64, posts: &[Post]) -> Vec<Message> {
     posts
         .iter()
-        .map(|post| match &post.body {
-            Body::Heading(text) => {
-                let text = text.clone();
-                Message::view(post.id.clone(), NARRATOR, move || {
-                    view! { <div class="sd-heading">{text.clone()}</div> }
-                })
+        .map(|post| {
+            let id = screen::key(era, &post.id);
+            match &post.body {
+                Body::Heading(text) => {
+                    let text = text.clone();
+                    Message::view(id, NARRATOR, move || {
+                        view! { <div class="sd-heading">{text.clone()}</div> }
+                    })
+                }
+                Body::Text(text) => Message::new(id, post.name.clone(), text.clone()),
             }
-            Body::Text(text) => Message::new(post.id.clone(), post.name.clone(), text.clone()),
         })
         .collect()
 }
