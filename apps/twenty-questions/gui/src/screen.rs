@@ -179,9 +179,7 @@ impl Screen {
                 };
                 self.post(who, body);
             }
-            Beat::Answered {
-                guess, text, named, ..
-            } => {
+            Beat::Answered { guess, text, named } => {
                 self.answered.insert(*guess);
                 if *named {
                     self.won = Some(*guess);
@@ -552,7 +550,6 @@ mod tests {
             guess,
             text: text.to_string(),
             named,
-            left: 0,
         };
         at(time, beat)
     }

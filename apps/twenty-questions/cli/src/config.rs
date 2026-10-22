@@ -49,19 +49,13 @@ impl Program for TwentyQuestions {
 /// A configuration file's `format` key, as `twenty-questions` reads it.
 pub type Format = free_agent_game::config::Format<TwentyQuestions>;
 
-pub use twenty_questions_gui_types::settings::{GUESSES, NAMES};
+pub use twenty_questions_gui_types::settings::{GUESSES, NAMES, PLAYERS, TEMPERATURE};
 
 /// How long a game lasts unless the file says.
 pub const TIME_LIMIT: Duration = Duration::from_secs(600);
 
 /// The shortest game.
 pub const SHORTEST: Duration = Duration::from_secs(30);
-
-/// How many players sit at the table unless the file says.
-pub const PLAYERS: usize = 4;
-
-/// The temperature the host picks at unless the file says.
-pub const TEMPERATURE: f64 = 1.2;
 
 /// The variables a player's prompt is rendered with besides the parts.
 const PLAYER_VARIABLES: [&str; 3] = ["name", "others", "guesses"];

@@ -126,9 +126,6 @@ pub enum Beat {
         text: String,
         /// Whether the guess named the secret object.
         named: bool,
-        /// How many guesses were left once those the host had received
-        /// were counted.
-        left: u64,
     },
     /// A guess after the last, neither counted nor answered.
     Uncounted {

@@ -52,7 +52,6 @@ fn every_beat() -> Vec<Beat> {
             guess: 1,
             text: "No.".to_string(),
             named: false,
-            left: 19,
         },
         Beat::Uncounted { who: alice(), text },
         Beat::Thinking { who: alice() },

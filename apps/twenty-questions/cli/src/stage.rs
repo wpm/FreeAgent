@@ -168,16 +168,11 @@ fn acted(message: &Message, lines: &[Line]) -> Vec<Beat> {
     match message {
         Message::Begin { .. } => vec![Beat::Began],
         Message::Answer {
-            guess,
-            text,
-            named,
-            left,
-            ..
+            guess, text, named, ..
         } => vec![Beat::Answered {
             guess: *guess,
             text: text.clone(),
             named: *named,
-            left: *left,
         }],
         _ => beats(lines),
     }
@@ -422,12 +417,11 @@ pub(crate) mod tests {
         }
     }
 
-    fn answered(guess: u64, text: &str, named: bool, left: u64) -> Beat {
+    fn answered(guess: u64, text: &str, named: bool) -> Beat {
         Beat::Answered {
             guess,
             text: text.to_string(),
             named,
-            left,
         }
     }
 
@@ -508,9 +502,9 @@ pub(crate) mod tests {
             vec![
                 said("Alice", "Let's think."),
                 guessed("Alice", "Is it alive?", 1),
-                answered(1, "No.", false, 19),
+                answered(1, "No.", false),
                 guessed("Bob", "Is it a teapot?", 2),
-                answered(2, "Yes, it is!", true, 18),
+                answered(2, "Yes, it is!", true),
             ],
             over(
                 Victory::Named,
@@ -543,7 +537,7 @@ pub(crate) mod tests {
                     who: "Bob".to_string(),
                     text: "Is it big?".to_string(),
                 },
-                answered(1, "No.", false, 0),
+                answered(1, "No.", false),
             ],
             over(
                 Victory::OutOfGuesses,

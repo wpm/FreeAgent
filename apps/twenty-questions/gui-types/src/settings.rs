@@ -24,6 +24,12 @@ pub const GAME: &str = "game";
 /// a configuration says.
 pub const GUESSES: u64 = 20;
 
+/// How many players sit at the table unless a configuration says.
+pub const PLAYERS: usize = 4;
+
+/// The temperature the host picks at unless a configuration says.
+pub const TEMPERATURE: f64 = 1.2;
+
 /// The players' names, in seat order: the first twelve of the
 /// cryptographers' cast.
 pub const NAMES: [&str; 12] = [
@@ -210,8 +216,8 @@ impl Default for GameSettings {
     /// Four players with twenty guesses and ten minutes, and nothing else.
     fn default() -> Self {
         Self {
-            players: 4,
-            guesses: 20,
+            players: PLAYERS,
+            guesses: GUESSES,
             time_limit: "10m".to_string(),
             strategy: String::new(),
             allotments: BTreeMap::new(),
@@ -326,7 +332,7 @@ impl Default for HostSettings {
         Self {
             model: String::new(),
             object: String::new(),
-            temperature: 1.2,
+            temperature: TEMPERATURE,
             categories: Vec::new(),
             pick: String::new(),
             system: String::new(),
