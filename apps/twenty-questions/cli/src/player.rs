@@ -24,7 +24,7 @@
 //! failure: the player logs it as [`Entry::Failed`], carries nothing out,
 //! and tries again after [`RETRY`], and the game goes on.
 
-use crate::game::{Actor, Seated, act, everyone_but, observe};
+use crate::game::{Actor, RETRY, Seated, act, everyone_but, observe};
 use crate::log::Entry;
 use crate::message::{HOST, Message, View, folded};
 use crate::model::{
@@ -46,11 +46,6 @@ use tokio::time::Instant;
 
 /// The name of the tool a player guesses with.
 pub(crate) const GUESS: &str = "guess";
-
-/// How long a player whose decision failed waits before it tries again,
-/// unless something wakes it sooner. A busy local server can time out
-/// every player at once, and nothing else would wake them.
-pub const RETRY: Duration = Duration::from_secs(10);
 
 /// The system prompt the probe tells the model.
 const PROBE_PROMPT: &str =

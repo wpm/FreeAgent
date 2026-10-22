@@ -123,8 +123,9 @@ Two loops over one mind, never locked across a model call
   a `wait` that says nothing, and told to ask "Is that your guess?" of a
   question put to it in speech, or to urge a quiet table to guess.
 - **A failure is asked again.** An answer, or the pick, that fails or is not
-  well formed is logged as `Failed` and asked again, up to three times in
-  all; then the episode fails, with the last error, which the host's
+  well formed is logged as `Failed` and asked again 10 seconds later, so
+  that a busy server has time to clear, up to three times in all; then the
+  episode fails, with the last error, which the host's
   clean-up returns. A word that fails is asked again up to as many times,
   and then the speech it was about is dropped.
 - **The time limit** is a timer, `Over`, which ends an idle game; an answer

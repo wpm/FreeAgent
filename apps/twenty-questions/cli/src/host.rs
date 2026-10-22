@@ -17,7 +17,8 @@
 //! A line of the host's that says the name before the game is won is not
 //! sent: it is a failure, logged as [`Entry::Failed`], and the host is
 //! asked again. A failed answer is asked again up to [`ATTEMPTS`] times,
-//! and so is the pick; after that the episode fails with the last error. A
+//! [`RETRY`] apart, and so is the pick; after that the episode fails with
+//! the last error. A
 //! failed word in conversation is asked again up to as many times, and then
 //! dropped.
 //!
@@ -31,7 +32,7 @@
 //! object.
 
 use crate::config::{Configuration, HostPrompt};
-use crate::game::{Actor, Seated, act, everyone_but, observe};
+use crate::game::{Actor, RETRY, Seated, act, everyone_but, observe};
 use crate::log::{Entry, Side, Victory};
 use crate::message::{HOST, Message, View, folded};
 use crate::model::{
@@ -555,8 +556,9 @@ impl Host {
         }
     }
 
-    /// Make `attempt` up to [`ATTEMPTS`] times, logging each failure, until
-    /// one succeeds. After the last failure the episode fails.
+    /// Make `attempt` up to [`ATTEMPTS`] times, [`RETRY`] apart, logging
+    /// each failure, until one succeeds. After the last failure the
+    /// episode fails.
     async fn persist<F: Future<Output = anyhow::Result<()>>>(
         &self,
         attempt: impl Fn() -> F,
@@ -571,6 +573,7 @@ impl Host {
             if tries == ATTEMPTS {
                 return self.fail(error);
             }
+            tokio::time::sleep(RETRY).await;
         }
     }
 
@@ -1317,6 +1320,28 @@ mod tests {
         assert_eq!(format!("{error:#}"), "actor Host failed: no model");
         assert_eq!(model.requests().len(), ATTEMPTS as usize);
         assert_eq!(played.won, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_host_waits_before_it_asks_again() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let at = Arc::clone(&asked);
+        let model = answering(
+            move |_| {
+                at.lock().unwrap().push(Instant::now());
+                Err(anyhow!("busy"))
+            },
+            0,
+        );
+        hosted(
+            &model,
+            Rules::default(),
+            &[("Alice", &[(1, Line::Guess("Is it alive?"))])],
+        )
+        .await;
+        let asked = asked.lock().unwrap();
+        let waits: Vec<Duration> = asked.windows(2).map(|at| at[1] - at[0]).collect();
+        assert_eq!(waits, [RETRY; ATTEMPTS as usize - 1]);
     }
 
     #[tokio::test(start_paused = true)]
