@@ -52,7 +52,10 @@ twenty-questions play prompted.toml
 ```
 
 `prompted.toml` plays against a local [LM Studio](https://lmstudio.ai) server
-serving `qwen2.5-7b-instruct-1m`. The same files are in
+serving `qwen2.5-7b-instruct-1m`. `ollama.toml` plays the same game against a
+local [Ollama](https://ollama.com) server serving `qwen2.5:7b`, and
+`mixed.toml` seats the players on LM Studio and the host on Claude Haiku,
+which answers guesses more truly. The same files are in
 [`configs/`](configs). A configuration file that is missing says how to write
 out the examples.
 
