@@ -1,9 +1,9 @@
 //! What Twenty Questions brings to [`free_agent_model`], through which it
 //! reaches its models: the shape of every request, the tools the host and
 //! the players share and how their calls are read, the [`Asker`] each actor
-//! asks its model through, and the probe, [`plays`], which asks a model to
-//! play as a player, as the host answering a guess, and as the host picking
-//! an object. For tests, the canned player and the canned providers that
+//! asks its model through, and the probe, [`plays_as`], which asks a model
+//! to play the parts it plays: a player, the host answering a guess, and
+//! the host picking an object. For tests, the canned player and the canned providers that
 //! play as it does.
 //!
 //! Every request makes the model call a tool, unless the probe finds the
@@ -264,10 +264,50 @@ impl Asker {
     }
 }
 
+/// The parts a model plays in a game: a player, the host answering
+/// guesses, and the host picking the object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Parts {
+    /// Whether it plays a player.
+    pub player: bool,
+    /// Whether it answers the guesses as the host.
+    pub answers: bool,
+    /// Whether it picks the object as the host.
+    pub picks: bool,
+}
+
+impl Parts {
+    /// Every part.
+    pub const ALL: Parts = Parts {
+        player: true,
+        answers: true,
+        picks: true,
+    };
+}
+
+/// A request the probe asks of a model, under a tool choice.
+type Asking = fn(&str, ToolChoice) -> Request;
+
+/// How the probe judges the answer to a request.
+type Judging = fn(&Response) -> anyhow::Result<()>;
+
 /// What asking `model` to play Twenty Questions as the model `id` finds:
 /// three requests, one after the other, asked as a player is, as the host
 /// answers a guess, and as the host picks an object, each judged as the
-/// game judges its answer.
+/// game judges its answer. See [`plays_as`].
+///
+/// # Errors
+///
+/// When the model could not be asked at all, because the provider was not
+/// reached or answered with anything but the model's answer.
+pub async fn plays(model: &dyn Model, id: &str) -> anyhow::Result<Probed> {
+    plays_as(model, id, Parts::ALL).await
+}
+
+/// What asking `model` to play the `parts` it plays in Twenty Questions as
+/// the model `id` finds: a request for each part, one after the other,
+/// asked as a player is, as the host answers a guess, and as the host
+/// picks an object, each judged as the game judges its answer.
 ///
 /// The first request is asked under `"required"`. If the provider refuses
 /// it as bad, it is asked again under `"auto"`, and both refusals are given
@@ -277,24 +317,46 @@ impl Asker {
 ///
 /// # Errors
 ///
-/// When the model could not be asked at all, because the provider was not
-/// reached or answered with anything but the model's answer.
-pub async fn plays(model: &dyn Model, id: &str) -> anyhow::Result<Probed> {
+/// When the model plays no part, or could not be asked at all, because the
+/// provider was not reached or answered with anything but the model's
+/// answer.
+pub async fn plays_as(model: &dyn Model, id: &str, parts: Parts) -> anyhow::Result<Probed> {
+    let probes: [(bool, &str, Asking, Judging); 3] = [
+        (
+            parts.player,
+            "as a player",
+            prompted::probe,
+            prompted::probed,
+        ),
+        (
+            parts.answers,
+            "as the host answering a guess",
+            host::probe_answer,
+            |response| host::answered(response).map(drop),
+        ),
+        (
+            parts.picks,
+            "as the host picking an object",
+            host::probe_pick,
+            |response| host::chosen(response).map(drop),
+        ),
+    ];
+    let probes: Vec<(&str, Asking, Judging)> = probes
+        .into_iter()
+        .filter(|(plays, ..)| *plays)
+        .map(|(_, what, ask, judge)| (what, ask, judge))
+        .collect();
+    let ((what, ask, judge), rest) = probes.split_first().context("it plays no part")?;
     let (tool_choice, answered) = first_answered(ToolChoice::Required, async |tool_choice| {
-        let response = model.complete(&prompted::probe(id, tool_choice)).await?;
-        prompted::probed(&response)
+        judge(&model.complete(&ask(id, tool_choice)).await?)
     })
     .await;
     let asked = async {
-        answered.map_err(|error| ("as a player", error))?;
-        let response = model.complete(&host::probe_answer(id, tool_choice)).await;
-        let answering = "as the host answering a guess";
-        host::answered(&response.map_err(|error| (answering, error))?)
-            .map_err(|error| (answering, error))?;
-        let response = model.complete(&host::probe_pick(id, tool_choice)).await;
-        let picking = "as the host picking an object";
-        host::chosen(&response.map_err(|error| (picking, error))?)
-            .map_err(|error| (picking, error))?;
+        answered.map_err(|error| (*what, error))?;
+        for (what, ask, judge) in rest {
+            let response = model.complete(&ask(id, tool_choice)).await;
+            judge(&response.map_err(|error| (*what, error))?).map_err(|error| (*what, error))?;
+        }
         Ok(())
     };
     let failed = asked.await.err();
@@ -349,6 +411,30 @@ mod tests {
             ]
         );
         assert_eq!(model.requests()[2].temperature, Some(1.2));
+    }
+
+    #[tokio::test]
+    async fn a_model_is_asked_only_as_the_parts_it_plays() {
+        let model = FakeModel::answering(canned);
+        let answers = Parts {
+            player: false,
+            answers: true,
+            picks: false,
+        };
+        let probed = plays_as(&model, "qwen", answers).await.unwrap();
+        assert!(matches!(probed, Probed::Played(_)), "{probed:?}");
+        let offered: Vec<Vec<String>> = model
+            .requests()
+            .iter()
+            .map(|request| request.tools.iter().map(|tool| tool.name.clone()).collect())
+            .collect();
+        assert_eq!(offered, [vec![ANSWER_TOOL, NAMED]]);
+        let none = Parts {
+            answers: false,
+            ..answers
+        };
+        let error = plays_as(&model, "qwen", none).await.unwrap_err();
+        assert_eq!(error.to_string(), "it plays no part");
     }
 
     #[tokio::test]

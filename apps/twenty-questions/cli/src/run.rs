@@ -136,10 +136,12 @@ impl Keys for Loading<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::CHOOSE;
     use crate::log::{Victory, Writer};
     use crate::model::canned::{
-        CANARY, CANARY_VARIABLE, assert_redacted, leaking, playing, refusing,
+        CANARY, CANARY_VARIABLE, assert_redacted, leaking, playing, refusing, refusing_offers_of,
     };
+    use crate::prompted::GUESS;
     use free_agent::Event;
     use free_agent_game::log::Ended;
     use free_agent_model::ToolChoice;
@@ -247,6 +249,28 @@ mod tests {
                  did not answer as a player:"
             ),
             "{shown}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_model_is_asked_to_play_only_the_parts_it_plays() {
+        // The host's model never guesses, and with the object named it
+        // never picks.
+        let players = playing(&["qwen2.5-7b-instruct"]);
+        let host = refusing_offers_of(GUESS, &["judge"]);
+        let text = format!(
+            "{}model = \"qwen\"\n[models.judge]\nbase_url = \"{host}\"\nid = \"judge\"\n",
+            quick(&players, "object = \"a teapot\"\nmodel = \"judge\"", "")
+        );
+        prepare(&text, &Environment).await.unwrap();
+        let picker = refusing_offers_of(CHOOSE, &["qwen2.5-7b-instruct"]);
+        let text = quick(&picker, "object = \"a teapot\"", "");
+        prepare(&text, &Environment).await.unwrap();
+        let text = quick(&picker, "pick = \"Pick something.\"", "");
+        let error = prepare(&text, &Environment).await.err().unwrap();
+        assert!(
+            format!("{error:#}").contains("did not answer as the host picking an object"),
+            "{error:#}"
         );
     }
 

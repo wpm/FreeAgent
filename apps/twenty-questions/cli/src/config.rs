@@ -19,7 +19,7 @@
 //! a player's variable, so no player's prompt can name it.
 
 use crate::host;
-use crate::model::plays;
+use crate::model::{Parts, plays_as};
 use crate::object;
 use crate::prompted;
 use anyhow::{Context as _, bail};
@@ -586,19 +586,41 @@ impl Settings {
         players.chain(host).max().unwrap_or_default()
     }
 
+    /// The parts the model `name` plays: a player when a strategy at the
+    /// table asks it, and the host answering guesses when it is the host's,
+    /// and picking the object too when the file names none.
+    pub fn parts(&self, name: &str) -> Parts {
+        let host = self.host.model.as_deref() == Some(name);
+        Parts {
+            player: self
+                .at_the_table()
+                .any(|(_, strategy)| strategy.model == name),
+            answers: host,
+            picks: host && self.host.object.is_none(),
+        }
+    }
+
     /// Set up each model in play as [`spec::set_up`] sets it up, settling
-    /// its context window for `prompts` and asking it to play as
-    /// [`plays`] probes it, which settles the tool choice, with its key
-    /// looked up in `keys`. A model the file defines and nobody asks is not
-    /// contacted.
+    /// its context window for `prompts` and asking it to play the
+    /// [`parts`](Settings::parts) it plays as [`plays_as`] probes it, which
+    /// settles the tool choice, with its key looked up in `keys`. A model
+    /// the file defines and nobody asks is not contacted.
     pub async fn set_up(
         &self,
         prompts: &Prompts,
         keys: &dyn Keys,
     ) -> anyhow::Result<(Models, Handles)> {
         let needed = |name: &str| Ok(self.needs(name, prompts));
-        let probe = async |provider: &Provider, id: &str| plays(provider, id).await;
-        spec::set_up(self.models_in_play(), keys, needed, probe).await
+        let (mut models, mut handles) = (Models::new(), Handles::new());
+        for (name, spec) in self.models_in_play() {
+            let parts = self.parts(name);
+            let probe = async |provider: &Provider, id: &str| plays_as(provider, id, parts).await;
+            let in_play = BTreeMap::from([(name, spec)]);
+            let (set_up, reached) = spec::set_up(in_play, keys, &needed, probe).await?;
+            models.extend(set_up);
+            handles.extend(reached);
+        }
+        Ok((models, handles))
     }
 
     /// A fresh deal of the strategies to the seats, in a new random order,

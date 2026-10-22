@@ -111,6 +111,12 @@ pub fn refusing_required(ids: &[&str]) -> String {
     canned::refusing_required(canned_calls, ids)
 }
 
+/// A provider that plays each of `ids` as [`playing`] does but refuses
+/// every request offering `tool`, as [`canned::refusing_offers_of`] does.
+pub fn refusing_offers_of(tool: &'static str, ids: &[&str]) -> String {
+    canned::refusing_offers_of(canned_calls, tool, ids)
+}
+
 /// A provider that plays each of `ids` as [`playing`] does but gives away
 /// everything it is asked with, as [`canned::leaking`] does: a player's
 /// story opens `You are `.

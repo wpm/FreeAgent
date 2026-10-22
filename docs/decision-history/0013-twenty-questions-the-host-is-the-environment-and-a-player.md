@@ -199,9 +199,13 @@ A TOML file, `deny_unknown_fields`, with `guesses`, `time_limit`,
 `[prompt_parts]` and `[strategies.*]`, each strategy a prompted policy with
 `system` and `model`. Each episode shuffles the strategies over the seats.
 Before the first actor is built, the file is checked, every prompt rendered,
-and each model in play listed, its context window settled, and probed as a
-player, as the host answering a guess, and as the host picking, under
-`"required"` and then `"auto"` ([ADR-0007](0007-a-tool-call-is-required-where-the-model-allows-it.md)).
+and each model in play listed, its context window settled, and probed in
+each part it plays, under `"required"` and then `"auto"`
+([ADR-0007](0007-a-tool-call-is-required-where-the-model-allows-it.md)): as
+a player when a strategy at the table asks it, as the host answering a
+guess when it is the host's, and as the host picking when the file names
+no object. *Amended 2026-10-22 (#454 review):* every model was probed in
+all three parts, so a players' model that could not pick was refused.
 
 ## What watching games changed
 
