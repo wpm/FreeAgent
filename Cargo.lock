@@ -5767,9 +5767,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "twenty-questions-desktop"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "free-agent-desktop",
+ "free-agent-model",
+ "futures-util",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-updater",
+ "tracing",
+ "twenty-questions",
+ "twenty-questions-gui-types",
+]
+
+[[package]]
+name = "twenty-questions-gui"
+version = "0.0.0"
+dependencies = [
+ "console_error_panic_hook",
+ "free-agent-gui",
+ "leptos",
+ "leptos-rich-chat",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "twenty-questions",
+ "twenty-questions-gui-types",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "twenty-questions-gui-types"
 version = "0.0.0"
 dependencies = [
+ "free-agent-gui-types",
+ "minijinja",
  "serde",
  "serde_json",
  "uuid",

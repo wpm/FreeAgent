@@ -1,0 +1,6 @@
+# What `cargo tauri dev` need not rebuild the shell for: the page, which
+# Trunk rebuilds and serves itself.
+/dist/
+/src/
+/index.html
+/style.css

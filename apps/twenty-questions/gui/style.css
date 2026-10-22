@@ -1,0 +1,386 @@
+/* Twenty Questions' own look, on Free Agent's: color means who is
+   speaking. Each player, Alice to Leo, has a hue of its own: a pale fill
+   behind ink in the light theme and a deep one behind it in the dark,
+   with a stronger mark of the same hue for its square, its guesses'
+   borders and its winning pip. The host speaks in ink. The hues stay
+   clear of marigold, which flags a problem. free_agent_gui's stylesheet
+   is in a cascade layer, as Rich-Chat's are, so these unlayered rules win
+   over both. */
+
+:root {
+  --tq-player-1: #c0dcff;
+  --tq-player-1-mark: #096acb;
+  --tq-player-2: #fee2e0;
+  --tq-player-2-mark: #cb454a;
+  --tq-player-3: #bbe7bb;
+  --tq-player-3-mark: #028321;
+  --tq-player-4: #e3cefe;
+  --tq-player-4-mark: #834bb9;
+  --tq-player-5: #9de9ed;
+  --tq-player-5-mark: #017b80;
+  --tq-player-6: #ffcdb2;
+  --tq-player-6-mark: #a94e00;
+  --tq-player-7: #fec6e4;
+  --tq-player-7-mark: #ab3782;
+  --tq-player-8: #b7fae2;
+  --tq-player-8-mark: #048f70;
+  --tq-player-9: #e5e8ff;
+  --tq-player-9-mark: #6a69db;
+  --tq-player-10: #e5f1b8;
+  --tq-player-10-mark: #748403;
+  --tq-player-11: #d0effe;
+  --tq-player-11-mark: #0686ae;
+  --tq-player-12: #feddff;
+  --tq-player-12-mark: #aa50b1;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --tq-player-1: #163c6a;
+    --tq-player-1-mark: #65a7fa;
+    --tq-player-2: #7a3939;
+    --tq-player-2-mark: #ffa09c;
+    --tq-player-3: #16481b;
+    --tq-player-3-mark: #67bb6b;
+    --tq-player-4: #472e61;
+    --tq-player-4-mark: #b98cea;
+    --tq-player-5: #014548;
+    --tq-player-5-mark: #04bbc3;
+    --tq-player-6: #602b04;
+    --tq-player-6-mark: #e9884d;
+    --tq-player-7: #5b2546;
+    --tq-player-7-mark: #e17eb9;
+    --tq-player-8: #035e49;
+    --tq-player-8-mark: #43dab0;
+    --tq-player-9: #474980;
+    --tq-player-9-mark: #b0b7ff;
+    --tq-player-10: #4c5612;
+    --tq-player-10-mark: #b6ca59;
+    --tq-player-11: #055873;
+    --tq-player-11-mark: #52cdfe;
+    --tq-player-12: #683d6b;
+    --tq-player-12-mark: #eb9def;
+  }
+}
+
+:root[data-theme="dark"] {
+  --tq-player-1: #163c6a;
+  --tq-player-1-mark: #65a7fa;
+  --tq-player-2: #7a3939;
+  --tq-player-2-mark: #ffa09c;
+  --tq-player-3: #16481b;
+  --tq-player-3-mark: #67bb6b;
+  --tq-player-4: #472e61;
+  --tq-player-4-mark: #b98cea;
+  --tq-player-5: #014548;
+  --tq-player-5-mark: #04bbc3;
+  --tq-player-6: #602b04;
+  --tq-player-6-mark: #e9884d;
+  --tq-player-7: #5b2546;
+  --tq-player-7-mark: #e17eb9;
+  --tq-player-8: #035e49;
+  --tq-player-8-mark: #43dab0;
+  --tq-player-9: #474980;
+  --tq-player-9-mark: #b0b7ff;
+  --tq-player-10: #4c5612;
+  --tq-player-10-mark: #b6ca59;
+  --tq-player-11: #055873;
+  --tq-player-11-mark: #52cdfe;
+  --tq-player-12: #683d6b;
+  --tq-player-12-mark: #eb9def;
+}
+
+/* The header: the name and the secret on the left, the controls, then the
+   guesses used over the time left on the right. */
+
+.tq-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.75rem 2rem;
+}
+
+.tq-title {
+  min-width: 0;
+}
+
+.tq-secret,
+.tq-outcome {
+  margin: 0.35rem 0 0;
+  font: 18px/1.35 var(--fa-serif);
+}
+
+.tq-secret strong {
+  font-style: italic;
+  font-weight: 700;
+}
+
+.tq-picking {
+  color: var(--fa-muted);
+  font-style: italic;
+}
+
+.tq-outcome {
+  font-weight: 700;
+}
+
+.tq-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* The count: 7 / 20 in large serif numerals, a pip for each guess, and
+   the countdown under them, all as wide as the pips. */
+
+.tq-count {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+}
+
+.tq-tally {
+  margin: 0;
+  font-family: var(--fa-serif);
+  font-variant-numeric: lining-nums tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.tq-used {
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.tq-of {
+  color: var(--fa-muted);
+  font-size: 22px;
+}
+
+.tq-pips {
+  display: flex;
+  gap: 3px;
+}
+
+/* A pip: an open square on a hairline, filled with ink once used. The one
+   that won takes its guesser's mark, and one waiting for its answer
+   pulses. */
+
+.tq-pip {
+  box-sizing: border-box;
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--fa-line);
+  border-radius: 2px;
+}
+
+.tq-used-pip {
+  border-color: var(--fa-ink);
+  background: var(--fa-ink);
+}
+
+.tq-won-pip {
+  border-color: var(--tq-mark);
+  background: var(--tq-mark);
+  box-shadow: 0 0 0 2px var(--fa-paper), 0 0 0 3px var(--tq-mark);
+}
+
+.tq-waiting {
+  border-color: var(--fa-ink);
+  animation: tq-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tq-pulse {
+  50% {
+    background: var(--fa-ink);
+  }
+}
+
+.tq-count .fa-clock {
+  gap: 0.6rem;
+  padding-left: 0;
+  border-left: none;
+  font-size: 13px;
+}
+
+.tq-count .fa-countdown {
+  width: 150px;
+}
+
+/* The chat fills the window under the header, in a readable column. */
+
+.tq-main {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 860px;
+  min-height: 0;
+  margin: 0 auto;
+}
+
+.tq-main .rc-chat {
+  height: 100%;
+}
+
+.tq-main .rc-thinking {
+  color: inherit;
+  opacity: 0.65;
+}
+
+/* Bubbles are filled, so they need no outline. */
+
+.rc-bubble {
+  border: 2px solid transparent;
+}
+
+/* The line over a player's bubbles: its color's square and its name. */
+
+.rc-sender {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 6px;
+  color: var(--fa-ink);
+  font: 700 13px/1 var(--fa-sans);
+}
+
+.tq-square {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--tq-mark);
+}
+
+/* A guess: the player's own bubble, bordered in its mark. An answer: the
+   host's, quoting the guess it answers. Each carries its number in small
+   capitals. */
+
+.tq-guess {
+  border-color: var(--tq-mark);
+}
+
+.tq-tag {
+  margin: 0 0 0.2rem;
+  font: 700 15px/1.2 var(--fa-sans);
+  font-variant-caps: all-small-caps;
+  font-variant-numeric: lining-nums;
+  letter-spacing: 0.08em;
+}
+
+.tq-quote {
+  margin: 0 0 0.35rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--tq-ring, currentColor);
+  opacity: 0.8;
+  font-style: italic;
+}
+
+/* The answer that names the object, and its guess, are ringed in the
+   guesser's mark. */
+
+.tq-won {
+  outline: 3px solid var(--tq-ring, var(--tq-mark));
+  outline-offset: 3px;
+}
+
+.tq-uncounted {
+  opacity: 0.7;
+}
+
+/* The start: the guesses as open pips, what the next game is, and Play. */
+
+.tq-start {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 1rem 2rem;
+  padding: 28px 0;
+  border-top: 1px solid var(--fa-ink);
+  border-bottom: 1px solid var(--fa-ink);
+}
+
+.tq-start .tq-pips {
+  margin-bottom: 14px;
+  gap: 5px;
+}
+
+.tq-start .tq-pip {
+  width: 14px;
+  height: 14px;
+  border-color: var(--fa-ink);
+  border-radius: 3px;
+}
+
+.tq-summary {
+  margin: 0;
+  font: 20px/1.4 var(--fa-serif);
+}
+
+.tq-run {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.fa-start .tq-start-error {
+  margin: 1rem 0 0;
+  font: 17px/1.4 var(--fa-serif);
+}
+
+/* Why a game failed to start can run to several lines. */
+.tq-failed {
+  white-space: pre-wrap;
+}
+
+.tq-start-error .fa-link {
+  font: inherit;
+}
+
+/* The Settings window's Game page: the restore's confirmation and the
+   secret object's field. */
+
+.tq-confirm {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--fa-warn);
+  border-radius: 0.5rem;
+}
+
+.tq-secret-field input {
+  flex: 0 1 16rem;
+  min-width: 8rem;
+}
+
+@media (max-width: 640px) {
+  .tq-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 0.75rem 16px;
+  }
+
+  .tq-count {
+    grid-column: 1 / -1;
+    justify-items: start;
+  }
+
+  .tq-start {
+    grid-template-columns: 1fr;
+  }
+
+  .tq-start .tq-pip {
+    width: 11px;
+    height: 11px;
+  }
+
+  .tq-start .tq-pips {
+    gap: 4px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tq-waiting {
+    animation: none;
+    background: color-mix(in srgb, var(--fa-ink) 40%, transparent);
+  }
+}
