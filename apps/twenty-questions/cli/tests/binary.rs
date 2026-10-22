@@ -97,7 +97,12 @@ fn the_example_plays_to_the_end_tells_the_game_and_logs_it_between_its_header_an
             && lines[5].ends_with(", the host is thinking of a teapot."),
         "{told}"
     );
-    assert!(lines.contains(&"Alice: Let's ask."), "{told}");
+    // A guess is put only once someone has spoken, but who speaks first
+    // depends on how the players' calls are scheduled.
+    assert!(
+        lines.iter().any(|line| line.ends_with(": Let's ask.")),
+        "{told}"
+    );
     assert!(
         lines
             .iter()
