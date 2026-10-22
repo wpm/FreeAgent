@@ -1,5 +1,5 @@
 name: Feature request
-description: An idea for Free Agent or Social Deduction.
+description: An idea for Free Agent, Social Deduction or Twenty Questions.
 labels: [enhancement]
 body:
   - type: markdown
@@ -14,6 +14,8 @@ body:
       options:
         - Social Deduction desktop app
         - social-deduction command line
+        - Twenty Questions desktop app
+        - twenty-questions command line
         - free-agent crate
         - The website or the sample game in the browser
         - Something new

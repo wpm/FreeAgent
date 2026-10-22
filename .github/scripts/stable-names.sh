@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Copies the desktop app's installers to the names that stay the same
+# Copies a desktop app's installers to the names that stay the same
 # from release to release, which the website links to.
 #
-#   stable-names.sh <directory> < artifact-paths.json
+#   stable-names.sh <product> <directory> < artifact-paths.json
 #
 # Reads tauri-action's artifactPaths output, a JSON array of paths, and
-# copies each installer into <directory> under its stable name:
+# copies each installer into <directory> under its stable name, here
+# Social Deduction's:
 #
 #   .dmg          Social-Deduction.dmg
 #   -setup.exe    Social-Deduction-setup.exe
@@ -22,7 +23,12 @@
 # or a package's architecture is not one of these.
 set -euo pipefail
 
-out=${1:?usage: stable-names.sh <directory> < artifact-paths.json}
+usage="usage: stable-names.sh <product> <directory> < artifact-paths.json"
+product=${1:?$usage}
+out=${2:?$usage}
+# shellcheck source=SCRIPTDIR/product.sh
+. "$(dirname "$0")/product.sh"
+product_names "$product"
 mkdir -p "$out"
 
 # A Linux package's architecture, read from the end of its name, which
@@ -40,12 +46,12 @@ while IFS= read -r path; do
   # jq on Windows ends its lines with a carriage return.
   path=${path%$'\r'}
   case $path in
-    *.dmg) name=Social-Deduction.dmg ;;
-    *-setup.exe) name=Social-Deduction-setup.exe ;;
-    *.msi) name=Social-Deduction.msi ;;
-    *.AppImage) name=Social-Deduction-$(arch "$path" x86_64 aarch64).AppImage ;;
-    *.deb) name=social-deduction-$(arch "$path" amd64 arm64).deb ;;
-    *.rpm) name=social-deduction-$(arch "$path" x86_64 aarch64).rpm ;;
+    *.dmg) name=$stem.dmg ;;
+    *-setup.exe) name=$stem-setup.exe ;;
+    *.msi) name=$stem.msi ;;
+    *.AppImage) name=$stem-$(arch "$path" x86_64 aarch64).AppImage ;;
+    *.deb) name=$product-$(arch "$path" amd64 arm64).deb ;;
+    *.rpm) name=$product-$(arch "$path" x86_64 aarch64).rpm ;;
     *) continue ;;
   esac
   # Windows runners hand over Windows paths, which Git Bash wants as Unix ones.

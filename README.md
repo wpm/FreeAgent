@@ -30,10 +30,11 @@ helpers its native code shares with its frontend, which build for WASM too.
 The workspace picks these up by their folders. Crates shared by more than one
 application go in `crates/`.
 
-For games built on this, see [`social-deduction`](apps/social-deduction/cli), whose
-[Servers and CI](apps/social-deduction/cli/README.md#servers-and-ci) section
-installs its command line alone, and
-[`twenty-questions`](apps/twenty-questions/cli).
+For games built on this, see [`social-deduction`](apps/social-deduction/cli)
+and [`twenty-questions`](apps/twenty-questions/cli). Each is a desktop app and
+a command line, installed together from its page on the
+[website](https://wpm.github.io/FreeAgent/#apps), and each README's Servers
+and CI section installs the command line alone.
 
 ## Development
 

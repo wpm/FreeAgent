@@ -1,21 +1,27 @@
-# Checks that the Windows setup.exe puts social-deduction on the user's
-# Path and that uninstalling takes it off again, for release-social-deduction.yml.
+# Checks that a desktop app's Windows setup.exe puts its command line on
+# the user's Path and that uninstalling takes it off again, for the
+# release workflows.
 #
-#   installer-path.ps1 <setup.exe> <version>
+#   installer-path.ps1 <product> <setup.exe> <version>
+#
+# The product, as product.sh names it, is the command line's name, and in
+# words, "Social Deduction", the install folder's.
 #
 # Gives the user's Path a %VARIABLE% entry and enough others to be longer
 # than 1024 characters, then installs silently twice, as an upgrade does,
 # and checks that the Path holds the install folder once, as its type
-# REG_EXPAND_SZ, and that a new shell's social-deduction --version prints
+# REG_EXPAND_SZ, and that a new shell's <product> --version prints
 # <version>. Uninstalls and checks that the Path is exactly as it was.
 # Puts the user's own Path back at the end.
 param(
+    [Parameter(Mandatory)] [string] $Product,
     [Parameter(Mandatory)] [string] $Setup,
     [Parameter(Mandatory)] [string] $Version
 )
 $ErrorActionPreference = 'Stop'
 
-$folder = Join-Path $env:LOCALAPPDATA 'Social Deduction'
+$title = (Get-Culture).TextInfo.ToTitleCase($Product.Replace('-', ' '))
+$folder = Join-Path $env:LOCALAPPDATA $title
 $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
 $failures = 0
 
@@ -53,11 +59,11 @@ try {
     $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $user = [Environment]::ExpandEnvironmentVariables($after)
     $env:Path = "$machine;$user"
-    $found = (Get-Command social-deduction).Source
-    Check "a new shell finds the installed social-deduction" ($found -eq (Join-Path $folder 'social-deduction.exe'))
-    $printed = powershell -NoProfile -Command 'social-deduction --version'
-    "social-deduction --version: $printed"
-    Check "social-deduction --version prints $Version" ($printed -match [regex]::Escape($Version))
+    $found = (Get-Command $Product).Source
+    Check "a new shell finds the installed $Product" ($found -eq (Join-Path $folder "$Product.exe"))
+    $printed = powershell -NoProfile -Command "$Product --version"
+    "$Product --version: $printed"
+    Check "$Product --version prints $Version" ($printed -match [regex]::Escape($Version))
 
     # Run in place (_?=, last and unquoted), so that waiting for it waits
     # for the uninstall.

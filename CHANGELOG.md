@@ -2,8 +2,9 @@
 
 From 0.2.0 on, release notes are on the
 [GitHub Releases page](https://github.com/wpm/FreeAgent/releases), under
-each product's tag: `free-agent-v<version>` for the library and
-`social-deduction-v<version>` for Social Deduction. This file is the
+each product's tag: `free-agent-v<version>` for the library,
+`social-deduction-v<version>` for Social Deduction and
+`twenty-questions-v<version>` for Twenty Questions. This file is the
 history up to 0.1.0 and the work that went into 0.2.0, newest first. Its
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the versions [Semantic Versioning](https://semver.org/spec/v2.0.0.html).

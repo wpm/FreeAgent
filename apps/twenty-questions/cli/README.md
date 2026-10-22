@@ -9,13 +9,32 @@ names none, answers each guess in the order it came, and ends the game.
 
 ## Installing
 
-From a checkout of this repository, with a Rust toolchain,
+[Download Twenty Questions](https://wpm.github.io/FreeAgent/twenty-questions.html#platforms)
+for macOS, Windows or Linux. Each installer gives you the desktop app and
+the `twenty-questions` command line:
 
-```sh
-cargo install --path apps/twenty-questions/cli
-```
+- **macOS:** open `Twenty-Questions.dmg`, drag the app to Applications,
+  then choose **Twenty Questions ▸ Install Command-Line Tool…**.
+- **Windows:** `Twenty-Questions-setup.exe` puts `twenty-questions` on your
+  PATH, in terminals opened after installing.
+- **Linux:** the `.deb` and `.rpm`, for x86_64 and arm64, install
+  `/usr/bin/twenty-questions`.
 
-builds the `twenty-questions` command line and puts it on your PATH.
+### Servers and CI
+
+The command line comes with every desktop installer: on the PATH with
+the `.deb`, the `.rpm` and the Windows setup, and from the macOS app's
+**Twenty Questions ▸ Install Command-Line Tool…** menu.
+
+Without the desktop app or its webview libraries, the command line is an
+archive for each platform on the latest `twenty-questions-v*` release on
+the [Releases page](https://github.com/wpm/FreeAgent/releases):
+`twenty-questions-<target>.tar.gz`, or `.zip` for Windows, each with a
+`.sha256` beside it. It holds the binary, the example configurations, this
+README and the licenses.
+
+With a Rust toolchain, `cargo install --git https://github.com/wpm/FreeAgent twenty-questions`
+builds it from source.
 
 ## Playing
 

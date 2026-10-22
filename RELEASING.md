@@ -8,6 +8,10 @@ The crates in a product share its version.
 |---|---|---|---|
 | `free-agent` | `free-agent` | `free-agent-v<version>` | `free-agent` on crates.io |
 | `social-deduction` | `social-deduction`, `social-deduction-gui`, `social-deduction-desktop`, `social-deduction-gui-types` | `social-deduction-v<version>` | Desktop installers for macOS, Windows and Linux, command-line archives, signed update bundles and `latest.json` |
+| `twenty-questions` | `twenty-questions`, `twenty-questions-gui`, `twenty-questions-desktop`, `twenty-questions-gui-types` | `twenty-questions-v<version>` | The same, for Twenty Questions |
+
+The crates shared by the apps, under `crates/`, stay at `0.0.0` and go
+into each app's build as they are on `main`.
 
 The tag is the version. Every manifest on `main` says `version = "0.0.0"`,
 and the release workflow stamps the tag's version into the product's
@@ -33,9 +37,11 @@ publishes.
 
 Publishing runs the product's workflow under Actions:
 
-- **Social Deduction:** **Release Social Deduction**
-  (`.github/workflows/release-social-deduction.yml`), about 15–20
-  minutes. It puts the desktop app's install table above the notes and
+- **Social Deduction** and **Twenty Questions:** **Release Social Deduction**
+  (`.github/workflows/release-social-deduction.yml`) or **Release
+  Twenty Questions** (`.github/workflows/release-twenty-questions.yml`),
+  each about 15–20 minutes, and each building its own product only. Social
+  Deduction's puts the desktop app's install table above the notes and
   uploads, each beside its versioned twin, `Social-Deduction.dmg`,
   `Social-Deduction-setup.exe`, `Social-Deduction.msi`,
   `social-deduction-amd64.deb`, `social-deduction-arm64.deb`,
@@ -52,7 +58,10 @@ Publishing runs the product's workflow under Actions:
   which points the download links at the new release and checks that it
   has each linked file. Then
   `https://wpm.github.io/FreeAgent/social-deduction/latest.json` shows
-  the new version.
+  the new version. Twenty Questions' uploads the same files with
+  `Twenty-Questions` and `twenty-questions` in their names, and its
+  `latest.json` is served at
+  `https://wpm.github.io/FreeAgent/twenty-questions/latest.json`.
 - **The library:** **Publish to crates.io**
   (`.github/workflows/publish-crates.yml`), about a minute. Check the
   version on [crates.io/crates/free-agent](https://crates.io/crates/free-agent).
@@ -62,9 +71,15 @@ Publishing runs the product's workflow under Actions:
 When a job fails, open the run and choose **Re-run failed jobs**, which
 uploads over what is there.
 
-To try **Release Social Deduction** without a release, run it by hand from
-the Actions tab. A push to `main` that changes it or its scripts does the
+To try a release workflow without a release, run it by hand from the
+Actions tab. A push to `main` that changes it or the scripts does the
 same. Either builds everything at version `0.0.0` as workflow artifacts.
+
+### A product's first release
+
+Until a product has a full release, its page on the website says *The
+first release is on its way* where its downloads go, and the site deploys
+as usual. Its first full release puts the downloads there.
 
 ## Choosing a version
 
@@ -88,32 +103,34 @@ otherwise. The release notes say which, and how to open an unsigned app.
 Each release carries a signed update bundle for each platform. They are
 signed with the minisign key in the `TAURI_SIGNING_PRIVATE_KEY` and
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets, and the build fails without
-them. The matching public key is `plugins.updater.pubkey` in
-`apps/social-deduction/gui/src-tauri/tauri.conf.json`. Every installed
+them. The matching public key is `plugins.updater.pubkey` in each app's
+`gui/src-tauri/tauri.conf.json`, the same key for both. Every installed
 copy trusts that key for good, so the private key and its password are
 kept backed up outside this machine and repository, and the key is never
 replaced.
 
 The installed app looks for updates at its updater endpoint,
-`https://wpm.github.io/FreeAgent/social-deduction/latest.json`, which the
-website's build copies from the newest full release. Every installed copy
-keeps the endpoint it was built with.
+`https://wpm.github.io/FreeAgent/<product>/latest.json`, which the
+website's build copies from the product's newest full release. Every
+installed copy keeps the endpoint it was built with.
 
 ## Adding an application
 
 Create `apps/<app>/` with whichever of `cli/`, `gui/`, `gui/src-tauri/` and
 `gui-types/` it has; the workspace picks them up. Then:
 
-1. List its crates under a new product in the table in
-   `.github/scripts/stamp-version.sh`.
+1. Add it to `.github/scripts/product.sh` with its title and what it
+   plays, for its release notes. `stamp-version.sh` then stamps its
+   crates, named for it as Social Deduction's are.
 2. Copy `.github/workflows/release-social-deduction.yml` with the new tag
-   prefix.
+   prefix and product.
 3. Add a label for it to `.github/labeler.yml`, matching `apps/<app>/**`,
    create the label, and add a category for it to `.github/release.yml`.
-4. Link its downloads on the website as
-   `{{release:<product>}}/<file>`, which the website's build resolves to
-   its newest full release. The build needs one, so these links go in
-   with or after its first full release.
+4. Give it a page on the website, linking its downloads as
+   `{{release:<product>}}/<file>` between `<!-- downloads:<product> -->`
+   and `<!-- /downloads:<product> -->`. The website's build resolves them
+   to its newest full release, and says the first release is on its way
+   until there is one.
 
 Its first release then needs no other setup.
 
