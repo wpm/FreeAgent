@@ -171,6 +171,10 @@ pub trait Strategies: Settings {
     /// The prompt parts of `of`, to change.
     fn prompt_parts_mut(&mut self, of: Self::Of) -> &mut BTreeMap<String, String>;
 
+    /// What pulls a prompt part in, one and many: `strategy` and
+    /// `strategies`.
+    const PART_USERS: (&'static str, &'static str) = ("strategy", "strategies");
+
     /// Each prompt part of `of`, with the names of what pulls it in.
     fn part_users(&self, of: Self::Of) -> BTreeMap<String, Vec<String>>;
 }

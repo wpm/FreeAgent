@@ -5,7 +5,8 @@
 //! checked with, are in [`catalog`]; API keys are stored under its service
 //! through [`secret`]; and [`play`](game::play) runs a game as
 //! `twenty-questions play` runs it, its log folded into cues sent to the
-//! main window. The [`menu`]'s File menu starts a new game.
+//! main window. The [`menu`]'s File menu starts a new game, and imports
+//! and exports configuration files.
 //! Closing the main window stops the game, whether it is being prepared or
 //! playing, and closes Settings. The opener plugin hands links to the
 //! system browser, and the dialog plugin tells of settings that can't be

@@ -1,5 +1,5 @@
 //! The desktop app's Settings window, Free Agent's: General, Models, and
-//! the Game page.
+//! the Game page, which holds the whole configuration but the models.
 
 use free_agent_gui::settings::{self as window, Page};
 use leptos::prelude::*;
@@ -23,7 +23,8 @@ impl Page for GamePage {
     }
 
     fn tip(self) -> String {
-        "The players, the host and its secret object, and the strategy the players play."
+        "Everything a game is played with but the models: the players, the host and its secret \
+         object, the strategies, who plays what, and the prompt parts."
             .to_string()
     }
 
@@ -58,7 +59,7 @@ mod tests {
             .collect();
         assert_eq!(titles, ["General", "Models", "Game"]);
         assert_eq!(Tab::App(GamePage).id(), "tab-game");
-        assert!(GamePage.tip().starts_with("The players"));
+        assert!(GamePage.tip().starts_with("Everything a game"));
         assert_eq!(
             Tab::<GamePage>::of(&["game".to_string(), "players".to_string()]),
             Tab::App(GamePage)

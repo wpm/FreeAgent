@@ -3,7 +3,8 @@
 //! stores them in `settings.toml` with [`save`] and reads them back with
 //! [`load`], [`validate`]s them field by field, and plays a game from the
 //! configuration [`text`] they make, which is what `twenty-questions play`
-//! reads.
+//! reads. A configuration file comes in with [`Imported::parse`] and
+//! [`import`], and goes out as [`text`].
 //!
 //! The game's settings are its configuration less its models. Its
 //! configuration is made of them with the models the host and its
@@ -11,7 +12,7 @@
 
 pub use twenty_questions_gui_types::settings::*;
 
-use crate::config::{self, Format, GUESSES, HostConfig, NAMES, SHORTEST};
+use crate::config::{self, About, Format, HostConfig, Placed, SHORTEST};
 use free_agent_game::strategy::Prompted;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -24,31 +25,43 @@ pub const FILE: &str = "settings.toml";
 /// The example configuration the game's settings start from.
 const EXAMPLE: &str = include_str!("../configs/prompted.toml");
 
-/// A configuration file as the settings write it, and read the example:
-/// every key the file may hold, with its values as written.
-#[derive(Debug, Serialize, Deserialize)]
+/// A configuration file as the settings write it: every key the file may
+/// hold, with its values as written.
+#[derive(Debug, Serialize)]
 struct Written {
     format: Format,
     guesses: u64,
     time_limit: String,
     players: WrittenPlayers,
     host: HostConfig,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     models: BTreeMap<String, ModelSettings>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     prompt_parts: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     strategies: BTreeMap<String, Prompted>,
 }
 
 /// The `[players]` table as written.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct WrittenPlayers {
+    #[serde(default)]
     count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     strategy: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     strategies: BTreeMap<String, usize>,
+}
+
+/// What a configuration file read in says as written, beside what it
+/// settles to: its time limit, who plays what, and its models.
+#[derive(Debug, Deserialize)]
+struct Read {
+    time_limit: Option<String>,
+    #[serde(default)]
+    players: WrittenPlayers,
+    #[serde(default)]
+    models: BTreeMap<String, ModelSettings>,
 }
 
 /// The configuration a game is played under, as written: the game's
@@ -75,7 +88,12 @@ fn written(app: &AppSettings) -> Written {
             model: given(&host.model),
             object: given(&host.object).map(|object| object.trim().to_string()),
             temperature: host.temperature,
-            categories: host.categories.clone(),
+            categories: host
+                .categories
+                .iter()
+                .map(|category| category.trim().to_string())
+                .filter(|category| !category.is_empty())
+                .collect(),
             pick: given(&host.pick),
             system: host.system.clone(),
         },
@@ -102,59 +120,118 @@ pub fn text(app: &AppSettings) -> String {
     toml::to_string_pretty(&written(app)).expect("every setting is TOML")
 }
 
-/// The settings of the example configuration, with the model the host
-/// and each strategy ask named, and its models.
-fn example() -> (GameSettings, BTreeMap<String, ModelSettings>) {
-    let settled = config::parse(EXAMPLE).expect("the example settles");
-    let written: Written = toml::from_str(EXAMPLE).expect("the example parses");
-    let strategy = written
-        .players
-        .strategy
-        .expect("the example names the strategy everyone plays");
-    let host = settled.host;
-    let game = GameSettings {
-        players: written.players.count,
-        guesses: written.guesses,
-        time_limit: written.time_limit,
-        strategy,
-        allotments: written.players.strategies,
-        host: HostSettings {
-            model: host.model.unwrap_or_default(),
-            object: host.object.unwrap_or_default(),
-            temperature: host.temperature,
-            categories: host.categories,
-            pick: host.pick.unwrap_or_default(),
-            system: host.system,
-        },
-        strategies: settled
-            .strategies
-            .into_iter()
-            .map(|(name, prompted)| {
-                let strategy = StrategySettings {
-                    policy: Policy::Prompted,
-                    model: prompted.model,
-                    system: prompted.system,
-                };
-                (name, strategy)
-            })
-            .collect(),
-        prompt_parts: written.prompt_parts,
-    };
-    (game, written.models)
+/// A configuration file read in: its game's settings and its models.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Imported {
+    /// The game's settings.
+    pub settings: GameSettings,
+    /// Its models, by name.
+    pub models: BTreeMap<String, ModelSettings>,
+}
+
+impl Imported {
+    /// The configuration file `text`, parsed as [`config::parse`] parses
+    /// it, so that its errors come back placed at their line and column.
+    /// Each setting is what the file settles to, the host and each
+    /// strategy naming the model they ask, and who plays what is as
+    /// written: the strategy everyone plays, or the only one there is.
+    ///
+    /// # Errors
+    ///
+    /// When `text` is not a configuration file that settles.
+    pub fn parse(text: &str) -> anyhow::Result<Self> {
+        let settled = config::parse(text)?;
+        let read: Read = toml::from_str(text)?;
+        let strategy = read.players.strategy.unwrap_or_else(|| {
+            let allotted: usize = read.players.strategies.values().sum();
+            match settled.strategies.keys().collect::<Vec<_>>()[..] {
+                [only] if allotted < settled.seats.len() => only.clone(),
+                _ => String::new(),
+            }
+        });
+        let host = settled.host;
+        let settings = GameSettings {
+            players: settled.seats.len(),
+            guesses: settled.guesses,
+            time_limit: read
+                .time_limit
+                .unwrap_or_else(|| humantime::format_duration(settled.time_limit).to_string()),
+            strategy,
+            allotments: read.players.strategies,
+            host: HostSettings {
+                model: host.model.unwrap_or_default(),
+                object: host.object.unwrap_or_default(),
+                temperature: host.temperature,
+                categories: host.categories,
+                pick: host.pick.unwrap_or_default(),
+                system: host.system,
+            },
+            strategies: settled
+                .strategies
+                .into_iter()
+                .map(|(name, prompted)| {
+                    let strategy = StrategySettings {
+                        policy: Policy::Prompted,
+                        model: prompted.model,
+                        system: prompted.system,
+                    };
+                    (name, strategy)
+                })
+                .collect(),
+            prompt_parts: settled.prompt_parts,
+        };
+        Ok(Imported {
+            settings,
+            models: read.models,
+        })
+    }
+}
+
+/// Bring `imported` into `app`: its settings replace the game's, and its
+/// models join the app's. A model whose name is taken by another is added
+/// as `<name>-2`, or the next number free, and the host and the strategies
+/// that ask it are changed to match; one the same as the model of its
+/// name is that model.
+pub fn import(app: &mut AppSettings, imported: Imported) {
+    let Imported {
+        mut settings,
+        models,
+    } = imported;
+    for (name, model) in models {
+        let taken = unique(&name, |taken| {
+            app.models.get(taken).is_some_and(|other| *other != model)
+        });
+        let users = std::iter::once(&mut settings.host.model).chain(
+            settings
+                .strategies
+                .values_mut()
+                .map(|strategy| &mut strategy.model),
+        );
+        for user in users.filter(|user| **user == name) {
+            user.clone_from(&taken);
+        }
+        app.models.insert(taken, model);
+    }
+    app.game = settings;
+}
+
+/// The example configuration, read in.
+fn example() -> Imported {
+    Imported::parse(EXAMPLE).expect("the example settles")
 }
 
 /// The settings the game starts from, which **Restore defaults** brings
 /// back: the example's, without its models.
 pub fn game_defaults() -> GameSettings {
-    example().0
+    example().settings
 }
 
 /// The settings the app starts from: the example's, with its models.
 pub fn defaults() -> AppSettings {
-    let (game, models) = example();
+    let Imported { settings, models } = example();
     AppSettings {
         models,
-        game,
+        game: settings,
         ..AppSettings::default()
     }
 }
@@ -342,23 +419,21 @@ fn model_error(user: &str, named: &str, app: &AppSettings) -> Option<String> {
     }
 }
 
-/// `settling`, a configuration's error, at the field it is about: a
-/// strategy's prompt, the host's, the pick, the prompt parts, or the game.
+/// `settling`, a configuration's error, at the field it is [`About`]: a
+/// strategy's prompt, the host's, the pick, a prompt part, or the game.
 fn placed(settling: &anyhow::Error) -> FieldError {
-    let message = format!("{settling:#}");
-    let about = settling.to_string();
-    let strategy = about
-        .strip_prefix("rendering the prompt of strategy ")
-        .and_then(|rest| rest.split_once(" for "))
-        .map(|(name, _)| name);
-    let path: Vec<&str> = match (strategy, about.as_str()) {
-        (Some(name), _) => vec!["strategies", name, "system"],
-        (None, "rendering the host's prompt") => vec!["host", "system"],
-        (None, "rendering the host's pick") => vec!["host", "pick"],
-        (None, about) if about.starts_with("[prompt_parts]") => vec!["prompt_parts"],
-        (None, _) => vec![],
+    let about = settling
+        .downcast_ref::<Placed>()
+        .map(|placed| &placed.about);
+    let path: Vec<&str> = match about {
+        Some(About::Strategy(name)) => vec!["strategies", name, "system"],
+        Some(About::Host) => vec!["host", "system"],
+        Some(About::Pick) => vec!["host", "pick"],
+        Some(About::Part(name)) => vec!["prompt_parts", name],
+        Some(About::Allotments) => vec!["allotments"],
+        None => vec![],
     };
-    FieldError::new(&[&[GAME], &path[..]].concat(), message)
+    FieldError::new(&[&[GAME], &path[..]].concat(), format!("{settling:#}"))
 }
 
 #[cfg(test)]
@@ -606,8 +681,106 @@ mod tests {
         let (at, message) = broken(|game| {
             game.prompt_parts.insert("name".to_string(), String::new());
         });
-        assert_eq!(at, path(&["game", "prompt_parts"]));
+        assert_eq!(at, path(&["game", "prompt_parts", "name"]));
         assert!(message.contains("template variable"), "{message}");
+    }
+
+    #[test]
+    fn a_player_s_prompt_that_names_the_object_is_an_error_at_that_prompt() {
+        let mut app = defaults();
+        app.game.strategies.get_mut("everyone").unwrap().system = "{{ object }}".to_string();
+        let (at, message) = only_error(&app);
+        assert_eq!(at, path(&["game", "strategies", "everyone", "system"]));
+        assert!(message.contains("undefined"), "{message}");
+    }
+
+    #[test]
+    fn no_more_seats_are_allotted_than_there_are_players() {
+        let mut app = defaults();
+        app.game.allotments.insert("everyone".to_string(), 5);
+        assert_eq!(
+            only_error(&app),
+            (
+                path(&["game", "allotments"]),
+                "[players] strategies allots 5 seats, more than the 4 players".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn the_categories_are_written_one_per_line_without_the_blank_ones() {
+        let mut app = defaults();
+        app.game.host.categories =
+            vec![" a bird ".to_string(), String::new(), "a tree".to_string()];
+        let settled = config::parse(&text(&app)).unwrap();
+        assert_eq!(settled.host.categories, ["a bird", "a tree"]);
+    }
+
+    #[test]
+    fn exporting_then_importing_gives_back_the_same_settings() {
+        let mut app = defaults();
+        app.game.players = 6;
+        app.game.guesses = 12;
+        app.game.time_limit = "5m 30s".to_string();
+        app.game.host.object = "a teapot".to_string();
+        app.game.host.temperature = 0.7;
+        app.game.strategies.insert(
+            "skeptic".to_string(),
+            StrategySettings {
+                policy: Policy::Prompted,
+                model: "qwen".to_string(),
+                system: "{{ rules }} Doubt, {{ name }}.".to_string(),
+            },
+        );
+        app.game.allotments.insert("skeptic".to_string(), 2);
+        let mut back = defaults();
+        back.game = GameSettings::default();
+        import(&mut back, Imported::parse(&text(&app)).unwrap());
+        assert_eq!(back, app);
+    }
+
+    #[test]
+    fn a_file_that_leaves_settings_out_imports_with_what_they_settle_to() {
+        let file = "[host]\nobject = \"a kite\"\nsystem = \"Hold {{ object }}.\"\n\
+                    [models.local]\nbase_url = \"http://localhost:1234/v1\"\nid = \"qwen\"\n\
+                    [strategies.plain]\nsystem = \"Ask.\"\n";
+        let Imported { settings, models } = Imported::parse(file).unwrap();
+        assert_eq!(settings.players, 4);
+        assert_eq!(settings.guesses, 20);
+        assert_eq!(settings.time_limit, "10m");
+        assert_eq!(settings.strategy, "plain");
+        assert_eq!(settings.host.model, "local");
+        assert_eq!(settings.host.temperature, 1.2);
+        assert_eq!(settings.strategies["plain"].model, "local");
+        assert_eq!(models["local"].id, "qwen");
+        let all_allotted = file.replace("[host]", "[players]\nstrategies = { plain = 4 }\n[host]");
+        assert_eq!(
+            Imported::parse(&all_allotted).unwrap().settings.strategy,
+            ""
+        );
+    }
+
+    #[test]
+    fn an_imported_model_whose_name_is_taken_is_renamed_and_so_are_its_users() {
+        let mut app = defaults();
+        let file = text(&app).replace("qwen2.5-7b-instruct-1m", "llama");
+        import(&mut app, Imported::parse(&file).unwrap());
+        assert_eq!(app.models["qwen"].id, "qwen2.5-7b-instruct-1m");
+        assert_eq!(app.models["qwen-2"].id, "llama");
+        assert_eq!(app.game.host.model, "qwen-2");
+        assert_eq!(app.game.strategies["everyone"].model, "qwen-2");
+        // The same model again is that one.
+        import(&mut app, Imported::parse(&file).unwrap());
+        assert_eq!(app.models.len(), 2);
+        assert_eq!(app.game.host.model, "qwen-2");
+    }
+
+    #[test]
+    fn a_file_that_does_not_settle_is_not_imported_and_its_error_is_placed() {
+        let shown = format!("{:#}", Imported::parse("[host\n").unwrap_err());
+        assert!(shown.contains("line 1"), "{shown}");
+        let shown = format!("{:#}", Imported::parse("format = 2\n").unwrap_err());
+        assert!(shown.contains("configuration format 2"), "{shown}");
     }
 
     #[test]

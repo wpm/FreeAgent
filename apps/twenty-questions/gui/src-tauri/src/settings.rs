@@ -1,14 +1,16 @@
 //! The app's settings: the [`Store`] that holds them in `settings.toml`,
-//! the commands the windows read and change them through, and the
-//! Settings window.
+//! the commands the windows read and change them through, the Settings
+//! window, and importing and exporting configuration files.
 //!
 //! The Settings window sends each change as the whole settings, and the
 //! main window hears of it as a `settings` event carrying the
-//! [`Snapshot`].
+//! [`Snapshot`]. A change made from the menus reaches both windows.
 
+use free_agent_desktop::dialog::{error, save_as};
 use free_agent_desktop::settings::File;
-use tauri::{AppHandle, Emitter, State};
-use twenty_questions::settings::{self, AppSettings, FieldError, GameSettings, Snapshot};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+use twenty_questions::settings::{self, AppSettings, FieldError, GameSettings, Imported, Snapshot};
 
 /// The settings, as stored in the app's config directory.
 pub type Store = free_agent_desktop::settings::Store<AppSettings>;
@@ -33,6 +35,18 @@ pub(crate) fn snapshot(settings: AppSettings) -> Snapshot {
     }
 }
 
+/// Tell the window `to`, or every window when `to` is `None`, that the
+/// settings are now `snapshot`.
+fn announce(app: &AppHandle, to: Option<&str>, snapshot: &Snapshot) {
+    let sent = match to {
+        Some(to) => app.emit_to(to, "settings", snapshot),
+        None => app.emit("settings", snapshot),
+    };
+    if let Err(error) = sent {
+        tracing::warn!("the settings could not be announced: {error}");
+    }
+}
+
 /// The settings, and what is wrong with them.
 #[tauri::command]
 pub fn settings_get(store: State<'_, Store>) -> Snapshot {
@@ -48,9 +62,7 @@ pub fn settings_set(
     settings: AppSettings,
 ) -> Vec<FieldError> {
     let snapshot = snapshot(store.change(|held| *held = settings));
-    if let Err(error) = app.emit_to("main", "settings", &snapshot) {
-        tracing::warn!("the settings could not be announced: {error}");
-    }
+    announce(&app, Some("main"), &snapshot);
     snapshot.errors
 }
 
@@ -66,4 +78,70 @@ pub fn game_defaults() -> GameSettings {
 #[tauri::command]
 pub async fn settings_open(app: AppHandle, path: Option<Vec<String>>) -> Result<(), String> {
     free_agent_desktop::settings::show(&app, path).map_err(|error| error.to_string())
+}
+
+/// The configuration files the dialogs show.
+const FILTER: (&str, &[&str]) = ("Configuration", &["toml"]);
+
+/// **Import Configuration…**: read a configuration file the user picks,
+/// and, once they confirm, make the game's settings those in the file and
+/// add its models. A file that does not parse is shown, with its error,
+/// in a dialog naming it. It blocks, so it runs off the main thread.
+pub fn import(app: &AppHandle) {
+    let Some(path) = app
+        .dialog()
+        .file()
+        .add_filter(FILTER.0, FILTER.1)
+        .blocking_pick_file()
+        .and_then(|path| path.into_path().ok())
+    else {
+        return;
+    };
+    let name = path.display().to_string();
+    let imported = std::fs::read_to_string(&path)
+        .map_err(anyhow::Error::from)
+        .and_then(|text| Imported::parse(&text));
+    let imported = match imported {
+        Ok(imported) => imported,
+        Err(failure) => {
+            return error(
+                app,
+                "Import Configuration",
+                format!("{name} couldn't be imported:\n\n{failure:#}"),
+            );
+        }
+    };
+    let confirmed = app
+        .dialog()
+        .message(format!(
+            "Replace the game settings with those in {name}? Its models join the app's models."
+        ))
+        .title("Import Configuration")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Replace".into(),
+            "Cancel".into(),
+        ))
+        .blocking_show();
+    if confirmed {
+        let snapshot = snapshot(
+            app.state::<Store>()
+                .change(|held| settings::import(held, imported)),
+        );
+        announce(app, None, &snapshot);
+    }
+}
+
+/// **Export Configuration…**: write the game's configuration, with its
+/// models and without their keys, to a file the user picks, which
+/// `twenty-questions play` plays as **Play** does. It blocks, so it runs
+/// off the main thread.
+pub fn export(app: &AppHandle) {
+    let text = settings::text(&app.state::<Store>().settings());
+    save_as(
+        app,
+        FILTER,
+        "twenty-questions.toml",
+        "Export Configuration",
+        text.as_bytes(),
+    );
 }

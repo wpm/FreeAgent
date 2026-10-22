@@ -20,6 +20,17 @@ pub use free_agent_gui_types::settings::{
 /// with.
 pub const GAME: &str = "game";
 
+/// The most guesses the players can have, and how many they have unless
+/// a configuration says.
+pub const GUESSES: u64 = 20;
+
+/// The players' names, in seat order: the first twelve of the
+/// cryptographers' cast.
+pub const NAMES: [&str; 12] = [
+    "Alice", "Bob", "Carol", "Dave", "Eve", "Frank", "Grace", "Heidi", "Ian", "Judy", "Kevin",
+    "Leo",
+];
+
 /// Everything the app's settings hold.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -142,6 +153,8 @@ impl Strategies for AppSettings {
 
     const MAY_BE_RANDOM: bool = false;
 
+    const PART_USERS: (&'static str, &'static str) = ("prompt", "prompts");
+
     fn at((): ()) -> Vec<String> {
         vec![GAME.to_string()]
     }
@@ -210,6 +223,12 @@ impl Default for GameSettings {
 }
 
 impl GameSettings {
+    /// The names of the players at the table, in seat order, as many as
+    /// [`NAMES`] has.
+    pub fn names(&self) -> &'static [&'static str] {
+        &NAMES[..self.players.min(NAMES.len())]
+    }
+
     /// The names of the strategies allotted a seat: those `allotments`
     /// gives seats, then `strategy` for the seats left.
     pub fn at_the_table(&self) -> BTreeSet<&str> {
@@ -382,6 +401,16 @@ mod tests {
     }
 
     #[test]
+    fn the_players_are_named_in_seat_order_up_to_leo() {
+        let mut game = table().game;
+        assert_eq!(game.names(), ["Alice", "Bob", "Carol"]);
+        game.players = 0;
+        assert!(game.names().is_empty());
+        game.players = 13;
+        assert_eq!(game.names().last(), Some(&"Leo"));
+    }
+
+    #[test]
     fn the_strategy_everyone_plays_sits_only_where_seats_are_left() {
         let mut game = table().game;
         assert_eq!(
@@ -444,6 +473,7 @@ mod tests {
     fn the_game_has_one_set_of_strategies_and_prompt_parts_none_random() {
         let mut settings = table();
         const { assert!(!AppSettings::MAY_BE_RANDOM) };
+        assert_eq!(AppSettings::PART_USERS, ("prompt", "prompts"));
         assert_eq!(AppSettings::at(()), ["game"]);
         settings
             .prompt_parts_mut(())
