@@ -3,7 +3,8 @@
 //! [`Screen::apply`] folds one cue at a time into the chat, the names
 //! table, the secret, the guesses used and the clock. The view draws a
 //! `Screen` and holds no state of its own, so the whole page is tested
-//! here, natively.
+//! here, natively. A [`Timeline`] holds the screen at each bubble of a game
+//! already folded, for review.
 
 use std::collections::BTreeSet;
 
@@ -51,6 +52,8 @@ pub enum Body {
     Answer {
         /// The number of the guess it answers.
         guess: u64,
+        /// Who put the guess it answers, if anyone did.
+        asker: Option<PlayerId>,
         /// The guess it answers, as asked.
         asked: String,
         /// The answer.
@@ -114,6 +117,8 @@ pub struct Screen {
     thinking: Vec<(PlayerId, Millis)>,
     /// The log-time clock.
     pub clock: Clock,
+    /// The bubble under review, selected, with every later one dimmed.
+    pub cursor: Option<usize>,
     /// How many times the screen has been reset.
     era: u64,
 }
@@ -136,6 +141,7 @@ impl Default for Screen {
             thinkers: Vec::new(),
             thinking: Vec::new(),
             clock: Clock::default(),
+            cursor: None,
             era: 0,
         }
     }
@@ -180,9 +186,10 @@ impl Screen {
                 if *named {
                     self.won = Some(*guess);
                 }
-                let asked = self.asker(*guess).map(|(_, asked)| asked.clone());
+                let (asker, asked) = self.asker(*guess).cloned().unzip();
                 let body = Body::Answer {
                     guess: *guess,
+                    asker,
                     asked: asked.unwrap_or_default(),
                     text: text.clone(),
                 };
@@ -239,6 +246,15 @@ impl Screen {
         if self.era == era {
             act(self);
         }
+    }
+
+    /// Show `shown`, a screen under review, in place of this one and in its
+    /// era.
+    pub fn review(&mut self, shown: Screen) {
+        *self = Screen {
+            era: self.era,
+            ..shown
+        };
     }
 
     /// Run the clock on by `elapsed` viewer milliseconds, as the page does
@@ -317,6 +333,116 @@ impl Screen {
         let name = name.to_string();
         self.posts.push(Post { id, name, body });
     }
+}
+
+/// The key the chat knows the post `id` by in `era`, `3-m12`, so that a
+/// post of one game is never taken for the post of another with its ID.
+pub fn key(era: u64, id: &str) -> String {
+    format!("{era}-{id}")
+}
+
+/// The bubble whose chat key is `key`: bubble `k` is posted as `m{k+1}`.
+pub fn bubble(key: &str) -> Option<usize> {
+    let (_, id) = key.split_once('-')?;
+    id.strip_prefix('m')?.parse::<usize>().ok()?.checked_sub(1)
+}
+
+/// The screen at every bubble of a game: the game's last screen, and the
+/// screen while each bubble is the latest, its posts left out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Timeline {
+    /// The screen after every cue.
+    last: Screen,
+    /// For each bubble, the screen after every cue from its own up to the
+    /// one that posts the next bubble, or to the end for the last one,
+    /// with no posts.
+    moments: Vec<Screen>,
+}
+
+impl Timeline {
+    /// The timeline of the game `cues` tell, folded at once.
+    pub fn new(cues: &[Cue]) -> Self {
+        let mut screen = Screen::default();
+        let mut moments = Vec::new();
+        for cue in cues {
+            let before = screen.posts.len();
+            let now = (moments.len() < before).then(|| moment(&mut screen));
+            screen.apply(cue);
+            if let Some(now) = now.filter(|_| screen.posts.len() > before) {
+                moments.resize(before, now);
+            }
+        }
+        let now = moment(&mut screen);
+        moments.resize(screen.posts.len(), now);
+        Self {
+            last: screen,
+            moments,
+        }
+    }
+
+    /// How many bubbles there are.
+    pub fn len(&self) -> usize {
+        self.moments.len()
+    }
+
+    /// Whether there are no bubbles.
+    pub fn is_empty(&self) -> bool {
+        self.moments.is_empty()
+    }
+
+    /// The bubbles that begin a chapter, each a guess, in order.
+    pub fn chapters(&self) -> Vec<usize> {
+        let posts = self.last.posts.iter().enumerate();
+        posts
+            .filter(|(_, post)| matches!(post.body, Body::Guess { .. }))
+            .map(|(k, _)| k)
+            .collect()
+    }
+
+    /// How the game ended, once it has.
+    pub fn outcome(&self) -> Option<&Outcome> {
+        self.last.outcome.as_ref()
+    }
+
+    /// The number of the guess that named the object, once one has.
+    pub fn won(&self) -> Option<u64> {
+        self.last.won
+    }
+
+    /// The secret object, once it is known.
+    pub fn secret(&self) -> Option<&str> {
+        self.last.secret.as_deref()
+    }
+
+    /// The screen with the cursor on bubble `k`: every post, and the rest
+    /// as it stood while bubble `k` was the latest, the clock stopped at
+    /// its time and nobody thinking.
+    ///
+    /// # Panics
+    ///
+    /// When there is no bubble `k`.
+    pub fn screen(&self, k: usize) -> Screen {
+        let moment = &self.moments[k];
+        Screen {
+            posts: self.last.posts.clone(),
+            cursor: Some(k),
+            thinkers: Vec::new(),
+            thinking: Vec::new(),
+            clock: Clock {
+                running: false,
+                ..moment.clock
+            },
+            ..moment.clone()
+        }
+    }
+}
+
+/// `screen` as it stands, without its posts.
+fn moment(screen: &mut Screen) -> Screen {
+    let posts = std::mem::take(&mut screen.posts);
+    let moment = screen.clone();
+    screen.posts = posts;
+    moment
 }
 
 /// When the dots of the call `cue` sends out are due, in log time, if it
@@ -538,6 +664,7 @@ mod tests {
                     "Host",
                     &Body::Answer {
                         guess: 1,
+                        asker: Some("Bob".to_string()),
                         asked: "Is it alive?".to_string(),
                         text: "No.".to_string()
                     }
@@ -587,6 +714,7 @@ mod tests {
                 "Host",
                 &Body::Answer {
                     guess: 4,
+                    asker: None,
                     asked: String::new(),
                     text: "No.".to_string()
                 }
@@ -681,11 +809,122 @@ mod tests {
         );
     }
 
+    /// The recorded game in `fixtures/`, as cues.
+    fn recorded() -> Vec<Cue> {
+        let log = include_str!("../fixtures/prompted.jsonl");
+        let mut recordings = twenty_questions::stage::recordings(log).unwrap();
+        recordings.games.remove(0).cues
+    }
+
+    /// The screen a fresh `Screen` shows after every cue up to the first
+    /// to post once bubble `k` is posted: the screen while bubble `k` is
+    /// the latest.
+    fn latest_at(cues: &[Cue], k: usize) -> Screen {
+        let mut screen = Screen::default();
+        for cue in cues {
+            let mut next = screen.clone();
+            next.apply(cue);
+            if screen.posts.len() > k && next.posts.len() > screen.posts.len() {
+                break;
+            }
+            screen = next;
+        }
+        screen
+    }
+
+    #[test]
+    fn the_screen_at_bubble_k_is_the_screen_folded_until_the_next_bubble() {
+        let cues = recorded();
+        let timeline = Timeline::new(&cues);
+        let last = shown(&cues);
+        assert!(!timeline.is_empty());
+        assert_eq!(timeline.len(), last.posts.len());
+        for k in 0..timeline.len() {
+            let folded = latest_at(&cues, k);
+            let expected = Screen {
+                posts: last.posts.clone(),
+                cursor: Some(k),
+                thinkers: Vec::new(),
+                thinking: Vec::new(),
+                clock: Clock {
+                    running: false,
+                    ..folded.clock
+                },
+                ..folded
+            };
+            assert_eq!(timeline.screen(k), expected, "bubble {k}");
+        }
+    }
+
+    #[test]
+    fn the_count_the_secret_and_the_outcome_follow_the_cursor() {
+        let cues = recorded();
+        let timeline = Timeline::new(&cues);
+        let first = timeline.screen(0);
+        assert_eq!(first.used(), 0);
+        assert_eq!(first.outcome, None);
+        assert_eq!(first.won, None);
+        let last = timeline.screen(timeline.len() - 1);
+        assert!(last.outcome.is_some());
+        assert_eq!(last.timer().unwrap().stopped, shown(&cues).ended);
+        assert_eq!(timeline.outcome(), last.outcome.as_ref());
+        assert_eq!(timeline.won(), last.won);
+        assert_eq!(timeline.secret(), last.secret.as_deref());
+        let guess = timeline.chapters()[0];
+        let asked = timeline.screen(guess);
+        assert_eq!(asked.used(), 1);
+        assert_eq!(asked.pips()[0], Pip::Waiting);
+    }
+
+    #[test]
+    fn each_guess_begins_a_chapter() {
+        let cues = recorded();
+        let timeline = Timeline::new(&cues);
+        let last = shown(&cues);
+        let chapters = timeline.chapters();
+        assert_eq!(chapters.len() as u64, last.used());
+        for (number, &k) in chapters.iter().enumerate() {
+            let Body::Guess { guess, .. } = last.posts[k].body else {
+                panic!("bubble {k} is no guess");
+            };
+            assert_eq!(guess, number as u64 + 1);
+        }
+    }
+
+    #[test]
+    fn a_game_with_no_bubble_has_an_empty_timeline() {
+        let timeline = Timeline::new(&[cast(&["Alice"])]);
+        assert!(timeline.is_empty());
+        assert_eq!(timeline.len(), 0);
+        assert!(timeline.chapters().is_empty());
+        assert_eq!(timeline.outcome(), None);
+    }
+
+    #[test]
+    fn a_bubble_is_found_by_its_key_in_the_chat() {
+        assert_eq!(key(3, "m12"), "3-m12");
+        assert_eq!(bubble(&key(0, "m1")), Some(0));
+        assert_eq!(bubble(&key(3, "m12")), Some(11));
+        assert_eq!(bubble("2-m0"), None);
+        assert_eq!(bubble("m1"), None);
+        assert_eq!(bubble("think-Alice"), None);
+    }
+
+    #[test]
+    fn a_screen_under_review_takes_the_place_of_the_screen_in_its_era() {
+        let cues = recorded();
+        let timeline = Timeline::new(&cues);
+        let mut screen = Screen::default();
+        screen.reset();
+        screen.review(timeline.screen(3));
+        assert_eq!(screen.era(), 1);
+        assert_eq!(screen.cursor, Some(3));
+        assert_eq!(Screen { era: 0, ..screen }, timeline.screen(3));
+    }
+
     #[test]
     fn the_recorded_game_is_won_on_the_guess_its_answer_names() {
-        let log = include_str!("../fixtures/prompted.jsonl");
-        let recordings = twenty_questions::stage::recordings(log).unwrap();
-        let screen = shown(&recordings.games[0].cues);
+        let screen = shown(&recorded());
         let won = screen.won.expect("the recorded game is won");
         assert!(matches!(
             screen.outcome,

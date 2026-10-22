@@ -19,6 +19,19 @@ one that won. The countdown is under them. Once the game is over, the
 header says who won, with **New game**; **File ▸ New Game** (⌘N, Ctrl+N
 elsewhere) goes back to the start from anywhere.
 
+A game over goes into review on its last bubble. **Save Log…**, or
+**File ▸ Save Game Log…** (⌘S), saves its log as `twenty-questions play`
+writes it, keys left out, named `twenty-questions-2026-10-21-1530.jsonl`
+by default. **File ▸ Open Game Log…** (⌘O) opens any saved log, the
+app's or the command line's, on its first bubble, with the file's name,
+‹ › and a list of its games when it holds several, and **Close**. In
+review the bubble you are on is selected and the ones after it dimmed,
+and the header shows the game as it stood there. The arrow keys step
+bubble by bubble, Home and End go to either end, and a click goes to
+the bubble clicked. The **Go** menu goes to the first or last bubble
+(⌘↑ ⌘↓), from guess to guess (⌥↑ ⌥↓), and to the game before or after
+(⌘[ ⌘]).
+
 **Settings** (⌘,) holds the look, the models and the game: how many
 play, the host's model, the secret object (empty, the host picks one) and
 the strategy the players play. The settings are kept in `settings.toml`
@@ -48,12 +61,20 @@ cargo tauri dev
 The icons are made from `src-tauri/icon.svg` with `cargo tauri icon
 icon.svg`, run in `src-tauri`; the page's mark is `src-tauri/mark.svg`.
 
+In a plain browser the page is a viewer of recorded games: it opens
+`game/<name>.json`, the hash's name or `prompted`, in review on its last
+bubble, with **Play** to replay it a cue every quarter second, ten times
+faster for a hash ending in `-fast`. `build-page.sh [public-url]` folds
+each game in `fixtures/` into `game/` and builds the page in `dist` to be
+served from the public URL, `/` by default.
+
 `fixtures/prompted.jsonl` is a game played against LM Studio. CI's Viewer
 job builds the page with `build-page.sh` and drives it in headless
 Chromium with `e2e/check.mjs`, which plays the recorded game through a
 stand-in for the desktop app's backend at ten times its pace, checks the
-start, the chat, the header and the Settings window, light and dark, wide
-and 420 px narrow, and saves screenshots. From the root of a checkout:
+start, the chat, the header, review, Save and Open, the web page and the
+Settings window, light and dark, wide and 420 px narrow, and saves
+screenshots. From the root of a checkout:
 
 ```sh
 apps/twenty-questions/gui/build-page.sh

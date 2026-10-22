@@ -5771,6 +5771,7 @@ name = "twenty-questions-desktop"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "free-agent-desktop",
  "free-agent-model",
  "futures-util",
@@ -5798,7 +5799,9 @@ dependencies = [
  "serde_json",
  "twenty-questions",
  "twenty-questions-gui-types",
+ "uuid",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 

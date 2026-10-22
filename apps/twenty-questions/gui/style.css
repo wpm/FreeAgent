@@ -126,7 +126,17 @@
 
 .tq-controls {
   display: flex;
-  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem 0.75rem;
+}
+
+/* In review the controls take a row of their own, under the rest. */
+
+.tq-header:has(.fa-review-position) .tq-controls {
+  grid-row: 2;
+  grid-column: 1 / -1;
 }
 
 /* The count: 7 / 20 in large serif numerals, a pip for each guess, and
@@ -190,6 +200,14 @@
   animation: tq-pulse 1.2s ease-in-out infinite;
 }
 
+/* At rest, in review, a guess waiting for its answer holds still,
+   half inked. */
+
+.tq-still .tq-waiting {
+  animation: none;
+  background: color-mix(in srgb, var(--fa-ink) 40%, transparent);
+}
+
 @keyframes tq-pulse {
   50% {
     background: var(--fa-ink);
@@ -212,14 +230,21 @@
 
 .tq-main {
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
   width: 100%;
   max-width: 860px;
   min-height: 0;
   margin: 0 auto;
 }
 
+.tq-main .fa-review-warning {
+  padding-bottom: 0.5rem;
+}
+
 .tq-main .rc-chat {
-  height: 100%;
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 .tq-main .rc-thinking {
@@ -431,6 +456,11 @@
 
   .tq-count .tq-tally {
     justify-self: start;
+  }
+
+  .tq-header:has(.fa-review-position) .tq-controls {
+    grid-row: 3;
+    justify-content: flex-start;
   }
 
   .tq-start {
