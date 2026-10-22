@@ -22,7 +22,7 @@ use tokio::sync::oneshot;
 /// How long past its time limit an episode is waited for before it is
 /// given up on: long enough for the slowest model call in flight at the
 /// limit to come back.
-pub const GRACE: Duration = Duration::from_secs(60 * 60);
+pub(crate) const GRACE: Duration = Duration::from_secs(60 * 60);
 
 /// The game the configuration `text` describes, parsed as
 /// [`config::parse`] parses it and made ready as [`Ready::new`] makes it,
@@ -69,7 +69,8 @@ impl Ready {
         &self.secrets
     }
 
-    /// How long an episode is waited for: its time limit and [`GRACE`].
+    /// How long an episode is waited for: its time limit and an hour's
+    /// grace.
     pub fn patience(&self) -> Duration {
         self.settings.time_limit + GRACE
     }

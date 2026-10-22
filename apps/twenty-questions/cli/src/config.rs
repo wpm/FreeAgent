@@ -52,16 +52,16 @@ pub type Format = free_agent_game::config::Format<TwentyQuestions>;
 pub use twenty_questions_gui_types::settings::{GUESSES, NAMES};
 
 /// How long a game lasts unless the file says.
-pub const TIME_LIMIT: Duration = Duration::from_secs(600);
+pub(crate) const TIME_LIMIT: Duration = Duration::from_secs(600);
 
 /// The shortest game.
-pub const SHORTEST: Duration = Duration::from_secs(30);
+pub(crate) const SHORTEST: Duration = Duration::from_secs(30);
 
 /// How many players sit at the table unless the file says.
-pub const PLAYERS: usize = 4;
+pub(crate) const PLAYERS: usize = 4;
 
 /// The temperature the host picks at unless the file says.
-pub const TEMPERATURE: f64 = 1.2;
+pub(crate) const TEMPERATURE: f64 = 1.2;
 
 /// The variables a player's prompt is rendered with besides the parts.
 const PLAYER_VARIABLES: [&str; 3] = ["name", "others", "guesses"];

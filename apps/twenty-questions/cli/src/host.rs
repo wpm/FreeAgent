@@ -16,8 +16,8 @@
 //! A guess that says the object's name wins the moment the host counts
 //! it, unanswered. A line of the host's that says the name before the game
 //! is won is not sent: it is a failure, logged as [`Entry::Failed`], and
-//! the host is asked again. A failed answer is asked again up to
-//! [`ATTEMPTS`] times, [`RETRY`] apart, and so is the pick; after that the
+//! the host is asked again. An answer is asked up to three times,
+//! [`RETRY`] apart, and so is the pick; after the third failure the
 //! episode fails with the last error. A failed word in conversation is
 //! asked again up to as many times, and then dropped.
 //!
@@ -56,7 +56,7 @@ use tokio::time::Instant;
 
 /// How many times the host is asked for an answer, a pick, or a word in
 /// conversation before it gives up.
-pub const ATTEMPTS: u32 = 3;
+pub(crate) const ATTEMPTS: u32 = 3;
 
 /// The name of the tool the host answers a guess with.
 pub(crate) const ANSWER_TOOL: &str = "answer";
@@ -127,7 +127,7 @@ const SILENT: &str = "Since you last spoke or waited, the players have said noth
 
 /// How long the players may go without a guess before the host may urge
 /// them to put one.
-pub const NUDGE: Duration = Duration::from_secs(120);
+pub(crate) const NUDGE: Duration = Duration::from_secs(120);
 
 /// `Yes.` or `No.`, when `text` begins with that word: what an answer that
 /// gives the object away after it is cut to.

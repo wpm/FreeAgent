@@ -43,7 +43,8 @@ pub enum Message {
     },
     /// Speech, from anyone to everyone else.
     Say {
-        /// Who spoke, since a message does not carry its sender.
+        /// Who spoke, the host or a player, since a message does not carry
+        /// its sender.
         from: ActorId,
         /// The speaker's number for this message.
         n: u64,
@@ -53,7 +54,7 @@ pub enum Message {
     /// A yes-or-no question a player puts formally to the host, which
     /// everyone else hears too. It uses one of the guesses if any are left.
     Guess {
-        /// Who asked.
+        /// Who asked, always a player.
         from: PlayerId,
         /// The player's number for this message.
         n: u64,
