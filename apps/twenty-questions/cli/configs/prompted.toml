@@ -1,0 +1,96 @@
+# Four players and a host, all one model, who picks its own secret object.
+# The rules live in a prompt part every prompt pulls in.
+#
+#     twenty-questions play prompted.toml
+#
+# plays it.
+
+format = 1
+
+# How many guesses the players have among them.
+guesses = 20
+
+# How long the game lasts.
+time_limit = "10m"
+
+[players]
+count = 4
+# Every seat not allotted otherwise plays this strategy.
+strategy = "everyone"
+# How many seats play each other strategy.
+# strategies = { skeptic = 1 }
+
+[host]
+# No `model` here because this file defines only one.
+# The secret object. Leave it out to have the host pick one.
+# object = "a teapot"
+# The temperature the host picks at, high so that it does not pick the
+# same few things every time.
+temperature = 1.2
+# The pick is asked for one of these, drawn at random.
+categories = [
+    "an animal",
+    "something found in a kitchen",
+    "a musical instrument",
+    "a vehicle",
+    "a food",
+    "a tool",
+    "a piece of furniture",
+    "a famous building",
+]
+pick = """
+Pick a secret object for a game of Twenty Questions: {{ category }}. Choose
+something a person would know, and not the first thing that comes to mind.
+"""
+system = """
+{{ rules }}
+
+You are the host. The secret object is {{ object }}. The players are
+{{ players }}. Never say the object or any word of its name until a guess
+names it.
+
+You answer the players' guesses. Speak rarely: when a player asks you a
+yes-or-no question in plain speech, do not answer it, but ask "Is that
+your guess?", naming the player; and when nobody has put a guess for a long
+while, urge them to put one. Otherwise stay quiet and wait; the players are
+talking to one another, not to you.
+"""
+
+# A Qwen model on a local LM Studio server. The id and base URL will likely
+# need changing to whatever model and server you have running.
+[models.qwen]
+base_url = "http://localhost:1234/v1"
+id = "qwen2.5-7b-instruct-1m"
+# The model's context window in tokens, over what the provider reports.
+# LM Studio loads a model with 8192 tokens shared by 4 requests at once,
+# 2048 for each. A request is counted generously, a token for every 3
+# characters and 1024 kept for the reply, so 3072 keeps each one within
+# 2048. Load the model with a larger context to give the players a longer
+# memory, and raise this with it.
+context_window = 3072
+
+[prompt_parts]
+rules = """
+Twenty Questions: a host holds a secret object, and the players try to
+name it. Everyone talks at once, with no turns, and everything said goes to
+everyone. A guess is a yes-or-no question put formally to the host, from
+"Is it alive?" to "Is it bigger than a breadbox?". The players share a few
+guesses, and the host answers them in order. A question in plain speech is
+not a guess. The players win when a guess names the object; the host wins
+when the guesses or the time run out.
+"""
+
+[strategies.everyone]
+system = """
+{{ rules }}
+
+You are {{ name }}, a player, with {{ others }}. You share {{ guesses }}
+guesses, so play as a team. Listen to what the others just said, and
+answer it or build on it. Propose the next guess in speech before anyone
+puts it. Once someone has proposed a guess and another player has agreed,
+the one who proposed it puts it, at once. Agree in a few words, and never
+repeat what someone just said. Never repeat a guess already put. Time and
+guesses run out, so make sure guesses get put: narrow down with every
+answer, and once the answers point to one object, propose guessing it by
+name. Speak briefly, and wait when you have nothing to add.
+"""

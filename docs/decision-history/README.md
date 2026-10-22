@@ -44,3 +44,4 @@ are not part of this repository's history.
 | [0010](0010-avalon-is-a-second-game-built-by-copying-werewolf.md) | Avalon is a second game, built by copying Werewolf | Accepted |
 | [0011](0011-speech-is-never-cut-off-at-a-phase-end.md) | Speech is never cut off at a phase end | Accepted |
 | [0012](0012-applications-share-crates-each-game-is-its-own.md) | Applications share crates; each game is its own | Accepted |
+| [0013](0013-twenty-questions-the-host-is-the-environment-and-a-player.md) | Twenty Questions: the host is the environment and a player | Accepted |

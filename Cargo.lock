@@ -5741,6 +5741,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "twenty-questions"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "free-agent",
+ "free-agent-game",
+ "free-agent-gui-types",
+ "free-agent-model",
+ "humantime",
+ "humantime-serde",
+ "minijinja",
+ "rand",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 1.1.8+spec-1.1.0",
+ "twenty-questions",
+ "uuid",
+]
+
+[[package]]
 name = "typed-builder"
 version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -92,6 +92,7 @@ free-agent-gui-types = { path = "crates/gui-types" }
 free-agent-model = { path = "crates/model" }
 social-deduction = { path = "apps/social-deduction/cli" }
 social-deduction-gui-types = { path = "apps/social-deduction/gui-types" }
+twenty-questions = { path = "apps/twenty-questions/cli" }
 
 [workspace.package]
 edition = "2024"
