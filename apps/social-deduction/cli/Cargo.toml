@@ -37,6 +37,10 @@ toml.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
 
+[build-dependencies]
+# The embedding of the example configurations alone.
+free-agent-game = { path = "../../../crates/game", default-features = false }
+
 [dev-dependencies]
 # Players named by a test, and the models in play a story is told of.
 free-agent-game = { workspace = true, features = ["test-support"] }

@@ -2,7 +2,7 @@
 name = "free-agent-game"
 version = "0.0.0"
 edition.workspace = true
-description = "What every Free Agent game shares: seats, strategies, example configurations, its log's redaction and its story's lines"
+description = "What every Free Agent game shares: seats, the prompted strategy, example configurations and their embedding, its log's redaction and its story's lines"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -10,17 +10,28 @@ homepage.workspace = true
 publish = false
 
 [features]
+default = ["games"]
+# Everything but `embed`, which an app's build script uses alone.
+games = [
+    "dep:anyhow",
+    "dep:free-agent",
+    "dep:free-agent-model",
+    "dep:humantime",
+    "dep:secrecy",
+    "dep:serde",
+    "dep:serde_json",
+]
 # Helpers for an app's tests, which turn it on in their [dev-dependencies].
-test-support = []
+test-support = ["games"]
 
 [dependencies]
-anyhow.workspace = true
-free-agent.workspace = true
-free-agent-model.workspace = true
-humantime.workspace = true
-secrecy.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+anyhow = { workspace = true, optional = true }
+free-agent = { workspace = true, optional = true }
+free-agent-model = { workspace = true, optional = true }
+humantime = { workspace = true, optional = true }
+secrecy = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 toml.workspace = true
