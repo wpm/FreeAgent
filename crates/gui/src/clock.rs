@@ -75,7 +75,7 @@ impl Timer {
 }
 
 /// Seconds as a clock's face shows them: `0:53`.
-pub fn face(seconds: u64) -> String {
+pub(crate) fn face(seconds: u64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 

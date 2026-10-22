@@ -14,7 +14,7 @@ use crate::chrome::Cross;
 
 /// How many use a prompt part, `users` of them, each `called` as one and
 /// as many: `unused`, `used by 1 strategy`, `used by 2 strategies`.
-pub fn uses_told(users: usize, (one, many): (&str, &str)) -> String {
+pub(crate) fn uses_told(users: usize, (one, many): (&str, &str)) -> String {
     match users {
         0 => "unused".to_string(),
         1 => format!("used by 1 {one}"),
@@ -24,7 +24,7 @@ pub fn uses_told(users: usize, (one, many): (&str, &str)) -> String {
 
 /// Why `name` can't name a new prompt part when `taken` says which
 /// variables the parts already have are pulled in with, if it can't.
-pub fn refused_part(name: &str, taken: impl Fn(&str) -> bool) -> Option<&'static str> {
+pub(crate) fn refused_part(name: &str, taken: impl Fn(&str) -> bool) -> Option<&'static str> {
     if !is_part_name(name) {
         Some("Use letters, digits, underscores and spaces, not starting with a digit.")
     } else if taken(&part_variable(name)) {
@@ -37,7 +37,7 @@ pub fn refused_part(name: &str, taken: impl Fn(&str) -> bool) -> Option<&'static
 /// Why `name` can't name a new strategy when `taken` says which are
 /// taken, if it can't. Where a strategy `may_be_random`, [`RANDOM`] is
 /// built in.
-pub fn refused_strategy(
+pub(crate) fn refused_strategy(
     name: &str,
     may_be_random: bool,
     taken: impl Fn(&str) -> bool,
@@ -65,7 +65,7 @@ pub fn path_of<S: Strategies>(of: S::Of, rest: &[&str]) -> Vec<String> {
 /// to choose from, and the tips say what the name, the remove button and
 /// the system prompt are in the app's words.
 #[component]
-pub fn StrategyCard<S: Strategies + Edited>(
+pub(crate) fn StrategyCard<S: Strategies + Edited>(
     /// The settings.
     editor: Editor<S>,
     /// Whose strategy it is.

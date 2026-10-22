@@ -180,7 +180,7 @@ pub fn check_in_background(app: &AppHandle) {
 
 /// Check in the background, as [`check_in_background`] does, if some
 /// models could not be checked.
-pub fn check_unchecked(app: &AppHandle) {
+pub(crate) fn check_unchecked(app: &AppHandle) {
     let catalog = app.state::<Catalog>();
     let unchecked = catalog
         .progress

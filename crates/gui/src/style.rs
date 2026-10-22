@@ -8,7 +8,7 @@ use leptos_rich_chat::{Names, RichChatStyle};
 /// The shared stylesheet, in the `free-agent` cascade layer. The layer
 /// comes after Rich-Chat's, so its rules win over Rich Chat's, and an
 /// app's own unlayered rules win over both.
-pub const SHEET: &str = concat!(
+pub(crate) const SHEET: &str = concat!(
     "@layer rich-chat, free-agent;\n@layer free-agent {\n",
     include_str!("../style.css"),
     "}\n"

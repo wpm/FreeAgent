@@ -33,13 +33,13 @@ pub struct Widths {
 impl Widths {
     /// The widest the pane gets in a main area `main` wide: what leaves
     /// the rest its least, and never under the pane's least.
-    pub fn widest(self, main: f64) -> f64 {
+    pub(crate) fn widest(self, main: f64) -> f64 {
         (main - self.rest).max(self.least)
     }
 
     /// The pane's width `width` in a main area `main` wide, kept between
     /// the narrowest pane and the widest.
-    pub fn clamped(self, width: f64, main: f64) -> f64 {
+    pub(crate) fn clamped(self, width: f64, main: f64) -> f64 {
         width.clamp(self.least, self.widest(main))
     }
 
@@ -62,7 +62,7 @@ impl Widths {
 
 /// A drag of the handle, from where it was grabbed.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Grab {
+pub(crate) struct Grab {
     /// How wide the pane gets.
     pub widths: Widths,
     /// The edge the pane is on.
@@ -93,7 +93,7 @@ impl Grab {
 
     /// The pane's width with the pointer at `x`: the line moves as far as
     /// the pointer does.
-    pub fn dragged(self, x: f64) -> f64 {
+    pub(crate) fn dragged(self, x: f64) -> f64 {
         let width = match self.edge {
             Edge::Left => x - self.zero,
             Edge::Right => self.zero - x,

@@ -8,7 +8,7 @@
 //! model is in the listing before it begins. Each decision is one
 //! [`Request`] to the provider, forcing a tool call, and the [`Response`]
 //! it is answered with. [`estimated`] counts what a request takes of the
-//! model's context window, [`MAX_TOKENS`] for the reply included. A player
+//! model's context window, `MAX_TOKENS` for the reply included. A player
 //! depends only on the [`Model`] trait, so a test gives it a fake model and
 //! no test reaches a model. The fake and the canned providers a test talks
 //! to come with the `test-support` feature.
@@ -57,13 +57,13 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 pub const CONTEXT_WINDOW: u64 = 4096;
 
 /// The tokens the context window keeps for the reply.
-pub const MAX_TOKENS: u64 = 1024;
+pub(crate) const MAX_TOKENS: u64 = 1024;
 
 /// The tokens a chat template adds around each message, by estimate.
-pub const MESSAGE_TOKENS: u64 = 8;
+pub(crate) const MESSAGE_TOKENS: u64 = 8;
 
 /// The tokens a chat template adds around each tool, by estimate.
-pub const TOOL_TOKENS: u64 = 32;
+pub(crate) const TOOL_TOKENS: u64 = 32;
 
 /// How many tokens `text` takes, by estimate: one for every 3
 /// characters, rounded up. A provider offers no tokenizer, and an estimate
@@ -79,8 +79,8 @@ pub fn tokens(chars: usize) -> u64 {
 }
 
 /// How many tokens `request` takes of the context window, by estimate:
-/// each message and its [`MESSAGE_TOKENS`], the tools as JSON and
-/// [`TOOL_TOKENS`] for each, and [`MAX_TOKENS`] for the reply.
+/// each message and its `MESSAGE_TOKENS`, the tools as JSON and
+/// `TOOL_TOKENS` for each, and `MAX_TOKENS` for the reply.
 pub fn estimated(request: &Request) -> u64 {
     let messages: u64 = request
         .messages
@@ -172,7 +172,7 @@ fn known(base_url: &str) -> Option<&'static Known> {
 /// The providers `src/models.toml` knows, each as its name, the root of
 /// its API and the environment variable conventionally holding its key, if
 /// any, in the file's order, for telling the user.
-pub fn known_providers() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
+pub(crate) fn known_providers() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
     KNOWLEDGE
         .providers
         .iter()
@@ -216,7 +216,7 @@ pub fn hidden(id: &str) -> bool {
 
 /// The families of models `src/models.toml` ranks, most capable first,
 /// each the start of its models' ids: `claude-opus`, `gpt-4.1`.
-pub fn families() -> &'static [String] {
+pub(crate) fn families() -> &'static [String] {
     &KNOWLEDGE.families
 }
 
@@ -237,14 +237,14 @@ fn known_headers(base_url: &str) -> Vec<(&'static str, &'static str)> {
 /// The environment variable conventionally holding the API key for the
 /// provider at `base_url`, when `src/models.toml` knows the provider and
 /// it wants one.
-pub fn known_key_variable(base_url: &str) -> Option<&'static str> {
+pub(crate) fn known_key_variable(base_url: &str) -> Option<&'static str> {
     known(base_url)?.api_key_env.as_deref()
 }
 
 /// The context window, in tokens, of the models the provider at
 /// `base_url` serves, when `src/models.toml` knows the provider and gives
 /// one.
-pub fn known_context_window(base_url: &str) -> Option<u64> {
+pub(crate) fn known_context_window(base_url: &str) -> Option<u64> {
     known(base_url)?.context_window
 }
 
@@ -342,7 +342,7 @@ impl Said {
 /// offers answers, and an answer that is not a selection is the model's
 /// own. A request that never reached the provider, or that it answered
 /// with any other status, says nothing about the model.
-pub fn concerns_the_model(error: &anyhow::Error) -> bool {
+pub(crate) fn concerns_the_model(error: &anyhow::Error) -> bool {
     let reached = error
         .chain()
         .all(|cause| cause.downcast_ref::<reqwest::Error>().is_none());
@@ -358,7 +358,7 @@ pub fn refused(error: &anyhow::Error) -> bool {
 
 /// The status the provider answered with, if `error` is the provider
 /// answering a request with anything but success.
-pub fn rejected_with(error: &anyhow::Error) -> Option<StatusCode> {
+pub(crate) fn rejected_with(error: &anyhow::Error) -> Option<StatusCode> {
     rejection(error).map(|rejection| rejection.status)
 }
 

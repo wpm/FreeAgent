@@ -105,7 +105,7 @@ pub fn grouped(tokens: u64) -> String {
 
 /// The number of tokens typed as `text`, its commas and spaces ignored,
 /// or none when nothing is typed or it is not a whole number.
-pub fn typed_tokens(text: &str) -> Option<u64> {
+pub(crate) fn typed_tokens(text: &str) -> Option<u64> {
     let digits: String = text
         .chars()
         .filter(|c| !matches!(c, ',' | ' ' | '_'))
@@ -141,7 +141,10 @@ fn remaining(progress: &BTreeMap<String, Progress>, base_url: &str) -> Option<us
 /// The line at the top of the tab while models are checked, naming the
 /// providers of `shown` whose models are, or none when none are:
 /// `Checking 2 new models on Local (localhost:1234) in the background.`
-pub fn checking_line(progress: &BTreeMap<String, Progress>, shown: &[Provider]) -> Option<String> {
+pub(crate) fn checking_line(
+    progress: &BTreeMap<String, Progress>,
+    shown: &[Provider],
+) -> Option<String> {
     let checking: Vec<(&str, usize)> = shown
         .iter()
         .filter_map(|p| Some((p.name.as_str(), remaining(progress, &p.base_url)?)))
@@ -161,7 +164,7 @@ pub fn checking_line(progress: &BTreeMap<String, Progress>, shown: &[Provider]) 
 /// Why the models of the provider `name` could not be checked, in the
 /// user's words, from `unchecked`. An account out of credits is told
 /// where to add them, at the host of the first link the provider gave.
-pub fn unchecked_line(name: &str, unchecked: &Unchecked) -> String {
+pub(crate) fn unchecked_line(name: &str, unchecked: &Unchecked) -> String {
     match unchecked.trouble {
         Trouble::NoCredits => {
             let at = unchecked
@@ -231,7 +234,7 @@ fn unchecked<'a>(
 /// The line at the top of the tab once no models are being checked: that
 /// every model is, and only those that play `plays` are listed, unless a
 /// provider of `shown` could not check some, as `progress` says.
-pub fn checked_line(
+pub(crate) fn checked_line(
     progress: &BTreeMap<String, Progress>,
     shown: &[Provider],
     plays: &str,

@@ -1,11 +1,11 @@
 //! What the desktop app's Models tab offers: the providers a model is
 //! reached through, those `src/models.toml` knows and the local servers
 //! [`discover`] finds; each provider's [`list`]ing, most capable first, as
-//! [`rank`] ranks it; and what probing each listed model found, kept in
+//! `rank` ranks it; and what probing each listed model found, kept in
 //! [`Probes`] so that no model is probed twice.
 //!
 //! A remote provider, one reached over `https`, has its models probed
-//! [`AT_ONCE`] at a time. A local server loads each model it is asked
+//! `AT_ONCE` at a time. A local server loads each model it is asked
 //! about, so its models are probed one at a time, and [`idle`] holds them
 //! back while a game plays. [`probe_each`] runs a provider's probes either
 //! way.
@@ -28,7 +28,7 @@ use std::path::Path;
 use std::time::Duration;
 
 /// How many of a remote provider's models are probed at once.
-pub const AT_ONCE: usize = 4;
+pub(crate) const AT_ONCE: usize = 4;
 
 /// How long a port is given to answer before no local server is taken to
 /// be on it.
@@ -50,7 +50,7 @@ pub fn providers(ports: &[u16]) -> Vec<Provider> {
 }
 
 /// How many of the models of the provider at `base_url` are probed at
-/// once: [`AT_ONCE`] for a remote provider, one for a local one.
+/// once: `AT_ONCE` for a remote provider, one for a local one.
 pub fn at_once(base_url: &str) -> usize {
     if is_remote(base_url) { AT_ONCE } else { 1 }
 }
@@ -70,7 +70,7 @@ pub async fn discover(ports: &[u16], timeout: Duration) -> Vec<u16> {
 }
 
 /// The models the provider at `base_url` lists, asked with `key`, most
-/// capable first, as [`rank`] ranks them, each marked hidden when its id
+/// capable first, as `rank` ranks them, each marked hidden when its id
 /// says it does not chat and with the context window a game gives it, as
 /// [`window`] says; or, when it cannot list them, why, in a line for under
 /// the provider.
@@ -99,7 +99,7 @@ pub async fn list(base_url: &str, key: Option<SecretString>) -> Listing {
 }
 
 /// The context window, in tokens, a game gives a model of the provider at
-/// `base_url` whose configuration sets none, as [`crate::window::unset`] gives
+/// `base_url` whose configuration sets none, as `crate::window::unset` gives
 /// it, from `reported`, the one its listing reports.
 pub fn window(base_url: &str, reported: Option<u64>) -> u64 {
     crate::window::unset(base_url, reported).tokens
@@ -122,7 +122,7 @@ enum Standing {
 /// `src/models.toml` lists, in its order and newest first within each;
 /// then those whose id gives a parameter count, the most first; then the
 /// rest, newest first.
-pub fn rank(models: &mut [crate::Listed]) {
+pub(crate) fn rank(models: &mut [crate::Listed]) {
     models.sort_by_cached_key(|model| {
         let (id, made) = (model.id.clone(), Reverse(model.created));
         match (family(&model.id), parameters(&model.id)) {

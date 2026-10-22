@@ -35,7 +35,7 @@ pub fn link(name: &str) -> PathBuf {
 
 /// What is at the link's path.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Linked {
+pub(crate) enum Linked {
     /// A link into this app.
     Here,
     /// Something else: another app's link, or a copy.
@@ -95,7 +95,7 @@ fn quoted(path: &Path) -> String {
 }
 
 /// The script that links `link` to `target`, making its folder if need be.
-pub fn install_script(target: &Path, link: &Path) -> String {
+pub(crate) fn install_script(target: &Path, link: &Path) -> String {
     let folder = link.parent().unwrap_or(Path::new("/"));
     format!(
         "mkdir -p {} && ln -sfn {} {}",
@@ -106,7 +106,7 @@ pub fn install_script(target: &Path, link: &Path) -> String {
 }
 
 /// The script that removes `link`.
-pub fn uninstall_script(link: &Path) -> String {
+pub(crate) fn uninstall_script(link: &Path) -> String {
     format!("rm -f {}", quoted(link))
 }
 
@@ -134,7 +134,7 @@ pub fn outcome(succeeded: bool, stderr: &str) -> Outcome {
 }
 
 /// Run `script` with administrator privileges, asking for the password.
-pub fn privileged(script: &str) -> Outcome {
+pub(crate) fn privileged(script: &str) -> Outcome {
     let ran = Command::new("osascript")
         .args([
             "-e",
@@ -157,7 +157,7 @@ pub fn privileged(script: &str) -> Outcome {
 
 /// Link `link` to the command line `name` in `bundle`, running the script
 /// with `run`.
-pub fn install(
+pub(crate) fn install(
     bundle: &Path,
     name: &str,
     link: &Path,
@@ -168,7 +168,7 @@ pub fn install(
 
 /// Remove `link`, running the script with `run`, if it points into
 /// `bundle`. Anything else is left alone.
-pub fn uninstall(bundle: &Path, link: &Path, run: impl FnOnce(&str) -> Outcome) -> Outcome {
+pub(crate) fn uninstall(bundle: &Path, link: &Path, run: impl FnOnce(&str) -> Outcome) -> Outcome {
     match linked(link, bundle) {
         Linked::Here => run(&uninstall_script(link)),
         Linked::Other | Linked::Absent => Outcome::Done,
@@ -200,7 +200,7 @@ fn origin(path: &Path) -> Option<&'static str> {
 /// What to tell the user when the first copy of the command that `type -a`
 /// lists in `output` isn't `link`. Nothing when it is, or when none is
 /// listed.
-pub fn shadowing(output: &str, link: &Path) -> Option<String> {
+pub(crate) fn shadowing(output: &str, link: &Path) -> Option<String> {
     let first = found(output).into_iter().next()?;
     if first == link {
         return None;

@@ -36,7 +36,7 @@ pub enum Source {
 /// configuration gives none: `reported`, the one the provider's listing
 /// reports for the model, otherwise the provider's default in
 /// `src/models.toml`, otherwise [`CONTEXT_WINDOW`].
-pub fn unset(base_url: &str, reported: Option<u64>) -> ContextWindow {
+pub(crate) fn unset(base_url: &str, reported: Option<u64>) -> ContextWindow {
     let given = |tokens, source| ContextWindow { tokens, source };
     reported
         .map(|tokens| given(tokens, Source::Provider))
@@ -45,7 +45,7 @@ pub fn unset(base_url: &str, reported: Option<u64>) -> ContextWindow {
 }
 
 /// The context window of the model `name`, which `spec` describes: the one
-/// its table gives, otherwise the one [`unset`] gives. A window smaller
+/// its table gives, otherwise the one `unset` gives. A window smaller
 /// than `needed`, the tokens the game's largest request to the model
 /// takes before what the player remembers, by estimate, is an error naming
 /// the model and where the window came from.

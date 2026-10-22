@@ -11,7 +11,7 @@ const COMMIT: Option<&str> = option_env!("GITHUB_SHA");
 
 /// The shortcut that opens Settings on the platform `platform` names, as
 /// `navigator.platform` gives it.
-pub fn settings_shortcut(platform: &str) -> &'static str {
+pub(crate) fn settings_shortcut(platform: &str) -> &'static str {
     if platform.starts_with("Mac") {
         "⌘,"
     } else {
@@ -49,7 +49,7 @@ pub fn StartHead(
 /// A select, the `children`, drawn as a field with a chevron beside it.
 /// The select takes the class `fa-select`.
 #[component]
-pub fn SelectBox(
+pub(crate) fn SelectBox(
     /// The select.
     children: Children,
 ) -> impl IntoView {
@@ -66,7 +66,7 @@ pub fn SelectBox(
 /// The × of a remove button, a muted stroke the button's `aria-label`
 /// names.
 #[component]
-pub fn Cross() -> impl IntoView {
+pub(crate) fn Cross() -> impl IntoView {
     view! {
         <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
             <path d="M3 3l8 8M11 3l-8 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />

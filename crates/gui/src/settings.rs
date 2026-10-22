@@ -9,7 +9,7 @@
 //! hash it opens at, names a field to show.
 //!
 //! The pieces a page is built of are here too: its [`PageHead`],
-//! [`Section`]s, [`Named`] rows, [`Segments`], [`Choice`]s, [`Adder`]s and
+//! [`Section`]s, [`Named`] rows, `Segments`, [`Choice`]s, `Adder`s and
 //! the [`Problem`] under a field, and, in [`strategies`], the editors of
 //! strategies and prompt parts.
 
@@ -88,10 +88,11 @@ pub trait Page: Copy + PartialEq + Send + Sync + 'static {
 }
 
 /// What the General page holds, as its help says.
-pub const GENERAL_TIP: &str = "The app's appearance.";
+pub(crate) const GENERAL_TIP: &str = "The app's appearance.";
 
 /// What the Models page holds, as its help says.
-pub const MODELS_TIP: &str = "Model providers, their keys, and the models strategies can use.";
+pub(crate) const MODELS_TIP: &str =
+    "Model providers, their keys, and the models strategies can use.";
 
 /// A page of the window, a tab of its sidebar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,7 +188,7 @@ pub fn path(path: &[&str]) -> Vec<String> {
 }
 
 /// The message of the error at `path` among `errors`, if there is one.
-pub fn error_at(errors: &[FieldError], path: &[String]) -> Option<String> {
+pub(crate) fn error_at(errors: &[FieldError], path: &[String]) -> Option<String> {
     errors
         .iter()
         .find(|error| error.is_at(path))
@@ -195,7 +196,7 @@ pub fn error_at(errors: &[FieldError], path: &[String]) -> Option<String> {
 }
 
 /// Focus the element `id`, if there is one.
-pub fn focus_by_id(id: &str) {
+pub(crate) fn focus_by_id(id: &str) {
     if let Some(element) = document()
         .get_element_by_id(id)
         .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
@@ -267,7 +268,7 @@ impl<S: Edited> Editor<S> {
     }
 
     /// Change the model `name` with `change`.
-    pub fn edit_model(self, name: &str, change: impl FnOnce(&mut ModelSettings)) {
+    pub(crate) fn edit_model(self, name: &str, change: impl FnOnce(&mut ModelSettings)) {
         self.edit(|settings| {
             if let Some(model) = settings.models_mut().get_mut(name) {
                 change(model);
@@ -540,7 +541,7 @@ pub fn Named(
 /// value with its title and help, the one `value` holds raised, and `set`
 /// called with the one pressed.
 #[component]
-pub fn Segments<T: Copy + PartialEq + Send + Sync + 'static>(
+pub(crate) fn Segments<T: Copy + PartialEq + Send + Sync + 'static>(
     /// What the control is called.
     label: &'static str,
     /// Each value, with its title and its help.
@@ -658,7 +659,7 @@ pub fn Choice(
 /// A name field and a button that adds a thing of that name with `add`,
 /// unless `refuse` says why it can't, which shows beside them.
 #[component]
-pub fn Adder(
+pub(crate) fn Adder(
     /// The button's label.
     #[prop(into)]
     label: String,
