@@ -2,7 +2,8 @@ name: Website
 
 # The site under site/ goes to GitHub Pages on every push to main, with the
 # viewer at viewer/ showing a random game of Avalon and one of Werewolf,
-# played for the push. Each product's download links go to its newest full
+# played for the push, and Twenty Questions' web page at
+# twenty-questions/viewer/ playing its recorded games. Each product's download links go to its newest full
 # release, whose latest.json, where the desktop app looks for updates, is
 # served at <product>/latest.json. A product's release workflow runs this
 # once the release's files are up, and a link to a file the release lacks
@@ -46,6 +47,9 @@ jobs:
       # sets for every step.
       - run: apps/social-deduction/gui/build-page.sh
       - run: cp -R apps/social-deduction/gui/dist site/viewer
+      # Beside the twenty-questions/latest.json the Releases step puts there.
+      - run: apps/twenty-questions/gui/build-page.sh /FreeAgent/twenty-questions/viewer/
+      - run: mkdir -p site/twenty-questions && cp -R apps/twenty-questions/gui/dist site/twenty-questions/viewer
       # Each {{release:<product>}} placeholder becomes the address of the
       # product's newest full release, which has to have every file the
       # site links to.

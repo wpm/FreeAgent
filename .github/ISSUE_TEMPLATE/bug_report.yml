@@ -86,7 +86,7 @@ body:
     attributes:
       label: The game's log
       description: >-
-        If a game was involved, attach its log: File ▸ Save Game Log… in the app, or what
+        If a game was involved, attach its log: save it from the app's File menu, or attach what
         `social-deduction play` or `twenty-questions play` wrote to standard error. API keys are redacted, so a log is safe
         to share. Drag the file here, zipped if GitHub won't take the .jsonl as it is.
 
