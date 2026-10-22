@@ -692,21 +692,21 @@ mod tests {
     #[test]
     fn a_player_s_prompt_that_names_the_object_is_an_error_at_that_prompt() {
         let mut app = defaults();
-        app.game.strategies.get_mut("everyone").unwrap().system = "{{ object }}".to_string();
+        app.game.strategies.get_mut("scout").unwrap().system = "{{ object }}".to_string();
         let (at, message) = only_error(&app);
-        assert_eq!(at, path(&["game", "strategies", "everyone", "system"]));
+        assert_eq!(at, path(&["game", "strategies", "scout", "system"]));
         assert!(message.contains("undefined"), "{message}");
     }
 
     #[test]
     fn no_more_seats_are_allotted_than_there_are_players() {
         let mut app = defaults();
-        app.game.allotments.insert("everyone".to_string(), 5);
+        app.game.allotments.insert("everyone".to_string(), 1);
         assert_eq!(
             only_error(&app),
             (
                 path(&["game", "allotments"]),
-                "[players] strategies allots 5 seats, more than the 4 players".to_string()
+                "[players] strategies allots 4 seats, more than the 3 players".to_string()
             )
         );
     }
