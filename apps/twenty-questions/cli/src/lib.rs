@@ -8,6 +8,7 @@
 pub mod config;
 pub mod game;
 pub mod host;
+pub mod live;
 pub mod log;
 pub mod message;
 pub mod model;
@@ -15,4 +16,5 @@ pub mod narrator;
 pub mod object;
 pub mod player;
 pub mod run;
+pub mod stage;
 pub mod story;

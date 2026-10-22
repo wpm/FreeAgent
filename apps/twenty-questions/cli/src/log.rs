@@ -15,13 +15,14 @@
 
 use crate::config::Configuration;
 use crate::message::Message;
+use anyhow::Context as _;
 use free_agent::{ActorId, Event};
 use free_agent_game::log::{Ended, Secrets};
 use free_agent_game::seat::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::io::{self, Write};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 /// The shape of the log this version writes. It goes up whenever the
@@ -222,6 +223,36 @@ impl Header {
     }
 }
 
+impl Header {
+    /// The header `line` holds, or `None` when it holds none.
+    ///
+    /// # Errors
+    ///
+    /// When the header is bad, is of a newer format than this version
+    /// reads, or is of another game.
+    pub fn read(line: &str) -> anyhow::Result<Option<Self>> {
+        let Ok(event) = serde_json::from_str::<Event<serde_json::Value>>(line) else {
+            return Ok(None);
+        };
+        let Some(header) = event.payload.get("Header") else {
+            return Ok(None);
+        };
+        let header = Header::deserialize(header).context("the log's header is bad")?;
+        let Header {
+            format,
+            version,
+            game,
+        } = &header;
+        anyhow::ensure!(game == GAME, "This log is of {game}, not {GAME}.");
+        anyhow::ensure!(
+            *format <= LOG_FORMAT,
+            "This log was written by {GAME} {version} in log format {format}. \
+             This version reads log formats up to {LOG_FORMAT}."
+        );
+        Ok(Some(header))
+    }
+}
+
 impl Default for Header {
     fn default() -> Self {
         Self::new()
@@ -273,8 +304,22 @@ impl<W: Write> Writer<W> {
     /// # Errors
     ///
     /// Fails when writing to `sink` fails.
-    pub fn end(mut self, ended: Ended) -> io::Result<W> {
-        self.write(&Event::now(self.episode, Entry::Ended(ended)))?;
+    pub fn end(self, ended: Ended) -> io::Result<W> {
+        self.end_at(ended, SystemTime::now())
+    }
+
+    /// Write how the episode `ended`, stamped `time`, its last line, and
+    /// give back the sink, flushed.
+    ///
+    /// # Errors
+    ///
+    /// Fails when writing to `sink` fails.
+    pub fn end_at(mut self, ended: Ended, time: SystemTime) -> io::Result<W> {
+        self.write(&Event {
+            time,
+            episode: self.episode,
+            payload: Entry::Ended(ended),
+        })?;
         self.sink.flush()?;
         Ok(self.sink)
     }
@@ -285,7 +330,6 @@ pub(crate) mod tests {
     use super::*;
     use secrecy::SecretString;
     use serde_json::json;
-    use std::time::SystemTime;
 
     /// `payload`, an entry or a memory, as an event logged or remembered
     /// when the game began, in no episode in particular.
@@ -344,6 +388,44 @@ pub(crate) mod tests {
             header["payload"],
             json!({"Header": {"format": 1, "version": env!("CARGO_PKG_VERSION"), "game": "twenty-questions"}})
         );
+    }
+
+    /// The header line of `payload`, as an event's.
+    fn header_line(payload: serde_json::Value) -> String {
+        serde_json::to_string(&logged(json!({ "Header": payload }))).unwrap()
+    }
+
+    #[test]
+    fn a_header_reads_back_and_a_line_that_is_no_header_holds_none() {
+        let written = Writer::start(Vec::new(), episode(), Secrets::default()).unwrap();
+        let written = written.end(Ended::Won).unwrap();
+        let text = String::from_utf8(written).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(Header::read(lines[0]).unwrap(), Some(Header::default()));
+        assert_eq!(Header::read(lines[1]).unwrap(), None);
+        assert_eq!(Header::read("not a line").unwrap(), None);
+    }
+
+    #[test]
+    fn a_header_of_another_game_a_newer_format_or_a_bad_shape_is_refused() {
+        let werewolf = header_line(json!({"format": 1, "version": "0.2.0", "game": "werewolf"}));
+        assert_eq!(
+            Header::read(&werewolf).unwrap_err().to_string(),
+            "This log is of werewolf, not twenty-questions."
+        );
+        let newer = header_line(json!({"format": 2, "version": "0.3.0", "game": GAME}));
+        assert_eq!(
+            Header::read(&newer).unwrap_err().to_string(),
+            "This log was written by twenty-questions 0.3.0 in log format 2. \
+             This version reads log formats up to 1."
+        );
+        for bad in [
+            json!({"format": 1}),
+            json!({"format": 1, "version": 1, "game": GAME}),
+        ] {
+            let error = Header::read(&header_line(bad)).unwrap_err();
+            assert_eq!(error.to_string(), "the log's header is bad");
+        }
     }
 
     #[test]
