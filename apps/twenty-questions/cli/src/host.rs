@@ -143,6 +143,12 @@ fn leading_yes_or_no(text: &str) -> Option<&'static str> {
     }
 }
 
+/// `elapsed` without its parts of a millisecond, as the log keeps how long
+/// a game took.
+fn to_the_millisecond(elapsed: Duration) -> Duration {
+    Duration::from_millis(elapsed.as_millis() as u64)
+}
+
 /// What the host is asked when no guess waits, after the speech it heard:
 /// how many of the `guesses` the players have `used`, how much time is
 /// left, how long it has been `quiet` since the last guess, and that only
@@ -558,10 +564,10 @@ impl Host {
     }
 
     /// End the game, won `by` this with `used` guesses: log the end with
-    /// the object, send the winner, and stop everyone. A game is ended
-    /// once.
+    /// the object and how long the game took, to the millisecond, send the
+    /// winner, and stop everyone. A game is ended once.
     fn finish(&self, by: Victory, used: u64) -> anyhow::Result<()> {
-        let took = self.elapsed();
+        let took = to_the_millisecond(self.elapsed());
         let end = {
             let mut state = self.mind.state.lock().unwrap();
             let over = std::mem::replace(&mut state.over, true);
@@ -1788,6 +1794,12 @@ mod tests {
                 },
             }]
         );
+    }
+
+    #[test]
+    fn how_long_a_game_took_is_kept_to_the_millisecond() {
+        let took = Duration::new(95, 89_306_959);
+        assert_eq!(to_the_millisecond(took), Duration::from_millis(95_089));
     }
 
     #[test]
