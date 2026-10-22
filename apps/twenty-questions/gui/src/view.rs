@@ -51,11 +51,6 @@ impl Default for Live {
 }
 
 impl Live {
-    /// The viewer's time.
-    fn now(self) -> f64 {
-        elapsed()
-    }
-
     /// Clear the screen for a new game. What the last game's cues left to
     /// do later, they leave undone.
     pub fn reset(self) {
@@ -67,7 +62,7 @@ impl Live {
     /// the screen is reset first.
     pub fn show(self, cue: &Cue) {
         let screen = self.screen;
-        let at = self.now();
+        let at = elapsed();
         let waited = at - self.arrived.get_value();
         self.arrived.set_value(at);
         screen.update(|screen| {
@@ -96,8 +91,8 @@ pub(crate) fn Viewer(
 ) -> impl IntoView {
     let screen = live.screen;
     // The viewer's time, now.
-    let tick = RwSignal::new(live.now());
-    if let Ok(ticking) = set_interval_with_handle(move || tick.set(live.now()), TICK) {
+    let tick = RwSignal::new(elapsed());
+    if let Ok(ticking) = set_interval_with_handle(move || tick.set(elapsed()), TICK) {
         on_cleanup(move || ticking.clear());
     }
     // A memo, so that a stopped clock redraws nothing as it ticks.
@@ -114,7 +109,8 @@ pub(crate) fn Viewer(
     };
     // Memos, so that a cue that leaves a part as it was redraws none of it.
     let names = Memo::new(move |_| screen.with(|screen| screen.names.clone()));
-    let posts = Memo::new(move |_| screen.with(|screen| screen.posts.clone()));
+    // Posts are only ever added, so their count says when they change.
+    let posted = Memo::new(move |_| screen.with(|screen| screen.posts.len()));
     let thinkers = Memo::new(move |_| screen.with(|screen| screen.thinkers.clone()));
     let won = Memo::new(move |_| screen.with(|screen| screen.won));
     let secret = Memo::new(move |_| screen.with(|screen| screen.secret.clone()));
@@ -141,13 +137,11 @@ pub(crate) fn Viewer(
     });
     let rendered = options.clone();
     let messages = Signal::derive(move || {
-        let mut messages = posts.with(|posts| {
-            screen.with_untracked(|screen| {
-                posts
-                    .iter()
-                    .map(|post| message(post, screen, won, rendered.clone(), on_link))
-                    .collect::<Vec<_>>()
-            })
+        posted.track();
+        let mut messages = screen.with_untracked(|screen| {
+            (screen.posts.iter())
+                .map(|post| message(post, screen, won, rendered.clone(), on_link))
+                .collect::<Vec<_>>()
         });
         thinkers.with(|thinkers| {
             messages.extend(thinkers.iter().map(|thinker| dots(thinker, silence)));
@@ -207,17 +201,15 @@ fn pip(pip: Pip) -> impl IntoView {
         Pip::Open => ("tq-pip", String::new()),
         Pip::Waiting => ("tq-pip tq-waiting", String::new()),
         Pip::Used => ("tq-pip tq-used-pip", String::new()),
-        Pip::Won(color) => (
-            "tq-pip tq-won-pip",
-            format!("--tq-mark: var(--tq-player-{}-mark)", color + 1),
-        ),
+        Pip::Won(color) => ("tq-pip tq-won-pip", format!("--tq-mark: {}", mark(color))),
     };
     view! { <span class=class style=style></span> }
 }
 
-/// `post` as a Rich-Chat message. A guess and an answer carry their tag,
-/// and the answer the guess it answers; each is ringed once `won` names
-/// its guess, in the guesser's color.
+/// `post` as a Rich-Chat message. A guess, an answer and a guess too late
+/// to count carry their tag, and the answer the guess it answers, marked
+/// in the guesser's color; a guess and its answer are ringed in it once
+/// `won` names the guess.
 fn message(
     post: &Post,
     screen: &Screen,
@@ -226,49 +218,57 @@ fn message(
     on_link: Callback<String>,
 ) -> Message {
     let (id, name) = (post.id.clone(), post.name.clone());
-    match &post.body {
-        Body::Told(text) | Body::Said(text) => Message::new(id, name, text.clone()),
-        Body::Guess { guess, text } => {
-            let (guess, text) = (*guess, text.clone());
-            Message::view(id, name, move || {
-                view! {
-                    <div class="rc-bubble tq-guess" class:tq-won=move || won.get() == Some(guess)>
-                        <p class="tq-tag">{format!("Guess {guess}")}</p>
-                        <RichText content=text.clone() options=options.clone() on_link=on_link />
-                    </div>
-                }
-            })
-        }
+    let (class, tag, guess, asked, text) = match &post.body {
+        Body::Told(text) | Body::Said(text) => return Message::new(id, name, text.clone()),
+        Body::Guess { guess, text } => (
+            "tq-guess",
+            format!("Guess {guess}"),
+            Some(*guess),
+            None,
+            text,
+        ),
         Body::Answer { guess, asked, text } => {
-            let (guess, asked, text) = (*guess, asked.clone(), text.clone());
-            let ring = screen
-                .asker_color(guess)
-                .map(|color| format!("--tq-ring: var(--tq-player-{}-mark)", color + 1))
-                .unwrap_or_default();
-            Message::view(id, name, move || {
-                let quote =
-                    (!asked.is_empty()).then(|| view! { <p class="tq-quote">{asked.clone()}</p> });
-                view! {
-                    <div class="rc-bubble tq-answer" style=ring.clone() class:tq-won=move || won.get() == Some(guess)>
-                        <p class="tq-tag">{format!("Answer {guess}")}</p>
-                        {quote}
-                        <RichText content=text.clone() options=options.clone() on_link=on_link />
-                    </div>
-                }
-            })
+            let asked = (!asked.is_empty()).then(|| asked.clone());
+            (
+                "tq-answer",
+                format!("Answer {guess}"),
+                Some(*guess),
+                asked,
+                text,
+            )
         }
-        Body::Uncounted(text) => {
-            let text = text.clone();
-            Message::view(id, name, move || {
-                view! {
-                    <div class="rc-bubble tq-uncounted">
-                        <p class="tq-tag">"Too late to count"</p>
-                        <RichText content=text.clone() options=options.clone() on_link=on_link />
-                    </div>
-                }
-            })
+        Body::Uncounted(text) => (
+            "tq-uncounted",
+            "Too late to count".to_string(),
+            None,
+            None,
+            text,
+        ),
+    };
+    let ring = match &post.body {
+        Body::Answer { guess, .. } => screen
+            .asker_color(*guess)
+            .map(|color| format!("--tq-ring: {}", mark(color))),
+        _ => None,
+    };
+    let text = text.clone();
+    Message::view(id, name, move || {
+        let quote = asked
+            .clone()
+            .map(|asked| view! { <p class="tq-quote">{asked}</p> });
+        view! {
+            <div class=format!("rc-bubble {class}") style=ring.clone() class:tq-won=move || guess.is_some() && won.get() == guess>
+                <p class="tq-tag">{tag.clone()}</p>
+                {quote}
+                <RichText content=text.clone() options=options.clone() on_link=on_link />
+            </div>
         }
-    }
+    })
+}
+
+/// The mark of the player color `color`, as CSS.
+fn mark(color: u8) -> String {
+    format!("var(--tq-player-{}-mark)", color + 1)
 }
 
 /// `thinker`'s dots, `think-Alice`: a live message whose text, `silence`,

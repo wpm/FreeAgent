@@ -208,6 +208,9 @@ impl Screen {
     /// Show the dots of every call out longer than [`THINKING_DELAY`] at
     /// log time `now`.
     pub fn reveal(&mut self, now: Millis) {
+        if self.thinking.is_empty() {
+            return;
+        }
         let (due, waiting) = std::mem::take(&mut self.thinking)
             .into_iter()
             .partition(|(_, at)| at + THINKING_DELAY <= now);

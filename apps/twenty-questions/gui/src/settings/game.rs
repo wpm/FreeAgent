@@ -5,7 +5,7 @@ use free_agent_gui::settings::strategies::{StrategyCard, path_of};
 use free_agent_gui::settings::{Choice, Editor, Named, Page, PageHead, Problem, Section, field_id};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use twenty_questions_gui_types::settings::{AppSettings, FieldError, GameSettings};
+use twenty_questions_gui_types::settings::{AppSettings, FieldError, GAME, GameSettings};
 
 use super::GamePage;
 use crate::tauri;
@@ -21,7 +21,7 @@ fn game_path(rest: &[&str]) -> Vec<String> {
 /// Whether the page shows the error at `path` beside its own field.
 fn shown_beside(path: &[String]) -> bool {
     match path {
-        [game, rest @ ..] if game == "game" => matches!(
+        [game, rest @ ..] if game == GAME => matches!(
             rest.iter().map(String::as_str).collect::<Vec<_>>()[..],
             ["players"]
                 | ["host", "model"]
@@ -169,7 +169,7 @@ fn Players(editor: Editor<AppSettings>) -> impl IntoView {
                     max=MOST.to_string()
                     id=field_id(&at)
                     aria-label="Players"
-                    data-tip="How many players, from 1 to 12. Type a number or use − and +."
+                    data-tip=format!("How many players, from 1 to {MOST}. Type a number or use − and +.")
                     prop:value=move || count.get().to_string()
                     on:input=typed
                 />
