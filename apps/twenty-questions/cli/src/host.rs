@@ -1439,12 +1439,9 @@ mod tests {
             .collect();
         // Once NUDGE after the beginning, and once NUDGE after the guess.
         assert_eq!(urged.len(), 2, "{urged:?}");
-        assert!(
-            urged[0].contains("The last guess came 2m ago"),
-            "{}",
-            urged[0]
-        );
-        assert!(urged[1].contains("Guesses used: 1 of 20."), "{}", urged[1]);
+        let (first, second) = (&urged[0], &urged[1]);
+        assert!(first.contains("The last guess came 2m ago"), "{first}");
+        assert!(second.contains("Guesses used: 1 of 20."), "{second}");
         assert_eq!(played.end().1, Victory::OutOfTime);
     }
 

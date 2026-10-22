@@ -9,7 +9,6 @@ pub use free_agent_model::canned::{
 
 use crate::host::{ANSWER_TOOL, CHOOSE, NAMED};
 use crate::model::{SPEAK, WAIT};
-use crate::object::says;
 use crate::prompted::GUESS;
 use anyhow::anyhow;
 use free_agent_model::canned;
@@ -25,10 +24,8 @@ pub const SAID: &str = "Let's ask.";
 /// What the canned player guesses.
 pub const GUESSED: &str = "Is it a teapot?";
 
-/// What the canned host answers a guess that names [`OBJECT`].
-pub const YES: &str = "Yes, it is!";
-
-/// What the canned host answers any other guess.
+/// What the canned host answers every guess it is asked: none says
+/// [`OBJECT`]'s name, since such a guess wins before the host is asked.
 pub const NO: &str = "No.";
 
 /// The answer the canned player gives `request`: the calls
@@ -40,12 +37,11 @@ pub fn canned(request: &Request) -> anyhow::Result<Response> {
 
 /// The calls the canned player makes to answer `request`, a completion
 /// request in the protocol's JSON, each as a tool's name and its arguments.
-/// Asked to pick, it chooses [`OBJECT`]. Asked to answer a guess, it calls
-/// it named, saying [`YES`], when the guess says the name of the object the
-/// request asks about, and otherwise answers [`NO`]. Asked as a player, it guesses [`GUESSED`] when
-/// it may and its story does not tell it guessed already, or else says
-/// [`SAID`] unless its story tells it said something already, or else waits
-/// as long as it may. Asked as the host with no guess waiting, it waits. A
+/// Asked to pick, it chooses [`OBJECT`]. Asked to answer a guess, it
+/// answers [`NO`]. Asked as a player, it guesses [`GUESSED`] when it may and
+/// its story does not tell it guessed already, or else says [`SAID`] unless
+/// its story tells it said something already, or else waits as long as it
+/// may. Asked as the host with no guess waiting, it waits. A
 /// request offering none of these tools is an error.
 pub fn canned_calls(request: &Value) -> anyhow::Result<Vec<(String, Value)>> {
     let tool = |name: &str| {
@@ -65,18 +61,7 @@ pub fn canned_calls(request: &Value) -> anyhow::Result<Vec<(String, Value)>> {
         return Ok(call(CHOOSE, json!({"object": OBJECT})));
     }
     if tool(NAMED).is_some() {
-        let guess = asked
-            .rsplit_once(" guesses: \"")
-            .and_then(|(_, guess)| guess.split_once('"'))
-            .map_or("", |(guess, _)| guess);
-        let object = asked
-            .split_once("If the guess names ")
-            .and_then(|(_, rest)| rest.split_once(" itself,"))
-            .map_or(OBJECT, |(object, _)| object);
-        return Ok(match says(guess, object) {
-            true => call(NAMED, json!({"text": YES})),
-            false => call(ANSWER_TOOL, json!({"text": NO})),
-        });
+        return Ok(call(ANSWER_TOOL, json!({"text": NO})));
     }
     let most =
         tool(WAIT).map(|wait| wait["parameters"]["properties"]["seconds"]["maximum"].as_u64());
