@@ -1,10 +1,12 @@
 ; The NSIS installer's hooks (bundle > windows > nsis > installerHooks in
 ; tauri.conf.json). Installing puts the install folder, which holds
 ; social-deduction.exe, on the user's Path, and uninstalling takes it off.
-; user-path.ps1 edits the Path, and each terminal opened afterward sees it.
+; user-path.ps1, which every app shares from crates/desktop, edits the
+; Path, and each terminal opened afterward sees it.
 
 ; Here rather than in the macro, where __FILEDIR__ is installer.nsi's.
-!define USER_PATH_SCRIPT "${__FILEDIR__}\user-path.ps1"
+; Tauri includes this file where it is, so __FILEDIR__ is src-tauri.
+!define USER_PATH_SCRIPT "${__FILEDIR__}\..\..\..\..\crates\desktop\user-path.ps1"
 
 !macro USER_PATH ACTION
   InitPluginsDir

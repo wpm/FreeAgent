@@ -9,7 +9,8 @@
 //! does; on launch, [`update`] checks for an
 //! update and, when the user agrees, installs it and restarts; and on
 //! macOS a debug build runs inside an app bundle, as `dev_bundle` makes
-//! it.
+//! it. On Windows, each app's installer puts its command line on the
+//! user's Path with this crate's `user-path.ps1`.
 //!
 //! What names the app, such as its keychain service, its probe, its
 //! settings and its command line, the app passes in. Its Tauri commands
